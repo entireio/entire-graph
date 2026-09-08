@@ -66,6 +66,22 @@ func renderGraphReport(snapshot sem.ProviderSnapshot) string {
 	return out.String()
 }
 
+// markdownTableCell renders one repository-controlled value as a single Markdown table cell.
+//
+// One key here is a Git pathname — the file column of "Top files by symbol count" — and a Git
+// pathname may hold any byte but NUL and '/'. termsafe.Line takes the control bytes: a newline in a
+// filename would otherwise end the table row and make the REPOSITORY the author of a whole line of a
+// file the caller asked this tool to write. But the cell separator is not a control byte. A file
+// named `a|b.go` is valid on every filesystem Git supports, and printed raw it splits one row into
+// three columns and corrupts the table from that row down — the caller's generated report, committed
+// and reviewed, restructured by a filename. GFM's own escape for that is a backslash, so the
+// backslash goes first (otherwise this would escape the escapes it just wrote) and the pipe second.
+func markdownTableCell(value string) string {
+	cell := termsafe.Line(value)
+	cell = strings.ReplaceAll(cell, `\`, `\\`)
+	return strings.ReplaceAll(cell, "|", `\|`)
+}
+
 // countBy tallies one field read from each of n records.
 func countBy(n int, value func(int) string) map[string]int {
 	counts := make(map[string]int)
@@ -101,12 +117,8 @@ func writeCountTable(out *strings.Builder, title, keyHeader string, counts map[s
 		shown = shown[:limit]
 	}
 	for _, key := range shown {
-		// termsafe.Line, because one key here is a Git pathname — the file column of
-		// "Top files by symbol count" — and a Git pathname may hold any byte but NUL
-		// and '/'. A newline in it would end the table row and make the REPOSITORY
-		// the author of a whole line of a file the caller asked this tool to write.
 		// Counting stays on the raw key so escaping cannot merge two files into one row.
-		fmt.Fprintf(out, "| %s | %d |\n", termsafe.Line(key), counts[key])
+		fmt.Fprintf(out, "| %s | %d |\n", markdownTableCell(key), counts[key])
 	}
 	if len(shown) < len(keys) {
 		fmt.Fprintf(out, "\n%d more not shown.\n", len(keys)-len(shown))

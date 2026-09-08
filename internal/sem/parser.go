@@ -3463,10 +3463,28 @@ func maskCPlusPlusConversionOperatorDecl(text string) string {
 
 func maskCPlusPlusOperatorCall(text string) string {
 	return cPlusPlusOperatorCallPattern.ReplaceAllStringFunc(text, func(match string) string {
-		if strings.HasPrefix(match, "::") {
-			return sameLengthReplacement("::op(", len(match))
+		// The stand-in identifier keeps the width of the OPERATOR NAME, not just
+		// of the whole match. A symbol's name is sliced from the UNMASKED content
+		// at the node's byte range, so a narrower stand-in reads the wrong bytes
+		// back: `op` is two characters where `operator=` is nine. Padding with
+		// '_' keeps it one identifier token, and the slice then returns the
+		// operator's real spelling.
+		paren := strings.LastIndexByte(match, '(')
+		if paren < 0 {
+			return match
 		}
-		return sameLengthReplacement("op(", len(match))
+		name := strings.TrimRight(match[:paren], " \t")
+		if name == "" {
+			return match
+		}
+		stand := "op"
+		if strings.HasPrefix(name, "::") {
+			stand = "::op"
+		}
+		if len(stand) > len(name) {
+			stand = stand[:len(name)]
+		}
+		return stand + strings.Repeat("_", len(name)-len(stand)) + match[len(name):]
 	})
 }
 
@@ -4391,7 +4409,7 @@ func minInt(a, b int) int {
 // as fully understood.
 func walkEntities(ctx context.Context, node *sitter.Node, src []byte, language, scope string, stop func() bool, entities *[]Entity) (depthExceeded bool) {
 	exceeded := false
-	walkEntitiesScoped(ctx, node, src, language, scope, false, stop, 0, entities, &exceeded)
+	walkEntitiesScoped(ctx, node, src, language, scope, false, false, stop, 0, entities, &exceeded)
 	return exceeded
 }
 
@@ -4399,12 +4417,21 @@ func walkEntities(ctx context.Context, node *sitter.Node, src []byte, language, 
 // (inFunc), so a callable defined there is marked Entity.Local — a nested/closure
 // def that call resolution must not name-match across scopes.
 //
-// depth is capped at maxParseWalkDepth while stop enforces the caller's
-// wall-clock budget.
-func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, language, scope string, inFunc bool, stop func() bool, depth int, entities *[]Entity, depthExceeded *bool) {
-	// One non-blocking channel probe per node is what makes a wall-clock budget
-	// able to interrupt this walk. stop is nil unless the caller is actually
-	// under a deadline, so the default path pays nothing.
+// scopeIsCallable says what `scope` NAMES: a type (false, the usual case) or the
+// enclosing CALLABLE (true, set only by the JS/TS re-anchoring below).
+// entityFromNode cannot tell the two apart — it treats any non-empty scope as a
+// type and promotes the callables under it to kind "method" — so this is what
+// tells a member of a type from a lexical binding of a function.
+//
+// depth is the current AST nesting level and is capped at maxParseWalkDepth: a
+// tree deeper than that truncates (setting *depthExceeded) instead of recursing
+// on until the goroutine stack is exhausted, which is a fatal process abort.
+// initializerTypeBodies below shares this counter rather than starting a fresh
+// one, because walkEntitiesScoped calls it and then descends into what it
+// returns; two independent budgets over the same root-to-leaf path would let the
+// two walkers amplify each other.
+func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, language, scope string, scopeIsCallable, inFunc bool, stop func() bool, depth int, entities *[]Entity, depthExceeded *bool) {
+	// Check the caller's wall-clock budget before descending into each node.
 	if stop != nil && stop() {
 		return
 	}
@@ -4415,6 +4442,16 @@ func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, lang
 		*depthExceeded = true
 		return
 	}
+	// In-class C++ method declarations must be emitted before the field early
+	// return below. One declaration can legally mix callable and data
+	// declarators (`int Start(), state;`): fieldEntities handles state and then
+	// stops the walk, so extracting methods afterwards silently loses Start.
+	// This remains separate from entityFromNode because one declaration can also
+	// declare several methods (`void Start(), Stop();`).
+	for _, member := range cPlusPlusMemberDeclarationEntities(node, src, language, scope) {
+		setEntitySourceRange(&member, cPlusPlusDeclarationSpan(node), language, src)
+		*entities = append(*entities, member)
+	}
 	// Field/property declarations emit one entity per declared name and are not
 	// descended into (their name nodes would otherwise look like field accesses).
 	if fields, ok := fieldEntities(node, src, language, scope, inFunc); ok {
@@ -4422,6 +4459,15 @@ func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, lang
 			setEntitySourceRange(&fields[index], node, language, src)
 		}
 		*entities = append(*entities, fields...)
+		// JS/TS callable fields already emit their method entity above. Walk
+		// their initializer as that method's lexical scope so nested helpers
+		// are retained without becoming members of the surrounding class.
+		if functionLocalScopeResets(language) && len(fields) == 1 && fields[0].Kind == "method" {
+			if value := node.ChildByFieldName("value"); functionLikeValue(value) {
+				walkEntitiesScoped(ctx, value, src, language, fields[0].Name, true, true, stop, depth+1, entities, depthExceeded)
+				return
+			}
+		}
 		// A field whose initializer is an anonymous/nested type still declares
 		// callables: `static final Comparator<T> C = new Comparator<T>() {
 		// public int compare(...) {...} };`. The declaration as a whole is not
@@ -4436,7 +4482,7 @@ func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, lang
 		// inside a method body, so localReachable keeps them scoped to the
 		// declaration instead of name-colliding with real members.
 		for _, body := range initializerTypeBodies(node, depth, depthExceeded) {
-			walkEntitiesScoped(ctx, body, src, language, scope, true, stop, depth+1, entities, depthExceeded)
+			walkEntitiesScoped(ctx, body, src, language, scope, scopeIsCallable, true, stop, depth+1, entities, depthExceeded)
 		}
 		// A C/C++ member can also DEFINE its type inline:
 		// `struct Inner { int value; } inner;`. Before members were extracted
@@ -4446,7 +4492,7 @@ func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, lang
 		// same scope and the same inFunc — the path the walk already took — so
 		// the type keeps its symbol and gains its own members.
 		for _, definition := range cFamilyInlineTypeDefinitions(node, language) {
-			walkEntitiesScoped(ctx, definition, src, language, scope, inFunc, stop, depth+1, entities, depthExceeded)
+			walkEntitiesScoped(ctx, definition, src, language, scope, scopeIsCallable, inFunc, stop, depth+1, entities, depthExceeded)
 		}
 		// An ANONYMOUS aggregate with a named instance --
 		// `union { int i; float f; } value;` -- declares no type symbol, so the
@@ -4456,17 +4502,34 @@ func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, lang
 		// are reached from (`packet.value.i`), so its scope is where they belong.
 		for _, body := range cFamilyAnonymousAggregateBodies(node, language) {
 			for _, instance := range fieldDeclNames(node, src) {
-				walkEntitiesScoped(ctx, body, src, language, qualify(scope, instance), inFunc, stop, depth+1, entities, depthExceeded)
+				// The instance-qualified scope names a CONTAINER path (`Packet.value`),
+				// never the enclosing callable, so it is not callable-scoped whatever
+				// the parent was.
+				walkEntitiesScoped(ctx, body, src, language, qualify(scope, instance), false, inFunc, stop, depth+1, entities, depthExceeded)
 			}
 		}
 		return
 	}
 	entity, ok := entityFromNode(ctx, node, src, language, scope)
 	childScope := scope
+	childScopeIsCallable := scopeIsCallable
 	childInFunc := inFunc
 	if ok {
+		// entityFromNode reads a non-empty scope as a TYPE and promotes a
+		// `function name(){}` under it to kind "method". When the scope names
+		// the enclosing callable instead (the re-anchoring below), that
+		// promotion is wrong: the declaration is a lexical binding of that
+		// callable, not member syntax, so it stays kind "function". A
+		// method_definition reached the same way — an object literal's method
+		// declared in a method body — IS member syntax and keeps "method".
+		if scopeIsCallable && entity.Kind == "method" && lexicalCallableForm(node) {
+			entity.Kind = "function"
+		}
 		setEntitySourceRange(&entity, node, language, src)
 		entity.cLinkage = declaredWithCLinkage(ctx, language, node, src)
+		if language == "C++" && node.Type() == "function_definition" {
+			entity.cPlusPlusDefinitionName = cPlusPlusDefinitionName(node, src)
+		}
 		if entity.Kind == "function" || entity.Kind == "method" {
 			if language == "JavaScript" || language == "TypeScript" {
 				entity.parameterNames = jsEntityParameterNames(node, src)
@@ -4493,6 +4556,7 @@ func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, lang
 		*entities = append(*entities, cFamilyTypedefAliasEntities(node, src, language, entity)...)
 		if scopesChildren(language, entity.Kind) {
 			childScope = entity.Name
+			childScopeIsCallable = false
 		}
 		if entity.Kind == "function" || entity.Kind == "method" {
 			// In R a callable is named by assignment (a binary_operator), and a
@@ -4506,6 +4570,75 @@ func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, lang
 			if language != "R" || node.Type() != "binary_operator" {
 				childInFunc = true // descendants of this callable are function-local
 			}
+			// A declaration inside another callable's BODY is a function-local
+			// binding, not a member of the enclosing class, so it must not
+			// inherit the TYPE scope. `function handler(){}` inside
+			// `Widget.render()` was qualified as the method `Widget.handler` —
+			// a symbol naming a member the class does not have, whose bare
+			// compound-v1 ID then collided with the real `Widget.handler` and
+			// pushed BOTH onto `#sig:`-suffixed IDs, so adding a callback in one
+			// method body silently re-identified an unrelated method.
+			//
+			// The type scope is REPLACED, not cleared. Clearing it drops the
+			// only component that told two nested declarations apart, so
+			// `helper` inside `A.m` and `helper` inside `B.m` would share one
+			// base ID and adding the second would move the first from a bare ID
+			// onto a `#sig:` one — the same instability under a different
+			// spelling, now fired by an edit to an unrelated class. Re-anchoring
+			// to the enclosing callable's own qualified name keeps them
+			// distinct (`A.m.helper` vs `B.m.helper`) and makes the container a
+			// symbol that actually declares them, while `Widget.handler` is left
+			// to the one real method. lexicalCallableForm then undoes
+			// entityFromNode's promotion to "method", which reads a non-empty
+			// scope as a type.
+			//
+			// Only a scope that EXISTS is replaced: at `scope == ""` (a callable
+			// nested in a top-level function) nothing qualified the declaration
+			// before this change and nothing does after, so no ID that predates
+			// it moves. The `const handler = (a) => a` spelling is likewise
+			// untouched — variable_declarator never consults the scope — so its
+			// bare, function-local shape is what it has always been.
+			//
+			// Scoped to JS/TS: other languages' nested callables (Java's
+			// anonymous-class members reached through initializerTypeBodies,
+			// Python's nested defs) rely on the type scope to stay
+			// container-qualified.
+			//
+			// Only a callable whose own name is QUALIFIED by the scope can
+			// become the new scope. The `const cb = () => {}` spelling is a
+			// variable_declarator, which never consults the scope, so its
+			// entity.Name is the bare `cb`: taking it would drop the `A.m`
+			// this walk had already established and re-anchor the body to a
+			// name that says nothing about which class it is in. `helper`
+			// inside `A.m`'s `cb` and inside `B.m`'s `cb` would then BOTH be
+			// `cb.helper` — the very collision this re-anchoring exists to
+			// prevent, one nesting level down, and adding the second class
+			// would move the first from `function:cb.helper` onto
+			// `function:cb.helper#sig:80cfac553042146c`. When the scope
+			// already names a callable it is kept instead, so the body is
+			// anchored to the nearest ENCLOSING callable that has a qualified
+			// name (`A.m.helper` vs `B.m.helper`) and its container is a
+			// symbol that exists. The same guard retains the class scope for an
+			// unqualified callback in a static block: otherwise A and B would
+			// both emit cb.helper. Marking the body scope callable still makes
+			// its helpers local functions rather than phantom class methods.
+			if functionLocalScopeResets(language) && scope != "" {
+				if strings.HasPrefix(entity.Name, scope+".") {
+					childScope = entity.Name
+				}
+				childScopeIsCallable = true
+			}
+		}
+	}
+	// Anonymous JS/TS callables have no entity, but their bodies still establish
+	// lexical scope. This includes class-field arrows and static-block IIFEs.
+	// Retain the nearest named scope without inventing a callable symbol; nested
+	// declarations must be local functions, not members of that enclosing type.
+	if !ok && functionLocalScopeResets(language) {
+		switch node.Type() {
+		case "arrow_function", "function_expression", "generator_function":
+			childInFunc = true
+			childScopeIsCallable = true
 		}
 	}
 	// In R the function body lives under the anonymous function_definition node
@@ -4522,6 +4655,7 @@ func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, lang
 	if node.Type() == "impl_item" {
 		if t := rustImplTypeName(node, src); t != "" {
 			childScope = t
+			childScopeIsCallable = false
 		}
 	}
 	// A Swift `extension Foo { ... }` block is likewise not a symbol itself
@@ -4530,10 +4664,11 @@ func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, lang
 	if language == "Swift" && node.Type() == "class_declaration" && swiftExtensionDeclaration(node) {
 		if t := swiftExtensionTypeName(node, src); t != "" {
 			childScope = t
+			childScopeIsCallable = false
 		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walkEntitiesScoped(ctx, node.NamedChild(i), src, language, childScope, childInFunc, stop, depth+1, entities, depthExceeded)
+		walkEntitiesScoped(ctx, node.NamedChild(i), src, language, childScope, childScopeIsCallable, childInFunc, stop, depth+1, entities, depthExceeded)
 	}
 }
 
@@ -5028,7 +5163,9 @@ func fieldDeclNames(node *sitter.Node, src []byte) []string {
 			// the declaration itself can carry, not only one reached through a
 			// pointer or a function declarator. A plain function declarator
 			// names nothing here: `int Add(int);` in a class body is a method
-			// declaration, not data, and is left to the entity walk.
+			// declaration, not data, and is left to the entity walk. Neither
+			// does `int (*Factory())(double);`, a METHOD returning a function
+			// pointer, which the member-declaration pass extracts.
 			if name := cFamilyMemberDeclaratorName(child, src); name != "" {
 				names = append(names, name)
 			}
@@ -5077,6 +5214,388 @@ func cPlusPlusInitialisedMemberName(node *sitter.Node, src []byte) string {
 	return ""
 }
 
+// cPlusPlusMemberDeclaration is one method declared by an in-class declaration,
+// paired with the declarator that declares it: one declaration can declare
+// several methods, and each carries its own signature text.
+type cPlusPlusMemberDeclaration struct {
+	name       string
+	declarator *sitter.Node
+}
+
+// cPlusPlusMemberDeclarations returns the methods declared when node is an
+// in-class C++ method DECLARATION — members declared in the class body and
+// defined elsewhere. tree-sitter-cpp gives that no node type of its own:
+// `int Add(int) const;` is a field_declaration, the same node type as
+// `int total_;`, and a constructor or destructor declaration is a bare
+// `declaration`, the same node type as a local variable.
+//
+// Two things separate a member method declaration from everything that shares
+// those node types. It sits in a field_declaration_list, which is the class
+// body — that excludes locals, namespace-scope prototypes, and the declaration
+// nested inside a friend_declaration, none of which are members of the class. A
+// member function TEMPLATE is one step further out, because the
+// template_declaration is what the class body holds, so that wrapper is stepped
+// through rather than treated as a different scope. And each declarator must
+// resolve to a function_declarator whose own declarator is a NAME: a
+// function-POINTER data member (`int (*handler_)(int);`) reaches a
+// parenthesized_declarator instead, and stays the field that the member pass
+// classifies it as.
+func cPlusPlusMemberDeclarations(node *sitter.Node, src []byte) []cPlusPlusMemberDeclaration {
+	switch node.Type() {
+	case "field_declaration", "declaration":
+	default:
+		return nil
+	}
+	parent := node.Parent()
+	// `template<class T> T Get();` in a class body is a declaration wrapped in a
+	// template_declaration; the class body holds the wrapper, not the
+	// declaration. Requiring the class body to be the DIRECT parent dropped
+	// every member function template.
+	if validNode(parent) && parent.Type() == "template_declaration" {
+		parent = parent.Parent()
+	}
+	if !validNode(parent) || parent.Type() != "field_declaration_list" {
+		return nil
+	}
+	// C++ allows several declarators in one declaration (`void Start(), Stop();`),
+	// so read every declarator child, not just the first. The field pass ignores
+	// plain function declarators, so anything missed here is missed everywhere.
+	var out []cPlusPlusMemberDeclaration
+	for i := 0; i < int(node.ChildCount()); i++ {
+		if node.FieldNameForChild(i) != "declarator" {
+			continue
+		}
+		child := node.Child(i)
+		if name := cPlusPlusMemberDeclaratorName(child, src); name != "" {
+			out = append(out, cPlusPlusMemberDeclaration{name: name, declarator: child})
+		}
+	}
+	return out
+}
+
+// cPlusPlusMemberDeclaratorName resolves one declarator of an in-class
+// declaration to the method name it declares, or "" when it declares something
+// that is not a method.
+func cPlusPlusMemberDeclaratorName(declarator *sitter.Node, src []byte) string {
+	// A reference or pointer return type wraps the declarator
+	// (`Ledger& operator=(...)`, `Ledger* Clone();`). The parse tree bounds the
+	// walk: every step moves to a strictly smaller span.
+	for validNode(declarator) {
+		if declarator.Type() != "reference_declarator" && declarator.Type() != "pointer_declarator" {
+			break
+		}
+		inner := declarator.ChildByFieldName("declarator")
+		if !validNode(inner) {
+			inner = firstNamedChildOfType(declarator, "function_declarator")
+		}
+		if !descendsStrictly(declarator, inner) {
+			return ""
+		}
+		declarator = inner
+	}
+	if !validNode(declarator) || declarator.Type() != "function_declarator" {
+		return ""
+	}
+	// `int (*Factory())(double);` declares a METHOD returning a function
+	// pointer. The outer function_declarator's own declarator is the
+	// parenthesized_declarator `(*Factory())`, and the name sits on the
+	// function_declarator nested inside it, so stopping at the outer declarator
+	// rejects a valid member declaration. A function-POINTER data member
+	// (`int (*handler_)(int);`) has the same outer shape but its parens hold a
+	// bare identifier with no nested function_declarator, so it reaches nothing
+	// here and stays the field the member pass classifies it as. The parse tree
+	// bounds the walk: every step moves to a strictly smaller span.
+	for {
+		outer := declarator.ChildByFieldName("declarator")
+		if !validNode(outer) || outer.Type() != "parenthesized_declarator" {
+			break
+		}
+		inner := firstDescendantOfType(outer, "function_declarator")
+		if !descendsStrictly(declarator, inner) {
+			return ""
+		}
+		declarator = inner
+	}
+	name := declarator.ChildByFieldName("declarator")
+	if !validNode(name) {
+		return ""
+	}
+	switch name.Type() {
+	case "identifier", // a constructor
+		"field_identifier",     // an ordinary member
+		"destructor_name",      // ~Ledger
+		"qualified_identifier": // a member of a nested or templated scope
+		if !cFamilyNameEndsAtTokenBoundary(name, src) {
+			return ""
+		}
+		text := strings.TrimSpace(name.Content(src))
+		if strings.HasPrefix(text, "operator") &&
+			(len(text) == len("operator") || !isIdentifierByte(text[len("operator")])) {
+			return normalizeCPlusPlusOperatorName(text)
+		}
+		return text
+	case "operator_name":
+		// An operator spelled with PUNCTUATION never arrives here.
+		// maskCPlusPlusOperatorCall rewrites `operator=(` to a same-width `op(`
+		// before tree-sitter sees the file, so the parser reports an ordinary
+		// identifier and the branch above reads the real spelling back out of
+		// the unmasked source at that (unmoved) byte range.
+		//
+		// What is left is the operators spelled with a WORD --
+		// `void* operator new(size_t)`, `void operator delete(void*)` and their
+		// array forms -- which that regex cannot match, because it requires
+		// punctuation between `operator` and the `(`. Nothing rewrites them, so
+		// the node's own range still holds the real name. Discarding it dropped
+		// every in-class allocation and deallocation member: no symbol to search
+		// for, no CONTAINS edge, and no target for a call.
+		if !cFamilyNameEndsAtTokenBoundary(name, src) {
+			return ""
+		}
+		text := normalizeCPlusPlusOperatorName(name.Content(src))
+		// A rewritten range would no longer read as an operator name. Report
+		// nothing rather than a stand-in: a wrong name is worse than a missing
+		// one, because it collides with every other symbol that shares it.
+		if !strings.HasPrefix(text, "operator") ||
+			(len(text) > len("operator") && isIdentifierByte(text[len("operator")])) {
+			return ""
+		}
+		return text
+	}
+	return ""
+}
+
+func normalizeCPlusPlusOperatorName(text string) string {
+	text = normalize(text)
+	suffix := strings.TrimSpace(strings.TrimPrefix(text, "operator"))
+	if suffix == "" {
+		return "operator"
+	}
+	if isIdentifierByte(suffix[0]) {
+		if strings.HasPrefix(suffix, "new") || strings.HasPrefix(suffix, "delete") {
+			suffix = strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(suffix)
+		}
+		return "operator " + suffix
+	}
+	suffix = strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(suffix)
+	return "operator" + suffix
+}
+
+// cPlusPlusMemberDeclarationEntities returns the method symbols an in-class C++
+// declaration declares. It is where a header's interface lives: a class that
+// declares its members and defines them out of line contributed no method
+// symbols at all — nothing to search for, no CONTAINS edge, and nothing for a
+// typed receiver to resolve a call to. The members are bodyless in exactly the
+// sense the field means: the declaration is real (it is where the parameter
+// types are written) but the out-of-line `Type::method` is the definition.
+//
+// This sits beside the walk rather than in entityFromNode because entityFromNode
+// yields at most one entity per node, and `void Start(), Stop();` is one node
+// declaring two methods.
+func cPlusPlusMemberDeclarationEntities(node *sitter.Node, src []byte, language, scope string) []Entity {
+	if language != "C++" || scope == "" {
+		return nil
+	}
+	members := cPlusPlusMemberDeclarations(node, src)
+	if len(members) == 0 {
+		return nil
+	}
+	// A member function TEMPLATE is written `template<class T> T Get();`, and
+	// the declaration node is only the part after the head. Everything the
+	// symbol reports must come from the whole construct: reading the inner node
+	// alone drops `template<...>` and its constraints from the signature, the
+	// body hash and the source range, so an edit confined to the head produces
+	// no entity change and two overloads separated only by their constraints
+	// collapse onto one fingerprint.
+	span := cPlusPlusDeclarationSpan(node)
+	templateHead := ""
+	if span != node && node.StartByte() > span.StartByte() && int(node.StartByte()) <= len(src) {
+		templateHead = strings.TrimSpace(string(src[span.StartByte():node.StartByte()])) + " "
+	}
+	declarationSignature := signatureFromNode(span, src)
+	// Everything before the first declarator is shared, including virtual,
+	// static, constexpr, attributes and cv-qualified return types.
+	sharedPrefix := ""
+	declaratorCount := 0
+	for i := 0; i < int(node.ChildCount()); i++ {
+		if node.FieldNameForChild(i) == "declarator" {
+			if declaratorCount == 0 {
+				sharedPrefix = string(src[node.StartByte():node.Child(i).StartByte()])
+			}
+			declaratorCount++
+		}
+	}
+	out := make([]Entity, 0, len(members))
+	for _, member := range members {
+		signature := declarationSignature
+		if declaratorCount > 1 {
+			// Several declarators share one declaration, so each method takes
+			// its own declarator text. That keeps both method-method declarations
+			// distinct and a mixed method-field sibling out of the method's
+			// signature and body hash.
+			signature = strings.Join(strings.Fields(templateHead+sharedPrefix+member.declarator.Content(src)), " ")
+		}
+		out = append(out, Entity{
+			Kind:      "method",
+			Name:      qualify(scope, member.name),
+			Signature: signature,
+			StartLine: int(span.StartPoint().Row) + 1,
+			EndLine:   int(span.EndPoint().Row) + 1,
+			// A bodyless declaration has no implementation body to hash. Use
+			// this member's own signature so a sibling declarator in the same
+			// field_declaration cannot make the unchanged method look edited.
+			BodyHash:        hash(normalize(signature)),
+			Fingerprint:     hash(normalize(signature)),
+			bodyless:        true,
+			cPlusPlusOwners: cPlusPlusDeclarationOwners(node, src, scope),
+		})
+		entity := &out[len(out)-1]
+		// Read this member's own parameters, not the template constraint or
+		// a sibling declarator's parameter list. The return type is shared.
+		declarator := member.declarator
+		for validNode(declarator) && declarator.Type() != "function_declarator" {
+			next := declarator.ChildByFieldName("declarator")
+			if !descendsStrictly(declarator, next) {
+				break
+			}
+			declarator = next
+		}
+		if paramText, returnText, known := astSignatureTypeTexts(declarator, src); known {
+			entity.paramTypeText = paramText
+			entity.returnTypeText = returnText
+			if typ := node.ChildByFieldName("type"); validNode(typ) {
+				entity.returnTypeText = typ.Content(src)
+			}
+			entity.signatureTypesKnown = true
+		}
+		entity.parameterNames, entity.parameterNamesKnown = astParameterNames(declarator, src)
+	}
+	return out
+}
+
+// cPlusPlusDefinitionName reads only the declared callable's AST name. Types,
+// parameters and expressions mentioning another method are never candidates.
+// Namespace ancestors supply qualification omitted inside namespace blocks.
+func cPlusPlusDefinitionName(node *sitter.Node, src []byte) string {
+	declarator := node.ChildByFieldName("declarator")
+	for validNode(declarator) {
+		if declarator.Type() == "function_declarator" {
+			name := declarator.ChildByFieldName("declarator")
+			if validNode(name) && name.Type() == "qualified_identifier" {
+				text := strings.TrimSpace(name.Content(src))
+				if strings.HasPrefix(text, "::") {
+					return strings.TrimSpace(strings.TrimPrefix(text, "::"))
+				}
+				for ancestor := node.Parent(); validNode(ancestor); ancestor = ancestor.Parent() {
+					if ancestor.Type() != "namespace_definition" {
+						continue
+					}
+					if ns := ancestor.ChildByFieldName("name"); validNode(ns) {
+						text = strings.TrimSpace(ns.Content(src)) + "::" + text
+					}
+				}
+				return text
+			}
+		}
+		next := declarator.ChildByFieldName("declarator")
+		if !descendsStrictly(declarator, next) {
+			return ""
+		}
+		declarator = next
+	}
+	return ""
+}
+
+// cPlusPlusDeclarationOwners returns lexical namespace/class owner patterns
+// without changing graph-qualified names or IDs. Inline segments are optional.
+func cPlusPlusDeclarationOwners(node *sitter.Node, src []byte, scope string) []string {
+	type segment struct {
+		name       string
+		inlineable bool
+	}
+	immediate := shortEntityName(scope)
+	parts := []segment{{name: immediate}}
+	skippedImmediate := false
+	for current := node.Parent(); validNode(current); current = current.Parent() {
+		switch current.Type() {
+		case "namespace_definition", "class_specifier", "struct_specifier":
+		default:
+			continue
+		}
+		name := current.ChildByFieldName("name")
+		if !validNode(name) {
+			continue
+		}
+		text := strings.TrimSpace(name.Content(src))
+		if text == "" {
+			continue
+		}
+		if !skippedImmediate && text == immediate {
+			skippedImmediate = true
+			continue
+		}
+		inlineable := false
+		if current.Type() == "namespace_definition" {
+			for i := 0; i < int(current.ChildCount()); i++ {
+				if current.Child(i).Type() == "inline" {
+					inlineable = true
+					break
+				}
+			}
+		}
+		parts = append([]segment{{name: text, inlineable: inlineable}}, parts...)
+	}
+	encoded := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name := part.name
+		if part.inlineable {
+			// Private marker consumed by signatureNamesQualifiedMethodPattern;
+			// C++ identifiers cannot contain NUL, so it cannot collide with source.
+			name = "\x00" + name
+		}
+		encoded = append(encoded, name)
+	}
+	return []string{strings.Join(encoded, "::")}
+}
+
+// cPlusPlusDeclarationSpan returns the node that spans a whole in-class
+// declaration. For a member function template the class body holds a
+// template_declaration and the declaration inside it is only the part after
+// `template<...>`, so the template head, its parameters and any constraints sit
+// OUTSIDE the declaration node. Every derived value — signature, body hash,
+// start and end line — must be read from the wrapper, or the head is invisible
+// to change detection and to signature-based disambiguation.
+func cPlusPlusDeclarationSpan(node *sitter.Node) *sitter.Node {
+	if parent := node.Parent(); validNode(parent) && parent.Type() == "template_declaration" {
+		return parent
+	}
+	return node
+}
+
+// cFamilyNameEndsAtTokenBoundary reports whether a name node's range still ends
+// at a token boundary in the ENTITY source. The C++ masks rewrite constructs
+// tree-sitter cannot parse into same-length stand-ins before parsing
+// (`operator=(` becomes `op(`), while entity text is read back from the
+// unmasked file. Where a mask shortened an identifier the two disagree: the
+// node covers `op` and the file has `operator=`, so the name read back is a
+// prefix of a longer token. Rejecting that is what keeps a masked construct
+// from being named after an arbitrary slice of itself — and, because every
+// masked operator shortens to the same stand-in, from putting two members of
+// one class under one name.
+func cFamilyNameEndsAtTokenBoundary(name *sitter.Node, src []byte) bool {
+	isIdent := func(b byte) bool {
+		return b == '_' || ('0' <= b && b <= '9') || ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z')
+	}
+	end := int(name.EndByte())
+	if end > 0 && end < len(src) && isIdent(src[end]) && isIdent(src[end-1]) {
+		return false
+	}
+	start := int(name.StartByte())
+	if start > 0 && start < len(src) && isIdent(src[start]) && isIdent(src[start-1]) {
+		return false
+	}
+	return true
+}
+
 // cFamilyMemberDeclaratorName unwraps the pointer/reference/array declarator
 // chain of a C-family data member down to the declared name, stopping at a
 // function declarator: `int (*handler)(int)` is a function-pointer member and
@@ -5097,6 +5616,15 @@ func cFamilyMemberDeclaratorName(node *sitter.Node, src []byte) string {
 		case "field_identifier", "identifier":
 			return strings.TrimSpace(node.Content(src))
 		case "pointer_declarator", "array_declarator", "parenthesized_declarator", "reference_declarator":
+			// Parens holding a nested function_declarator are the return type of
+			// a METHOD (`int (*Factory())(double);`), not the name of a
+			// function-POINTER member (`int (*handler_)(int);`). The
+			// field_identifier fallback below reaches the same name in both
+			// shapes, so without this the one construct would enter the graph
+			// twice, as a field here and as a method from the declaration pass.
+			if node.Type() == "parenthesized_declarator" && validNode(firstDescendantOfType(node, "function_declarator")) {
+				return ""
+			}
 			next = node.ChildByFieldName("declarator")
 			if !validNode(next) {
 				next = firstChildDeclarator(node)
@@ -7952,10 +8480,24 @@ func javascriptExportedVariableEntities(content string, stop func() bool) []Enti
 // the walk / other extractors and are excluded here (the alternation requires
 // the value to begin with `(`, `function(`, `function*(`, `async ... =>`, or a
 // braceless `class {`), so a named `function foo` / `class Foo` never matches.
-var jsDefaultExportPattern = regexp.MustCompile(`(?m)^\s*export\s+default\s+(async\s+)?(function\s*\*?\s*\(|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>|class\s*\{)`)
+// The leading indent is [ \t]* rather than \s*: `\s` matches newlines, so an
+// export preceded by blank (or comment-blanked) lines had its match START at
+// the first of them, and the symbol reported that line and that line's text as
+// its signature.
+var jsDefaultExportPattern = regexp.MustCompile(`(?m)^[ \t]*export\s+default\s+(async\s+)?(function\s*\*?\s*\(|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>|class\s*\{)`)
 
 func javascriptDefaultExportEntities(path, content string) []Entity {
-	loc := jsDefaultExportPattern.FindStringIndex(content)
+	// Match on comment- and literal-stripped source, exactly as the SQL regex
+	// fallbacks above do and for the same reason: this pattern is line-anchored
+	// but has no idea what a comment is, so an `export default () => {}` written
+	// out inside a block comment or a template literal (a README snippet, a
+	// codegen template) minted a phantom file-named symbol for a module that
+	// exports nothing. stripCodeLiteralsAndComments blanks those spans in place
+	// and preserves every byte offset and newline, so the offsets below still
+	// index the ORIGINAL content and the signature, block and hashes are cut
+	// from real source.
+	stripped := stripCodeLiteralsAndComments(content)
+	loc := jsDefaultExportPattern.FindStringSubmatchIndex(stripped)
 	if loc == nil {
 		return nil
 	}
@@ -7966,15 +8508,20 @@ func javascriptDefaultExportEntities(path, content string) []Entity {
 	if base == "" {
 		return nil
 	}
+	// Read the kind off the alternative that actually matched, not off the whole
+	// matched prefix: `export default classifier => classifier()` contains the
+	// substring "class" in its PARAMETER, and a containment test on the prefix
+	// therefore published a callable export as a container, which misranks it in
+	// search and breaks call resolution against it.
 	kind := "function"
-	if strings.Contains(content[loc[0]:loc[1]], "class") {
+	if value := stripped[loc[4]:loc[5]]; strings.HasPrefix(value, "class") &&
+		strings.TrimSpace(strings.TrimPrefix(value, "class")) == "{" {
 		kind = "class"
 	}
 	startLine := countLinesBefore(content, loc[0]) + 1
 	endLine := startLine
 	blockEnd := loc[1]
-	if openBrace := strings.IndexByte(content[loc[0]:], '{'); openBrace >= 0 {
-		openBrace += loc[0]
+	if openBrace := javascriptDefaultExportBodyBrace(stripped, loc); openBrace >= 0 {
 		if closeBrace := matchingDelimiterOffset(content, openBrace, '{', '}'); closeBrace >= 0 {
 			endLine = countLinesBefore(content, closeBrace) + 1
 			blockEnd = closeBrace + 1
@@ -7996,6 +8543,114 @@ func javascriptDefaultExportEntities(path, content string) []Entity {
 		BodyHash:    hash(normalize(block)),
 		Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: base, Signature: signature}, block))),
 	}}
+}
+
+// javascriptDefaultExportBodyBrace returns the offset of the `{` that opens the
+// default export's body, or -1 when the exported value has no braced body at
+// all. loc is a jsDefaultExportPattern submatch index over the same content.
+//
+// It anchors on the end of the match instead of scanning forward for the first
+// `{` in the rest of the file. That scan was unbounded, so an expression-bodied
+// arrow (`export default value => value + 1`) adopted the brace of whatever
+// object or function happened to come next in the module: the synthetic symbol
+// took that construct's end line and body hash, and its reported source range
+// covered code it does not contain.
+func javascriptDefaultExportBodyBrace(content string, loc []int) int {
+	if loc[1] <= loc[0] || loc[1] > len(content) {
+		return -1
+	}
+	cursor := loc[1]
+	switch content[loc[1]-1] {
+	case '{':
+		// `class {` — the pattern consumed the brace itself.
+		return loc[1] - 1
+	case '(':
+		// `function (` / `function* (` — the pattern stops at the paren that
+		// opens the parameter list; the body follows its match.
+		closeParen := matchingDelimiterOffset(content, loc[1]-1, '(', ')')
+		if closeParen < 0 {
+			return -1
+		}
+		cursor = closeParen + 1
+	}
+	cursor = skipSpace(content, cursor)
+	if cursor < len(content) && content[cursor] == ':' {
+		// A TypeScript return annotation sits between the parameter list and the
+		// body: `export default function (): Result { … }`.
+		return typeScriptAnnotatedBodyBrace(content, cursor+1)
+	}
+	// Arrow alternatives end at `=>`; a braced body is the next non-space byte.
+	if cursor < len(content) && content[cursor] == '{' {
+		return cursor
+	}
+	return -1
+}
+
+// typeScriptTypePositionKeywords are the words that, immediately before a `{`,
+// mean the brace opens an object TYPE rather than a function body.
+var typeScriptTypePositionKeywords = map[string]bool{
+	"readonly": true, "keyof": true, "extends": true, "infer": true,
+	"typeof": true, "is": true, "asserts": true, "in": true, "out": true,
+}
+
+// typeScriptAnnotatedBodyBrace returns the offset of the `{` that opens the body
+// of a callable whose return type is annotated, scanning from just past the
+// annotation's `:`. It returns -1 when no body brace follows.
+//
+// A return annotation can itself contain braces — `(): { ok: boolean } { … }`,
+// `(): Promise<{ ok: boolean }> { … }` — so taking the first `{` after the `:`
+// ended the entity at the TYPE's closing brace: every later edit to the real
+// body fell outside its range and its body hash. A brace opens a type when what
+// precedes it continues a type expression (`:`, `|`, `&`, `<`, `,`, `(`, `[`,
+// `?`, `=>`, or a type-position keyword); otherwise it opens the body.
+func typeScriptAnnotatedBodyBrace(content string, cursor int) int {
+	for cursor < len(content) {
+		at := strings.IndexByte(content[cursor:], '{')
+		if at < 0 {
+			return -1
+		}
+		brace := cursor + at
+		if !typeScriptTypeContinues(content, brace) {
+			return brace
+		}
+		closing := matchingDelimiterOffset(content, brace, '{', '}')
+		if closing < 0 {
+			return -1
+		}
+		cursor = closing + 1
+	}
+	return -1
+}
+
+// typeScriptTypeContinues reports whether the text before brace leaves a type
+// expression unfinished, which is what makes the brace an object type.
+func typeScriptTypeContinues(content string, brace int) bool {
+	index := brace - 1
+	for index >= 0 && (content[index] == ' ' || content[index] == '\t' || content[index] == '\n' || content[index] == '\r') {
+		index--
+	}
+	if index < 0 {
+		return false
+	}
+	switch content[index] {
+	case ':', '|', '&', '<', ',', '(', '[', '?':
+		// `[` opens a tuple type and `?` the true branch of a conditional type;
+		// both leave the type expression unfinished, so the brace after them is
+		// still part of it.
+		return true
+	case '>':
+		// `=>` continues a function type; a lone `>` closes a generic argument
+		// list and completes the type.
+		return index > 0 && content[index-1] == '='
+	}
+	if !isJSIdentifierPart(content[index]) {
+		return false
+	}
+	end := index + 1
+	for index >= 0 && isJSIdentifierPart(content[index]) {
+		index--
+	}
+	return typeScriptTypePositionKeywords[content[index+1:end]]
 }
 
 func javascriptVariableDeclaratorEnd(content string, valueStart int) int {
@@ -8504,6 +9159,43 @@ func isExportedTopLevelJSVariable(node *sitter.Node, language string) bool {
 	}
 	root := grandparent.Parent()
 	return validNode(root) && root.Type() == "program"
+}
+
+// functionLocalScopeResets reports whether entering a callable's body replaces
+// the enclosing TYPE scope with that callable, so declarations inside it are
+// emitted as function-local bindings of it rather than as members of the type.
+//
+// True only for JavaScript/TypeScript, where a nested `function name(){}` or
+// named function expression is a lexical binding of the enclosing function and
+// is never reachable as `Type.name`. Every other routed grammar keeps the type
+// scope for nested callables: Java's anonymous-class members are walked with the
+// outer scope on purpose (see initializerTypeBodies), and Python/Ruby nested
+// defs are qualified under their class today.
+func functionLocalScopeResets(language string) bool {
+	return language == "JavaScript" || language == "TypeScript"
+}
+
+// lexicalCallableForm reports whether a node is the `function name(){}`
+// spelling — a function declaration or a named function expression — rather
+// than `method_definition`, which is member syntax.
+//
+// It decides one thing: whether a callable qualified under an enclosing
+// CALLABLE keeps kind "function" (a lexical binding of it) or the "method"
+// entityFromNode gave it (an object literal's method, which is declared with
+// member syntax and stays a method of that literal). Callers gate it on
+// scopeIsCallable, which only the JS/TS re-anchoring sets, so the node types
+// here are read as JS/TS grammar node types and never as another grammar's
+// same-named node.
+func lexicalCallableForm(node *sitter.Node) bool {
+	if !validNode(node) {
+		return false
+	}
+	switch node.Type() {
+	case "function_declaration", "function_expression", "generator_function":
+		return true
+	default:
+		return false
+	}
 }
 
 func scopesChildren(language, kind string) bool {

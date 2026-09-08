@@ -316,11 +316,19 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	// one's hits and warnings in candidate order, which is the order the
 	// sequential scan produced them in.
 	parser := TreeSitterParser{}
-	scanCandidate := func(i int, path string) candidateScan {
+	scanCandidate := func(workerCtx context.Context, i int, path string) candidateScan {
 		var scan candidateScan
-		if overBudget() {
-			scan.stopped = true
-			return scan
+		// Avoid starting more scan work after the pipeline canceled this worker
+		// or the budget expired. The reducer independently checks the deadline
+		// before accepting buffered results; see workerStop for why neither
+		// check can move the truncated set.
+		abandon := func() (candidateScan, bool) {
+			canceled, budget := workerStop(workerCtx, overBudget)
+			scan.err, scan.stopped = canceled, budget
+			return scan, canceled != nil || budget
+		}
+		if out, stop := abandon(); stop {
+			return out
 		}
 		if !Supported(path) {
 			return scan
@@ -333,9 +341,8 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		// A deep-path metadata read can consume the remaining budget. Stop
 		// immediately after it returns, before its deadline-driven
 		// Unaddressable result is mistaken for a file-read failure.
-		if overBudget() {
-			scan.stopped = true
-			return scan
+		if out, stop := abandon(); stop {
+			return out
 		}
 		if !ok {
 			// In a fallback full-tree scan, an unsafe oversized file has no
@@ -398,6 +405,13 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			return scan
 		}
 
+		// The token screen passed, so the tree-sitter parse below is the
+		// expensive half of this candidate. Without this check the worker runs
+		// a canceled or already-out-of-budget candidate to completion and the
+		// pipeline's deferred join waits for it.
+		if out, stop := abandon(); stop {
+			return out
+		}
 		entities, _, status := parser.ParseWithStatus(path, content)
 		if status.ParseError && isCandidate(content) {
 			scan.warnings = append(scan.warnings, dependentsParseFailureWarning(path, status))
@@ -426,7 +440,7 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	}
 
 	scanErr := runIndexedPipeline(ctx, len(files), dependentsScanWorkers(),
-		func(_ context.Context, i int) candidateScan { return scanCandidate(i, files[i]) },
+		func(workerCtx context.Context, i int) candidateScan { return scanCandidate(workerCtx, i, files[i]) },
 		func(i int, scan candidateScan) error {
 			if scan.err != nil {
 				return scan.err

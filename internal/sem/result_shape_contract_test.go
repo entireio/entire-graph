@@ -47,6 +47,7 @@ import (
 //     is BREAKING -> requires a major bump (2.0) and a migration note
 var resultWireShape = map[string][]string{
 	"Result": {
+		`name="identity_revision" type="string" tagged=true anonymous=false options="omitempty"`,
 		`name="checkpoint" type="string" tagged=true anonymous=false options="omitempty"`,
 		`name="base" type="string" tagged=true anonymous=false options=""`,
 		`name="head" type="string" tagged=true anonymous=false options=""`,
@@ -884,8 +885,8 @@ func resultWireShapeDigest() string {
 func TestResultWireShapeIsBoundToTheSchemaVersion(t *testing.T) {
 	t.Parallel()
 	const (
-		pinnedSchemaVersion = "1.1"
-		pinnedShapeDigest   = "9c02ab3256e93b77"
+		pinnedSchemaVersion = "1.2"
+		pinnedShapeDigest   = "a8d4cd9b7a4a6735"
 	)
 	if SchemaVersion != pinnedSchemaVersion || resultWireShapeDigest() != pinnedShapeDigest {
 		t.Fatalf(

@@ -859,6 +859,20 @@ func graphqlRootSelectionFields(body string) []string {
 		}
 		nameStart := i
 		if nameStart >= 3 && body[nameStart-3:nameStart] == "..." {
+			// A fragment spread is not a field; graphqlRootFragmentSpreads
+			// resolves it separately. Skip the WHOLE spread name: `continue`
+			// alone left the loop to resume at its SECOND byte, so
+			// `...ViewerFields` emitted a field named `iewerFields` — a symbol
+			// naming nothing that exists in the document, which is the worst
+			// failure this extractor can produce. The final i-- keeps the
+			// loop's own increment landing ON the byte after the name rather
+			// than past it, so a `#` comment or a bracket that immediately
+			// follows a spread is still seen by the scanner.
+			i++
+			for i < len(body) && isJSIdentifierPart(body[i]) {
+				i++
+			}
+			i--
 			continue
 		}
 		i++

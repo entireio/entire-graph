@@ -600,15 +600,34 @@ func isRootEscape(err error) bool {
 // cross-platform value is unsafe: Darwin and the BSDs reject a chain before Linux does, and
 // stripping the links before handing the result to os.Root must not turn their ELOOP into a write.
 func containedLinkHopLimit(fullyQualifiedTarget bool) int {
-	switch runtime.GOOS {
+	return linkHopLimitFor(runtime.GOOS, fullyQualifiedTarget)
+}
+
+// linkHopLimitFor is containedLinkHopLimit with the host family passed in, so every platform's
+// limit can be asserted from one machine. The limit is the number of links this walk will follow
+// before it returns ELOOP, and it must never EXCEED what the host's own pathname resolution
+// allows: the links are stripped before the result is handed to os.Root, so a chain the kernel
+// would have refused becomes a write if it is allowed here.
+//
+// AIX belongs with the System V family, not with the BSDs. Its pathname resolution stops at
+// MAXSYMLINKS = 20, the same limit illumos and Solaris carry, while Darwin and the BSDs allow 32;
+// grouping it at 31 authorised a 20-to-31-link AGENTS.md alias that AIX itself rejects, and the
+// resolver would then have translated it into a direct in-repository name and written there.
+//
+// Where a family's limit is uncertain the SMALLER value is the safe one — it can only refuse a
+// chain the kernel might have allowed, never allow one it would have refused — which is why every
+// entry here sits at or below the host's own count rather than at the most permissive value that
+// still passes a test.
+func linkHopLimitFor(goos string, fullyQualifiedTarget bool) int {
+	switch goos {
 	case "windows":
 		if fullyQualifiedTarget {
 			return 31
 		}
 		return 63
-	case "illumos", "solaris":
+	case "aix", "illumos", "solaris":
 		return 19
-	case "aix", "darwin", "dragonfly", "freebsd", "netbsd", "openbsd":
+	case "darwin", "dragonfly", "freebsd", "netbsd", "openbsd":
 		return 31
 	default:
 		return 40
@@ -1022,11 +1041,21 @@ func resolveContainedLanding(root *os.Root, name string, allowMissingDirectory b
 		}
 		var target string
 		if runtime.GOOS == "windows" {
-			rawTarget, available, rawErr := windowsRawReparseTarget(root.Name(), candidate, info)
+			rawTarget, kind, rawErr := windowsRawReparseTarget(root.Name(), candidate, info)
 			if rawErr != nil {
 				return "", fmt.Errorf("%w: cannot inspect raw Windows reparse target: %v", errUnresolvableAlias, rawErr)
 			}
-			if !available {
+			switch kind {
+			case windowsReparseOpaqueAlias:
+				// A NAME SURROGATE whose tag this code cannot decode. Windows follows it
+				// while resolving the path, so calling it an ordinary component would
+				// leave its own chain neither expanded nor counted, and an alias the
+				// kernel refuses could be translated into a repository-relative name and
+				// written to. There is nothing to resolve and nothing safe to assume.
+				return "", fmt.Errorf(
+					"%w: %s is a Windows reparse point of an unsupported kind that the kernel follows",
+					errUnresolvableAlias, candidate)
+			case windowsReparseInert:
 				// Since Go 1.23, Windows reports every reparse point as
 				// ModeIrregular. Preserve tags that do not participate in path
 				// resolution for the ordinary file-type check below.
@@ -1469,11 +1498,21 @@ func resolvePathAndCountLinks(path string) (string, int, error) {
 
 		var link string
 		if runtime.GOOS == "windows" {
-			rawTarget, available, rawErr := windowsRawReparseTargetAtPath(dest, info)
+			rawTarget, kind, rawErr := windowsRawReparseTargetAtPath(dest, info)
 			if rawErr != nil {
 				return "", 0, rawErr
 			}
-			if !available {
+			switch kind {
+			case windowsReparseOpaqueAlias:
+				// The prefix of an absolute target is where this matters most: a name
+				// surrogate here is FOLLOWED by Windows and its hops belong to the same
+				// ELOOP budget as the link that named the prefix. Skipping it counted
+				// nothing and resolved nothing, so a chain Windows refuses could still be
+				// translated into a direct in-repository name.
+				return "", 0, fmt.Errorf(
+					"%w: %s is a Windows reparse point of an unsupported kind that the kernel follows",
+					errUnresolvableAlias, dest)
+			case windowsReparseInert:
 				if isWindowsReparsePoint && !isSymlink {
 					if !info.IsDir() && end < len(path) {
 						return "", 0, &fs.PathError{Op: "resolve", Path: original, Err: syscall.ENOTDIR}
