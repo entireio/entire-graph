@@ -4,7 +4,35 @@ Paused explicitly at the user’s request. Do not resume work, heartbeat or
 benchmarks until the user requests it. Branch `codex/graph-advantage`, worktree
 `<REPO_ROOT>`. Commit and push, no merge.
 
-## Current status after explicit resume — 2026-09-07
+## Current pause — 2026-09-08
+
+The user paused all work. The active worktree is
+`<REPO_ROOT>`, branch `codex/graph-advantage`,
+pre-handover tip `ef1df4ed`. Eight controlled product invocations have been consumed and
+zero clean stability batches have run. The latest immutable full-check and
+compiler-correctness evidence is at source `effa358f`; the latest diagnostic
+timed out. One completion diagnostic without an arbitrary elapsed product
+deadline is authorized in principle, but no execution may begin until the user
+resumes and the 14 GiB/`TasksMax=512` controls are implemented and verified.
+Full-campaign approval remains absent. The prepared package is WIP and has not
+been reviewed, tested or launched; preserve exact identities and protected
+untracked files. Heartbeat `monitor-p1-corpus-campaign` was paused via the
+automation control plane and must remain paused until resume.
+
+The WIP package is at
+`docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/`.
+Owned moving files are `collector/run_remote.py`,
+`collector/observe_remote.py`, `collector/cloud.py` and
+`controller/controller.py`; `controller/test_completion_controls.py` has only
+passed syntax and diff checks. The integrated suite and CLI preflight did not
+run. The package was never frozen, reviewed, committed or launched; its
+`controller/manifest.json` is stale and `batch-manifest.json`, `README`,
+`control-hashes.txt` and `control-files.tar.gz` were not created. No cloud, VM
+or product launch occurred; all three VMs were last verified deallocated.
+Preserved untracked WIP was not pushed. See the
+[authoritative resumption plan](resumption-plan-20260907.md).
+
+## Historical status after explicit resume — 2026-09-07
 
 The user has resumed the revised controlled sequence. The heartbeat
 `monitor-p1-corpus-campaign` is ACTIVE for implementation monitoring. One
@@ -17,6 +45,7 @@ prerequisites and controls pass. No full-campaign approval has been granted.
 The cheaper-model routing, 100-run shared cap, first-issue stops and explicit
 full-run approval boundary remain in force. The validation VM is deallocated
 after collection.
+
 
 The one authorized immutable verification completed on pinned commit
 `1f20f694775c3d8fd616eee4b22d9b13c30ff0fe`: `mise run check` exited 0 in

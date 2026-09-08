@@ -1,10 +1,9 @@
 # Revised resumption plan — bounded P1 stability sampling
 
 User-directed on 2026-09-07. This changes sequencing and adds an explicit
-approval boundary. The user subsequently resumed the revised controlled
-sequence, including diagnostics, fixes and sampled batches once prerequisites
-pass; no product or corpus call has yet been made in this resumed sequence.
-The campaign is not currently running and release gates remain unchanged. It
+approval boundary. The user subsequently resumed the revised controlled sequence, including
+ diagnostics and fixes, then explicitly paused all work on 2026-09-08. The
+campaign is not currently running and release gates remain unchanged. It
 supersedes earlier handoff/ledger suggestions that a canary pass can lead
 directly to the full campaign. Historical protocols/results remain unchanged.
 The full P1 campaign still requires explicit user approval and is NOT yet
@@ -26,10 +25,15 @@ Workers may execute otherwise authorized commands or VM tasks, but delegation
 adds no budget or authorization. The shared 100-run batch cap, first-issue
 stops, and explicit user approval before any full campaign remain in force.
 The bounded immutable repository verification authorized after the user’s
-resume is complete; no product/corpus run, benchmark, VM task or campaign has
-started in this resumed sequence. After the documented prerequisites and hard
-controls pass, sampled work may proceed under this plan. A full campaign still
-requires explicit user approval.
+resume is complete. The active implementation worktree is
+`<REPO_ROOT>`, branch `codex/graph-advantage`,
+tip `ef1df4ed`. Eight controlled product invocations have been consumed and
+zero clean stability batches have run. The latest immutable full-check and
+compiler-correctness evidence is at source `effa358f`; the latest diagnostic
+timed out. One completion diagnostic without an arbitrary elapsed product
+deadline is user-authorized in principle, but execution is paused until the
+user resumes and the 14 GiB/`TasksMax=512` controls are implemented and
+verified. Full-campaign approval remains absent.
 
 ## 1. Resolve known issues before sampling
 
@@ -133,9 +137,9 @@ benchmark dataset. Failed gates and experimental defaults remain unchanged.
 ## Pause and handoff
 
 Planning documents and the bounded verification status were reconciled after
-the explicit resume. No VM, benchmark, product/corpus test campaign or full
-evaluation has run in this resumed sequence. Controlled diagnostics, fixes and
-sampled batches may proceed after prerequisites; the hard batch controls
-remain planned/pending review, and a full campaign still requires explicit
-approval. This resumption plan governs the earlier shutdown handoff and
-proposed benchmark sequence.
+the explicit resume. Work is now paused at the user’s request; do not execute,
+resume or heartbeat until the user resumes. The prepared completion-diagnostic
+package is WIP and has not been reviewed, tested or launched. Preserve its
+exact source, binary, input and control identities, plus pending test contracts;
+do not alter protected untracked files. This resumption plan governs the
+earlier shutdown handoff and the authorized but paused completion diagnostic.

@@ -1,19 +1,22 @@
-# Prospective 240-second Kubernetes completion diagnostic
+# Authorized Kubernetes completion diagnostic
 
-Status: proposal for explicit user approval. This document authorizes no
-product, corpus, cloud or VM execution and does not change the frozen P1
-campaign protocol.
+Status: paused by user on 2026-09-08; existing authorization does not resume
+execution. The user-authorized one-time completion diagnostic has its
+execution-control correction pending with `p1_diagnostic_prepare`.
+This document authorizes no execution by itself and does not change the frozen
+P1 campaign protocol or approve a full campaign.
 
-## Decision requested
+## Authorized scope
 
-Approve one separately versioned, non-admission diagnostic whose only requested
-workload change from `diagnostic-dispatch-effa358f` is a 240-second product
-deadline in place of 120 seconds. Its purpose is only to determine whether the
-same cache-OFF, full-profile Kubernetes snapshot reaches a terminal result
-after the campaign deadline. It is not a retry of the eighth invocation and
-must use a new dispatch ID, claim and output directory.
+Run one separately versioned, non-admission completion diagnostic using the
+same cache-OFF, full-profile Kubernetes snapshot and a new dispatch ID, claim
+and output directory. It is not a retry of the eighth invocation. The user has
+authorized completion without an arbitrary product deadline; the diagnostic
+must stop on the first actual issue, require progress monitoring that does not
+terminate or cancel ongoing work, and may not add retries, comparisons or
+campaign expansion.
 
-The existing campaign deadline remains 120 seconds. The preregistered protocol
+The existing campaign deadline remains 120 seconds for campaign measurements. The preregistered protocol
 defines that per-request limit and retains timeouts as failed observations
 (`p1-corpus-20260905/protocol.md:117-125`). The active stopgap calls the 14 GiB
 cgroup, 512-task limit and 120-second request deadline the fixed absolute
@@ -27,10 +30,9 @@ artifact or resource measurement, and forbids automatic replay
 (`resumption-plan-20260907.md:78-83`). The current accepted diagnostic decision
 also permits only one OFF/full/snapshot invocation, consumes that invocation on
 timeout and grants no ON arm, warm-up, retry, comparison or campaign expansion
-(`diagnostic-validation-policy-proposal.md:54-63`). Because its retained
-controller and evidence bind 120 seconds and the eighth claim is consumed, a
-240-second execution needs this prospective exception and explicit user
-approval; the broader resume instruction is insufficient.
+(`diagnostic-validation-policy-proposal.md:54-63`). The eighth claim is
+consumed, so this separately authorized completion diagnostic must use a new
+package and preserve the non-admission boundary.
 
 ## Immutable inputs and execution boundary
 
@@ -64,51 +66,48 @@ control gap rather than describe the protocol limits as inherited guarantees.
 The package cap is one reserved and attempted product invocation. The shared
 100-run accounting remains in force. If executed, this is controlled product
 invocation nine whether it completes, returns partial, fails or times out.
-There is no ON arm, cache warm-up, repeat, retry, comparison, sampling,
-admission, performance claim or automatic follow-up.
+There is no ON arm, cache warm-up, repeat, retry, comparison, admission,
+performance claim or automatic follow-up. Progress monitoring is required and
+must not terminate or cancel the ongoing workload.
 
 The delayed diagnostic CPU profile remains enabled with the retained
 88-second requested start, 90-second latest start, 20-second window and 8 MiB
-ceiling. Keeping it unchanged leaves the deadline as the sole requested
-workload variable and preserves disclosure of profile overhead. Explicit
+ceiling. Keeping it unchanged preserves disclosure of profile overhead. Explicit
 cgroup enforcement is an execution-control correction disclosed separately,
-not evidence that conditions matched the eighth diagnostic.
+not evidence that conditions matched the eighth diagnostic. It must be
+implemented and verified before the authorized completion diagnostic; until
+then, no diagnostic run is ready.
 
-## Exact prospective control delta
+## Exact completion-diagnostic control delta
 
-After approval, preparation may mechanically copy the reviewed
+Preparation may mechanically copy the reviewed
 `diagnostic-dispatch-effa358f` controls into a new package with a new dispatch
-identity such as `p1-diag-effa358f-k8s-completion-240s-off-01`. Before any cloud
-operation, review must verify these bounded changes and no others:
+identity. Before any cloud operation, review must verify these bounded changes
+and no others:
 
-1. Change `controller/manifest.json` `product_deadline_seconds` from `120` to
-   `240`, retain `remote_control_timeout_seconds: 360`, and keep all source,
-   binary, input, workload and profiler bindings above.
-2. Change the controller's fail-closed expected manifest value for
-   `product_deadline_seconds` from `120` to `240`.
-3. Change the archived collector's `TIMEOUT_SECONDS` from `120` to `240` and
-   `GO_TEST_TIMEOUT_SECONDS` from `130` to `250`. Keep the existing process
-   group kill, artifact collection and post-run identity checks.
-4. Launch the collector and its product child in one uniquely named transient
+1. Do not impose an arbitrary product deadline. Preserve process-group cleanup,
+   artifact collection and post-run identity checks, with the actual first
+   issue ending the diagnostic.
+2. Launch the collector and its product child in one uniquely named transient
    systemd scope using `systemd-run --scope`, a unique `--unit`,
    `--property=MemoryMax=15032385536` and `--property=TasksMax=512` around the
    existing `runuser ...` command. Before durable
    claim creation or product start, record the collector's effective cgroup
    path plus its `memory.max` and `pids.max` values and require exact values
    `15032385536` and `512`. Failure to create the scope, read the effective
-   limits or match either value refuses the product invocation. The outer
-   360-second timeout and process-group cleanup remain independent backstops.
-5. Create a new one-cell batch manifest with `total_attempts=1`,
+   limits or match either value refuses the product invocation. Process-group cleanup remains available for an actual issue or explicit
+   cancellation.
+3. Create a new one-cell batch manifest with `total_attempts=1`,
    `derived_invocations=1`, `preparatory_invocations=0` and only arm `false`.
    Use new claim and output paths; never reuse or mutate the eighth package.
-6. Rebuild the control archive because the controller/collector bytes changed,
+4. Rebuild the control archive because the controller/collector bytes changed,
    bind every new control hash in the manifest, and require the existing exact
    full-check and compiler-build evidence before claim creation.
 
 No command is approved by this document. After package review, the exact
-prospective invocation would remain the reviewed controller's single
-`controller.py --execute` entry point. It may run only after the user approves
-this 240-second exception and the frozen package is independently verified.
+invocation would remain the reviewed controller's single `controller.py
+--execute` entry point, and may run only after the frozen package and cgroup
+controls are independently verified.
 
 ## Required evidence and outcome rules
 
@@ -118,7 +117,7 @@ hash-bound evidence:
 - durable reservation, start and terminal budget state for exactly one arm;
 - the effective cgroup path, `memory.max=15032385536` and `pids.max=512`
   recorded before claim/product start;
-- process exit zero within 240 seconds;
+- process exit zero for a complete result;
 - a relations phase-end event and every later phase needed for a terminal
   snapshot result;
 - the complete semantic result and diagnostic arrays, with their status,
@@ -131,17 +130,15 @@ hash-bound evidence:
 
 The terminal classification is fixed prospectively:
 
-- A complete result in `(120s, 240s]` establishes only that this exact work is
-  finite beyond the frozen campaign deadline. It does not pass the campaign
-  cell or establish performance, stability, admission or release.
-- A complete result in `<=120s` remains a diagnostic observation. It does not
-  rewrite any of the eight retained diagnostic observations or admit a
-  campaign run.
+- A complete result establishes only that this exact work reached completion.
+  It does not pass the campaign cell or establish performance, stability,
+  admission or release, and does not rewrite any of the eight retained
+  diagnostic observations.
 - A provider partial is retained as partial and is not completion, even if the
   process exits zero. Any missing semantic array/digest, RSS value, phase-end,
   identity or control artifact is likewise an issue.
-- A timeout at 240 seconds, process/control failure, identity drift, invalid
-  resource measurement or any other first issue ends runtime investigation.
+- A process/control failure, identity drift, invalid resource measurement or
+  any other first issue ends runtime investigation.
   It triggers cleanup and retention only: no second attempt, larger deadline,
   alternate arm/profile/verb, source optimization or automatic escalation.
 
@@ -156,7 +153,7 @@ loop or pathological repetition.
 
 All eight existing controlled diagnostic observations—the completed
 syntax-only partial and seven full timeouts—their raw artifacts and the
-zero-clean-batch state remain immutable. Approval would permit only the single
-diagnostic described here. It would not approve a full P1 campaign, modify the
-preregistered 120-second protocol, waive any release gate, or authorize
-preparation or execution of another runtime observation.
+zero-clean-batch state remain immutable. The existing user authorization
+permits only the single diagnostic described here. It does not approve a full
+P1 campaign, modify the preregistered 120-second protocol, waive any release
+gate, or authorize preparation or execution of another runtime observation.

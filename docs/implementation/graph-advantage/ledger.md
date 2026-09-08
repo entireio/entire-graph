@@ -14,7 +14,7 @@ dispatch, first-issue stop, and approval-boundary controls are implemented at
 `58f03a22`; see `resumption-plan-20260907.md`. The user has resumed the
 revised controlled sequence; no campaign is currently running.
 
-**Current bounded-resumption status:** Source `effa358f` retains the latest completed immutable Linux `mise run check` pass covering formatting, vet, race, build and statusline correctness. The eighth controlled product invocation is the latest runtime diagnostic: `diagnostic-dispatch-effa358f` started one OFF/full/snapshot arm and timed out at 120 seconds (`process=-9`, `collector=1`), with zero completed arms and no completed product observation. Its diagnostic-only relations profile captured 20.031817991 seconds and 44,928 bytes; the 1,313 progress events and first/latest relation counts 512/672,256 are cumulative progress counters, not sample-local work. Relations began at 53.804 seconds and accumulated through profiler status completion around 108.045 seconds; no relation-phase end was observed. RSS is unknown. Eight product invocations have been consumed, zero clean stability batches have run, and no timeout cure, performance, stability, release or campaign-admission gate has passed. All three VMs used for this diagnostic were deallocated after collection.
+**Current bounded-resumption status:** Work is paused at the user’s request; no execution or heartbeat may resume until the user resumes. Source `effa358f` retains the latest completed immutable Linux `mise run check` and compiler-correctness evidence. Eight product invocations have been consumed, zero clean stability batches have run, and the eighth diagnostic timed out with no timeout cure, performance, stability, release or campaign-admission gate passed. One completion diagnostic without an arbitrary elapsed product deadline is authorized in principle, pending implementation and verification of the 14 GiB/`TasksMax=512` controls; the prepared package remains WIP and unlaunched. Full-campaign approval is absent.
 
 **Mandatory model routing, 2026-09-07:** all substantive implementation,
 diagnosis, source/data inspection, fixture or harness work, execution/testing,
@@ -128,8 +128,14 @@ The eighth diagnostic did not enforce the protocol's specified 14 GiB cgroup
 memory ceiling or `TasksMax=512`; its launch recorded `GOMAXPROCS=4`, timeout
 and process-group cleanup but no `systemd-run`, `MemoryMax` or `TasksMax`
 enforcement. The proposed correction is documented in
-`prospective-240s-completion-diagnostic.md`; it is not implemented or
-authorized, and the missing enforcement does not relabel the eighth result.
+`prospective-240s-completion-diagnostic.md`; the correction remains
+unimplemented, with implementation controls pending owner `p1_diagnostic_prepare`.
+The user has authorized one completion diagnostic without an arbitrary product
+deadline, but only after those controls are fixed and verified. The cap remains
+one invocation under the global 100 limit; no retries, comparisons or
+full-campaign approval are authorized. Progress monitoring is required and
+must not terminate or cancel ongoing work. The missing enforcement
+does not relabel the eighth result.
 
 All 77 campaign-control tests passed; a live fake-service smoke verified that all three active workers stopped after an injected pause. The validation VM is confirmed deallocated after correctness and corrective evidence collection; the two campaign workers remain deallocated. No campaign is running. P2/P3/P4 comparative studies remain deferred, and no complete workstream release gate has passed. Defaults remain extraction reuse off, compiler off, impact depth two and current ranking.
 
