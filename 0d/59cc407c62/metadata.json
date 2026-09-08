@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "0d59cc407c62",
+  "strategy": "manual-commit",
+  "branch": "fix/committed-tree-regular-files",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/gitutil/git.go",
+    "internal/gitutil/index_symlink_review_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0d/59cc407c62/0/metadata.json",
+      "transcript": "/0d/59cc407c62/0/full.jsonl",
+      "compact_transcript": "/0d/59cc407c62/0/transcript.jsonl",
+      "content_hash": "/0d/59cc407c62/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 10399,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1527936,
+    "output_tokens": 2592,
+    "api_call_count": 14
+  }
+}
