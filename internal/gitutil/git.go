@@ -177,7 +177,8 @@ func validateTreeish(rev string) error {
 }
 
 // IndexNonRegularPaths returns the worktree paths whose INDEX mode is not a
-// regular file, keyed by slash-separated repo-relative path.
+// regular file, keyed by slash-separated repo-relative path. Values are stage-0
+// object IDs, or empty for unmerged entries.
 //
 // lstat is not sufficient to answer this. With core.symlinks=false -- the
 // default wherever the filesystem cannot make symlinks, which is common on
@@ -189,14 +190,14 @@ func validateTreeish(rev string) error {
 //
 // Untracked paths have no index entry and are absent from the result, so a
 // caller still judges those by lstat alone.
-func IndexNonRegularPaths(ctx context.Context, repo string) (map[string]struct{}, error) {
+func IndexNonRegularPaths(ctx context.Context, repo string) (map[string]string, error) {
 	// Streamed through the same fixed count and byte bounds every other listing
 	// uses. Reading the index with run() buffered all of stdout and then
 	// strings.Split copied it again, so a repository near the 256 MiB raw-output
 	// limit the sibling listings enforce needed several more full-size copies
 	// here -- and could exhaust memory before any output was consumed -- while
 	// bypassing the bound that exists to stop exactly that.
-	paths := map[string]struct{}{}
+	paths := map[string]string{}
 	err := visitBoundedWorktreePathOutput(
 		newCmd(ctx, repo, "git", "ls-files", "-s", "-z"),
 		func(entry string) bool {
@@ -208,11 +209,19 @@ func IndexNonRegularPaths(ctx context.Context, repo string) (map[string]struct{}
 			if !found || path == "" {
 				return true
 			}
-			mode, _, found := strings.Cut(meta, " ")
+			mode, objectStage, found := strings.Cut(meta, " ")
 			if !found || isRegularTreeMode(mode) {
 				return true
 			}
-			paths[path] = struct{}{}
+			objectID, stage, valid := strings.Cut(objectStage, " ")
+			if !valid {
+				return true
+			}
+			// Unmerged entries have no stage-0 object to compare.
+			if stage != "0" {
+				objectID = ""
+			}
+			paths[path] = objectID
 			return true
 		})
 	if err != nil {
@@ -244,194 +253,84 @@ const maxSymlinkTargetBytes = 4096
 //
 // Only paths given in nonRegular are examined, so the cost is bounded by the
 // number of tracked symlinks and gitlinks rather than by the size of the tree.
-func IndexReplacedNonRegularPaths(ctx context.Context, repo string, nonRegular map[string]struct{}) map[string]struct{} {
+func IndexReplacedNonRegularPaths(ctx context.Context, repo string, nonRegular map[string]string) (map[string]struct{}, error) {
 	replaced := map[string]struct{}{}
-	if len(nonRegular) == 0 {
-		return replaced
-	}
-	// Only entries that are a REGULAR file on disk can have been substituted, and
-	// their on-disk size is the first half of the comparison. Collected before any
-	// subprocess runs, so the batch below asks about the smallest possible set.
-	sizeOnDisk := map[string]int64{}
+	var reader *BatchFileReader
+	defer func() {
+		if reader != nil {
+			_ = reader.Close()
+		}
+	}()
+	paths := make([]string, 0, len(nonRegular))
 	for path := range nonRegular {
-		onDisk, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(path)))
-		if err != nil || !onDisk.Mode().IsRegular() {
-			// Still a link (or gone): nothing was substituted for it.
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		full := filepath.Join(repo, filepath.FromSlash(path))
+		info, err := os.Lstat(full)
+		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		sizeOnDisk[path] = onDisk.Size()
-	}
-	if len(sizeOnDisk) == 0 {
-		return replaced
-	}
-	// TWO subprocesses for the whole repository, not two per entry. A checkout
-	// under core.symlinks=false materializes EVERY tracked symlink as a regular
-	// file, so a per-entry `cat-file` pair meant hundreds of thousands of
-	// processes on a large repository and a worktree query that never returned.
-	// A path holding a NEWLINE cannot ride the line-delimited batch: it would
-	// split into several requests and shift every later response onto the wrong
-	// path, which admits an untouched symlink as source or hides a replacement.
-	// Such paths are legal and vanishingly rare, so they are asked about one at
-	// a time rather than forcing a Git version this tool does not require.
-	var batchable, individual []string
-	for _, path := range sortedKeys(sizeOnDisk) {
-		if strings.ContainsRune(path, '\n') {
-			individual = append(individual, path)
-			continue
-		}
-		batchable = append(batchable, path)
-	}
-	sizes := catFileBatchCheckSizes(ctx, repo, batchable)
-	for _, path := range individual {
-		sized, err := run(ctx, repo, "git", "cat-file", "-s", indexObjectSpec(path))
 		if err != nil {
+			return nil, fmt.Errorf("inspect index path %q: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
 			continue
 		}
-		if size, convErr := strconv.ParseInt(strings.TrimSpace(sized), 10, 64); convErr == nil {
-			sizes[path] = size
-		}
-	}
-	var needContent []string
-	for path, onDisk := range sizeOnDisk {
-		blobBytes, known := sizes[path]
-		if !known {
-			// No stage-0 entry. An UNMERGED path has stages 1-3 and no stage 0,
-			// so there is no single index blob to compare against -- and the
-			// worktree file sitting there is the merge's own resolution, which a
-			// worktree query exists to show.
+		objectID := nonRegular[path]
+		if objectID == "" || info.Size() > maxSymlinkTargetBytes {
 			replaced[path] = struct{}{}
 			continue
 		}
-		if blobBytes > maxSymlinkTargetBytes || onDisk != blobBytes {
-			// Too large to be a link target, or a different length than the
-			// entry: either way the file on disk is not that entry materialized.
+		if reader == nil {
+			reader, err = NewBatchFileReader(ctx, repo, "HEAD")
+			if err != nil {
+				return nil, err
+			}
+		}
+		// Read immutable OIDs from the bounded index listing. Path bytes never
+		// enter the line protocol, including newline and stage-like names. Consume
+		// and compare one bounded blob at a time instead of retaining every target.
+		indexed, comparable, err := reader.readIndexTarget(objectID)
+		if err != nil {
+			return nil, fmt.Errorf("read index path %q: %w", path, err)
+		}
+		if !comparable || info.Size() != int64(len(indexed)) {
 			replaced[path] = struct{}{}
 			continue
 		}
-		needContent = append(needContent, path)
-	}
-	if len(needContent) == 0 {
-		return replaced
-	}
-	sort.Strings(needContent)
-	var batchContent, individualContent []string
-	for _, path := range needContent {
-		if strings.ContainsRune(path, '\n') {
-			individualContent = append(individualContent, path)
-			continue
-		}
-		batchContent = append(batchContent, path)
-	}
-	contents := catFileBatchContents(ctx, repo, batchContent)
-	for _, path := range individualContent {
-		blob, err := run(ctx, repo, "git", "cat-file", "blob", indexObjectSpec(path))
+		// The extra byte detects growth after Lstat even when the prefix matches.
+		current, err := readFileAtMost(full, len(indexed)+1)
 		if err != nil {
-			continue
-		}
-		contents[path] = blob
-	}
-	for _, path := range needContent {
-		indexed, known := contents[path]
-		if !known {
-			continue
-		}
-		// One byte MORE than the blob. A bounded read of exactly the indexed
-		// length returns only a prefix if the file grew after the Lstat above,
-		// and a replacement whose first bytes happen to match the link target
-		// then read as untouched -- hidden by the very bound that makes the
-		// read safe. The extra byte is still bounded, and its presence is
-		// itself the answer: a longer file is a different file.
-		current, err := readFileAtMost(filepath.Join(repo, filepath.FromSlash(path)), len(indexed)+1)
-		if err != nil {
-			continue
+			return nil, fmt.Errorf("read worktree index replacement %q: %w", path, err)
 		}
 		if string(current) != indexed {
 			replaced[path] = struct{}{}
 		}
 	}
-	return replaced
+	if reader != nil {
+		if err := reader.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return replaced, nil
 }
 
-// catFileBatchCheckSizes returns the stage-0 index blob size for each path, in ONE
-// subprocess. Paths Git cannot resolve are absent from the result rather than
-// reported as an error: an unmerged path legitimately has no stage 0.
-func catFileBatchCheckSizes(ctx context.Context, repo string, paths []string) map[string]int64 {
-	sizes := map[string]int64{}
-	var stdin bytes.Buffer
-	for _, path := range paths {
-		stdin.WriteString(indexObjectSpec(path))
-		stdin.WriteByte('\n')
-	}
-	// Line-delimited, and callers must pass only paths WITHOUT a newline. The
-	// NUL-delimited form would carry any path, but `cat-file -z` arrived in Git
-	// 2.38 and this tool supports 2.36 (README), where it fails outright and
-	// every materialized symlink is then misclassified as replaced. Splitting
-	// the rare newline-bearing path off costs one subprocess each and keeps the
-	// floor.
-	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch-check=%(objectsize)")
-	cmd.Stdin = &stdin
-	out, err := cmd.Output()
+func (r *BatchFileReader) readIndexTarget(objectID string) (string, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id, kind, size, found, err := r.objectInfoLocked(objectID)
 	if err != nil {
-		return sizes
+		return "", false, err
 	}
-	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	for i, line := range lines {
-		if i >= len(paths) {
-			break
-		}
-		size, convErr := strconv.ParseInt(strings.TrimSpace(line), 10, 64)
-		if convErr != nil {
-			// "<spec> missing" for an unresolvable entry; leave it absent.
-			continue
-		}
-		sizes[paths[i]] = size
+	if !found {
+		return "", false, fmt.Errorf("index object %s is missing", objectID)
 	}
-	return sizes
-}
-
-// catFileBatchContents returns the stage-0 index blob contents for each path, in ONE
-// subprocess. Callers must already have bounded the set: every path here was sized at
-// or below maxSymlinkTargetBytes.
-func catFileBatchContents(ctx context.Context, repo string, paths []string) map[string]string {
-	contents := map[string]string{}
-	var stdin bytes.Buffer
-	for _, path := range paths {
-		stdin.WriteString(indexObjectSpec(path))
-		stdin.WriteByte('\n')
+	if kind != "blob" || size > maxSymlinkTargetBytes {
+		return "", false, nil
 	}
-	// Line-delimited for the reason given on catFileBatchCheckSizes; callers
-	// pass only newline-free paths. The RESPONSE is length-prefixed and read by
-	// that length, so blob CONTENT holding a newline is already safe.
-	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch=%(objectsize)")
-	cmd.Stdin = &stdin
-	out, err := cmd.Output()
-	if err != nil {
-		return contents
-	}
-	rest := out
-	for _, path := range paths {
-		newline := bytes.IndexByte(rest, '\n')
-		if newline < 0 {
-			break
-		}
-		size, convErr := strconv.ParseInt(strings.TrimSpace(string(rest[:newline])), 10, 64)
-		rest = rest[newline+1:]
-		if convErr != nil || size < 0 || int64(len(rest)) < size+1 {
-			break
-		}
-		contents[path] = string(rest[:size])
-		rest = rest[size+1:] // trailing LF Git appends after each blob
-	}
-	return contents
-}
-
-// indexObjectSpec names a path's stage-0 index entry unambiguously.
-//
-// A bare ":"+path is ambiguous: Git reads a leading "0:".."3:" as a STAGE, so a
-// file legitimately named `0:link.go` addresses another entry entirely, or none.
-// The "./" form cannot be read as a stage number.
-func indexObjectSpec(path string) string {
-	return ":./" + path
+	return r.readObjectContentsLocked(id, kind, size, objectID)
 }
 
 // readFileAtMost reads at most limit bytes, so a file that grew between the size
@@ -448,15 +347,6 @@ func readFileAtMost(name string, limit int) ([]byte, error) {
 		return nil, err
 	}
 	return buffer[:read], nil
-}
-
-func sortedKeys(m map[string]int64) []string {
-	out := make([]string, 0, len(m))
-	for key := range m {
-		out = append(out, key)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // ListRegularFiles lists the REGULAR files in a committed tree, excluding

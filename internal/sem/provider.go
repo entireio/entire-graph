@@ -19028,12 +19028,11 @@ func worktreeSourceFilesWithLister(
 	// core.symlinks=false Git writes a mode-120000 entry to disk as an ordinary
 	// file holding the link target, so lstat calls it regular and the worktree
 	// listing would admit a symlink the committed listing excludes by mode --
-	// the same divergence, reappearing from the other side. A failure here is
-	// not fatal: the lstat classification below still applies, which is the
-	// behaviour that existed before this consultation.
+	// the same divergence, reappearing from the other side. Classification
+	// failures must be reported rather than silently admitting index symlinks.
 	indexNonRegular, indexErr := gitutil.IndexNonRegularPaths(ctx, repo)
 	if indexErr != nil {
-		indexNonRegular = nil
+		return nil, nil, fmt.Errorf("list Git index modes: %w", indexErr)
 	}
 	// The index alone cannot tell a materialized symlink from a replaced one.
 	// Both leave mode 120000 in the index with an ordinary file on disk: the
@@ -19043,7 +19042,10 @@ func worktreeSourceFilesWithLister(
 	// second is source a worktree query is supposed to show -- vetoing both made
 	// an uncommitted replacement invisible until it was staged, which is the one
 	// thing a worktree listing promises not to do.
-	indexReplaced := gitutil.IndexReplacedNonRegularPaths(ctx, repo, indexNonRegular)
+	indexReplaced, err := gitutil.IndexReplacedNonRegularPaths(ctx, repo, indexNonRegular)
+	if err != nil {
+		return nil, nil, err
+	}
 	kinds := make([]listedPathKind, len(listed))
 	var listedDirs []string
 	for index, entry := range listed {

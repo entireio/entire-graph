@@ -2911,6 +2911,9 @@ func TestFirstParentRejectsAnOptionShapedRevision(t *testing.T) {
 // listing to be parsed as ordinary source -- the exact confusion the index consultation
 // exists to prevent. The "./" form cannot be read as a stage number.
 func TestIndexReplacedNonRegularPathsHandlesAStageLikeName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("colon is not a valid Windows filename")
+	}
 	t.Parallel()
 	repo := t.TempDir()
 	git(t, repo, "init", "-q", ".")
@@ -2932,7 +2935,11 @@ func TestIndexReplacedNonRegularPathsHandlesAStageLikeName(t *testing.T) {
 	if _, ok := nonRegular["0:link.go"]; !ok {
 		t.Fatalf("a symlink named like a stage was not seen as non-regular: %v", nonRegular)
 	}
-	if _, wrong := IndexReplacedNonRegularPaths(context.Background(), repo, nonRegular)["0:link.go"]; wrong {
+	replaced, err := IndexReplacedNonRegularPaths(context.Background(), repo, nonRegular)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, wrong := replaced["0:link.go"]; wrong {
 		t.Fatal("an untouched symlink named like a stage was reported as replaced")
 	}
 }
@@ -2971,7 +2978,11 @@ func TestIndexReplacedNonRegularPathsHandlesANewlineInAPath(t *testing.T) {
 	}
 	// Nothing was touched, so nothing may be reported replaced. A desynchronized
 	// batch shows up here as a false positive on whichever path took the answer.
-	if replaced := IndexReplacedNonRegularPaths(context.Background(), repo, nonRegular); len(replaced) != 0 {
+	replaced, err := IndexReplacedNonRegularPaths(context.Background(), repo, nonRegular)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replaced) != 0 {
 		t.Fatalf("untouched symlinks reported as replaced: %q", replaced)
 	}
 }
