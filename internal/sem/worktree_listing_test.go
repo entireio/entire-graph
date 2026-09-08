@@ -736,3 +736,40 @@ func TestVendoredNegationGlobSparesOnlyThePathsItNames(t *testing.T) {
 		})
 	}
 }
+
+func TestVendoredBasenameNegationKeepsOnlyScopedMatches(t *testing.T) {
+	for _, nested := range []bool{false, true} {
+		name := "root"
+		if nested {
+			name = "nested"
+		}
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			initRepo(t, repo)
+			ignorePath := ".gitignore"
+			if nested {
+				ignorePath = "vendor/.gitignore"
+			}
+			writeFile(t, repo, ignorePath, "!lib.py\n")
+			writeFile(t, repo, "vendor/lib.py", "def kept_file():\n    pass\n")
+			writeFile(t, repo, "vendor/dep.py", "def excluded_dependency():\n    pass\n")
+			writeFile(t, repo, "third_party/lib.py", "def excluded_sibling():\n    pass\n")
+			git(t, repo, "add", "-f", ".")
+			git(t, repo, "commit", "-m", "track basename negation fixture")
+			for _, worktree := range []bool{false, true} {
+				snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test", ProviderSnapshotOptions{Worktree: worktree})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := snapshotHasSymbol(snapshot, "kept_file"); got != nested {
+					t.Errorf("worktree=%v: kept_file present=%v, want %v", worktree, got, nested)
+				}
+				for _, symbol := range []string{"excluded_dependency", "excluded_sibling"} {
+					if snapshotHasSymbol(snapshot, symbol) {
+						t.Errorf("worktree=%v: admitted %s", worktree, symbol)
+					}
+				}
+			}
+		})
+	}
+}

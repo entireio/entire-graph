@@ -1371,7 +1371,8 @@ func (m ignoreMatcher) ReincludesPath(rel string) bool {
 // reincludesPathUnder is ReincludesPath for an ignore file that lives in dir
 // rather than at the repository root: its patterns are relative to dir, so rel
 // is re-expressed relative to dir before the rules see it. Basename-only
-// negations are skipped exactly as reincludesDescendantUnder skips them.
+// negations need a nested directory to supply their scope, as in
+// reincludesDescendantUnder; root-level pathless negations remain no signal.
 //
 // The rule is EVALUATED against the path and its ancestor directories rather
 // than reduced to its literal prefix. A prefix is not the pattern: taking
@@ -1384,12 +1385,13 @@ func (m ignoreMatcher) reincludesPathUnder(dir, rel string) bool {
 	if rel == "" {
 		return false
 	}
-	sub, ok := pathUnder(cleanIgnorePath(dir), rel)
+	dir = cleanIgnorePath(dir)
+	sub, ok := pathUnder(dir, rel)
 	if !ok || sub == "" {
 		return false
 	}
 	for _, rule := range m.rules {
-		if rule.ignore || rule.includeFile || rule.basenameOnly {
+		if rule.ignore || rule.includeFile || (rule.basenameOnly && dir == "") {
 			continue
 		}
 		// A listed path is a file: a directory-only negation can only reach it
