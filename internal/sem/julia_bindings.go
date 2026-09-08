@@ -10,7 +10,7 @@ import (
 // juliaLocalBindingNames returns every name that Julia's syntax binds inside
 // one callable. The same-container CALLS fallback is intentionally fail-closed:
 // a parse failure returns nil, which disables that fallback for the callable.
-func juliaLocalBindingNames(source string) map[string]struct{} {
+func juliaLocalBindingNames(ctx context.Context, source string) map[string]struct{} {
 	sourceBytes := []byte(source)
 	headerSource := maskJuliaLiteralsAndComments(source)
 	spec, ok := languageForPath("scope.jl")
@@ -20,7 +20,7 @@ func juliaLocalBindingNames(source string) map[string]struct{} {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(spec.grammar)
-	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	ctx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
 	defer cancel()
 	tree, err := parser.ParseCtx(ctx, nil, sourceBytes)
 	if tree != nil {

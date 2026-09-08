@@ -200,6 +200,15 @@ func (transaction *ProviderRecordsCacheTransaction) Store(records []byte, summar
 	if transaction == nil || !transaction.enabled {
 		return nil
 	}
+	if SnapshotTruncated(summary) {
+		// A budget-truncated stream is not this tree's answer. The key is
+		// derived from the tree and the graph-shaping options only, never from
+		// the budget, so persisting a truncation would hand it to every later
+		// caller -- including unbudgeted ones -- as the complete index. Not an
+		// error: persistence here is best effort by contract, and the caller
+		// already has the (correctly self-describing) records in hand.
+		return nil
+	}
 	if observed.SchemaVersion != SchemaVersion ||
 		observed.Tree != transaction.tree ||
 		observed.Commit != transaction.commit ||

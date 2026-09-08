@@ -23,12 +23,12 @@ type pythonBareImportScopes struct {
 	complete       bool
 }
 
-func newPythonBareImportScopes(content string, symbols []SymbolRecord) *pythonBareImportScopes {
+func newPythonBareImportScopes(ctx context.Context, content string, symbols []SymbolRecord) *pythonBareImportScopes {
 	state := &pythonBareImportScopes{imports: map[string]map[string][][]string{}, module: map[string][][]string{}, contexts: map[string]map[string][]pythonImportContext{}, moduleContexts: map[string][]pythonImportContext{}, genericAllowed: map[string]map[string]bool{}, moduleGeneric: map[string]bool{}}
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(python.GetLanguage())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	tree, err := parser.ParseCtx(ctx, nil, []byte(content))
 	if err != nil || tree == nil {

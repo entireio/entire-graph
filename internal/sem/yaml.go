@@ -13,9 +13,12 @@ type yamlBlock struct {
 	EndLine   int
 }
 
-func yamlEntities(path, content string) []Entity {
+func yamlEntities(path, content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
-	topLevel := yamlTopLevelBlocks(lines)
+	if stopped(stop) {
+		return nil
+	}
+	topLevel := yamlTopLevelBlocks(lines, stop)
 	if len(topLevel) == 0 {
 		return nil
 	}
@@ -24,16 +27,25 @@ func yamlEntities(path, content string) []Entity {
 	if yamlWorkflowPath(path) {
 		entities = append(entities, yamlEntity("workflow", yamlWorkflowEntityName(path), yamlWorkflowSignature(path, lines, topLevel), 1, len(lines), lines))
 	}
-	entities = append(entities, yamlKubernetesResourceEntities(lines)...)
-	if yamlDockerComposePath(path) {
-		entities = append(entities, yamlComposeServiceEntities(topLevel, lines)...)
+	if stopped(stop) {
+		return nil
 	}
-	for _, block := range topLevel {
+	entities = append(entities, yamlKubernetesResourceEntities(lines, stop)...)
+	if stopped(stop) {
+		return nil
+	}
+	if yamlDockerComposePath(path) {
+		entities = append(entities, yamlComposeServiceEntities(topLevel, lines, stop)...)
+	}
+	for i, block := range topLevel {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return nil
+		}
 		switch block.Key {
 		case "name":
 			continue
 		case "jobs":
-			entities = append(entities, yamlJobEntities(block, lines)...)
+			entities = append(entities, yamlJobEntities(block, lines, stop)...)
 		default:
 			entities = append(entities, yamlEntity("section", block.Key, "section "+block.Key, block.StartLine, block.EndLine, lines))
 		}
@@ -48,10 +60,16 @@ func yamlEntities(path, content string) []Entity {
 	return entities
 }
 
-func yamlKubernetesResourceEntities(lines []string) []Entity {
+func yamlKubernetesResourceEntities(lines []string, stop func() bool) []Entity {
 	var entities []Entity
-	for _, doc := range yamlDocumentRanges(lines) {
-		topLevel := yamlTopLevelBlocksInRange(lines, doc.Start, doc.End)
+	for i, doc := range yamlDocumentRanges(lines, stop) {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return nil
+		}
+		topLevel := yamlTopLevelBlocksInRange(lines, doc.Start, doc.End, stop)
+		if stopped(stop) {
+			return nil
+		}
 		kind := yamlTopLevelScalar("kind", lines, topLevel)
 		name := yamlNestedScalar("metadata", "name", lines, topLevel)
 		if kind == "" || name == "" {
@@ -78,11 +96,11 @@ func yamlDockerComposePath(path string) bool {
 	}
 }
 
-func yamlTopLevelBlocks(lines []string) []yamlBlock {
-	return yamlTopLevelBlocksInRange(lines, 0, len(lines))
+func yamlTopLevelBlocks(lines []string, stop func() bool) []yamlBlock {
+	return yamlTopLevelBlocksInRange(lines, 0, len(lines), stop)
 }
 
-func yamlTopLevelBlocksInRange(lines []string, start, end int) []yamlBlock {
+func yamlTopLevelBlocksInRange(lines []string, start, end int, stop func() bool) []yamlBlock {
 	var blocks []yamlBlock
 	if start < 0 {
 		start = 0
@@ -91,6 +109,9 @@ func yamlTopLevelBlocksInRange(lines []string, start, end int) []yamlBlock {
 		end = len(lines)
 	}
 	for index := start; index < end; index++ {
+		if (index-start)%budgetPollStride == 0 && stopped(stop) {
+			return blocks
+		}
 		line := lines[index]
 		if yamlIndent(line) != 0 || yamlIgnoreLine(line) {
 			continue
@@ -112,11 +133,14 @@ type yamlDocumentRange struct {
 	End   int
 }
 
-func yamlDocumentRanges(lines []string) []yamlDocumentRange {
+func yamlDocumentRanges(lines []string, stop func() bool) []yamlDocumentRange {
 	ranges := []yamlDocumentRange{{Start: 0, End: len(lines)}}
 	start := 0
 	var split []yamlDocumentRange
 	for index, line := range lines {
+		if index%budgetPollStride == 0 && stopped(stop) {
+			return ranges
+		}
 		if strings.TrimSpace(line) != "---" {
 			continue
 		}
@@ -134,7 +158,7 @@ func yamlDocumentRanges(lines []string) []yamlDocumentRange {
 	return split
 }
 
-func yamlJobEntities(jobs yamlBlock, lines []string) []Entity {
+func yamlJobEntities(jobs yamlBlock, lines []string, stop func() bool) []Entity {
 	jobIndent := yamlDirectChildIndent(jobs, lines)
 	if jobIndent < 0 {
 		return nil
@@ -142,6 +166,9 @@ func yamlJobEntities(jobs yamlBlock, lines []string) []Entity {
 
 	var blocks []yamlBlock
 	for index := jobs.StartLine; index < jobs.EndLine && index < len(lines); index++ {
+		if (index-jobs.StartLine)%budgetPollStride == 0 && stopped(stop) {
+			return nil
+		}
 		line := lines[index]
 		if yamlIndent(line) != jobIndent || yamlIgnoreLine(line) {
 			continue
@@ -164,7 +191,7 @@ func yamlJobEntities(jobs yamlBlock, lines []string) []Entity {
 	return entities
 }
 
-func yamlComposeServiceEntities(topLevel []yamlBlock, lines []string) []Entity {
+func yamlComposeServiceEntities(topLevel []yamlBlock, lines []string, stop func() bool) []Entity {
 	var services yamlBlock
 	for _, block := range topLevel {
 		if block.Key == "services" {
@@ -181,6 +208,9 @@ func yamlComposeServiceEntities(topLevel []yamlBlock, lines []string) []Entity {
 	}
 	var blocks []yamlBlock
 	for index := services.StartLine; index < services.EndLine && index < len(lines); index++ {
+		if (index-services.StartLine)%budgetPollStride == 0 && stopped(stop) {
+			return nil
+		}
 		line := lines[index]
 		if yamlIndent(line) != serviceIndent || yamlIgnoreLine(line) {
 			continue

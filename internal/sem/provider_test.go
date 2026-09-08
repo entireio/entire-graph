@@ -2,6 +2,7 @@ package sem
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -5221,7 +5222,7 @@ def sibling():
 
 	t.Run("incomplete scope disables raw FFI but retains imported external fallback", func(t *testing.T) {
 		deep := strings.Repeat("(", maxParseWalkDepth+10) + "0" + strings.Repeat(")", maxParseWalkDepth+10)
-		scopes := newPythonBareImportScopes("from lib import compute\nvalue = "+deep+"\n", nil)
+		scopes := newPythonBareImportScopes(context.Background(), "from lib import compute\nvalue = "+deep+"\n", nil)
 		if scopes.complete {
 			t.Fatal("deep scope walk unexpectedly completed")
 		}
@@ -5250,7 +5251,7 @@ def sibling():
 		repo := t.TempDir()
 		writeFile(t, repo, "lib.c", "int compute(int value) { return value + 1; }\n")
 		content := "from lib import compute\n\ndef run():\n    return compute(1)\n\nbroken = (\n"
-		if newPythonBareImportScopes(content, nil).complete {
+		if newPythonBareImportScopes(context.Background(), content, nil).complete {
 			t.Fatal("malformed scope unexpectedly completed")
 		}
 		writeFile(t, repo, "app.py", content)
@@ -5264,7 +5265,7 @@ def sibling():
 		repo := t.TempDir()
 		writeFile(t, repo, "lib.c", "int compute(int value) { return value + 1; }\n")
 		content := "from lib import compute\n\ncompute(1)\n\nbroken = (\n"
-		if newPythonBareImportScopes(content, nil).complete {
+		if newPythonBareImportScopes(context.Background(), content, nil).complete {
 			t.Fatal("malformed scope unexpectedly completed")
 		}
 		writeFile(t, repo, "app.py", content)
@@ -5508,7 +5509,7 @@ def valid():
 	if err != nil {
 		t.Fatal(err)
 	}
-	scopes := newPythonBareImportScopes(string(content), snapshot.Symbols)
+	scopes := newPythonBareImportScopes(context.Background(), string(content), snapshot.Symbols)
 	byName := map[string]SymbolRecord{}
 	for _, symbol := range snapshot.Symbols {
 		if symbol.FilePath == "app.py" && symbol.Name != "compute" {
@@ -13059,7 +13060,7 @@ func TestBuildRelationsUsesSymbolBlockIdentifierLookup(t *testing.T) {
 	recordsByFile[caller.FilePath] = []SymbolRecord{caller}
 	contentByFile[caller.FilePath] = "package pkg\nfunc Caller() {\n\tTargetSymbol()\n}\n"
 
-	relations := buildRelations("repo", files, recordsByFile, mapReader(contentByFile))
+	relations := buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile))
 
 	var sawTargetCall bool
 	for _, relation := range relations {
@@ -13130,7 +13131,7 @@ func TestBuildRelationsDropsAmbiguousCrossFileCallNameCollisions(t *testing.T) {
 		"runtime.ts":    "function sleep(ms: number) {}\n",
 	}
 
-	for _, relation := range buildRelations("repo", files, recordsByFile, mapReader(contentByFile)) {
+	for _, relation := range buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile)) {
 		if relation.Type == "CALLS" && relation.FromID == "caller" {
 			t.Fatalf("ambiguous sleep call should not resolve globally: %#v", relation)
 		}
@@ -13182,7 +13183,7 @@ func TestBuildRelationsResolvesCPlusPlusSameFileOverloadSet(t *testing.T) {
 	}
 
 	var targets []string
-	for _, relation := range buildRelations("repo", files, recordsByFile, mapReader(contentByFile)) {
+	for _, relation := range buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile)) {
 		if relation.Type == "CALLS" && relation.FromID == "caller" {
 			targets = append(targets, relation.ToID)
 			if relation.Resolution != "name_only" || relation.RelationScope != "workspace" {
@@ -13874,7 +13875,7 @@ func TestCollectRegistrationAliases(t *testing.T) {
 		return c, ok
 	}
 
-	got := collectRegistrationAliases(paths, read)
+	got := collectRegistrationAliases(nil, paths, read)
 	want := map[string][]string{
 		"getrangeCommand": {"getrange", "substr"},
 		"getCommand":      {"get"},

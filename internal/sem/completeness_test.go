@@ -56,27 +56,44 @@ func TestGraphIgnoreFileHonored(t *testing.T) {
 	}
 }
 
+// hardFailures builds n partial failures that count as real gaps, so the table
+// below still reads as "n failures" now that completenessLevel takes records.
+func hardFailures(n int) []PartialFailure {
+	failures := make([]PartialFailure, 0, n)
+	for i := 0; i < n; i++ {
+		failures = append(failures, PartialFailure{Code: "E_PARSE_ERROR"})
+	}
+	return failures
+}
+
 func TestCompletenessLevel(t *testing.T) {
 	cases := []struct {
-		name                            string
-		failures, files, parsed, symbol int
-		want                            string
+		name                  string
+		failures              []PartialFailure
+		files, parsed, symbol int
+		want                  string
 	}{
-		{"empty scope", 0, 0, 0, 0, "ok"},
-		{"clean full parse", 0, 100, 100, 4000, "ok"},
+		{"empty scope", nil, 0, 0, 0, "ok"},
+		{"clean full parse", nil, 100, 100, 4000, "ok"},
 		// The subdir/mis-scope bug: a stray config file parses fine (no failure)
 		// but the real source was never discovered. Must NOT report "ok".
-		{"parsed but no symbols", 0, 3, 3, 0, "degraded"},
-		{"majority unparsed", 0, 100, 30, 500, "unsafe"},
-		{"a few hard failures", 2, 100, 98, 4000, "degraded"},
-		{"mostly failures", 30, 100, 70, 500, "unsafe"},
+		{"parsed but no symbols", nil, 3, 3, 0, "degraded"},
+		{"majority unparsed", nil, 100, 30, 500, "unsafe"},
+		{"a few hard failures", hardFailures(2), 100, 98, 4000, "degraded"},
+		{"mostly failures", hardFailures(30), 100, 70, 500, "unsafe"},
+		// Intentional skips still do not count as gaps.
+		{"intentional skips only", []PartialFailure{{Code: "E_FILE_TOO_LARGE"}, {Code: "E_MINIFIED"}}, 100, 100, 4000, "ok"},
+		// A wall-clock truncation is never "ok" and never merely "degraded":
+		// the unreached suffix of the repository is unknown and unbounded.
+		{"truncated empty", []PartialFailure{{Code: AnalysisBudgetExceededCode}}, 0, 0, 0, "unsafe"},
+		{"truncated large prefix", []PartialFailure{{Code: AnalysisBudgetExceededCode}}, 1000, 1000, 40000, "unsafe"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := completenessLevel(tc.failures, tc.files, tc.parsed, tc.symbol)
 			if got != tc.want {
 				t.Fatalf("completenessLevel(f=%d files=%d parsed=%d sym=%d) = %q, want %q",
-					tc.failures, tc.files, tc.parsed, tc.symbol, got, tc.want)
+					len(tc.failures), tc.files, tc.parsed, tc.symbol, got, tc.want)
 			}
 		})
 	}

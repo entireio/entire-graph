@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -610,7 +611,7 @@ func pythonScopeCallable(t *testing.T, src, id, kind, header string) SymbolRecor
 
 func pythonScopeModules(t *testing.T, src string, symbols []SymbolRecord, owner SymbolRecord, name string) []string {
 	t.Helper()
-	scopes := newPythonBareImportScopes(src, symbols)
+	scopes := newPythonBareImportScopes(context.Background(), src, symbols)
 	if !scopes.complete {
 		t.Fatalf("scope analysis did not complete for:\n%s", src)
 	}

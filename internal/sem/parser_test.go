@@ -2982,7 +2982,7 @@ int validate(int token) {
 	}
 	return 0;
 }
-`, "C")
+`, "C", nil)
 	seen := map[string]string{}
 	for _, entity := range entities {
 		seen[entity.Name] = entity.Kind

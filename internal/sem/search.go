@@ -2270,7 +2270,7 @@ func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, s
 	if budget <= 0 || len(selected) == 0 || len(selected) >= len(source.paths) {
 		return selected
 	}
-	aliases := collectRegistrationAliases(selected, source.read)
+	aliases := collectRegistrationAliases(func() bool { return ctx.Err() != nil }, selected, source.read)
 	if len(aliases) == 0 {
 		return selected
 	}
