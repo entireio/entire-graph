@@ -1063,7 +1063,7 @@ func registrationCandidateCounts(
 	err := runProviderFilePipeline(ctx, sc.paths, workers,
 		func(workerCtx context.Context, index int, path string) providerFileResult {
 			content, readable := sc.read(path)
-			if !readable || !mentionsRegistrationHandler(content, aliasesByHandler) {
+			if !readable || !mentionsRegistrationHandlerInFile(path, content, aliasesByHandler) {
 				return providerFileResult{index: index, path: path}
 			}
 			return processProviderFile(workerCtx, sc, spec, maxParseBytes, index, path)
@@ -5055,7 +5055,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	// interface-implementation hop needs to decide package qualifiers across the
 	// declaring files. Lazy and memoised: only files that actually reach a
 	// signature comparison are read.
-	goFileImportIndex := newGoFileImports(readContent)
+	goFileImportIndex := newGoFileImports(readContent, files, manifestImports.goModules)
 
 	// pythonModuleExists reports whether the repo contains a Python file that the
 	// strict dotted-module matcher resolves `module` to (the module's own source
@@ -9099,10 +9099,7 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 		satisfied := true
 		for _, requirement := range requirements {
 			implMember, ok := implMembers[requirement]
-			if !ok || !goMethodSignaturesMatch(
-				members[requirement].Signature, implMember.Signature,
-				goImports.forFile(members[requirement].FilePath), goImports.forFile(implMember.FilePath),
-			) {
+			if !ok || !goImports.signaturesMatch(members[requirement], implMember) {
 				satisfied = false
 				break
 			}
@@ -9129,267 +9126,11 @@ func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortNa
 	return out
 }
 
-// goFileImports resolves, per Go file and memoised, the single import path each
-// qualifier alias names in that file. It is the evidence a signature string does
-// not carry: the interface and its implementations live in different files with
-// different import blocks, so whether two qualifiers denote one package can only
-// be answered by reading each file's imports.
-//
-// Aliases bound more than once in one file (a build-tag-split import) resolve to
-// nothing, as do dot-imports and blank imports — importedGoNames drops both — so
-// a bare name is never mistaken for a resolved one and its comparison stays
-// permissive.
-type goFileImports struct {
-	readContent contentReader
-	byFile      map[string]map[string]string
-}
-
-func newGoFileImports(readContent contentReader) *goFileImports {
-	return &goFileImports{readContent: readContent, byFile: map[string]map[string]string{}}
-}
-
-// forFile returns alias -> import path for a Go file, reading it at most once.
-// A nil index, a non-Go path or an unreadable file all yield no evidence, which
-// folds every comparison exactly as the name-only key did.
-func (imports *goFileImports) forFile(filePath string) map[string]string {
-	if imports == nil || imports.readContent == nil || filePath == "" {
-		return nil
-	}
-	if !strings.EqualFold(filepath.Ext(filePath), ".go") {
-		return nil
-	}
-	if resolved, ok := imports.byFile[filePath]; ok {
-		return resolved
-	}
-	resolved := map[string]string{}
-	if content, ok := imports.readContent(filePath); ok {
-		for alias, modules := range importedGoNames(content) {
-			if len(modules) == 1 && alias != "" {
-				resolved[alias] = modules[0]
-			}
-		}
-	}
-	imports.byFile[filePath] = resolved
-	return resolved
-}
-
-// goMethodSignaturesMatch reports whether a concrete method declaration can
-// satisfy an interface requirement. A shared method NAME is not satisfaction:
-// `Run(name string) error` does not implement `Run() error`, and binding a call
-// to it invents an edge Go itself would reject. Parameter and result names are
-// not part of a Go signature, so they are dropped before comparing. Any shape
-// the normaliser cannot render faithfully compares as no match — a missing
-// implementation hop is cheaper than a wrong one.
-//
-// Comparing the two renderings BYTE FOR BYTE was too strict in the other
-// direction: Go lets one type be spelled several ways at a call site, and the
-// interface and its implementations are normally in different files with
-// different import aliases, so `context.Context` against `gocontext.Context`,
-// or `[]byte` against `[]uint8`, dropped implementations that Go accepts. The
-// comparison therefore runs over goTypeIdentityKey, which folds the spelling
-// differences that denote one type.
-//
-// The two import maps are the alias -> import path bindings of the FILE each
-// signature was declared in, and they decide the qualifiers the key alone
-// cannot: `http.Client` and `redis.Client` key identically as `Client`, but
-// their files resolve `http` and `redis` to different packages, so they are
-// different types and the implementation hop must not be carried. A qualifier
-// neither file resolves — a bare name, a dot-import, an alias the import
-// scanner did not record — stays folded, because there the signature really is
-// all the evidence there is and a missing hop is worse than an imprecise one.
-// Passing nil for either map is the no-evidence case and reproduces the
-// name-only comparison exactly.
+// goMethodSignaturesMatch compares signatures using only explicit import evidence.
+// The relation path also supplies package declarations through goFileImports.
 func goMethodSignaturesMatch(requirement, implementation string, requirementImports, implementationImports map[string]string) bool {
-	want, ok := goNormalizedMethodSignature(requirement)
-	if !ok {
-		return false
-	}
-	got, ok := goNormalizedMethodSignature(implementation)
-	if !ok {
-		return false
-	}
-	wantKey, wantQualifiers := goTypeIdentityKeyWithQualifiers(want)
-	gotKey, gotQualifiers := goTypeIdentityKeyWithQualifiers(got)
-	if wantKey != gotKey {
-		return false
-	}
-	return goQualifiersCompatible(wantQualifiers, gotQualifiers, requirementImports, implementationImports)
-}
-
-// goQualifiersCompatible reports whether two aligned qualifier lists can denote
-// the same types. Equal identity keys already fixed the structure and every type
-// NAME, so the lists are positionally aligned, one entry per name in the key;
-// only the packages those names were qualified by remain to be checked.
-//
-// A pair is rejected only when BOTH sides resolve to an import path and the
-// paths differ — the one case where the file's import block proves Go would
-// reject the implementation. Anything else folds: an unresolved qualifier, an
-// unqualified name (recorded as ""), or a missing import map. Lists of unequal
-// length would mean the keys agreed while the emitted names did not, which the
-// renderer cannot produce; it folds rather than invent a decline.
-func goQualifiersCompatible(want, got []string, wantImports, gotImports map[string]string) bool {
-	if len(want) != len(got) {
-		return true
-	}
-	for i := range want {
-		wantPath, wantResolved := wantImports[want[i]]
-		gotPath, gotResolved := gotImports[got[i]]
-		if !wantResolved || !gotResolved {
-			continue
-		}
-		if wantPath != gotPath {
-			return false
-		}
-	}
-	return true
-}
-
-// goPredeclaredTypeAliases are the spellings the Go spec makes ALIASES: two
-// names for one identical type, not two convertible types. A method written
-// with `[]byte` implements a requirement written with `[]uint8` and vice versa.
-// Convertible-but-distinct pairs (`int`/`int64`, a defined type and its
-// underlying type) are deliberately absent — those are different methods.
-var goPredeclaredTypeAliases = map[string]string{
-	"byte": "uint8",
-	"rune": "int32",
-	"any":  "interface{}",
-}
-
-// goTypeIdentityKey rewrites a canonicalised type expression into a key that is
-// equal for every spelling denoting the same Go type. Three rewrites:
-//
-//   - PACKAGE QUALIFIERS LEAVE THE KEY, so `context.Context`, an aliased
-//     `gocontext.Context` and a dot-imported bare `Context` all key as
-//     `Context`. A signature string alone cannot say whether two qualifiers name
-//     one package — the import block, the alias and the dot-import all live
-//     elsewhere in the file — so the key deliberately does not try. It is
-//     returned ALONGSIDE the qualifier each name carried
-//     (goTypeIdentityKeyWithQualifiers), and goMethodSignaturesMatch resolves
-//     those against the declaring files' import blocks, which is where the
-//     evidence actually is. Nothing structural is folded: arity, pointers,
-//     slices, arrays, maps, channels and variadics all still separate, so the
-//     `Run(name string) error` against `Run() error` case that motivated
-//     signature matching stays rejected.
-//   - PREDECLARED ALIASES ARE FOLDED (goPredeclaredTypeAliases). Sound: the
-//     spec defines each pair as one type.
-//   - PARAMETER AND RESULT NAMES INSIDE A NESTED func TYPE ARE DROPPED, as
-//     goNormalizedMethodSignature already drops them at the top level, and a
-//     single parenthesised result is unwrapped (`func() (error)` is `func()
-//     error`). Sound: names are not part of a Go function type.
-//
-// Known remaining strictness: names inside an inline `interface{ ... }` method
-// set are left alone, so an interface literal spelled with named parameters on
-// one side only still fails to match. Rewriting that needs a real type parser,
-// and the residue errs towards a missing hop rather than a wrong one.
-func goTypeIdentityKey(text string) string {
-	key, _ := goTypeIdentityKeyWithQualifiers(text)
-	return key
-}
-
-// goTypeIdentityKeyWithQualifiers returns the identity key and, positionally
-// aligned with the type names the key emits, the package qualifier each was
-// written with ("" for an unqualified name). Two equal keys therefore come with
-// two equally long qualifier lists that can be compared name by name.
-func goTypeIdentityKeyWithQualifiers(text string) (string, []string) {
-	var out strings.Builder
-	var qualifiers []string
-	pending := ""
-	for i := 0; i < len(text); {
-		if !goIdentifierByte(text[i]) {
-			out.WriteByte(text[i])
-			i++
-			continue
-		}
-		end := i
-		for end < len(text) && goIdentifierByte(text[end]) {
-			end++
-		}
-		// `pkg.Name` keys as `Name`: hold the qualifier aside, skip it and its
-		// dot, then resume from the next segment so a chain reduces to its last
-		// one and carries the qualifier written immediately before it.
-		if end+1 < len(text) && text[end] == '.' && goIdentifierByte(text[end+1]) {
-			pending = text[i:end]
-			i = end + 1
-			continue
-		}
-		name := text[i:end]
-		if name == "func" && end < len(text) && text[end] == '(' {
-			if rendered, funcQualifiers, next, ok := goFuncTypeIdentityKey(text, end); ok {
-				out.WriteString(rendered)
-				qualifiers = append(qualifiers, funcQualifiers...)
-				pending = ""
-				i = next
-				continue
-			}
-		}
-		if alias, ok := goPredeclaredTypeAliases[name]; ok {
-			name = alias
-		}
-		out.WriteString(name)
-		qualifiers = append(qualifiers, pending)
-		pending = ""
-		i = end
-	}
-	return out.String(), qualifiers
-}
-
-// goIdentifierByte is identifierByte without the dot, so a qualified name splits
-// into its segments instead of scanning as one word.
-func goIdentifierByte(b byte) bool { return identifierByte(b) && b != '.' }
-
-// goFuncTypeIdentityKey renders the `func` type whose parameter list opens at
-// `open`, returning the key and the index just past it. Parameter and result
-// names are dropped through goSignatureTypeList, the same reduction the top
-// level of a method signature already gets. It declines when either list cannot
-// be reduced, leaving the caller to copy the text through unchanged.
-func goFuncTypeIdentityKey(text string, open int) (string, []string, int, bool) {
-	closing := matchingParen(text, open)
-	if closing < 0 {
-		return "", nil, 0, false
-	}
-	params, ok := goSignatureTypeList(text[open+1 : closing])
-	if !ok {
-		return "", nil, 0, false
-	}
-	paramKeys, qualifiers := goTypeIdentityKeys(params)
-	rendered := "func(" + strings.Join(paramKeys, ",") + ")"
-	next := closing + 1
-	if next < len(text) && text[next] == '(' {
-		end := matchingParen(text, next)
-		if end < 0 {
-			return "", nil, 0, false
-		}
-		resultTypes, ok := goSignatureTypeList(text[next+1 : end])
-		if !ok {
-			return "", nil, 0, false
-		}
-		results, resultQualifiers := goTypeIdentityKeys(resultTypes)
-		// A one-result list is written both ways; key it the unwrapped way so
-		// `func() (error)` and `func() error` agree.
-		switch len(results) {
-		case 0:
-		case 1:
-			rendered += results[0]
-		default:
-			rendered += "(" + strings.Join(results, ",") + ")"
-		}
-		qualifiers = append(qualifiers, resultQualifiers...)
-		next = end + 1
-	}
-	return rendered, qualifiers, next, true
-}
-
-// goTypeIdentityKeys keys each type in a list and concatenates their qualifier
-// lists in the same order the keys are joined, so the alignment survives nesting.
-func goTypeIdentityKeys(types []string) ([]string, []string) {
-	out := make([]string, len(types))
-	var qualifiers []string
-	for i, text := range types {
-		key, typeQualifiers := goTypeIdentityKeyWithQualifiers(text)
-		out[i] = key
-		qualifiers = append(qualifiers, typeQualifiers...)
-	}
-	return out, qualifiers
+	return compareGoSignatures(requirement, implementation,
+		&goTypeScope{imports: requirementImports}, &goTypeScope{imports: implementationImports}) == goTypeMatch
 }
 
 // goNormalizedMethodSignature renders a Go method signature — an interface

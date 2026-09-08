@@ -19,20 +19,22 @@ func TestGoMethodSignatureIdentityDecidesBothDirections(t *testing.T) {
 		reqImports map[string]string // the requirement file's alias -> import path
 		implImport map[string]string // the implementation file's alias -> import path
 		match      bool
-		permissive bool // folded because neither file's imports decide it
+		unknown    bool // insufficient type identity evidence must decline
 	}{
 		// --- same type, different spelling: must match ---
 		{why: "identical", req: "Run() error", impl: "func (w *W) Run() error", match: true},
 		{
 			why: "import alias on the same package", match: true,
+			reqImports: map[string]string{"context": "context"}, implImport: map[string]string{"gocontext": "context"},
 			req: "Do(ctx context.Context) error", impl: "func (w *W) Do(c gocontext.Context) error",
 		},
 		{
-			why: "dot-import or same-package spelling drops the qualifier", match: true,
+			why: "bare spelling without declaration evidence is unknown", unknown: true,
 			req: "Do(r io.Reader) error", impl: "func (w *W) Do(r Reader) error",
 		},
 		{
 			why: "qualifier inside a composite type", match: true,
+			reqImports: map[string]string{"pkg": "example.com/p"}, implImport: map[string]string{"alias": "example.com/p"},
 			req: "Map(m map[string]pkg.T, p *pkg.T) error", impl: "func (w *W) Map(m map[string]alias.T, p *alias.T) error",
 		},
 		{
@@ -53,8 +55,9 @@ func TestGoMethodSignatureIdentityDecidesBothDirections(t *testing.T) {
 		},
 		{
 			why: "names inside a nested func type are not part of it either", match: true,
-			req:  "Walk(fn func(p string, i fs.FileInfo, e error) error) error",
-			impl: "func (w *W) Walk(fn func(string, os.FileInfo, error) error) error",
+			req:        "Walk(fn func(p string, i fs.FileInfo, e error) error) error",
+			impl:       "func (w *W) Walk(fn func(string, alias.FileInfo, error) error) error",
+			reqImports: map[string]string{"fs": "io/fs"}, implImport: map[string]string{"alias": "io/fs"},
 		},
 		{
 			why: "a one-result list is written both ways", match: true,
@@ -159,31 +162,31 @@ func TestGoMethodSignatureIdentityDecidesBothDirections(t *testing.T) {
 			implImport: map[string]string{"redis": "github.com/redis/go-redis/v9"},
 		},
 
-		// --- undecidable even with the import blocks: folded on purpose ---
+		// --- unknown identity must not manufacture an implementation hop ---
 		{
-			why: "with no import evidence at all the comparison stays name-only",
+			why: "with no import evidence the comparison is unknown",
 			req: "Do(x http.Client) error", impl: "func (w *W) Do(x redis.Client) error",
-			match: true, permissive: true,
+			unknown: true,
 		},
 		{
-			why: "only one side resolving is not proof the packages differ", match: true,
+			why: "only one side resolving is insufficient evidence",
 			req: "Do(x http.Client) error", impl: "func (w *W) Do(x redis.Client) error",
 			reqImports: map[string]string{"http": "net/http"},
-			permissive: true,
+			unknown:    true,
 		},
 		{
-			why: "a dot-imported or same-package bare name resolves to nothing", match: true,
+			why: "a dot-imported or same-package bare name needs declarations",
 			req: "Do(r io.Reader) error", impl: "func (w *W) Do(r Reader) error",
 			reqImports: map[string]string{"io": "io"},
 			implImport: map[string]string{"bytes": "bytes"},
-			permissive: true,
+			unknown:    true,
 		},
 		{
-			why: "an alias the import scanner never recorded stays folded", match: true,
+			why: "an alias the import scanner never recorded is unknown",
 			req: "Do(x http.Client) error", impl: "func (w *W) Do(x redis.Client) error",
 			reqImports: map[string]string{"http": "net/http"},
 			implImport: map[string]string{"other": "example.com/other"},
-			permissive: true,
+			unknown:    true,
 		},
 	}
 	for _, tc := range cases {
@@ -194,8 +197,8 @@ func TestGoMethodSignatureIdentityDecidesBothDirections(t *testing.T) {
 				if tc.match {
 					verdict = "must match"
 				}
-				if tc.permissive {
-					verdict += " (folded because the import blocks do not decide it)"
+				if tc.unknown {
+					verdict += " (unknown identity must be declined)"
 				}
 				t.Fatalf("%s: %q vs %q matched=%v, %s\n  req key:  %s\n  impl key: %s",
 					tc.why, tc.req, tc.impl, got, verdict,
@@ -205,14 +208,13 @@ func TestGoMethodSignatureIdentityDecidesBothDirections(t *testing.T) {
 	}
 }
 
-// signatureIdentityKeyForTest renders what the matcher actually compares, so a
-// failure names the spelling difference instead of just reporting a boolean.
+// signatureIdentityKeyForTest prints the normalized input before evidence resolution.
 func signatureIdentityKeyForTest(signature string) string {
 	normalized, ok := goNormalizedMethodSignature(signature)
 	if !ok {
 		return "<declined>"
 	}
-	return goTypeIdentityKey(normalized)
+	return normalized
 }
 
 // The end-to-end shape of the same defect: the interface and its implementations
