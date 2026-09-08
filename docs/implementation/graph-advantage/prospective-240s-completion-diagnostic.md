@@ -1,0 +1,162 @@
+# Prospective 240-second Kubernetes completion diagnostic
+
+Status: proposal for explicit user approval. This document authorizes no
+product, corpus, cloud or VM execution and does not change the frozen P1
+campaign protocol.
+
+## Decision requested
+
+Approve one separately versioned, non-admission diagnostic whose only requested
+workload change from `diagnostic-dispatch-effa358f` is a 240-second product
+deadline in place of 120 seconds. Its purpose is only to determine whether the
+same cache-OFF, full-profile Kubernetes snapshot reaches a terminal result
+after the campaign deadline. It is not a retry of the eighth invocation and
+must use a new dispatch ID, claim and output directory.
+
+The existing campaign deadline remains 120 seconds. The preregistered protocol
+defines that per-request limit and retains timeouts as failed observations
+(`p1-corpus-20260905/protocol.md:117-125`). The active stopgap calls the 14 GiB
+cgroup, 512-task limit and 120-second request deadline the fixed absolute
+campaign boundaries (`p1-corpus-20260905/stopgaps-v2.md:61-64`). A result from
+this proposed diagnostic therefore cannot replace, relabel or enter the
+campaign's baseline, canary, stability or release measurements.
+
+The first-issue rule remains active. The resumption plan stops a batch on the
+first timeout, process/control failure, partial, identity drift, missing
+artifact or resource measurement, and forbids automatic replay
+(`resumption-plan-20260907.md:78-83`). The current accepted diagnostic decision
+also permits only one OFF/full/snapshot invocation, consumes that invocation on
+timeout and grants no ON arm, warm-up, retry, comparison or campaign expansion
+(`diagnostic-validation-policy-proposal.md:54-63`). Because its retained
+controller and evidence bind 120 seconds and the eighth claim is consumed, a
+240-second execution needs this prospective exception and explicit user
+approval; the broader resume instruction is insufficient.
+
+## Immutable inputs and execution boundary
+
+The proposed diagnostic must bind exactly these retained identities:
+
+- evaluator source commit
+  `effa358f2ceaca2b9accd829984272598fa78078`;
+- evaluator binary SHA-256
+  `f2c2940a565397a010488843af99ff469c725dd54a720c90ed190311249ed1f6`;
+- evaluator build-manifest SHA-256
+  `fcb17b1b279acbfd80bde9f753b1fcad0e6cae2aef55db88e55bb319a0cecb4c`;
+- frozen input-manifest SHA-256
+  `d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0`;
+- Kubernetes commit
+  `b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe` and effective input SHA-256
+  `d7a25ec35c9720efead0ac3f3dccc493385f6f4bc8c42d2f0313e2afbc9e4db4`;
+- cache OFF, profile `full`, verb `snapshot`, scenario `diagnostic`, arm
+  `reuse=false`, one worker and no preparatory invocation; and
+- the existing no-egress environment, pinned runtime and process-group cleanup
+  behavior, plus an explicitly enforced 14 GiB cgroup memory ceiling and
+  `TasksMax=512`, with
+  the effective limits recorded before the product starts.
+
+The last item is a prospective prerequisite, not a claim about the eighth
+diagnostic. Focused inspection of its retained launch command found
+`GOMAXPROCS=4`, the outer timeout and process-group cleanup, but no
+`systemd-run`, `MemoryMax` or `TasksMax` enforcement. Its missing GNU-time RSS
+record also cannot prove a memory ceiling. The proposed run must close that
+control gap rather than describe the protocol limits as inherited guarantees.
+
+The package cap is one reserved and attempted product invocation. The shared
+100-run accounting remains in force. If executed, this is controlled product
+invocation nine whether it completes, returns partial, fails or times out.
+There is no ON arm, cache warm-up, repeat, retry, comparison, sampling,
+admission, performance claim or automatic follow-up.
+
+The delayed diagnostic CPU profile remains enabled with the retained
+88-second requested start, 90-second latest start, 20-second window and 8 MiB
+ceiling. Keeping it unchanged leaves the deadline as the sole requested
+workload variable and preserves disclosure of profile overhead. Explicit
+cgroup enforcement is an execution-control correction disclosed separately,
+not evidence that conditions matched the eighth diagnostic.
+
+## Exact prospective control delta
+
+After approval, preparation may mechanically copy the reviewed
+`diagnostic-dispatch-effa358f` controls into a new package with a new dispatch
+identity such as `p1-diag-effa358f-k8s-completion-240s-off-01`. Before any cloud
+operation, review must verify these bounded changes and no others:
+
+1. Change `controller/manifest.json` `product_deadline_seconds` from `120` to
+   `240`, retain `remote_control_timeout_seconds: 360`, and keep all source,
+   binary, input, workload and profiler bindings above.
+2. Change the controller's fail-closed expected manifest value for
+   `product_deadline_seconds` from `120` to `240`.
+3. Change the archived collector's `TIMEOUT_SECONDS` from `120` to `240` and
+   `GO_TEST_TIMEOUT_SECONDS` from `130` to `250`. Keep the existing process
+   group kill, artifact collection and post-run identity checks.
+4. Launch the collector and its product child in one uniquely named transient
+   systemd scope using `systemd-run --scope`, a unique `--unit`,
+   `--property=MemoryMax=15032385536` and `--property=TasksMax=512` around the
+   existing `runuser ...` command. Before durable
+   claim creation or product start, record the collector's effective cgroup
+   path plus its `memory.max` and `pids.max` values and require exact values
+   `15032385536` and `512`. Failure to create the scope, read the effective
+   limits or match either value refuses the product invocation. The outer
+   360-second timeout and process-group cleanup remain independent backstops.
+5. Create a new one-cell batch manifest with `total_attempts=1`,
+   `derived_invocations=1`, `preparatory_invocations=0` and only arm `false`.
+   Use new claim and output paths; never reuse or mutate the eighth package.
+6. Rebuild the control archive because the controller/collector bytes changed,
+   bind every new control hash in the manifest, and require the existing exact
+   full-check and compiler-build evidence before claim creation.
+
+No command is approved by this document. After package review, the exact
+prospective invocation would remain the reviewed controller's single
+`controller.py --execute` entry point. It may run only after the user approves
+this 240-second exception and the frozen package is independently verified.
+
+## Required evidence and outcome rules
+
+A completion observation requires all of the following retained and
+hash-bound evidence:
+
+- durable reservation, start and terminal budget state for exactly one arm;
+- the effective cgroup path, `memory.max=15032385536` and `pids.max=512`
+  recorded before claim/product start;
+- process exit zero within 240 seconds;
+- a relations phase-end event and every later phase needed for a terminal
+  snapshot result;
+- the complete semantic result and diagnostic arrays, with their status,
+  counts, ordering and digests retained rather than normalized;
+- elapsed time and a valid process-specific peak-RSS measurement;
+- source, repository, binary, input, batch, gate, runner and control identities
+  matching before and after execution; and
+- the raw archive, controller/collector statuses, VM terminal records and all
+  three VMs deallocated after collection.
+
+The terminal classification is fixed prospectively:
+
+- A complete result in `(120s, 240s]` establishes only that this exact work is
+  finite beyond the frozen campaign deadline. It does not pass the campaign
+  cell or establish performance, stability, admission or release.
+- A complete result in `<=120s` remains a diagnostic observation. It does not
+  rewrite any of the eight retained diagnostic observations or admit a
+  campaign run.
+- A provider partial is retained as partial and is not completion, even if the
+  process exits zero. Any missing semantic array/digest, RSS value, phase-end,
+  identity or control artifact is likewise an issue.
+- A timeout at 240 seconds, process/control failure, identity drift, invalid
+  resource measurement or any other first issue ends runtime investigation.
+  It triggers cleanup and retention only: no second attempt, larger deadline,
+  alternate arm/profile/verb, source optimization or automatic escalation.
+
+The existing relations progress counters show advancement only through the
+completed 88-to-108-second profile window; they are cumulative and reveal no
+total or remaining-work denominator. A terminal phase-end and complete result
+would distinguish finite completion beyond 120 seconds. Another timeout would
+remain causally inconclusive and must not be described as proof of an infinite
+loop or pathological repetition.
+
+## Retained history and approval effect
+
+All eight existing controlled diagnostic observations—the completed
+syntax-only partial and seven full timeouts—their raw artifacts and the
+zero-clean-batch state remain immutable. Approval would permit only the single
+diagnostic described here. It would not approve a full P1 campaign, modify the
+preregistered 120-second protocol, waive any release gate, or authorize
+preparation or execution of another runtime observation.

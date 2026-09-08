@@ -115,7 +115,7 @@ unchanged inputs. OFF 57.769s / ON 62.614s (ratio 1.084) and peak RSS
 3,312,332,800 / 3,167,264,768 bytes (ratio 0.956) were within both 1.10
 screens. This single pair is not statistical, causal or release evidence; the
 previous failed RSS screen remains retained. Remaining baseline timeouts,
-partial admission and the six unresolved diagnostic timeouts still prevent campaign
+partial admission and the seven unresolved full-profile diagnostic timeouts still prevent campaign
 expansion. Evidence: `p1-corpus-20260905/retained-snapshot-6cf92c9c/summary.json`
 and `evidence/diagnostic-dispatch-1f20f694/`. No stability batch has run, and
 the retained CPU profile does not establish a stability or performance gate.
@@ -123,6 +123,13 @@ the retained CPU profile does not establish a stability or performance gate.
 The bounded execution controls are implemented at `58f03a22`: selected manifests are capped at 100 derived product invocations, preparation and arm costs are reserved before spawn, worker claims are durable and path-stable, duplicate/retry dispatch is refused, and the first issue stops the batch. The committed controller and focused Python contracts passed 90 synthetic-only tests in 7.985225 seconds; evidence and source hashes are in `evidence/bounded-controls-58f03a22/`. The eight controlled product invocations did not close partial admission, timeout or performance gates, zero clean stability batches have run, and no release gate passed.
 
 Source `78c8b496` implements the bounded Go HTTP route-parser refactor motivated by the retained relations profile. Focused normal, race, compatibility-oracle and resource-bound checks are recorded in `evidence/route-parser-profile-8689fc3d/`; this is implementation/correctness evidence only. The latest controlled runtime diagnostic at source `effa358f` timed out at 120 seconds with zero completed arms and retained a diagnostic-only CPU profile; further runtime sampling is stopped pending workload and deadline diagnosis, and no speedup, stability or release claim follows.
+
+The eighth diagnostic did not enforce the protocol's specified 14 GiB cgroup
+memory ceiling or `TasksMax=512`; its launch recorded `GOMAXPROCS=4`, timeout
+and process-group cleanup but no `systemd-run`, `MemoryMax` or `TasksMax`
+enforcement. The proposed correction is documented in
+`prospective-240s-completion-diagnostic.md`; it is not implemented or
+authorized, and the missing enforcement does not relabel the eighth result.
 
 All 77 campaign-control tests passed; a live fake-service smoke verified that all three active workers stopped after an injected pause. The validation VM is confirmed deallocated after correctness and corrective evidence collection; the two campaign workers remain deallocated. No campaign is running. P2/P3/P4 comparative studies remain deferred, and no complete workstream release gate has passed. Defaults remain extraction reuse off, compiler off, impact depth two and current ranking.
 
@@ -132,7 +139,7 @@ The test-only corpus harness now has an optional `diagnostics_path` artifact con
 
 This table supersedes earlier checkpoint/status statements. “Complete” in the
 implementation column describes code or harness delivery. The latest
-immutable full check is the current `950567a3` checkpoint described above.
+immutable full check is the current `effa358f` checkpoint described above.
 The three retained query profile paths are historical exact
 partial-output parity evidence. Broader evaluation remains paused. Evaluation
 tasks cannot be declared complete merely because their harness exists;
