@@ -43,6 +43,13 @@ confirm the committed partial package and owner report, then wait for the user
 to resume. No implementation, runtime, VM, cloud or automation work resumes
 from this pause state.
 
+Known follow-up issues: in the rolling UTC window 2026-09-06T07:13:01Z to
+2026-09-08T07:13:01Z, 147 of 196 branch-reachable commits were trailerless.
+A missing trailer is not proof that no checkpoint exists; the historical cause
+remains unproven, and no history was rewritten. The raw mise/full-manifest/
+archive material added at `2bd309eb` is excessive; storage cleanup remains
+undone. No repair or execution is requested while the pause remains active.
+
 ## Historical status after explicit resume — 2026-09-07
 
 The user has resumed the revised controlled sequence. The heartbeat
