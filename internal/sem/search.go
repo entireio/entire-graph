@@ -556,6 +556,10 @@ type searchCandidate struct {
 	score             float64
 	constraintSurface *searchConstraintSurface
 	prosePassagePlan  []SearchPassage
+	// proseSection identifies the headed section of a prose document this region falls in. Set by
+	// attachProseSectionUnits; it is what makes the prose unit of retrieval the SECTION rather than
+	// the file. Empty for code, and for prose whose file has no indexed symbols.
+	proseSection string
 }
 
 type searchContentReadTracker struct {
@@ -757,16 +761,22 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}
 	}
 	var preindexedSnapshot ProviderSnapshot
+	// preindexBinding keeps the generation this complete snapshot was read under
+	// beside the snapshot itself. Deriving a selective view from it later is only
+	// sound while that generation is still current, and this is the only place
+	// that can observe it before the snapshot is read.
+	var preindexBinding preloadedCompleteSnapshot
 	preindexCacheHit := false
 	indexStarted := time.Now()
 	if !options.Worktree && !searchCacheDisabled {
 		var err error
-		preindexedSnapshot, preindexCacheHit, err = loadCachedCompleteSearchSnapshot(
+		preindexBinding, preindexCacheHit, err = loadCachedCompleteSearchSnapshotBinding(
 			ctx, repo, providerVersion, baseSnapshotOptions, options.CacheDir,
 		)
 		if err != nil {
 			return SearchResponse{}, err
 		}
+		preindexedSnapshot = preindexBinding.snapshot
 	}
 	if options.afterPreindexLoad != nil {
 		options.afterPreindexLoad()
@@ -785,6 +795,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// still match. Treat drift as a miss and rebuild from the captured source.
 	if preindexCacheHit && !searchSnapshotMatchesSelection(preindexedSnapshot, selection) {
 		preindexedSnapshot = ProviderSnapshot{}
+		preindexBinding = preloadedCompleteSnapshot{}
 		preindexCacheHit = false
 	}
 	preselectLatency := time.Since(preselectStarted)
@@ -878,7 +889,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// ordinary build when derivation fails (for example after a HEAD move).
 		indexStarted = time.Now()
 		snapshot, cacheHit, err = loadOrDeriveSelectiveSearchSnapshot(
-			ctx, repo, providerVersion, snapshotOptions, options.CacheDir, searchCacheDisabled, preindexedSnapshot,
+			ctx, repo, providerVersion, snapshotOptions, options.CacheDir, searchCacheDisabled, preindexBinding,
 		)
 		if err != nil {
 			return SearchResponse{}, err
@@ -1112,6 +1123,10 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	applySearchBoilerplatePrior(candidates, q)
 	sortSearchCandidates(candidates)
 	candidates = collapseNearDuplicateCandidates(candidates)
+	// The prose unit of retrieval is the SECTION, and which section a region belongs to is decided
+	// from the document's headings — not from whether the region happens to carry a symbol of its
+	// own, which is true only for regions that matched a heading LINE. See attachProseSectionUnits.
+	attachProseSectionUnits(candidates, symbolsByFile)
 	semantic := selectSearchCandidates(candidates, q, options.TopK, options.MaxRegionsPerFile, !options.DocumentResolution)
 	selected := semantic
 	if len(sparseCandidates) > 0 {
@@ -1154,6 +1169,12 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// enclosure planner and the VERIFY deriver all see one consistent order.
 	// See search_testrank.go.
 	selected = promoteFixSiteOverLeadingTest(selected, q)
+	// Passage deduplication runs HERE, on the final selection, and not inside selectSearchCandidates
+	// which only produced the semantic half of it: hybrid fusion replaces and reorders rows, so a
+	// plan deduplicated against the pre-fusion selection loses passages whose claimant fusion
+	// dropped and keeps passages that duplicate a sparse row fusion seated. See
+	// dropSelectedProsePassages.
+	selected = dropSelectedProsePassages(selected)
 	results := make([]SearchResult, 0, len(selected))
 	prosePassagePlans := make(map[int][]SearchPassage)
 	for i := range selected {
@@ -1172,6 +1193,17 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// the enclosure planner looks for a callable at the code line rather than in the prose above it,
 	// and the literal block mines program text. Ranking is untouched — see search_reanchor.go.
 	results, stats.DocReanchored = reanchorSearchDocComments(results, symbolsByFile, read, options.MaxSnippetLines)
+	// SECTION LABELS ARE PRICED WITH THE RANKING, not after it. `"section":"docs-and-fixtures"` is
+	// ~28 bytes on every result it touches, and the authoritative pass below runs after the fitter
+	// and the allocator have already spent the ceiling — so on a prose-heavy payload those bytes
+	// landed OUTSIDE the budget and SearchResponse.Validate rejected the whole response with
+	// `search result context exceeds byte budget`, failing the command for a caller who had asked
+	// for a smaller answer. Measured: a 6-document notes corpus at --max-context-bytes 6000 came
+	// back 6170 bytes with --document-resolution.
+	//
+	// Labelling here charges them to the fitter. The pass is idempotent, so the call below still
+	// decides the final labels, and the all-docs fallback, on the payload that is going out.
+	results = assignSearchSections(results, q)
 	ranked := append([]SearchResult(nil), results...)
 	results, resultBytes, dropped, _ := fitSearchResultsToBudget(results, q, options.MaxContextBytes)
 	// The fitter decides HOW MANY results fit; the allocator decides how the bytes they are
@@ -1227,10 +1259,13 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	tailSnippetLines := minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines)
 	seated := results
+	// bodyHeadRanks narrows the BODY head only; the never-demoted head stays at
+	// searchEnclosureHeadRanks. Passing one value for both is what made --body-head-ranks=2
+	// tersify ranks 3-5 as well, contradicting the paragraph above.
 	results, completeSymbols, locators := allocateSearchSnippets(
 		seated, enclosures, plainEnclosures, options.MaxContextBytes,
 		resolvedSearchSnippetGrowth(seated, options.MaxContextBytes),
-		bodyHeadRanks, tailSnippetLines,
+		bodyHeadRanks, searchEnclosureHeadRanks, tailSnippetLines,
 	)
 	// THE RE-ANCHOR FUNDING INVARIANT, the same one seatForcedSearchUnits enforces for forced units: a
 	// body a hit gained only because it was re-anchored may be paid for out of free budget, never out of
@@ -1249,7 +1284,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if control, exempt, gated := unreanchoredSearchEnclosures(seated, enclosures); gated {
 		plan, bodies, demoted := allocateSearchSnippets(
 			seated, control, plainEnclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
-			bodyHeadRanks, tailSnippetLines,
+			bodyHeadRanks, searchEnclosureHeadRanks, tailSnippetLines,
 		)
 		if !searchAllocationPreservesSource(plan, results, exempt) {
 			results, completeSymbols, locators = plan, bodies, demoted
@@ -1414,14 +1449,15 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// Compose here, in the emitted string, rather than asking the agent to compose. `explain`
 		// passes the build output through before appending declarations, so this stays a superset of
 		// what the bare command printed — the agent loses nothing by running the longer line.
-		suffix := " 2>&1 | " + options.VerifyExplainCommand
-		verifyCommand.Command += suffix
-		// The suffix is caller-configured FIXED overhead, not content the ranking produced, so it is
+		composed, overhead := composeSearchVerifyExplain(
+			verifyCommand.Command, options.VerifyExplainCommand)
+		verifyCommand.Command = composed
+		// The wrapper is caller-configured FIXED overhead, not content the ranking produced, so it is
 		// added to the block's allowance rather than charged against it. Without this the composed
 		// command overflows the 320-byte cap and search_blocks fails the whole response — measured:
 		// "search verify command exceeds its allowance: 373 > 320", which returned ZERO-BYTE payloads
 		// on 7 of 17 sessions before it was caught.
-		stats.VerifyExplainSuffixBytes = len(suffix)
+		stats.VerifyExplainSuffixBytes = overhead
 	}
 	if verifyCommand != nil {
 		stats.VerifyCommandBytes = searchVerifyCommandCost(verifyCommand)
@@ -1457,7 +1493,13 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// are handed back to the expansion and spent on regions the payload does not already show.
 	results = dropContainedProseResults(results)
 	if !options.SingleResolution {
-		results = expandProseResolution(results, options.TopK, options.MaxContextBytes)
+		// The reference blocks are funded from the same ceiling the response is validated against,
+		// and they were priced before this pass runs, so promotion may only spend what they left.
+		reserved := stats.SignatureTypeBytes
+		if len(typeCard) > 0 {
+			reserved += serializedSearchResultBytes(typeCard)
+		}
+		results = expandProseResolution(results, options.TopK, options.MaxContextBytes, reserved)
 	}
 	stats.CandidatesSelected = len(results)
 	stats.ProsePassages, stats.ProsePassageBytes = searchPassageStats(results)
@@ -1911,7 +1953,10 @@ func preselectSearchFiles(
 	if exactFullPreindex && !options.Worktree && !options.Deep && grepSafe {
 		matches, grepErr := gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
 		if grepErr == nil {
-			selection.files = committedSearchFiles(source.paths, matches, q)
+			// This branch deliberately keeps every matched file rather than
+			// honouring MaxIndexedFiles (see above), so the bridge gets its own
+			// budget rather than a remainder of a cap this path does not apply.
+			selection.files = bridgeRegistrationHandlerFiles(ctx, source, committedSearchFiles(source.paths, matches, q), searchRegistrationBridgeMaxHandlers)
 			selection.sparseFiles = append([]string(nil), selection.files...)
 			selection.preselectionBackend = "git-tree-grep"
 			selection.preselectionPasses = 1
@@ -2154,6 +2199,9 @@ func preselectSearchFiles(
 		}
 		selection.preselectionPasses = 1
 	}
+	// An explicit MaxIndexedFiles is an exact compatibility limit, so the bridge
+	// spends only what preselection left unused.
+	selection.files = bridgeRegistrationHandlerFiles(ctx, source, selection.files, options.MaxIndexedFiles-len(selection.files))
 	selection.filesContentRead = contentReads
 	selection.preselectionBackend = "go-content"
 	selection.preselectionFilesExamined = len(scanPaths)
@@ -2171,6 +2219,311 @@ func preselectSearchFiles(
 		selection.gitGrepTreeish = ""
 	}
 	return selection, nil
+}
+
+const (
+	// searchRegistrationBridgeMaxHandlers is the ceiling on how many distinct
+	// handlers one preselection will chase — and, since each one contributes at
+	// most its defining file, on how many files the bridge may add. The caller's
+	// unspent MaxIndexedFiles budget narrows it further.
+	// searchRegistrationBridgeMaxParses bounds how many candidate files it may
+	// parse to tell a definition from a call site, and
+	// searchRegistrationBridgeScanLimit how much of the corpus it may read.
+	searchRegistrationBridgeMaxHandlers = 8
+	searchRegistrationBridgeMaxParses   = 64
+	searchRegistrationBridgeScanLimit   = 50_000
+)
+
+// bridgeRegistrationHandlerFiles adds the source files that define the handlers
+// named by the command tables already in the selection.
+//
+// A command verb reaches its implementation only through a registration table
+// (commands/<verb>.json -> "function": handler); the verb never appears in the
+// handler body. The provider indexes the verb as a searchable ALIAS of the
+// handler symbol, but it can only do that for a handler it parsed, and on a
+// repository above MaxIndexedFiles the selective snapshot is built from these
+// preselected files alone. A query for the verb then matches the JSON table,
+// which is exactly the file that cannot answer it, and the handler is never
+// indexed — so the alias the provider exists to attach can never be attached.
+//
+// The bridge belongs here rather than in the provider: the provider's OnlyFiles
+// scope is the contract that its graph and search's lexical scope describe the
+// SAME files, so widening the corpus inside the provider would silently break
+// it. Widening the selection keeps both sides derived from one list.
+//
+// It is deliberately cheap and rare. Nothing runs unless a selected file is a
+// commands/*.json carrying a "function" field, it adds at most one file per
+// handler and never more than budget files, and it stops as soon as every
+// handler has been placed. budget is what the caller's MaxIndexedFiles has left
+// unspent: that limit is documented as an exact compatibility ceiling when set
+// explicitly, so a caller asking for a strict parsing ceiling must not be handed
+// more files than it asked for — even to complete an alias.
+//
+// A file is added only when it DEFINES the handler, which is checked by parsing
+// it. Accepting any file that merely applies the name would let call sites
+// consume the budget while the definition sits further down the path order, and
+// the handler symbol — the whole point of the bridge — would still be missing.
+func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, selected []string, budget int) []string {
+	if budget > searchRegistrationBridgeMaxHandlers {
+		budget = searchRegistrationBridgeMaxHandlers
+	}
+	if budget <= 0 || len(selected) == 0 || len(selected) >= len(source.paths) {
+		return selected
+	}
+	aliases := collectRegistrationAliases(selected, source.read)
+	if len(aliases) == 0 {
+		return selected
+	}
+	handlers := make([]string, 0, len(aliases))
+	for handler := range aliases {
+		handlers = append(handlers, handler)
+	}
+	sort.Strings(handlers)
+	chosen := make(map[string]bool, len(selected))
+	for _, filePath := range selected {
+		chosen[filePath] = true
+	}
+	// A handler the selection already defines needs no file and must not hold a
+	// slot: truncating first let a lexicographically earlier handler that was
+	// already covered consume the only budget there was, and the handler that
+	// actually needed bridging was never reached.
+	handlers = unplacedRegistrationHandlers(handlers, placedRegistrationHandlers(handlers, selected, source.read))
+	if len(handlers) > budget {
+		handlers = handlers[:budget]
+	}
+	if len(handlers) == 0 {
+		return selected
+	}
+	placed := make(map[string]bool, len(handlers))
+	var added []string
+	examined, parsed := 0, 0
+	for _, filePath := range source.paths {
+		// len(added) cannot exceed len(handlers), which the budget already
+		// truncated, so the budget needs no second check here.
+		if len(placed) == len(handlers) || examined >= searchRegistrationBridgeScanLimit || parsed >= searchRegistrationBridgeMaxParses {
+			break
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		if chosen[filePath] || !Supported(filePath) {
+			continue
+		}
+		content, ok := source.read(filePath)
+		if !ok {
+			continue
+		}
+		examined++
+		// The cheap textual screen runs first so the parse budget is spent only
+		// on files that could plausibly hold the definition.
+		candidate := false
+		for _, handler := range handlers {
+			if !placed[handler] && declaresAppliedIdentifier(content, handler) {
+				candidate = true
+				break
+			}
+		}
+		if !candidate {
+			continue
+		}
+		parsed++
+		defined := topLevelFunctionNames(filePath, content)
+		for _, handler := range handlers {
+			if placed[handler] || !defined[handler] {
+				continue
+			}
+			placed[handler] = true
+			if !chosen[filePath] {
+				chosen[filePath] = true
+				added = append(added, filePath)
+			}
+		}
+	}
+	if len(added) == 0 {
+		return selected
+	}
+	return append(append(make([]string, 0, len(selected)+len(added)), selected...), added...)
+}
+
+// topLevelFunctionNames returns the names of the top-level functions a file
+// defines, so the bridge can tell the file that DEFINES a handler from the files
+// that merely call it.
+//
+// It is deliberately narrower than "declares this name anywhere". A registration
+// table names a bare identifier that the runtime dispatches to, which is a
+// top-level function by construction; a method or a nested closure that happens
+// to share the name is a different symbol, and accepting one would mark the
+// handler placed, spend a slot on the wrong file, and hide the real definition
+// that a later path would have supplied.
+func topLevelFunctionNames(path, content string) map[string]bool {
+	entities, _ := (TreeSitterParser{}).Parse(path, content)
+	names := make(map[string]bool, len(entities))
+	for _, entity := range entities {
+		if entity.Kind != "function" || entity.Local {
+			continue
+		}
+		names[entity.Name] = true
+	}
+	return names
+}
+
+// placedRegistrationHandlers reports which handlers the already-selected files
+// define, so the bridge neither re-adds their file nor spends budget on them.
+func placedRegistrationHandlers(handlers, selected []string, read contentReader) map[string]bool {
+	placed := make(map[string]bool, len(handlers))
+	for _, filePath := range selected {
+		if len(placed) == len(handlers) {
+			break
+		}
+		if !Supported(filePath) {
+			continue
+		}
+		content, ok := read(filePath)
+		if !ok {
+			continue
+		}
+		candidate := false
+		for _, handler := range handlers {
+			if !placed[handler] && declaresAppliedIdentifier(content, handler) {
+				candidate = true
+				break
+			}
+		}
+		if !candidate {
+			continue
+		}
+		defined := topLevelFunctionNames(filePath, content)
+		for _, handler := range handlers {
+			if defined[handler] {
+				placed[handler] = true
+			}
+		}
+	}
+	return placed
+}
+
+// unplacedRegistrationHandlers keeps the handlers still needing a file, in order.
+func unplacedRegistrationHandlers(handlers []string, placed map[string]bool) []string {
+	remaining := handlers[:0:0]
+	for _, handler := range handlers {
+		if !placed[handler] {
+			remaining = append(remaining, handler)
+		}
+	}
+	return remaining
+}
+
+// declaresAppliedIdentifier reports whether name occurs in content as a whole
+// identifier applied to a parameter list, in a position that looks like a
+// DECLARATION rather than a call. It is the cheap screen in front of the parse:
+// what it admits is decided by topLevelFunctionNames, and what it rejects is
+// never parsed at all.
+//
+// Rejecting calls matters for recall, not just cost. The parse budget is finite,
+// and a widely-called handler has far more call sites than definitions; if call
+// sites could pass the screen, enough of them lexically ahead of the definition
+// would spend the whole budget and the bridge would fail on exactly the large
+// repositories it exists for.
+//
+// The rule is deliberately permissive toward declarations and strict about
+// calls: everything on the line before the name must read as a declaration's
+// leading tokens — a return type, a qualifier, `func`/`function`/`static` — so
+// any operator, paren, dot or bracket rules the occurrence out, as does a
+// statement keyword or a line that ends in a semicolon (a call, or a C
+// prototype, which is not the definition either).
+func declaresAppliedIdentifier(content, name string) bool {
+	if name == "" {
+		return false
+	}
+	for offset := 0; offset <= len(content)-len(name); {
+		at := strings.Index(content[offset:], name)
+		if at < 0 {
+			return false
+		}
+		start := offset + at
+		end := start + len(name)
+		offset = end
+		if start > 0 && isJSIdentifierPart(content[start-1]) {
+			continue
+		}
+		if cursor := skipSpace(content, end); cursor >= len(content) || content[cursor] != '(' {
+			continue
+		}
+		if declarationLeadsIdentifier(content, start) {
+			return true
+		}
+	}
+	return false
+}
+
+// declarationStatementKeywords are the words that make an applied identifier a
+// call however type-shaped the rest of the line looks.
+var declarationStatementKeywords = map[string]bool{
+	"return": true, "await": true, "yield": true, "new": true, "throw": true,
+	"if": true, "while": true, "for": true, "switch": true, "case": true,
+	"else": true, "typeof": true, "delete": true, "defer": true, "go": true,
+}
+
+// declarationLeadsIdentifier reports whether the text before an occurrence reads
+// as the head of a declaration.
+func declarationLeadsIdentifier(content string, start int) bool {
+	lineStart := strings.LastIndexByte(content[:start], '\n') + 1
+	lineEnd := len(content)
+	if at := strings.IndexByte(content[start:], '\n'); at >= 0 {
+		lineEnd = start + at
+	}
+	// A line that terminates is a call or a prototype; a definition's line
+	// carries on into its body.
+	if strings.HasSuffix(strings.TrimSpace(content[lineStart:lineEnd]), ";") {
+		return false
+	}
+	prefix := strings.TrimSpace(content[lineStart:start])
+	if prefix == "" {
+		// A declaration may put its return type on the line above
+		// (`void\ngetrangeCommand(client *c)`), which is ordinary C style. A
+		// call at the start of its own line looks identical on this line alone,
+		// so the line above decides: a declaration head there, or nothing.
+		return declarationHeadText(previousNonEmptyLine(content, lineStart))
+	}
+	return declarationHeadText(prefix)
+}
+
+// previousNonEmptyLine returns the trimmed line above the one starting at
+// lineStart, skipping blank lines.
+func previousNonEmptyLine(content string, lineStart int) string {
+	for lineStart > 0 {
+		end := lineStart - 1
+		begin := strings.LastIndexByte(content[:end], '\n') + 1
+		if text := strings.TrimSpace(content[begin:end]); text != "" {
+			return text
+		}
+		lineStart = begin
+	}
+	return ""
+}
+
+// declarationHeadText reports whether text reads as a declaration's leading
+// tokens: a return type, a qualifier, `func`/`function`/`static`. Any operator,
+// paren, dot or bracket rules it out, as does a statement keyword.
+func declarationHeadText(text string) bool {
+	if text == "" {
+		return false
+	}
+	for index := 0; index < len(text); index++ {
+		switch character := text[index]; character {
+		case ' ', '\t', '*', '&', ':', '<', '>', ',', '~':
+		default:
+			if !isJSIdentifierPart(character) {
+				return false
+			}
+		}
+	}
+	for _, word := range strings.FieldsFunc(text, func(r rune) bool { return r == ' ' || r == '\t' }) {
+		if declarationStatementKeywords[word] {
+			return false
+		}
+	}
+	return true
 }
 
 func searchSnapshotMatchesSelection(snapshot ProviderSnapshot, selection searchFileSelection) bool {

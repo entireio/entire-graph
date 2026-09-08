@@ -7,15 +7,15 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
+	"math/bits"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/entireio/entire-graph/internal/gitutil"
 	"github.com/entireio/entire-graph/internal/sem"
 	"github.com/entireio/entire-graph/internal/termsafe"
 )
@@ -23,30 +23,38 @@ import (
 // stats answers the question users actually ask about a code graph: "did this save me
 // anything?". It is a local, read-only report over the coding-agent session transcripts that
 // already exist on disk (Claude Code writes one JSONL file per session under
-// ~/.claude/projects/<path-slug>/). Nothing is uploaded and nothing is written.
+// ~/.claude/projects/<path-slug>/). Nothing is uploaded; the only thing written is a per-file
+// memo under the cache directory, which --no-cache turns off.
 //
-// It reports three things the graph cannot otherwise show:
-//   - how often the graph was used vs. how often the session fell back to grep/find/whole-file
-//     reads (the behaviour the graph is supposed to replace),
-//   - how many bytes/tokens each of those two paths pulled into context,
-//   - an ESTIMATED token saving, computed from a single explicitly documented assumption
-//     (see savingsModelText) rather than presented as a measurement.
+// The DEFAULT output is one line: the estimated tokens saved. --verbose restores the full report
+// (per-verb and per-kind tables, billed tokens, the graph-first rate, the model text), and
+// --format json is a machine contract whose shape only ever grows.
 
 // savingsModelShort/savingsModelText document the counterfactual. Both the text and the JSON
 // output carry it verbatim so the number is never quoted without its assumption.
-const savingsModelShort = "each graph locate call is credited with the one whole-file read it replaced"
+const savingsModelShort = "each graph locate call is credited with one exploration call it displaced, " +
+	"priced from this session's own measured per-call costs"
 
 const savingsModelText = "Model (assumption, not a measurement): each graph locate call " +
-	"(search/neighbors/impact) is credited with the ONE whole-file read it replaced. " +
-	"Counterfactual = on-disk size of the top-hit file that call pointed at (the repo's median " +
-	"tracked-file size when the path cannot be resolved), minus the bytes the graph call " +
-	"actually returned, floored at 0, converted at 4 bytes = 1 token. Real savings depend on " +
-	"what you would actually have read instead; treat this as an estimate, not ground truth."
+	"(search/neighbors/impact) is credited with the ONE exploration call (Read/Grep/Glob/bash " +
+	"grep-find-read) it displaced. Both prices are MEASURED from the same session's own " +
+	"transcript: graph bytes per locate call, and exploration bytes per exploration call. Saving " +
+	"per substitution = exploration bytes/call minus graph bytes/call, floored at 0, converted at " +
+	"4 bytes = 1 token. The only assumption left is the 1:1 substitution ratio, and a paired A/B " +
+	"benchmark of this tool measured 0.980 exploration calls displaced per graph call; 1:1 is that " +
+	"number rounded in the understating direction. What you would actually have read instead is " +
+	"not observable, so treat this as an estimate, not ground truth."
 
 // bytesPerToken is the standard rough transcript-accounting conversion. Tool results are raw
 // text, so token counts are not recorded per call anywhere; 4 bytes/token is the usual
-// approximation and is stated in the output.
+// approximation and is stated in the output. Real code runs nearer 3.2-3.6 bytes/token, so
+// dividing by 4 understates the tokens a byte count stands for.
 const bytesPerToken = 4
+
+// substitutionRatio is how many exploration calls one graph locate call is assumed to displace.
+// Measured at 0.980 in a paired A/B benchmark of this tool; carried as 1 because rounding the
+// ratio up understates the saving and keeps the arithmetic exact in integers.
+const substitutionRatio = 1
 
 // graphLocateVerbs are the verbs whose whole purpose is to replace exploration, and therefore
 // the only ones credited with savings. Bulk/ingest verbs (snapshot, edges, symbols) and
@@ -81,10 +89,6 @@ var commandPrefixes = map[string]bool{
 	"rtk": true, "sudo": true, "command": true, "time": true, "nice": true, "xargs": true, "env": true,
 }
 
-var filePathJSONPattern = regexp.MustCompile(`"(?:file_path|path|file)"\s*:\s*"((?:[^"\\]|\\.)*)"`)
-
-var pathTokenPattern = regexp.MustCompile(`[A-Za-z0-9_./+-]*[A-Za-z0-9_-]\.[A-Za-z0-9_]{1,12}`)
-
 const (
 	kindReadRange = "Read (line range)"
 	kindReadWhole = "Read (whole file)"
@@ -102,6 +106,9 @@ type statsFlags struct {
 	Format      string
 	SessionsDir string
 	Transcript  string
+	CacheDir    string
+	NoCache     bool
+	Verbose     bool
 }
 
 type statsCount struct {
@@ -119,6 +126,9 @@ type statsTokens struct {
 	Total      int64 `json:"total_tokens"`
 }
 
+// statsResponse is a machine contract: fields are only ever ADDED, never removed or renamed.
+// scripts/entire-graph-statusline.sh reads estimated_savings_est_tokens and
+// estimated_savings_pct_of_session_tokens out of it on every prompt render.
 type statsResponse struct {
 	FormatVersion             int          `json:"format_version"`
 	Provider                  string       `json:"provider"`
@@ -147,8 +157,33 @@ type statsResponse struct {
 	EstimatedSavingsTokens    int64        `json:"estimated_savings_est_tokens"`
 	EstimatedSavingsPct       float64      `json:"estimated_savings_pct_of_session_tokens"`
 	CreditedGraphCalls        int          `json:"credited_graph_calls"`
-	MedianTrackedFileBytes    int64        `json:"median_tracked_file_bytes"`
-	SavingsModel              string       `json:"savings_model"`
+	// MedianTrackedFileBytes is RETIRED and always 0. The savings model no longer prices a
+	// counterfactual from the repository's median tracked-file size, so nothing computes it —
+	// but the key stays in the contract, because removing a key is the one change a consumer
+	// cannot absorb.
+	MedianTrackedFileBytes int64  `json:"median_tracked_file_bytes"`
+	SavingsModel           string `json:"savings_model"`
+
+	// --- added fields; older consumers ignore them --------------------------------------
+
+	// TranscriptsConsidered is every `*.jsonl` found in scope; Transcripts is how many were
+	// actually opened after the --since window pruned the rest by file mtime.
+	TranscriptsConsidered int `json:"transcripts_considered"`
+	// TranscriptsFromCache is how many of Transcripts were served from the per-file memo
+	// instead of being re-parsed.
+	TranscriptsFromCache int `json:"transcripts_from_cache"`
+	// GraphLocateCalls / GraphLocateReturnedBytes are the search+neighbors+impact subset —
+	// the only calls the savings model prices. CreditedGraphCalls is the subset of those whose
+	// tool_result was actually observed, which is what the per-call price divides by.
+	GraphLocateCalls         int     `json:"graph_locate_calls"`
+	GraphLocateReturnedBytes int64   `json:"graph_locate_returned_bytes"`
+	GraphBytesPerLocateCall  float64 `json:"graph_bytes_per_locate_call"`
+	ExplorationBytesPerCall  float64 `json:"exploration_bytes_per_call"`
+	// SessionsWithPositiveSavings is how many in-window sessions produced a saving above 0. A
+	// session whose graph calls returned more per call than the exploration they displaced
+	// contributes 0 — a correct answer, not one to be floored away at the total.
+	SessionsWithPositiveSavings int     `json:"sessions_with_positive_savings"`
+	SubstitutionRatio           float64 `json:"substitution_ratio"`
 }
 
 func runStats(ctx context.Context, opts Options, args []string) error {
@@ -202,28 +237,34 @@ func runStats(ctx context.Context, opts Options, args []string) error {
 	}
 
 	report := statsResponse{
-		FormatVersion:    1,
-		Provider:         sem.ProviderName,
-		RepoRoot:         repo,
-		SessionsDir:      sessionsDir,
-		SessionsDirFound: found,
-		Since:            flags.Since,
-		SavingsModel:     savingsModelText,
+		FormatVersion:     1,
+		Provider:          sem.ProviderName,
+		RepoRoot:          repo,
+		SessionsDir:       sessionsDir,
+		SessionsDirFound:  found,
+		Since:             flags.Since,
+		SavingsModel:      savingsModelText,
+		SubstitutionRatio: substitutionRatio,
 		// non-nil so JSON never emits null for the tables
 		GraphByVerb:       []statsCount{},
 		ExplorationByKind: []statsCount{},
 	}
 
 	if found {
-		collector := newStatsCollector(ctx, repo)
-		scan := collector.scan
-		if flags.Transcript != "" {
-			scan = collector.scanTranscript
+		// ONE clock reading drives both halves of the window, so the mtime prune and the
+		// per-session filter can never disagree about where the boundary sits.
+		cutoff := time.Time{}
+		if window > 0 {
+			cutoff = time.Now().Add(-window)
 		}
-		if err := scan(sessionsDir); err != nil {
+		files, err := listTranscriptFiles(sessionsDir, flags.Transcript != "")
+		if err != nil {
 			return err
 		}
-		collector.finish(&report, window)
+		collector := newStatsCollector()
+		collector.cache = openStatsCache(statsCacheDir(flags, opts.Env), sessionsDir, opts.Version, files)
+		collector.run(files, cutoff)
+		collector.finish(&report, cutoff)
 	}
 
 	if flags.Format == "json" {
@@ -231,7 +272,11 @@ func runStats(ctx context.Context, opts Options, args []string) error {
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(report)
 	}
-	writeStatsText(opts.Stdout, report)
+	if flags.Verbose {
+		writeStatsText(opts.Stdout, report)
+		return nil
+	}
+	writeStatsSummary(opts.Stdout, report)
 	return nil
 }
 
@@ -270,6 +315,16 @@ func parseStatsFlags(args []string) (statsFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.Transcript, index = value, next
+		case "--cache-dir":
+			value, next, err := searchFlagValue(args, index)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.CacheDir, index = value, next
+		case "--no-cache":
+			flags.NoCache = true
+		case "--verbose":
+			flags.Verbose = true
 		default:
 			rest = append(rest, args[index])
 		}
@@ -341,7 +396,6 @@ func sessionSlugCandidates(repo string) []string {
 type transcriptRecord struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
-	SessionID string `json:"sessionId"`
 	Message   struct {
 		ID      string          `json:"id"`
 		Content json.RawMessage `json:"content"`
@@ -364,43 +418,92 @@ type contentBlock struct {
 	Text      string          `json:"text"`
 }
 
-// pendingCall remembers what a tool_use was, so the matching tool_result can be attributed to
-// the graph bucket or the exploration bucket.
-type pendingCall struct {
-	session string
-	graph   bool
-	verb    string
-	kind    string
+// --- one transcript file's contribution -------------------------------------------------
+
+// summaryCall is one tool call: which bucket it fell in, and — once its tool_result was seen —
+// how many bytes it pulled into context. The API-assigned tool_use id is kept because it is the
+// only thing that makes the SAME call identifiable when it appears in two transcripts.
+type summaryCall struct {
+	ID        string `json:"i,omitempty"`
+	Verb      string `json:"v,omitempty"`
+	Kind      string `json:"k,omitempty"`
+	Bytes     int64  `json:"b,omitempty"`
+	HasResult bool   `json:"r,omitempty"`
 }
 
-type sessionAcc struct {
-	key           string
-	first, last   time.Time
-	graphCalls    int
-	exploreCalls  int
-	firstLocate   string // "graph" | "explore"
-	verbCalls     map[string]int
-	verbBytes     map[string]int64
-	exploreCalls2 map[string]int
-	exploreBytes  map[string]int64
-	usageByID     map[string]statsTokens // one entry per assistant message; see addUsage
-	unkeyedTokens statsTokens            // usage from records carrying no message id
-	savingsBytes  int64
-	creditedCalls int
+// summaryUsage is one assistant message's billed usage, kept per message.id so the same message
+// appearing in two transcripts of one session is billed once.
+type summaryUsage struct {
+	ID     string      `json:"i"`
+	Tokens statsTokens `json:"t"`
 }
 
-func newSessionAcc(key string) *sessionAcc {
-	return &sessionAcc{
-		key:           key,
-		verbCalls:     map[string]int{},
-		verbBytes:     map[string]int64{},
-		exploreCalls2: map[string]int{},
-		exploreBytes:  map[string]int64{},
-		usageByID:     map[string]statsTokens{},
+// fileSummary is EVERYTHING one transcript file contributes to the report, and the unit the
+// per-file memo caches. Sessions are assembled only from summaries, so the cached path and the
+// freshly-parsed path run identical merge code and cannot drift.
+//
+// Calls and usage are kept per identity rather than pre-aggregated, because aggregates cannot be
+// deduplicated afterwards. Claude Code replays a forked subagent's history into the new
+// transcript, so ONE tool call really does appear in several of a session's files: measured at
+// 215 tool_use ids and 168 usage-bearing message ids across 3,316 real transcripts. Aggregating
+// per file and summing would bill every one of those twice.
+type fileSummary struct {
+	Malformed     int            `json:"malformed,omitempty"`
+	FirstUnixNano int64          `json:"first,omitempty"`
+	LastUnixNano  int64          `json:"last,omitempty"`
+	Calls         []summaryCall  `json:"calls,omitempty"`
+	Usage         []summaryUsage `json:"usage,omitempty"`
+	// Unkeyed is usage from records carrying no message id. Those cannot be deduplicated, so
+	// they accumulate per record: that can only over-count, and silently dropping billed
+	// tokens would be the worse failure.
+	Unkeyed statsTokens `json:"unkeyed,omitempty"`
+}
+
+// fileScanner turns one transcript file into one fileSummary.
+type fileScanner struct {
+	summary  fileSummary
+	pending  map[string]int // tool_use id -> index into summary.Calls
+	seenUse  map[string]bool
+	usageIdx map[string]int // message id -> index into summary.Usage
+}
+
+func newFileScanner() *fileScanner {
+	return &fileScanner{
+		pending:  map[string]int{},
+		seenUse:  map[string]bool{},
+		usageIdx: map[string]int{},
 	}
 }
 
-// addUsage records ONE assistant message's billed usage.
+func (s *fileScanner) consume(record transcriptRecord) {
+	if ts, err := time.Parse(time.RFC3339, record.Timestamp); err == nil {
+		nanos := ts.UnixNano()
+		if s.summary.FirstUnixNano == 0 || nanos < s.summary.FirstUnixNano {
+			s.summary.FirstUnixNano = nanos
+		}
+		if nanos > s.summary.LastUnixNano {
+			s.summary.LastUnixNano = nanos
+		}
+	}
+	if usage := record.Message.Usage; usage != nil {
+		s.consumeUsage(record.Message.ID, statsTokens{
+			Input:      usage.InputTokens,
+			CacheWrite: usage.CacheCreationIn,
+			CacheRead:  usage.CacheReadIn,
+			Output:     usage.OutputTokens,
+		})
+	}
+	for _, block := range decodeContentBlocks(record.Message.Content) {
+		switch block.Type {
+		case "tool_use":
+			s.consumeToolUse(block)
+		case "tool_result":
+			s.consumeToolResult(block)
+		}
+	}
+}
+
+// consumeUsage records ONE assistant message's billed usage.
 //
 // Claude Code does not write one transcript record per assistant message: it writes one record
 // per content block (text, each tool_use, …), and every one of those records repeats the SAME
@@ -413,23 +516,195 @@ func newSessionAcc(key string) *sessionAcc {
 // ~7,500 usage-bearing records in ~400 transcripts: the last record was never below any earlier
 // record on any field, and last-per-id reproduced the run's own `claude -p --output-format json`
 // usage exactly in 250/250 benchmark sessions).
-//
-// Records with no id cannot be deduplicated, so they accumulate per record. That can only ever
-// over-count, never drop tokens — silently losing usage would be the worse failure.
-func (a *sessionAcc) addUsage(id string, usage statsTokens) {
+func (s *fileScanner) consumeUsage(id string, tokens statsTokens) {
 	if id == "" {
-		a.unkeyedTokens.Input += usage.Input
-		a.unkeyedTokens.CacheWrite += usage.CacheWrite
-		a.unkeyedTokens.CacheRead += usage.CacheRead
-		a.unkeyedTokens.Output += usage.Output
+		s.summary.Unkeyed.Input += tokens.Input
+		s.summary.Unkeyed.CacheWrite += tokens.CacheWrite
+		s.summary.Unkeyed.CacheRead += tokens.CacheRead
+		s.summary.Unkeyed.Output += tokens.Output
 		return
 	}
-	a.usageByID[id] = usage
+	if index, ok := s.usageIdx[id]; ok {
+		s.summary.Usage[index].Tokens = tokens
+		return
+	}
+	s.usageIdx[id] = len(s.summary.Usage)
+	s.summary.Usage = append(s.summary.Usage, summaryUsage{ID: id, Tokens: tokens})
 }
 
-// tokens folds the per-message usage into the session's billed total.
+func (s *fileScanner) consumeToolUse(block contentBlock) {
+	// One tool_use id is one API call. A re-serialised turn repeats the block, and counting
+	// every occurrence would bill the same call twice; first occurrence wins.
+	if block.ID != "" {
+		if s.seenUse[block.ID] {
+			return
+		}
+		s.seenUse[block.ID] = true
+	}
+	call, ok := classifyToolUse(block)
+	if !ok {
+		return
+	}
+	call.ID = block.ID
+	s.summary.Calls = append(s.summary.Calls, call)
+	if block.ID != "" {
+		s.pending[block.ID] = len(s.summary.Calls) - 1
+	}
+}
+
+// classifyToolUse puts a tool_use in the graph bucket, the exploration bucket, or neither.
+func classifyToolUse(block contentBlock) (summaryCall, bool) {
+	if verb, ok := graphVerbFromToolUse(block); ok {
+		return summaryCall{Verb: verb}, true
+	}
+	if kind, ok := explorationKindFromToolUse(block); ok {
+		return summaryCall{Kind: kind}, true
+	}
+	return summaryCall{}, false
+}
+
+func (s *fileScanner) consumeToolResult(block contentBlock) {
+	index, ok := s.pending[block.ToolUseID]
+	if !ok {
+		return
+	}
+	// Dropping the pending entry is what stops a repeated tool_result from being billed twice
+	// against the same call: the second one finds nothing pending.
+	delete(s.pending, block.ToolUseID)
+	s.summary.Calls[index].Bytes = int64(len(toolResultText(block.Content)))
+	s.summary.Calls[index].HasResult = true
+}
+
+func summariseTranscript(path string) (fileSummary, bool) {
+	handle, err := os.Open(path) //nolint:gosec // the path comes from walking the caller's own transcript directory
+	if err != nil {
+		return fileSummary{}, false // skip unreadable transcripts rather than abort the report
+	}
+	defer func() { _ = handle.Close() }()
+
+	scanner := newFileScanner()
+	lines := bufio.NewScanner(handle)
+	// Transcript lines routinely exceed bufio's 64KiB default (large tool results inline).
+	lines.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for lines.Scan() {
+		line := strings.TrimSpace(lines.Text())
+		if line == "" {
+			continue
+		}
+		var record transcriptRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			scanner.summary.Malformed++
+			continue
+		}
+		scanner.consume(record)
+	}
+	if err := lines.Err(); err != nil {
+		// A truncated or over-long line is treated like a malformed line, not a hard failure.
+		scanner.summary.Malformed++
+	}
+	return scanner.summary, true
+}
+
+// --- session assembly -------------------------------------------------------------------
+
+type sessionAcc struct {
+	firstNano, lastNano int64
+	firstLocate         string // "graph" | "explore"
+	verbCalls           map[string]int
+	verbResults         map[string]int
+	verbBytes           map[string]int64
+	kindCalls           map[string]int
+	kindResults         map[string]int
+	kindBytes           map[string]int64
+	seenCalls           map[string]summaryCall
+	usageByID           map[string]statsTokens
+	unkeyed             statsTokens
+}
+
+func newSessionAcc() *sessionAcc {
+	return &sessionAcc{
+		verbCalls:   map[string]int{},
+		verbResults: map[string]int{},
+		verbBytes:   map[string]int64{},
+		kindCalls:   map[string]int{},
+		kindResults: map[string]int{},
+		kindBytes:   map[string]int64{},
+		seenCalls:   map[string]summaryCall{},
+		usageByID:   map[string]statsTokens{},
+	}
+}
+
+// merge folds one transcript's summary into its owning session. Replayed calls count once,
+// while later copies can supply missing results or more complete usage. Files are merged in
+// sorted path order, so firstLocate does not depend on what was cached.
+func (a *sessionAcc) merge(summary fileSummary) {
+	if summary.FirstUnixNano != 0 && (a.firstNano == 0 || summary.FirstUnixNano < a.firstNano) {
+		a.firstNano = summary.FirstUnixNano
+	}
+	if summary.LastUnixNano > a.lastNano {
+		a.lastNano = summary.LastUnixNano
+	}
+	for _, call := range summary.Calls {
+		if call.ID != "" {
+			if previous, seen := a.seenCalls[call.ID]; seen {
+				// A replay can complete a call whose first copy had no result.
+				// Keep its original classification and count the result only once.
+				if !previous.HasResult && call.HasResult {
+					previous.HasResult, previous.Bytes = true, call.Bytes
+					a.seenCalls[call.ID] = previous
+					if previous.Verb != "" {
+						a.verbResults[previous.Verb]++
+						a.verbBytes[previous.Verb] += call.Bytes
+					} else {
+						a.kindResults[previous.Kind]++
+						a.kindBytes[previous.Kind] += call.Bytes
+					}
+				}
+				continue
+			}
+			a.seenCalls[call.ID] = call
+		}
+		if call.Verb != "" {
+			a.verbCalls[call.Verb]++
+			if call.HasResult {
+				a.verbResults[call.Verb]++
+				a.verbBytes[call.Verb] += call.Bytes
+			}
+			if a.firstLocate == "" {
+				a.firstLocate = "graph"
+			}
+			continue
+		}
+		a.kindCalls[call.Kind]++
+		if call.HasResult {
+			a.kindResults[call.Kind]++
+			a.kindBytes[call.Kind] += call.Bytes
+		}
+		if a.firstLocate == "" {
+			a.firstLocate = "explore"
+		}
+	}
+	for _, usage := range summary.Usage {
+		// Usage grows as a message streams. Filename order does not identify
+		// the final record, so a partial replay must not lower any counter.
+		previous := a.usageByID[usage.ID]
+		a.usageByID[usage.ID] = statsTokens{
+			Input:      max(previous.Input, usage.Tokens.Input),
+			CacheWrite: max(previous.CacheWrite, usage.Tokens.CacheWrite),
+			CacheRead:  max(previous.CacheRead, usage.Tokens.CacheRead),
+			Output:     max(previous.Output, usage.Tokens.Output),
+		}
+	}
+	a.unkeyed.Input += summary.Unkeyed.Input
+	a.unkeyed.CacheWrite += summary.Unkeyed.CacheWrite
+	a.unkeyed.CacheRead += summary.Unkeyed.CacheRead
+	a.unkeyed.Output += summary.Unkeyed.Output
+}
+
+// tokens folds the per-message usage into the session's billed total. Integer addition is
+// order-independent, so a map walk is deterministic here.
 func (a *sessionAcc) tokens() statsTokens {
-	total := a.unkeyedTokens
+	total := a.unkeyed
 	for _, usage := range a.usageByID {
 		total.Input += usage.Input
 		total.CacheWrite += usage.CacheWrite
@@ -440,38 +715,215 @@ func (a *sessionAcc) tokens() statsTokens {
 	return total
 }
 
-type statsCollector struct {
-	ctx              context.Context
-	repo             string
-	sessions         map[string]*sessionAcc
-	pending          map[string]pendingCall
-	sizeCache        map[string]int64
-	medianBytes      int64
-	medianDone       bool
-	worktreeSafe     bool
-	worktreeSafeDone bool
-	transcripts      int
-	malformed        int
-}
-
-func newStatsCollector(ctx context.Context, repo string) *statsCollector {
-	return &statsCollector{
-		ctx:       ctx,
-		repo:      repo,
-		sessions:  map[string]*sessionAcc{},
-		pending:   map[string]pendingCall{},
-		sizeCache: map[string]int64{},
+func addCounts(into, from map[string]int) {
+	for key, value := range from {
+		into[key] += value
 	}
 }
 
-// scan walks the transcript directory. Top-level `<session>.jsonl` files are sessions;
-// subagent transcripts live under `<session>/subagents/*.jsonl` and are folded into the
-// owning session so delegated exploration is not invisible.
-func (c *statsCollector) scan(dir string) error {
-	var files []string
+func addBytes(into, from map[string]int64) {
+	for key, value := range from {
+		into[key] += value
+	}
+}
+
+func sumCounts(values map[string]int) int {
+	total := 0
+	for _, value := range values {
+		total += value
+	}
+	return total
+}
+
+func sumBytes(values map[string]int64) int64 {
+	var total int64
+	for _, value := range values {
+		total += value
+	}
+	return total
+}
+
+// locateTotals is the search+neighbors+impact subset: calls made, results observed, and the
+// bytes those results returned. Only a result carries bytes, so only results can price a call.
+func (a *sessionAcc) locateTotals() (calls, results int, bytes int64) {
+	for verb := range graphLocateVerbs {
+		calls += a.verbCalls[verb]
+		results += a.verbResults[verb]
+		bytes += a.verbBytes[verb]
+	}
+	return calls, results, bytes
+}
+
+// savingsBytes implements the model documented in savingsModelText, in integers so two runs over
+// unchanged input cannot differ by a float ulp:
+//
+//	saved = locateResults * (exploreBytes / exploreResults) - locateBytes
+//
+// The subtracted term is exactly locateResults * (locateBytes / locateResults), which is why the
+// graph-side division cancels and no per-call rounding accumulates.
+//
+// Floored at 0 per SESSION: a session whose graph calls returned more per call than the
+// exploration they displaced saved nothing. That is a real answer — this tool's own paired A/B
+// benchmark found graph output larger per call than the baseline's — and it is not floored away
+// at the total, which is a sum of per-session results.
+func (a *sessionAcc) savingsBytes() int64 {
+	_, locateResults, locateBytes := a.locateTotals()
+	exploreResults := sumCounts(a.kindResults)
+	if locateResults == 0 || exploreResults == 0 {
+		return 0
+	}
+	displaced := mulDiv(int64(locateResults)*substitutionRatio, sumBytes(a.kindBytes), int64(exploreResults))
+	if displaced <= locateBytes {
+		return 0
+	}
+	return displaced - locateBytes
+}
+
+// mulDiv computes a*b/c, truncating, without overflowing the a*b product — which on real
+// transcript volumes already reaches ~10^13 and on adversarial input would silently wrap int64.
+func mulDiv(a, b, c int64) int64 {
+	if a <= 0 || b <= 0 || c <= 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(uint64(a), uint64(b))
+	if hi >= uint64(c) {
+		return math.MaxInt64 // the quotient does not fit in 64 bits; saturate rather than wrap
+	}
+	quotient, _ := bits.Div64(hi, lo, uint64(c))
+	if quotient > uint64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return int64(quotient)
+}
+
+// --- collector --------------------------------------------------------------------------
+
+type transcriptFile struct {
+	path     string
+	identity string // absolute resolved path, including a symlink target
+	session  string
+	size     int64
+	modTime  time.Time
+}
+
+type statsCollector struct {
+	sessions    map[string]*sessionAcc
+	cache       *statsCache
+	considered  int
+	transcripts int
+	fromCache   int
+	malformed   int
+}
+
+func newStatsCollector() *statsCollector {
+	return &statsCollector{sessions: map[string]*sessionAcc{}}
+}
+
+func (c *statsCollector) session(key string) *sessionAcc {
+	acc, ok := c.sessions[key]
+	if !ok {
+		acc = newSessionAcc()
+		c.sessions[key] = acc
+	}
+	return acc
+}
+
+// run parses the candidate transcripts and folds them into sessions.
+//
+// The --since window is applied HERE, by file mtime, before anything is opened. That is the
+// whole performance story: a project's transcript directory reaches gigabytes (2.2 GB over 3,313
+// files was the report that prompted this), and `--since 1d` used to JSON-parse every byte of it
+// before throwing the result away in the per-session filter.
+//
+// The prune is sound in ONE direction only. A file whose mtime precedes the window start cannot
+// contain a record inside the window, because records are written by appending — dropping it is
+// safe. The converse does not hold (a file touched today can carry months of older records), so
+// a file that survives is still parsed in full and still filtered per session afterwards.
+// Pruning is decided per SESSION, not per file, so a subagent transcript can never be separated
+// from the transcript that owns it.
+func (c *statsCollector) run(files []transcriptFile, cutoff time.Time) {
+	c.considered = len(files)
+	c.cache.retain(files)
+	keep := map[string]bool{}
+	for _, file := range files {
+		if cutoff.IsZero() || !file.modTime.Before(cutoff) {
+			keep[file.session] = true
+		}
+	}
+	for _, file := range files {
+		if !keep[file.session] {
+			continue
+		}
+		summary, ok := c.summarise(file)
+		if !ok {
+			continue
+		}
+		c.transcripts++
+		c.malformed += summary.Malformed
+		c.session(file.session).merge(summary)
+	}
+	c.cache.save()
+}
+
+func (c *statsCollector) summarise(file transcriptFile) (fileSummary, bool) {
+	if summary, ok := c.cache.lookup(file); ok {
+		c.fromCache++
+		return summary, true
+	}
+	// Read the same target whose identity was captured during enumeration.
+	// Retargeting an alias must not store another file's data under this key.
+	path := file.identity
+	if path == "" {
+		path = file.path
+	}
+	summary, ok := summariseTranscript(path)
+	if !ok {
+		return fileSummary{}, false
+	}
+	c.cache.store(file, summary)
+	return summary, true
+}
+
+// listTranscriptFiles enumerates the `*.jsonl` in scope with the size and mtime the memo keys
+// on. Top-level `<session>.jsonl` files are sessions; subagent transcripts live under
+// `<session>/subagents/*.jsonl` and are folded into the owning session so delegated exploration
+// is not invisible.
+//
+// When single is set, root names ONE transcript file rather than a directory: that file plus the
+// `<session>/` sibling directory holding its subagent transcripts. Both key to the same session,
+// so the accounting is byte-for-byte what the directory walk would produce for that session. It
+// exists because a project's transcript directory can reach gigabytes, which a per-render caller
+// (status line) cannot afford to walk.
+func listTranscriptFiles(root string, single bool) ([]transcriptFile, error) {
+	if !single {
+		return walkTranscripts(root, root, true)
+	}
+	base := filepath.Dir(root)
+	files := []transcriptFile{}
+	if file, ok := transcriptFileAt(root, sessionKeyForPath(base, root)); ok {
+		files = append(files, file)
+	}
+	subagents := strings.TrimSuffix(root, ".jsonl")
+	if subagents == root {
+		return files, nil
+	}
+	if info, err := os.Stat(subagents); err != nil || !info.IsDir() {
+		return files, nil //nolint:nilerr // a session without subagent transcripts is the common case
+	}
+	nested, err := walkTranscripts(subagents, base, false)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, nested...)
+	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
+	return files, nil
+}
+
+func walkTranscripts(dir, keyRoot string, reportRootError bool) ([]transcriptFile, error) {
+	var files []transcriptFile
 	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			if path == dir {
+			if reportRootError && path == dir {
 				return err
 			}
 			return nil //nolint:nilerr // an unreadable subtree must not fail the whole report
@@ -479,90 +931,34 @@ func (c *statsCollector) scan(dir string) error {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			return nil
 		}
-		files = append(files, path)
+		if file, ok := transcriptFileAt(path, sessionKeyForPath(keyRoot, path)); ok {
+			files = append(files, file)
+		}
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	sort.Strings(files)
-	for _, path := range files {
-		if err := c.scanFile(dir, path); err != nil {
-			return err
-		}
-	}
-	return nil
+	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
+	return files, nil
 }
 
-// scanTranscript is scan narrowed to ONE session: the named `<session>.jsonl` plus the
-// `<session>/` sibling directory holding its subagent transcripts. Both are keyed to the same
-// session by sessionKeyForPath, so the accounting is byte-for-byte what scan would produce for
-// that session. It exists because a project's transcript directory can reach hundreds of MB,
-// which a per-render caller (status line) cannot afford to walk.
-func (c *statsCollector) scanTranscript(path string) error {
-	root := filepath.Dir(path)
-	if err := c.scanFile(root, path); err != nil {
-		return err
-	}
-	subagents := strings.TrimSuffix(path, ".jsonl")
-	if subagents == path {
-		return nil
-	}
-	if info, err := os.Stat(subagents); err != nil || !info.IsDir() {
-		return nil //nolint:nilerr // a session without subagent transcripts is the common case
-	}
-	var files []string
-	err := filepath.WalkDir(subagents, func(current string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree must not fail the whole report
-		}
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			return nil
-		}
-		files = append(files, current)
-		return nil
-	})
+// transcriptFileAt follows transcript symlinks while keeping the alias's session grouping.
+// Cache identity and window pruning use the resolved target, not the symlink's metadata.
+func transcriptFileAt(path, session string) (transcriptFile, bool) {
+	identity, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return err
+		return transcriptFile{}, false
 	}
-	sort.Strings(files)
-	for _, file := range files {
-		if err := c.scanFile(root, file); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (c *statsCollector) scanFile(root, path string) error {
-	handle, err := os.Open(path)
+	identity, err = filepath.Abs(identity)
 	if err != nil {
-		return nil //nolint:nilerr // skip unreadable transcripts rather than abort the report
+		return transcriptFile{}, false
 	}
-	defer func() { _ = handle.Close() }()
-
-	c.transcripts++
-	sessionKey := sessionKeyForPath(root, path)
-	scanner := bufio.NewScanner(handle)
-	// Transcript lines routinely exceed bufio's 64KiB default (large tool results inline).
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var record transcriptRecord
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			c.malformed++
-			continue
-		}
-		c.consume(sessionKey, record)
+	info, err := os.Stat(identity)
+	if err != nil || !info.Mode().IsRegular() {
+		return transcriptFile{}, false
 	}
-	if err := scanner.Err(); err != nil {
-		// A truncated or over-long line is treated like a malformed line, not a hard failure.
-		c.malformed++
-	}
-	return nil
+	return transcriptFile{path: path, identity: identity, session: session, size: info.Size(), modTime: info.ModTime()}, true
 }
 
 // sessionKeyForPath folds `<session>/subagents/agent-x.jsonl` back onto `<session>`.
@@ -578,43 +974,6 @@ func sessionKeyForPath(root, path string) string {
 	return strings.TrimSuffix(parts[0], ".jsonl")
 }
 
-func (c *statsCollector) session(key string) *sessionAcc {
-	acc, ok := c.sessions[key]
-	if !ok {
-		acc = newSessionAcc(key)
-		c.sessions[key] = acc
-	}
-	return acc
-}
-
-func (c *statsCollector) consume(sessionKey string, record transcriptRecord) {
-	acc := c.session(sessionKey)
-	if ts, err := time.Parse(time.RFC3339, record.Timestamp); err == nil {
-		if acc.first.IsZero() || ts.Before(acc.first) {
-			acc.first = ts
-		}
-		if ts.After(acc.last) {
-			acc.last = ts
-		}
-	}
-	if usage := record.Message.Usage; usage != nil {
-		acc.addUsage(record.Message.ID, statsTokens{
-			Input:      usage.InputTokens,
-			CacheWrite: usage.CacheCreationIn,
-			CacheRead:  usage.CacheReadIn,
-			Output:     usage.OutputTokens,
-		})
-	}
-	for _, block := range decodeContentBlocks(record.Message.Content) {
-		switch block.Type {
-		case "tool_use":
-			c.consumeToolUse(acc, block)
-		case "tool_result":
-			c.consumeToolResult(block)
-		}
-	}
-}
-
 func decodeContentBlocks(raw json.RawMessage) []contentBlock {
 	if len(raw) == 0 {
 		return nil
@@ -624,228 +983,6 @@ func decodeContentBlocks(raw json.RawMessage) []contentBlock {
 		return nil
 	}
 	return blocks
-}
-
-func (c *statsCollector) consumeToolUse(acc *sessionAcc, block contentBlock) {
-	if verb, ok := graphVerbFromToolUse(block); ok {
-		acc.graphCalls++
-		acc.verbCalls[verb]++
-		if acc.firstLocate == "" {
-			acc.firstLocate = "graph"
-		}
-		if block.ID != "" {
-			c.pending[block.ID] = pendingCall{session: acc.key, graph: true, verb: verb}
-		}
-		return
-	}
-	kind, ok := explorationKindFromToolUse(block)
-	if !ok {
-		return
-	}
-	acc.exploreCalls++
-	acc.exploreCalls2[kind]++
-	if acc.firstLocate == "" {
-		acc.firstLocate = "explore"
-	}
-	if block.ID != "" {
-		c.pending[block.ID] = pendingCall{session: acc.key, kind: kind}
-	}
-}
-
-func (c *statsCollector) consumeToolResult(block contentBlock) {
-	call, ok := c.pending[block.ToolUseID]
-	if !ok {
-		return
-	}
-	delete(c.pending, block.ToolUseID)
-	text := toolResultText(block.Content)
-	size := int64(len(text))
-	acc := c.session(call.session)
-	if call.graph {
-		acc.verbBytes[call.verb] += size
-		if graphLocateVerbs[call.verb] {
-			acc.savingsBytes += c.creditFor(text, size)
-			acc.creditedCalls++
-		}
-		return
-	}
-	acc.exploreBytes[call.kind] += size
-}
-
-// creditFor implements the documented counterfactual: the whole-file read this graph call
-// replaced, minus what the call itself cost, floored at 0.
-func (c *statsCollector) creditFor(text string, returned int64) int64 {
-	counterfactual := c.topHitFileSize(text)
-	if counterfactual <= 0 {
-		counterfactual = c.medianTrackedFileSize()
-	}
-	if counterfactual <= returned {
-		return 0
-	}
-	return counterfactual - returned
-}
-
-// topHitFileSize resolves the first file the graph call pointed at and measures it on disk.
-func (c *statsCollector) topHitFileSize(text string) int64 {
-	for _, match := range filePathJSONPattern.FindAllStringSubmatch(text, 8) {
-		var unquoted string
-		if err := json.Unmarshal([]byte(`"`+match[1]+`"`), &unquoted); err != nil {
-			unquoted = match[1]
-		}
-		if size := c.fileSize(unquoted); size > 0 {
-			return size
-		}
-	}
-	for _, candidate := range pathTokenPattern.FindAllString(text, 64) {
-		if size := c.fileSize(candidate); size > 0 {
-			return size
-		}
-	}
-	return 0
-}
-
-func (c *statsCollector) fileSize(path string) int64 {
-	if path == "" || c.repo == "" {
-		return 0
-	}
-	if cached, ok := c.sizeCache[path]; ok {
-		return cached
-	}
-	var size int64
-	if c.worktreeTraversalSafe() {
-		if rel, ok := statsRepoRelativePath(c.repo, path); ok {
-			if root, err := os.OpenRoot(c.repo); err == nil {
-				if measured, ok := statsRootedRegularFileSize(root, rel); ok {
-					size = measured
-				}
-				_ = root.Close()
-			}
-		}
-	}
-	c.sizeCache[path] = size
-	return size
-}
-
-func statsRepoRelativePath(repo, candidate string) (string, bool) {
-	repoAbs, err := filepath.Abs(repo)
-	if err != nil {
-		return "", false
-	}
-	resolved := candidate
-	if !filepath.IsAbs(resolved) {
-		resolved = filepath.Join(repoAbs, resolved)
-	}
-	resolvedAbs, err := filepath.Abs(resolved)
-	if err != nil {
-		return "", false
-	}
-	rel, err := filepath.Rel(repoAbs, resolvedAbs)
-	if err != nil || rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", false
-	}
-	return filepath.ToSlash(rel), true
-}
-
-func statsRootedRegularFileSize(root *os.Root, rel string) (int64, bool) {
-	native := filepath.Clean(filepath.FromSlash(rel))
-	if native == "." || filepath.IsAbs(native) || filepath.VolumeName(native) != "" {
-		return 0, false
-	}
-	components := strings.Split(native, string(filepath.Separator))
-	current := ""
-	for index, component := range components {
-		if component == "" || component == "." || component == ".." {
-			return 0, false
-		}
-		current = filepath.Join(current, component)
-		info, err := root.Lstat(current)
-		if err != nil || info.Mode()&fs.ModeSymlink != 0 {
-			return 0, false
-		}
-		if index < len(components)-1 {
-			if !info.IsDir() {
-				return 0, false
-			}
-			continue
-		}
-		if info.Mode().IsRegular() {
-			return info.Size(), true
-		}
-	}
-	return 0, false
-}
-
-func (c *statsCollector) worktreeTraversalSafe() bool {
-	if c.worktreeSafeDone {
-		return c.worktreeSafe
-	}
-	c.worktreeSafeDone = true
-	c.worktreeSafe = c.repo != "" && sem.EnsureWorktreeSafeForFilesystemTraversal(c.ctx, c.repo) == nil
-	return c.worktreeSafe
-}
-
-// medianTrackedFileSize is the fallback counterfactual when the top hit cannot be resolved on
-// disk (file since deleted/renamed, or a different worktree). Tracked files first; a bounded
-// filesystem walk if the directory is not a git repo.
-func (c *statsCollector) medianTrackedFileSize() int64 {
-	if c.medianDone {
-		return c.medianBytes
-	}
-	c.medianDone = true
-	if c.repo == "" {
-		return 0
-	}
-	if !c.worktreeTraversalSafe() {
-		return 0
-	}
-	var sizes []int64
-	if sem.EnsureGitMetadataSafeForSubprocess(c.repo) == nil {
-		if files, err := gitutil.ListIndexFiles(c.ctx, c.repo); err == nil {
-			if root, err := os.OpenRoot(c.repo); err == nil {
-				for _, name := range files {
-					if size, ok := statsRootedRegularFileSize(root, filepath.ToSlash(name)); ok {
-						sizes = append(sizes, size)
-					}
-					if len(sizes) >= 5000 {
-						break
-					}
-				}
-				_ = root.Close()
-			}
-		}
-	}
-	if len(sizes) == 0 {
-		_ = filepath.WalkDir(c.repo, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return nil //nolint:nilerr // best-effort fallback measurement
-			}
-			if entry.Type()&fs.ModeSymlink != 0 {
-				if entry.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if entry.IsDir() {
-				if entry.Name() != "." && strings.HasPrefix(entry.Name(), ".") && path != c.repo {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if info, err := entry.Info(); err == nil && info.Mode().IsRegular() {
-				sizes = append(sizes, info.Size())
-			}
-			if len(sizes) >= 5000 {
-				return filepath.SkipAll
-			}
-			return nil
-		})
-	}
-	if len(sizes) == 0 {
-		return 0
-	}
-	sort.Slice(sizes, func(i, j int) bool { return sizes[i] < sizes[j] })
-	c.medianBytes = sizes[len(sizes)/2]
-	return c.medianBytes
 }
 
 // toolResultText normalises the two shapes a tool_result carries: a plain string, or an array
@@ -989,13 +1126,15 @@ func splitShellSegments(command string) []string {
 
 // --- aggregation and rendering ----------------------------------------------------------
 
-func (c *statsCollector) finish(report *statsResponse, window time.Duration) {
+func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 	report.Transcripts = c.transcripts
+	report.TranscriptsConsidered = c.considered
+	report.TranscriptsFromCache = c.fromCache
 	report.MalformedLinesSkipped = c.malformed
 
-	cutoff := time.Time{}
-	if window > 0 {
-		cutoff = time.Now().Add(-window)
+	var cutoffNano int64
+	if !cutoff.IsZero() {
+		cutoffNano = cutoff.UnixNano()
 	}
 
 	verbCalls := map[string]int{}
@@ -1009,25 +1148,28 @@ func (c *statsCollector) finish(report *statsResponse, window time.Duration) {
 	}
 	sort.Strings(keys)
 
-	var windowStart, windowEnd time.Time
+	var windowStart, windowEnd int64
+	var exploreResults int
 	for _, key := range keys {
 		acc := c.sessions[key]
-		if !cutoff.IsZero() && !acc.last.IsZero() && acc.last.Before(cutoff) {
+		if cutoffNano != 0 && acc.lastNano != 0 && acc.lastNano < cutoffNano {
 			continue
 		}
 		tokens := acc.tokens()
-		if acc.graphCalls == 0 && acc.exploreCalls == 0 && tokens.Total == 0 {
+		graphCalls := sumCounts(acc.verbCalls)
+		exploreCalls := sumCounts(acc.kindCalls)
+		if graphCalls == 0 && exploreCalls == 0 && tokens.Total == 0 {
 			continue
 		}
 		report.Sessions++
-		if !acc.first.IsZero() && (windowStart.IsZero() || acc.first.Before(windowStart)) {
-			windowStart = acc.first
+		if acc.firstNano != 0 && (windowStart == 0 || acc.firstNano < windowStart) {
+			windowStart = acc.firstNano
 		}
-		if acc.last.After(windowEnd) {
-			windowEnd = acc.last
+		if acc.lastNano > windowEnd {
+			windowEnd = acc.lastNano
 		}
-		report.GraphCalls += acc.graphCalls
-		report.ExplorationCalls += acc.exploreCalls
+		report.GraphCalls += graphCalls
+		report.ExplorationCalls += exploreCalls
 		switch acc.firstLocate {
 		case "graph":
 			report.SessionsWithLocate++
@@ -1035,24 +1177,24 @@ func (c *statsCollector) finish(report *statsResponse, window time.Duration) {
 		case "explore":
 			report.SessionsWithLocate++
 		}
-		for verb, count := range acc.verbCalls {
-			verbCalls[verb] += count
-		}
-		for verb, size := range acc.verbBytes {
-			verbBytes[verb] += size
-		}
-		for kind, count := range acc.exploreCalls2 {
-			kindCalls[kind] += count
-		}
-		for kind, size := range acc.exploreBytes {
-			kindBytes[kind] += size
-		}
+		addCounts(verbCalls, acc.verbCalls)
+		addBytes(verbBytes, acc.verbBytes)
+		addCounts(kindCalls, acc.kindCalls)
+		addBytes(kindBytes, acc.kindBytes)
 		report.SessionTokens.Input += tokens.Input
 		report.SessionTokens.CacheWrite += tokens.CacheWrite
 		report.SessionTokens.CacheRead += tokens.CacheRead
 		report.SessionTokens.Output += tokens.Output
-		report.EstimatedSavingsBytes += acc.savingsBytes
-		report.CreditedGraphCalls += acc.creditedCalls
+
+		locateCalls, locateResults, locateBytes := acc.locateTotals()
+		report.GraphLocateCalls += locateCalls
+		report.CreditedGraphCalls += locateResults
+		report.GraphLocateReturnedBytes += locateBytes
+		exploreResults += sumCounts(acc.kindResults)
+		if saved := acc.savingsBytes(); saved > 0 {
+			report.EstimatedSavingsBytes += saved
+			report.SessionsWithPositiveSavings++
+		}
 	}
 
 	report.SessionTokens.Total = report.SessionTokens.Input + report.SessionTokens.CacheWrite +
@@ -1069,18 +1211,25 @@ func (c *statsCollector) finish(report *statsResponse, window time.Duration) {
 	report.GraphReturnedTokens = report.GraphReturnedBytes / bytesPerToken
 	report.ExplorationReturnedTokens = report.ExplorationReturnedBytes / bytesPerToken
 	report.EstimatedSavingsTokens = report.EstimatedSavingsBytes / bytesPerToken
+	if report.CreditedGraphCalls > 0 {
+		report.GraphBytesPerLocateCall = roundTo(
+			float64(report.GraphLocateReturnedBytes)/float64(report.CreditedGraphCalls), 2)
+	}
+	if exploreResults > 0 {
+		report.ExplorationBytesPerCall = roundTo(
+			float64(report.ExplorationReturnedBytes)/float64(exploreResults), 2)
+	}
 	if report.SessionTokens.Total > 0 {
 		report.EstimatedSavingsPct = roundTo(float64(report.EstimatedSavingsTokens)*100/float64(report.SessionTokens.Total), 2)
 	}
 	if report.SessionsWithLocate > 0 {
 		report.GraphFirstRate = roundTo(float64(report.GraphFirstSessions)/float64(report.SessionsWithLocate), 4)
 	}
-	report.MedianTrackedFileBytes = c.medianBytes
-	if !windowStart.IsZero() {
-		report.WindowStart = windowStart.UTC().Format(time.RFC3339)
+	if windowStart != 0 {
+		report.WindowStart = time.Unix(0, windowStart).UTC().Format(time.RFC3339)
 	}
-	if !windowEnd.IsZero() {
-		report.WindowEnd = windowEnd.UTC().Format(time.RFC3339)
+	if windowEnd != 0 {
+		report.WindowEnd = time.Unix(0, windowEnd).UTC().Format(time.RFC3339)
 	}
 }
 
@@ -1122,13 +1271,46 @@ func sortedCounts(calls map[string]int, bytes map[string]int64, order []string) 
 	return out
 }
 
+// roundTo rounds half away from zero. The previous int64-truncating implementation rounded
+// negatives the wrong way and was undefined for values outside int64 range; math.Round has
+// neither problem and is identical on the non-negative values this report produces.
 func roundTo(value float64, places int) float64 {
-	factor := 1.0
-	for i := 0; i < places; i++ {
-		factor *= 10
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0
 	}
-	rounded := float64(int64(value*factor+0.5)) / factor
-	return rounded
+	factor := math.Pow(10, float64(places))
+	return math.Round(value*factor) / factor
+}
+
+const statsPrefix = "[entire-graph]"
+
+// writeStatsSummary is the DEFAULT text output: one line, the number, nothing else. The tilde is
+// load-bearing — it is what stops a modelled estimate from reading as a measurement — and the
+// full model text is one --verbose away.
+func writeStatsSummary(out io.Writer, report statsResponse) {
+	if !report.SessionsDirFound {
+		fmt.Fprintf(out, "%s no coding-agent session transcripts for this repo yet (looked in %s)\n",
+			statsPrefix, termsafe.Line(report.SessionsDir))
+		return
+	}
+	if report.Sessions == 0 {
+		fmt.Fprintf(out, "%s no sessions in this window (--since %s); widen it with --since all\n",
+			statsPrefix, termsafe.Line(report.Since))
+		return
+	}
+	fmt.Fprintln(out, statsGreen(out, fmt.Sprintf("%s ~%s tokens saved",
+		statsPrefix, humanInt(report.EstimatedSavingsTokens))))
+}
+
+// statsGreen styles the headline for a terminal and degrades to plain text everywhere else,
+// using the same NO_COLOR / FORCE_COLOR / TERM / character-device rules as the rest of the
+// binary, so a pipe or a redirect never receives raw escape bytes.
+func statsGreen(out io.Writer, value string) string {
+	value = termsafe.Line(value)
+	if value == "" || !sem.ShouldUseColor(out) {
+		return value
+	}
+	return "\x1b[32m" + value + "\x1b[0m"
 }
 
 func writeStatsText(out io.Writer, report statsResponse) {
@@ -1142,8 +1324,8 @@ func writeStatsText(out io.Writer, report statsResponse) {
 		return
 	}
 	fmt.Fprintf(out, "  sessions: %s\n", report.SessionsDir)
-	fmt.Fprintf(out, "  window:   --since %s · %d session(s), %d transcript file(s)\n",
-		report.Since, report.Sessions, report.Transcripts)
+	fmt.Fprintf(out, "  window:   --since %s · %d session(s), %d of %d transcript file(s) parsed\n",
+		report.Since, report.Sessions, report.Transcripts, report.TranscriptsConsidered)
 	if report.WindowStart != "" {
 		fmt.Fprintf(out, "  covering: %s → %s\n", report.WindowStart, report.WindowEnd)
 	}
@@ -1188,6 +1370,12 @@ func writeStatsText(out io.Writer, report statsResponse) {
 		humanInt(report.SessionTokens.Total))
 	fmt.Fprintln(out)
 
+	fmt.Fprintln(out, "measured per-call cost (what the model prices from)")
+	fmt.Fprintf(out, "  graph locate %s bytes/call · exploration %s bytes/call\n",
+		strconv.FormatFloat(report.GraphBytesPerLocateCall, 'f', -1, 64),
+		strconv.FormatFloat(report.ExplorationBytesPerCall, 'f', -1, 64))
+	fmt.Fprintln(out)
+
 	fmt.Fprintf(out, "ESTIMATED SAVINGS  ~%s tokens", humanInt(report.EstimatedSavingsTokens))
 	if report.EstimatedSavingsPct > 0 {
 		fmt.Fprintf(out, "  (~%.2f%% of billed session tokens)", report.EstimatedSavingsPct)
@@ -1195,6 +1383,8 @@ func writeStatsText(out io.Writer, report statsResponse) {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "  credited graph calls: %d of %d (search/neighbors/impact only)\n",
 		report.CreditedGraphCalls, report.GraphCalls)
+	fmt.Fprintf(out, "  sessions with a saving above 0: %d of %d\n",
+		report.SessionsWithPositiveSavings, report.Sessions)
 	for _, line := range wrapText(savingsModelText, 88) {
 		fmt.Fprintf(out, "  %s\n", line)
 	}

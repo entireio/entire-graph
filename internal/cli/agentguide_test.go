@@ -209,11 +209,41 @@ func TestParserAcceptsFlag(t *testing.T) {
 	}
 }
 
+// guideLine is one logical line of a guide: its text after continuations are joined, and the number
+// of the line the text STARTED on, so a drift report still points at something a reader can find.
+type guideLine struct {
+	text   string
+	number int
+}
+
+// guideLogicalLines splits a guide into lines, joining any that a trailing backslash continues.
+//
+// A shell invocation long enough to wrap is written with a trailing `\`, and the flags after the
+// wrap are as much part of the command as the ones before it. Read line by line, the continuation is
+// a line that names no command, so every flag on it was dropped — an unsupported flag could sit in
+// the shipped guide, on the second line of a documented invocation, and this whole check would stay
+// green. Joining first is what puts those flags back on the invocation they belong to.
+func guideLogicalLines(guide string) []guideLine {
+	var lines []guideLine
+	for index, raw := range strings.Split(guide, "\n") {
+		if last := len(lines) - 1; last >= 0 && strings.HasSuffix(lines[last].text, `\`) {
+			lines[last].text = strings.TrimSuffix(lines[last].text, `\`) + " " + strings.TrimSpace(raw)
+			continue
+		}
+		lines = append(lines, guideLine{text: raw, number: index + 1})
+	}
+	return lines
+}
+
 func parseGuideClaims(guide string) (commands, flags, negatives, defaults []guideClaim) {
 	inFence := false
 	sectionCommand := ""
-	for index, line := range strings.Split(guide, "\n") {
-		lineNumber := index + 1
+	// blockCommand is the command named by an invocation earlier in the code block being read, so a
+	// continuation line holding nothing but flags is still attributed to it. It is cleared the moment
+	// the block ends, which is what keeps the attribution from leaking into the prose below.
+	blockCommand := ""
+	for _, logical := range guideLogicalLines(guide) {
+		line, lineNumber := logical.text, logical.number
 		if guideSectionRE.MatchString(line) {
 			sectionCommand = ""
 			if match := guideHeadingRE.FindStringSubmatch(line); match != nil {
@@ -228,15 +258,28 @@ func parseGuideClaims(guide string) (commands, flags, negatives, defaults []guid
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			inFence = !inFence
+			blockCommand = ""
 			continue
+		}
+		indented := guideIndentedCodeRE.MatchString(line)
+		if !inFence && !indented {
+			blockCommand = ""
 		}
 		// An indented block counts as an invocation only when it names the command outright.
 		// Unlike a fence, indentation is also how Markdown continues a wrapped list item, so
 		// without that second test a bare --flag in continuation prose would be claimed against
 		// whatever heading preceded it, and reported as drift in a command that never had it.
-		if inFence || (guideIndentedCodeRE.MatchString(line) && guideCommandRE.MatchString(line)) {
+		switch {
+		case inFence || (indented && guideCommandRE.MatchString(line)):
+			if match := guideCommandRE.FindStringSubmatch(line); match != nil {
+				blockCommand = match[1]
+			}
 			flags = append(flags, invocationFlagClaims(line, sectionCommand, lineNumber)...)
-		} else {
+		case indented && blockCommand != "" && strings.HasPrefix(trimmed, "-"):
+			// A line of an indented block that begins with a flag, under an invocation that named
+			// its command. Prose does not start a wrapped line with `--`; a wrapped command does.
+			flags = append(flags, invocationFlagClaims(line, blockCommand, lineNumber)...)
+		default:
 			for _, match := range guideInlineRE.FindAllStringSubmatch(line, -1) {
 				flags = append(flags, invocationFlagClaims(match[1], sectionCommand, lineNumber)...)
 			}

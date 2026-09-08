@@ -1,0 +1,32 @@
+# The fairness and provenance guards of the vendored memory-benchmark kit have
+# their own unittest suites. `go test` never runs them, and the kit's other
+# Python jobs do not cover them, so without this job a regression in argv
+# redaction, in the FAIR_MODE guard, or in the search-drop accounting of
+# patch 0003 would land silently.
+name: bench-memory-guards
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench-memory-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # Both suites are stdlib-only on purpose: they must stay runnable without
+      # reconstructing the upstream harness or installing its dependencies.
+      - run: |
+          python -B -m unittest -v \
+            bench.memory.benchmarks.common.test_runmeta \
+            bench.memory.ci.test_locomo_search_retry_patch

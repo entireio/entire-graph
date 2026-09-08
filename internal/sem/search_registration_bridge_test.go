@@ -1,0 +1,348 @@
+package sem
+
+import (
+	"fmt"
+	"sort"
+	"testing"
+)
+
+// A command verb reaches its implementation only through a registration table
+// (commands/<verb>.json -> "function": handler), and the provider indexes the
+// verb as a searchable alias of the handler symbol. Above MaxIndexedFiles the
+// selective snapshot is built from the preselected files alone, so a query for
+// the verb selected the JSON table — the one file that cannot answer it — and
+// left the handler unparsed, which is the only state in which the alias can
+// never be attached.
+func TestSearchSelectsRegistrationHandlerAboveIndexLimit(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "src/commands/substr.json", `{"function":"getrangeCommand","arity":4,"summary":"Returns a substring."}`)
+	write(t, repo, "src/t_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+	for index := 0; index < 40; index++ {
+		write(t, repo, fmt.Sprintf("src/filler%02d.go", index), fmt.Sprintf("package src\n\nfunc Filler%02d() {}\n", index))
+	}
+
+	response, err := SearchRepository(t.Context(), repo, "test-version", "substr", SearchOptions{
+		Profile:         ProfileSyntaxOnly,
+		TopK:            5,
+		MaxIndexedFiles: 2,
+		Worktree:        true,
+		DisableCache:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, result := range response.Results {
+		if result.FilePath == "src/t_string.go" && result.SymbolName == "getrangeCommand" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("handler getrangeCommand not returned for its command verb; results: %+v", response.Results)
+	}
+}
+
+// The bridge must not fire on a repository with no registration table, and must
+// not add a file that only mentions the handler name as text.
+func TestBridgeRegistrationHandlerFilesIsInert(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/substr.json": `{"function":"getrangeCommand"}`,
+		"src/t_string.go":          "package src\n\nfunc getrangeCommand() {}\n",
+		"docs/commands.md":         "getrangeCommand implements substr",
+		"src/other.go":             "package src\n\nfunc Other() {}\n",
+	}
+	paths := []string{"docs/commands.md", "src/commands/substr.json", "src/other.go", "src/t_string.go"}
+	source := sourceContext{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		},
+	}
+
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"}, 4)
+	want := []string{"src/commands/substr.json", "src/t_string.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged = %v, want %v", got, want)
+	}
+
+	// No registration table in the selection: nothing to bridge.
+	got = bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/other.go"}, 4)
+	if fmt.Sprint(got) != fmt.Sprint([]string{"src/other.go"}) {
+		t.Fatalf("bridged without a command table = %v", got)
+	}
+
+	// No budget left: an explicit MaxIndexedFiles is an exact ceiling, so the
+	// bridge must add nothing rather than exceed it.
+	got = bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"}, 0)
+	if fmt.Sprint(got) != fmt.Sprint([]string{"src/commands/substr.json"}) {
+		t.Fatalf("bridged with no budget = %v", got)
+	}
+
+	// Already selected: no duplicate.
+	got = bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json", "src/t_string.go"}, 4)
+	if fmt.Sprint(got) != fmt.Sprint([]string{"src/commands/substr.json", "src/t_string.go"}) {
+		t.Fatalf("bridged with the handler already selected = %v", got)
+	}
+}
+
+// The screen in front of the parse must admit declarations and reject calls: a
+// widely-called handler has far more call sites than definitions, and letting
+// them through would spend the parse budget before the definition is reached.
+func TestDeclaresAppliedIdentifier(t *testing.T) {
+	for _, testCase := range []struct {
+		content string
+		name    string
+		want    bool
+	}{
+		{"void getrangeCommand(client *c) {", "getrangeCommand", true},
+		{"func getrangeCommand() {}", "getrangeCommand", true},
+		{"static int getrangeCommand(client *c) {", "getrangeCommand", true},
+		{"export default function getrangeCommand(a) {", "getrangeCommand", true},
+		{"Result Namespace::getrangeCommand(int a) {", "getrangeCommand", true},
+		{"void\ngetrangeCommand(client *c) {", "getrangeCommand", true},
+		{"getrangeCommand(client *c)", "getrangeCommand", false},
+		{"func Caller() {\n\tgetrangeCommand()\n}", "getrangeCommand", false},
+
+		{"func Caller() { getrangeCommand() }", "getrangeCommand", false},
+		{"  return getrangeCommand(c)", "getrangeCommand", false},
+		{"  x = getrangeCommand(c)", "getrangeCommand", false},
+		{"  getrangeCommand(c);", "getrangeCommand", false},
+		{"int getrangeCommand(client *c);", "getrangeCommand", false},
+		{"  await getrangeCommand(c)", "getrangeCommand", false},
+		{"  foo.getrangeCommand(c)", "getrangeCommand", false},
+
+		{`{"function":"getrangeCommand"}`, "getrangeCommand", false},
+		{"getrangeCommand implements substr", "getrangeCommand", false},
+		{"void xgetrangeCommand(c) {", "getrangeCommand", false},
+		{"void getrangeCommandExtra(c) {", "getrangeCommand", false},
+		{"", "getrangeCommand", false},
+		{"getrangeCommand(", "", false},
+	} {
+		if got := declaresAppliedIdentifier(testCase.content, testCase.name); got != testCase.want {
+			t.Fatalf("declaresAppliedIdentifier(%q, %q) = %v, want %v", testCase.content, testCase.name, got, testCase.want)
+		}
+	}
+}
+
+// Call sites must not consume the parse budget: a definition beyond
+// searchRegistrationBridgeMaxParses lexically earlier callers is still found.
+func TestBridgeRegistrationHandlerFilesOutlastsManyCallers(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/substr.json": `{"function":"getrangeCommand"}`,
+		"src/t_string.go":          "package src\n\nfunc getrangeCommand() {}\n",
+	}
+	paths := []string{"src/commands/substr.json"}
+	for index := 0; index < searchRegistrationBridgeMaxParses*2; index++ {
+		path := fmt.Sprintf("src/aaa_caller%04d.go", index)
+		contents[path] = fmt.Sprintf("package src\n\nfunc Caller%04d() {\n\tgetrangeCommand()\n}\n", index)
+		paths = append(paths, path)
+	}
+	paths = append(paths, "src/t_string.go")
+	sort.Strings(paths)
+	source := sourceContext{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		},
+	}
+
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"}, 4)
+	want := []string{"src/commands/substr.json", "src/t_string.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged = %v, want %v", got, want)
+	}
+}
+
+// Call sites must not consume the bridge's budget: only the file that DEFINES
+// the handler is added, however many lexically earlier files call it.
+func TestBridgeRegistrationHandlerFilesPrefersTheDefinition(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/substr.json": `{"function":"getrangeCommand"}`,
+		"src/t_string.go":          "package src\n\nfunc getrangeCommand() {}\n",
+	}
+	paths := []string{"src/commands/substr.json"}
+	for index := 0; index < 12; index++ {
+		path := fmt.Sprintf("src/aaa_caller%02d.go", index)
+		contents[path] = fmt.Sprintf("package src\n\nfunc Caller%02d() { getrangeCommand() }\n", index)
+		paths = append(paths, path)
+	}
+	paths = append(paths, "src/t_string.go")
+	sort.Strings(paths)
+	source := sourceContext{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		},
+	}
+
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"}, 4)
+	want := []string{"src/commands/substr.json", "src/t_string.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged = %v, want %v", got, want)
+	}
+}
+
+// topLevelFunctionNames is what separates a handler's definition from a call
+// site, and from a method or closure that merely shares its name.
+func TestTopLevelFunctionNames(t *testing.T) {
+	defining := topLevelFunctionNames("src/t_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+	if !defining["getrangeCommand"] {
+		t.Fatalf("definition not reported: %v", defining)
+	}
+	calling := topLevelFunctionNames("src/caller.go", "package src\n\nfunc Caller() { getrangeCommand() }\n")
+	if calling["getrangeCommand"] {
+		t.Fatalf("call site reported as a definition: %v", calling)
+	}
+	if !calling["Caller"] {
+		t.Fatalf("caller's own definition missing: %v", calling)
+	}
+	method := topLevelFunctionNames("src/store.go", "package src\n\ntype Store struct{}\n\nfunc (s Store) getrangeCommand() {}\n")
+	if method["getrangeCommand"] {
+		t.Fatalf("method reported as a top-level function: %v", method)
+	}
+	nested := topLevelFunctionNames("src/nested.js", "function outer() {\n  function getrangeCommand() {}\n  return getrangeCommand\n}\n")
+	if nested["getrangeCommand"] {
+		t.Fatalf("nested function reported as top level: %v", nested)
+	}
+}
+
+// A same-named method earlier in path order must not consume the handler's slot
+// and hide the real definition.
+func TestBridgeRegistrationHandlerFilesSkipsSameNamedMethod(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/substr.json": `{"function":"getrangeCommand"}`,
+		"src/aaa_store.go":         "package src\n\ntype Store struct{}\n\nfunc (s Store) getrangeCommand() {}\n",
+		"src/t_string.go":          "package src\n\nfunc getrangeCommand() {}\n",
+	}
+	paths := []string{"src/aaa_store.go", "src/commands/substr.json", "src/t_string.go"}
+	source := sourceContext{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		},
+	}
+
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, []string{"src/commands/substr.json"}, 4)
+	want := []string{"src/commands/substr.json", "src/t_string.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged = %v, want %v", got, want)
+	}
+}
+
+// The bridge must never push a search past an explicit MaxIndexedFiles.
+func TestSearchBridgeRespectsExplicitIndexLimit(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "src/commands/substr.json", `{"function":"getrangeCommand","arity":4,"summary":"Returns a substring."}`)
+	write(t, repo, "src/t_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+	for index := 0; index < 40; index++ {
+		write(t, repo, fmt.Sprintf("src/filler%02d.go", index), fmt.Sprintf("package src\n\nfunc Filler%02d() {}\n", index))
+	}
+
+	response, err := SearchRepository(t.Context(), repo, "test-version", "substr", SearchOptions{
+		Profile:         ProfileSyntaxOnly,
+		TopK:            5,
+		MaxIndexedFiles: 1,
+		Worktree:        true,
+		DisableCache:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.FilesIndexed > 1 {
+		t.Fatalf("indexed %d files, want at most the requested 1", response.Stats.FilesIndexed)
+	}
+}
+
+// A budget smaller than the number of handlers admits that many files and no
+// more, deterministically.
+func TestBridgeRegistrationHandlerFilesHonoursAPartialBudget(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/append.json": `{"function":"appendCommand"}`,
+		"src/commands/substr.json": `{"function":"getrangeCommand"}`,
+		"src/t_append.go":          "package src\n\nfunc appendCommand() {}\n",
+		"src/t_string.go":          "package src\n\nfunc getrangeCommand() {}\n",
+	}
+	paths := []string{"src/commands/append.json", "src/commands/substr.json", "src/t_append.go", "src/t_string.go"}
+	source := sourceContext{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		},
+	}
+	selected := []string{"src/commands/append.json", "src/commands/substr.json"}
+
+	// Handlers are chased in sorted name order: appendCommand before
+	// getrangeCommand.
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, selected, 1)
+	want := []string{"src/commands/append.json", "src/commands/substr.json", "src/t_append.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged with budget 1 = %v, want %v", got, want)
+	}
+
+	got = bridgeRegistrationHandlerFiles(t.Context(), source, selected, 2)
+	want = []string{"src/commands/append.json", "src/commands/substr.json", "src/t_append.go", "src/t_string.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged with budget 2 = %v, want %v", got, want)
+	}
+}
+
+// A handler the selection already defines must not hold a budget slot: with one
+// slot and a lexicographically earlier handler already covered, the handler that
+// actually needs bridging is the one that gets it.
+func TestBridgeRegistrationHandlerFilesSkipsAlreadyCoveredHandlers(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/append.json": `{"function":"appendCommand"}`,
+		"src/commands/substr.json": `{"function":"getrangeCommand"}`,
+		"src/t_append.go":          "package src\n\nfunc appendCommand() {}\n",
+		"src/t_string.go":          "package src\n\nfunc getrangeCommand() {}\n",
+	}
+	paths := []string{"src/commands/append.json", "src/commands/substr.json", "src/t_append.go", "src/t_string.go"}
+	source := sourceContext{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		},
+	}
+	// appendCommand sorts first and is already defined by a selected file, so the
+	// single slot must go to getrangeCommand.
+	selected := []string{"src/commands/append.json", "src/commands/substr.json", "src/t_append.go"}
+
+	got := bridgeRegistrationHandlerFiles(t.Context(), source, selected, 1)
+	want := append(append([]string(nil), selected...), "src/t_string.go")
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("bridged = %v, want %v", got, want)
+	}
+}
+
+// placedRegistrationHandlers reads only the definitions the selection already
+// carries, not its call sites.
+func TestPlacedRegistrationHandlers(t *testing.T) {
+	contents := map[string]string{
+		"src/t_append.go": "package src\n\nfunc appendCommand() {}\n",
+		"src/caller.go":   "package src\n\nfunc Caller() {\n\tgetrangeCommand()\n}\n",
+		"docs/notes.md":   "getrangeCommand and appendCommand",
+		// Declaration-shaped to the textual screen, but no symbol to the parser.
+		"src/doc.go": "package src\n\nconst doc = `\nfunc getrangeCommand() {}\n`\n",
+	}
+	read := func(path string) (string, bool) {
+		content, ok := contents[path]
+		return content, ok
+	}
+	placed := placedRegistrationHandlers(
+		[]string{"appendCommand", "getrangeCommand"},
+		[]string{"docs/notes.md", "src/caller.go", "src/doc.go", "src/t_append.go"},
+		read,
+	)
+	if !placed["appendCommand"] {
+		t.Fatalf("selected definition not reported: %v", placed)
+	}
+	if placed["getrangeCommand"] {
+		t.Fatalf("a call site or a quoted declaration reported as covered: %v", placed)
+	}
+}

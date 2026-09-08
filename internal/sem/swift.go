@@ -430,17 +430,24 @@ func swiftReceiverMethodByArgumentLabels(call receiverCall, candidates []SymbolR
 	return SymbolRecord{}, false
 }
 
+var swiftCallArgumentLabelsRe = regexp.MustCompile(`^([A-Za-z_]\w*)\s*:`)
+
 func swiftCallArgumentLabels(args string) map[string]bool {
 	labels := map[string]bool{}
 	for _, arg := range splitTopLevelCommas(args) {
 		arg = strings.TrimSpace(arg)
-		m := regexp.MustCompile(`^([A-Za-z_]\w*)\s*:`).FindStringSubmatch(arg)
+		m := swiftCallArgumentLabelsRe.FindStringSubmatch(arg)
 		if len(m) == 2 {
 			labels[m[1]] = true
 		}
 	}
 	return labels
 }
+
+var (
+	swiftSignatureArgumentLabelsRe  = regexp.MustCompile(`^@\w+(?:\([^)]*\))?\s+`)
+	swiftSignatureArgumentLabelsRe2 = regexp.MustCompile(`^([A-Za-z_]\w*)\s+(?:[A-Za-z_]\w*)\s*:`)
+)
 
 func swiftSignatureArgumentLabels(signature, name string) map[string]bool {
 	labels := map[string]bool{}
@@ -458,15 +465,15 @@ func swiftSignatureArgumentLabels(signature, name string) map[string]bool {
 		if param == "" {
 			continue
 		}
-		param = regexp.MustCompile(`^@\w+(?:\([^)]*\))?\s+`).ReplaceAllString(param, "")
+		param = swiftSignatureArgumentLabelsRe.ReplaceAllString(param, "")
 		if strings.HasPrefix(param, "_ ") {
 			continue
 		}
-		if m := regexp.MustCompile(`^([A-Za-z_]\w*)\s+(?:[A-Za-z_]\w*)\s*:`).FindStringSubmatch(param); len(m) == 2 {
+		if m := swiftSignatureArgumentLabelsRe2.FindStringSubmatch(param); len(m) == 2 {
 			labels[m[1]] = true
 			continue
 		}
-		if m := regexp.MustCompile(`^([A-Za-z_]\w*)\s*:`).FindStringSubmatch(param); len(m) == 2 {
+		if m := swiftCallArgumentLabelsRe.FindStringSubmatch(param); len(m) == 2 {
 			labels[m[1]] = true
 		}
 	}

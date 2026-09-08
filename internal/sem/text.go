@@ -108,6 +108,13 @@ func newTextStyles(out io.Writer) textStyles {
 	return textStyles{color: shouldUseColor(out)}
 }
 
+// ShouldUseColor reports whether ANSI styling is appropriate for out, applying the same
+// NO_COLOR / FORCE_COLOR / TERM / character-device rules this renderer uses. Exported so other
+// renderers in this binary reach the same decision instead of re-deriving it.
+func ShouldUseColor(out io.Writer) bool {
+	return shouldUseColor(out)
+}
+
 func shouldUseColor(out io.Writer) bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
