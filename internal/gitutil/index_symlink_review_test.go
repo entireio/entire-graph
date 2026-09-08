@@ -95,3 +95,20 @@ func TestIndexMaterializedSymlinkReplacements(t *testing.T) {
 		t.Fatalf("same-length replacements: %v %v", replaced, err)
 	}
 }
+
+func TestIndexSymlinkBelowReplacedDirectoryIsDeleted(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	write(t, repo, "target", "real.go")
+	oid := gitOutput(t, repo, "hash-object", "-w", "target")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+oid+",dir/link.go")
+	write(t, repo, "dir", "package p\n")
+	entries, err := IndexNonRegularPaths(t.Context(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := IndexReplacedNonRegularPaths(t.Context(), repo, entries)
+	if err != nil || len(replaced) != 0 {
+		t.Fatalf("deleted nested link: %v %v", replaced, err)
+	}
+}

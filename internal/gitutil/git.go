@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/entireio/entire-graph/internal/filedigest"
@@ -269,7 +270,7 @@ func IndexReplacedNonRegularPaths(ctx context.Context, repo string, nonRegular m
 	for _, path := range paths {
 		full := filepath.Join(repo, filepath.FromSlash(path))
 		info, err := os.Lstat(full)
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 			continue
 		}
 		if err != nil {
