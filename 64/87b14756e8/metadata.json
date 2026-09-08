@@ -1,0 +1,17 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "6487b14756e8",
+  "strategy": "manual-commit",
+  "branch": "fix/committed-tree-regular-files",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/64/87b14756e8/0/metadata.json",
+      "transcript": "/64/87b14756e8/0/full.jsonl",
+      "compact_transcript": "/64/87b14756e8/0/transcript.jsonl",
+      "content_hash": "/64/87b14756e8/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
