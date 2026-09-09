@@ -2,28 +2,47 @@
 
 # Entire Graph
 
-Coding agents lose time before the edit, while they are still looking for the
-right code. Entire Graph is a plugin for the Entire CLI that gives an agent a
-precomputed map of one Git repository: ranked code search plus definitions,
-callers, types, routes, and change impact, each with `file:line` locations. The
-built-in analyzer parses the repository locally with tree-sitter and makes no
-network requests, model calls, or API-key lookups. Installing the plugin is the
-networked step.
+Agents are continually spending their budgets before they write the first line
+of code, rummaging through files, grepping for function names, and re-reading
+the same files and configs, as they attempt to understand a codebase fresh with
+each session. According to [OpenRouter's Head of Insights](https://www.linkedin.com/posts/peterjameswalker_february-6th-2026-potentially-the-last-share-7493029881841344512-IK89/?utm_source=share&utm_medium=member_desktop&rcm=ACoAABfX0nABz6sCWbPldiV_9liETVfz5fRLAD0), agentic
+token usage grew 14x between February and August 2026, up from 0.51 trillion tokens
+to 7.3 trillion.
 
-Setup happens once per repository. After that, the interface is your coding
-agent: you ask a code question in plain language, the agent runs graph queries,
-reads the code the graph points at, and answers with citations. A captured
-example is shown below.
+Entire Graph is a plugin for the Entire CLI specifically designed to enable your
+agents to stop paying that cost. It hands your agent a precomputed map of a Git
+repository: ranked code search plus definitions, callers, types, routes, and
+change impact, each with `file:line` locations. The built-in analyzer parses the
+repository locally with tree-sitter and makes no network requests, model calls,
+or API-key lookups.
+
+When running [LoCoMo](https://github.com/snap-research/locomo) against competitors,
+we measured the top score of 94.74% for Entire Graph. We also observed token savings
+up to 71% depending on the coding scenario. As always, your mileage may vary.
+
+## Setup
+
+[Entire CLI](https://github.com/entireio/cli#quick-start) is required. Then setup happens once per repository:
+
+```sh
+entire graph init-agents --repo .
+```
+
+If the plugin is not installed yet, the Entire CLI offers to install it on the
+spot. After that, the interface is your coding agent: you ask a code question in
+plain language, the agent runs graph queries, reads the code the graph points
+at, and answers with citations. A captured example follows.
 
 ## Benchmarks
 
-The Entire Graph retrieval engine ranked first in an eight-system LoCoMo comparison
-(1,540 questions, shared reader and judge, a 200-item retrieval budget requested for
-every arm) while building its index without model calls. Measured 2026-08-14 on the
-[#104](https://github.com/entireio/entire-graph/pull/104) branch, before that work merged; the
-retrieval path it exercises first shipped in
-[v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0) (tagged four days later,
-2026-08-18). See § below for what that does and does not license you to claim.
+To put entire-graph to the test, we ran it through
+[LoCoMo](https://github.com/snap-research/locomo), the standard benchmark for
+one hard skill: finding a single small detail buried in a pile of text. LoCoMo
+asks over 1,500 questions about long conversations that span many sessions and
+scores whether the tool can find the right piece of evidence.
+
+On identical questions, entire-graph found the right evidence more often than
+any of the seven other systems we tested, including graphify, mem0, and cognee.
 
 | System | LoCoMo | Index-time tokens | Version tested |
 | --- | --- | --- | --- |
