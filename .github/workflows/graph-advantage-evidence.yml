@@ -43,6 +43,7 @@ jobs:
           python -B docs/implementation/graph-advantage/cleanup/audit_archive_provenance.py \
             --repo . \
             --provenance docs/implementation/graph-advantage/cleanup/archive-provenance.json
+          python -B -c 'from pathlib import Path; import sys; sys.path.insert(0,"docs/implementation/graph-advantage/cleanup"); from validate_precleanup_attestation import verify; errors=verify(Path.cwd(),Path("docs/implementation/graph-advantage/cleanup/precleanup-parity-attestation.json")); print("\n".join(errors)); raise SystemExit(bool(errors))'
           python -B docs/implementation/graph-advantage/cleanup/validate_archive_operational.py \
             docs/implementation/graph-advantage/cleanup/archive-operational-observations.json
           python -B docs/implementation/graph-advantage/cleanup/check_public_artifacts.py

@@ -38,6 +38,12 @@ class TestArchiveProvenance(unittest.TestCase):
             p = root / "provenance.json"; p.write_text(json.dumps({"archives":[{"archive_path":"bundle.tar.gz","archive_sha256":hashlib.sha256(archive.read_bytes()).hexdigest(),"member_count":1,"members":[{"member":"member.txt","sha256":digest,"member_mode":stat.S_IMODE(f.stat().st_mode),"replacement_paths":["missing.txt"],"replacement_modes":{}}]}]}))
             self.assertTrue(verify(root, p))
 
+    def test_external_archive_mode_fails_when_backup_is_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); p = root / "provenance.json"
+            p.write_text(json.dumps({"archives":[{"archive_path":"missing.tar.gz","archive_sha256":"0"*64,"member_count":0,"members":[]}]}))
+            self.assertIn("external archive missing: missing.tar.gz", verify(root, p, external_archive_root=root))
+
     def test_chain_requires_live_file_and_source_mapping(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d); source = root / "source.txt"; source.write_text("original\n")

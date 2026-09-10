@@ -2129,12 +2129,12 @@
           "canonical_replacement_chains": [
             {
               "current_mode": 420,
-              "current_sha256": "42a0c94878d1b6eb47f4296c9f658e213c5dfd4561db1e329d9bee0b6d261620",
-              "declared_retained_sha256": "42a0c94878d1b6eb47f4296c9f658e213c5dfd4561db1e329d9bee0b6d261620",
-              "evidence_record_path": "docs/implementation/graph-advantage/cleanup/correctness-archive-mappings.json",
+              "current_sha256": "8f88bdc27b79ed79bd45ca62353597d33f30b9e30d14dfb42f4716db6d68f542",
+              "declared_retained_sha256": "8f88bdc27b79ed79bd45ca62353597d33f30b9e30d14dfb42f4716db6d68f542",
+              "evidence_record_path": "docs/implementation/graph-advantage/cleanup/correctness-combination-records.json",
               "kind": "combination",
-              "path": "docs/implementation/graph-advantage/cleanup/correctness-archive-mappings.json",
-              "role": "combination dataset only: existing projection digest evidence; no query-dataset equivalence asserted"
+              "path": "docs/implementation/graph-advantage/cleanup/correctness-combination-records.json",
+              "role": "full sanitized failed, fixture_origin, ordered responses, and sources_by_stage"
             }
           ],
           "member": "combination.json",
@@ -2367,12 +2367,12 @@
           "canonical_replacement_chains": [
             {
               "current_mode": 420,
-              "current_sha256": "42a0c94878d1b6eb47f4296c9f658e213c5dfd4561db1e329d9bee0b6d261620",
-              "declared_retained_sha256": "42a0c94878d1b6eb47f4296c9f658e213c5dfd4561db1e329d9bee0b6d261620",
-              "evidence_record_path": "docs/implementation/graph-advantage/cleanup/correctness-archive-mappings.json",
+              "current_sha256": "8f88bdc27b79ed79bd45ca62353597d33f30b9e30d14dfb42f4716db6d68f542",
+              "declared_retained_sha256": "8f88bdc27b79ed79bd45ca62353597d33f30b9e30d14dfb42f4716db6d68f542",
+              "evidence_record_path": "docs/implementation/graph-advantage/cleanup/correctness-combination-records.json",
               "kind": "combination",
-              "path": "docs/implementation/graph-advantage/cleanup/correctness-archive-mappings.json",
-              "role": "combination dataset only: existing projection digest evidence; no query-dataset equivalence asserted"
+              "path": "docs/implementation/graph-advantage/cleanup/correctness-combination-records.json",
+              "role": "full sanitized failed, fixture_origin, ordered responses, and sources_by_stage"
             },
             {
               "current_mode": 420,
@@ -2614,12 +2614,12 @@
           "canonical_replacement_chains": [
             {
               "current_mode": 420,
-              "current_sha256": "42a0c94878d1b6eb47f4296c9f658e213c5dfd4561db1e329d9bee0b6d261620",
-              "declared_retained_sha256": "42a0c94878d1b6eb47f4296c9f658e213c5dfd4561db1e329d9bee0b6d261620",
-              "evidence_record_path": "docs/implementation/graph-advantage/cleanup/correctness-archive-mappings.json",
+              "current_sha256": "8f88bdc27b79ed79bd45ca62353597d33f30b9e30d14dfb42f4716db6d68f542",
+              "declared_retained_sha256": "8f88bdc27b79ed79bd45ca62353597d33f30b9e30d14dfb42f4716db6d68f542",
+              "evidence_record_path": "docs/implementation/graph-advantage/cleanup/correctness-combination-records.json",
               "kind": "combination",
-              "path": "docs/implementation/graph-advantage/cleanup/correctness-archive-mappings.json",
-              "role": "combination dataset only: existing projection digest evidence; no query-dataset equivalence asserted"
+              "path": "docs/implementation/graph-advantage/cleanup/correctness-combination-records.json",
+              "role": "full sanitized failed, fixture_origin, ordered responses, and sources_by_stage"
             },
             {
               "current_mode": 420,
@@ -2861,12 +2861,12 @@
           "canonical_replacement_chains": [
             {
               "current_mode": 420,
-              "current_sha256": "42a0c94878d1b6eb47f4296c9f658e213c5dfd4561db1e329d9bee0b6d261620",
-              "declared_retained_sha256": "42a0c94878d1b6eb47f4296c9f658e213c5dfd4561db1e329d9bee0b6d261620",
-              "evidence_record_path": "docs/implementation/graph-advantage/cleanup/correctness-archive-mappings.json",
+              "current_sha256": "8f88bdc27b79ed79bd45ca62353597d33f30b9e30d14dfb42f4716db6d68f542",
+              "declared_retained_sha256": "8f88bdc27b79ed79bd45ca62353597d33f30b9e30d14dfb42f4716db6d68f542",
+              "evidence_record_path": "docs/implementation/graph-advantage/cleanup/correctness-combination-records.json",
               "kind": "combination",
-              "path": "docs/implementation/graph-advantage/cleanup/correctness-archive-mappings.json",
-              "role": "combination dataset only: existing projection digest evidence; no query-dataset equivalence asserted"
+              "path": "docs/implementation/graph-advantage/cleanup/correctness-combination-records.json",
+              "role": "full sanitized failed, fixture_origin, ordered responses, and sources_by_stage"
             },
             {
               "current_mode": 420,
@@ -3108,12 +3108,12 @@
           "canonical_replacement_chains": [
             {
               "current_mode": 420,
-              "current_sha256": "42a0c94878d1b6eb47f4296c9f658e213c5dfd4561db1e329d9bee0b6d261620",
-              "declared_retained_sha256": "42a0c94878d1b6eb47f4296c9f658e213c5dfd4561db1e329d9bee0b6d261620",
-              "evidence_record_path": "docs/implementation/graph-advantage/cleanup/correctness-archive-mappings.json",
+              "current_sha256": "8f88bdc27b79ed79bd45ca62353597d33f30b9e30d14dfb42f4716db6d68f542",
+              "declared_retained_sha256": "8f88bdc27b79ed79bd45ca62353597d33f30b9e30d14dfb42f4716db6d68f542",
+              "evidence_record_path": "docs/implementation/graph-advantage/cleanup/correctness-combination-records.json",
               "kind": "combination",
-              "path": "docs/implementation/graph-advantage/cleanup/correctness-archive-mappings.json",
-              "role": "combination dataset only: existing projection digest evidence; no query-dataset equivalence asserted"
+              "path": "docs/implementation/graph-advantage/cleanup/correctness-combination-records.json",
+              "role": "full sanitized failed, fixture_origin, ordered responses, and sources_by_stage"
             },
             {
               "current_mode": 420,

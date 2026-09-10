@@ -628,5 +628,447 @@
       "git_blob": "6d8da546868ce48b4b1b25150c02ce28f3be7d2a",
       "bytes": 3592
     }
+  ],
+  "boundary_fixture": {
+    "path": "docs/implementation/graph-advantage/cleanup/preservation-boundary.json",
+    "sha256": "19df2c95e17179c8cf4a95f01a485143aa2ad6fc0d05ee01feac8dea888bac1a"
+  },
+  "approved_cleanup_paths": [
+    ".github/workflows/graph-advantage-evidence.yml",
+    "docs/implementation/graph-advantage/cleanup/README.md",
+    "docs/implementation/graph-advantage/cleanup/archive-operational-observations.json",
+    "docs/implementation/graph-advantage/cleanup/archive-profile-summaries.json",
+    "docs/implementation/graph-advantage/cleanup/archive-provenance.json",
+    "docs/implementation/graph-advantage/cleanup/archive-retained-controls/eba13e825a4a28ae38a8c81af9116648693346c7f85b6f2e395b01db0ec3566d-run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/audit_archive_provenance.py",
+    "docs/implementation/graph-advantage/cleanup/build_history_cleanup_attestation.py",
+    "docs/implementation/graph-advantage/cleanup/check_public_artifacts.py",
+    "docs/implementation/graph-advantage/cleanup/complete_archive_profile_summaries.py",
+    "docs/implementation/graph-advantage/cleanup/complete_archive_provenance.py",
+    "docs/implementation/graph-advantage/cleanup/consumer-parity.json",
+    "docs/implementation/graph-advantage/cleanup/correctness-archive-mappings.json",
+    "docs/implementation/graph-advantage/cleanup/correctness-combination-records.json",
+    "docs/implementation/graph-advantage/cleanup/correctness-query-cases.ndjson",
+    "docs/implementation/graph-advantage/cleanup/correctness-query-metadata.json",
+    "docs/implementation/graph-advantage/cleanup/duplicate-vm-terminal-observations.json",
+    "docs/implementation/graph-advantage/cleanup/empty-binary-markers.json",
+    "docs/implementation/graph-advantage/cleanup/historical-control-provenance.json",
+    "docs/implementation/graph-advantage/cleanup/history-cleanup-proposal.md",
+    "docs/implementation/graph-advantage/cleanup/log-observations.json",
+    "docs/implementation/graph-advantage/cleanup/log_observations.py",
+    "docs/implementation/graph-advantage/cleanup/metadata-log-observations.json",
+    "docs/implementation/graph-advantage/cleanup/metadata-log-retention-map.json",
+    "docs/implementation/graph-advantage/cleanup/metadata_log_observations.py",
+    "docs/implementation/graph-advantage/cleanup/platform-observations.json",
+    "docs/implementation/graph-advantage/cleanup/platform_observations.py",
+    "docs/implementation/graph-advantage/cleanup/precleanup-parity-attestation.json",
+    "docs/implementation/graph-advantage/cleanup/preservation-boundary.json",
+    "docs/implementation/graph-advantage/cleanup/preservation-scope.json",
+    "docs/implementation/graph-advantage/cleanup/privacy-redactions.json",
+    "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+    "docs/implementation/graph-advantage/cleanup/removal-map.json",
+    "docs/implementation/graph-advantage/cleanup/residual-log-observations.json",
+    "docs/implementation/graph-advantage/cleanup/residual-log-retention-map.json",
+    "docs/implementation/graph-advantage/cleanup/residual_log_observations.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/06fe46587417dfc4921a7ab3bb3f289a642948a65a2f787b5d913728001d7c87-controller.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/07b2fd35ccac7477087d1575ebf5dc8d450ffdede8a97feca249c37e6bb73a69-07b2fd35ccac7477087d1575ebf5dc8d450ffdede8a97feca249c37e6bb73a69-run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/07d15a9ad9f7b9c93aa536a699105b66fbc6ca78da204ee2695c56eb6f2dabd9-controller-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/100d19eed1d800f0bbac74f22ff20559767d10177d300cb12c0a2761b602eb5e-test_controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/179d0924e6f4375e0bc5b2ba9a5bebfbdad28d67e1455d33bbb7ffa742b2866e-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/1ab36d492943a2a98ff7a1bff350b0f9cffde2ebb3f71683451f97b6b652015a-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/1f9a3473e8eed54eef493a126ce73eec22ed35b8b0206b9d4191c5724eccc94b-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/2150e9983ab071e4c296ff9e77aed34c089ad8e8f2df2a52abf2b0e97cdfcdbf-test_run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/219ba234819dbfe3456839e8a75535aa2103c1ec68c2e339fffa1bf8e10783f3-remote-template.diff",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/222cb830ecfc6952dd29a53dac5da877ec1d46e8b6b859cfe75281b8029bb398-222cb830ecfc6952dd29a53dac5da877ec1d46e8b6b859cfe75281b8029bb398-run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/23f7d063c75fb3190da21b232145181dd7ac8ff5e30436d65de76eedc678df3a-23f7d063c75fb3190da21b232145181dd7ac8ff5e30436d65de76eedc678df3a-batch_budget.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/2489bb1d6d33b814258f877c45a48652b04b58e1794d4bd1ef30cc51f365e9de-controller.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/250adcaa7c385de4f53a3dadb3be1c84a0879b07ac32ef2d5b582a331687dc35-controller.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/252e00223c23be5a648dd1a6f89bfe298e0e39635c890006abf4ea2c8821bef1-test_controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/25d27151861fa748b565128b80c23131614cb8223f2a9d63f5a925212c562cd6-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/27bd4fdaa85acf33117ca2fdcc52f355ca28bcb790d3e00b1dc015d664ddb288-remote-vs-successful-full-r1.diff",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/28518e3931f73ffd7c66235009e4cb306bc281e3681fa8dd06137ea710ebb569-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/286841617db7bcb675f5a9f142e2542afbb77db73624ac2b834b22e592c14515-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/2a6a89d9f19cdc9d2f4102ccb89f2549f9e3ed4c4750f63fcf9ecf6923d01535-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/2d0bae060facb7269e4ec1d1e01bb1a434cc18abc651fdb15b3da364cdeec9ff-2d0bae060facb7269e4ec1d1e01bb1a434cc18abc651fdb15b3da364cdeec9ff-test_run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/2d22c192bc75010298b1a5f9f511aa4553b4ade15edb9cace3e9c80448e749cd-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/3873068a72652592be06bec06f47b6e01b9941973d26cb6a06eaf0fbff35c423-test_controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/3d4c8b0eeb3eaee02c40e3947da2af9b6d035270d06c0214bd17803aac7ffa1f-controller-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/4021b345b17f8f9857048f65d11f1141b064b70f9719843a84db4e340bbf7bcb-formatter-mutation.patch",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/4402a9895610144aa78a9fdb9f2c390092aef072f9ae5b848616b4cefa9f79ae-controller.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/484fa5498497b93c1a2ef89c7bc19871ce694fedf9e547b7fb9d47a5afb78bb3-test_diagnostic_gate.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/4a0933bb0967bb09a32f415fb3dc625750d610f37a0e8eabcb544f89a1695dc9-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/4afcc7b3b0ab09a23b9613ff8809d6cb8f7452f180739087139b33e9fa4a8e75-run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/4b394501868f4db6e6dd10af1adc874e3401dfcc78e061d64c9034fd9195a5f5-4b394501868f4db6e6dd10af1adc874e3401dfcc78e061d64c9034fd9195a5f5-run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/4b7a8f06f138f74cc05090ba4ffe338f384c08b6c67c5cf8c51842be4ffc0164-4b7a8f06f138f74cc05090ba4ffe338f384c08b6c67c5cf8c51842be4ffc0164-run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/5b3b5ad6ad0cdde76f5e448e01f236f34fd3bdffc92a4322696f1cc15d103d24-test_gates.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/5c224dd3f3f926a69aa1c6e18d21636e32e8a99181a8c99d9315b3c27965ad69-5c224dd3f3f926a69aa1c6e18d21636e32e8a99181a8c99d9315b3c27965ad69-run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/62b67c205848b03e6896504ade2fc6c8fd1729b1a5a7b2a5672eb394f79dba16-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/68d5c69a03d25f9f32de99fd6b33279b70b85eee945438955f6559fc02210bde-controller-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75-p1_scenario.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/6d7391902f49bc6677f13d2c97f7067314e7ae4a0883443e61927ebedd0dcbce-test_controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/6ea9dc2ec315c3dbe0f24ed5ffd7f84a41b993550a4c96193745c75b2e08c3d5-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/7036de8d10352a2a93c7f8307f2cc3df22e18bf9383776fedd97a855a49ecdd0-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/7149811c09eb96cb21cbd196f186dc52874ee3d16065ac935465421cfbb57a41-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/73b16de7d2da2ff76692b094ff0f3290096aa13e2da49a2836f6bb0985a93560-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/7711141f8c1461f31f5e3ab5866b6097ccdc3931d0d38edaea9b2fe486db07cb-test_controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/7b00de74ac643ce095ac967469f30b72d2e43c1e8168b7efd1062cfd4d066399-7b00de74ac643ce095ac967469f30b72d2e43c1e8168b7efd1062cfd4d066399-run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/7b12a66737256ffbe7c78f9fcf26b4d42205ec5cf5ac34153c82e72386742696-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/7bd3658d3618459226fcebf25661f4ad062ccadaf9a3d5c14993de884b5f8e7d-run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/7cde35cccf92a4fcdd9d297acf77c68fee2474295c370ddfce776f9387de5708-test_r2_controller_regressions.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/8c07cdac2089a99aae7c338f65472885d3039f223080d60d57978ae08587cae6-8c07cdac2089a99aae7c338f65472885d3039f223080d60d57978ae08587cae6-campaign_gate.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/8d78e8d4b4c856f3d9145e1ed98e95b8fd73547840b1e2ff23867b751797ec2c-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/8e5074a707d5114ea163bdd045a9246629d3f458ef09afe8a5c88c6d9a94b62a-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/8ea145eedc83c6be40ab7453ff1f2ff10073175aa066bd1b097f86da61ffc6c4-8ea145eedc83c6be40ab7453ff1f2ff10073175aa066bd1b097f86da61ffc6c4-run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/8ed072de0a0e004bf8e75b7684c32d1632d2b93d4be119f7b9cba8bd416660b0-controller-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/8fb6fe842d149fd1f6bc59b120b44b9ecdf340c326761c2ff020358f0302748c-controller.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/8fc28d9f82a2a696eb13ea9f46ad47c7b063874096a1f3ab0d3a2ebf993503a8-diagnostic_gate.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/91d3fe827b4474e8b7a56b043e5531f34bf3f2205a0a3f3d3533af71fae969b8-test_r2_controller_regressions.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/927ff2bc4e7647c88d60c39123477953102391936d38ec2c57d9f44f73dcd548-927ff2bc4e7647c88d60c39123477953102391936d38ec2c57d9f44f73dcd548-cloud.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/96f9b04bfe5384f867c843d4990cb4f7326ec67dc3a96b69ab314e499d5d954d-96f9b04bfe5384f867c843d4990cb4f7326ec67dc3a96b69ab314e499d5d954d-test_controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/README.md",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/a324f768fad2de809c954dcee1cf002c4d5b78e510e53d9bafef5a6eb218fa8a-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/a3fd9d4194f48cea2e5ad46b739ad746be6f51f0ab821c735561a4b7243af107-remote-launcher-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/a9fe685689b05ae186bb76c0d843a8e8bb2eba7146b74c1b191ff9e9a7b8ea30-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/aa27818a10e5ca2d595a41dd26b479286c0cbe96a734a8e17d92892a8a2b6b13-controller-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/aaf290d58e180b7cc248a0bf26621ab47d1b10557bf91a47a3524f3d938e35b9-controller.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/ab29213dc2df962197d9c55045fbc2a5f0473282312e6c798abb04cef112e8cb-remote-launcher-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/b98a3ca629144f2d5925a6d35dd67d3a8f49fa1608a1609dd0107a488ee4520d-controller-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/c1b97aa5ff0d2577fd3d4c55ddf150137bbc85c6be0fe218f5bd5858aa3f750f-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/c1f17136a9aba6b0a8c6931ac9c1d0a5bc60afb2b43ff68eab6b94c823c4728e-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/c22cb787d4e8f716b60620b71d77380161ba863dd2da452f9f0c178d6cf69b83-local_functional_test.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/c51b406577b0627c30a11744d67954c7b861f31f19a3e9eb4b05fb96ffce010a-c51b406577b0627c30a11744d67954c7b861f31f19a3e9eb4b05fb96ffce010a-test_controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/cf3190213d164b4e5c12bfb4d3e4f79ab1d0e251c39739e2cf250ac1ae59f1ca-remote-launcher-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/d1aec61b4f8ac9106c55ff61e43f84deca60a35de6e3d575da19ec00339ea7a7-controller-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/d655e07b72a96bdb93d1e2eb22d4698b48617655fe7b643abdfdf984b0707899-controller-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/df894dcab066f6469fbba545d4f7a3339d8e4871c95c79450a404c6449f5931c-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/e12ab60f944b5ac06e756776b12aeb10dbcca4746063e73a6fe31793511082bc-local_functional_test.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/e53258da70109a75f482a35ea36b1b996b72f8e419430d6aa991c3ba3b928e29-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/e693917d659ba4052cb015036ff7762e603dd3ed8ec8467b359c1a2b04185a2e-e693917d659ba4052cb015036ff7762e603dd3ed8ec8467b359c1a2b04185a2e-test_run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/ea481072ffb8265b57810e97e310d171c9b8ae79f511415ffaa112fff859ab30-local-stub-test.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/ecdbd46d2dddfce2e13e4e49c5be85b075ba59ced2654b2b167d555c606ec7af-controller.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/f618a0176371dcc780a4d4163e0fe76fca981a110ed4a17a9610cfd843a71068-controller-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/f8411fc4164e211302057b7ca1f488353155753831515713dbc137a62f379781-f8411fc4164e211302057b7ca1f488353155753831515713dbc137a62f379781-run_remote.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/f9e06c7aa97814ea1ac19e4c8e52668f19604662618abc3a7c08c80bc47abd6c-remote-template.sh",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/fa9b1685d8497af459b1a7e9d509eafec07cd428ef65958ea51ff047f921c368-controller.py",
+    "docs/implementation/graph-advantage/cleanup/retained-controls/fd80a8df72b92d05a21e95dbd2a820ef5f0514f668562c8cd26290c88f7e87fe-controller-template.diff",
+    "docs/implementation/graph-advantage/cleanup/runtime-observations.json",
+    "docs/implementation/graph-advantage/cleanup/special-log-observations.json",
+    "docs/implementation/graph-advantage/cleanup/special_log_observations.py",
+    "docs/implementation/graph-advantage/cleanup/structured-archive-observations.json",
+    "docs/implementation/graph-advantage/cleanup/structured_archive_observations.py",
+    "docs/implementation/graph-advantage/cleanup/test_active_configuration.py",
+    "docs/implementation/graph-advantage/cleanup/test_archive_profile_summaries.py",
+    "docs/implementation/graph-advantage/cleanup/test_archive_provenance.py",
+    "docs/implementation/graph-advantage/cleanup/test_check_public_artifacts.py",
+    "docs/implementation/graph-advantage/cleanup/test_cleanup_records.py",
+    "docs/implementation/graph-advantage/cleanup/test_correctness_archive_mappings.py",
+    "docs/implementation/graph-advantage/cleanup/test_history_cleanup_attestation_builder.py",
+    "docs/implementation/graph-advantage/cleanup/test_log_observations.py",
+    "docs/implementation/graph-advantage/cleanup/test_metadata_log_observations.py",
+    "docs/implementation/graph-advantage/cleanup/test_platform_observations.py",
+    "docs/implementation/graph-advantage/cleanup/test_precleanup_attestation.py",
+    "docs/implementation/graph-advantage/cleanup/test_privacy_redactions.py",
+    "docs/implementation/graph-advantage/cleanup/test_residual_log_observations.py",
+    "docs/implementation/graph-advantage/cleanup/test_runtime_observations.py",
+    "docs/implementation/graph-advantage/cleanup/test_special_log_observations.py",
+    "docs/implementation/graph-advantage/cleanup/test_structured_archive_observations.py",
+    "docs/implementation/graph-advantage/cleanup/test_validate_archive_operational.py",
+    "docs/implementation/graph-advantage/cleanup/test_verify_preservation_scope.py",
+    "docs/implementation/graph-advantage/cleanup/test_vm_statusline_observations.py",
+    "docs/implementation/graph-advantage/cleanup/text-retention-map.json",
+    "docs/implementation/graph-advantage/cleanup/tracked-manifest-provenance.json",
+    "docs/implementation/graph-advantage/cleanup/validate_archive_operational.py",
+    "docs/implementation/graph-advantage/cleanup/validate_precleanup_attestation.py",
+    "docs/implementation/graph-advantage/cleanup/verify_preservation_scope.py",
+    "docs/implementation/graph-advantage/cleanup/vm-statusline-observations.json",
+    "docs/implementation/graph-advantage/cleanup/vm_statusline_observations.py",
+    "docs/implementation/graph-advantage/evidence/.gitignore"
+  ],
+  "approved_retained_changes": [
+    {
+      "path": "docs/implementation/graph-advantage/corpus/README.md",
+      "git_blob": "69e7545c8ccc78a9235fabb36ccbeaa6d411e220",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/corpus/corpus-manifest.json",
+      "git_blob": "f096c32f008dfa440bb53bb7e58990a9fe3ff9e1",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/corpus/p1_scenario.py",
+      "git_blob": "896de94621b5cd50a84d253ef9da8cef04a4a818",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/corpus/prepare_p1_corpus.py",
+      "git_blob": "d0a619ca8082aa9c829daeb2176bdf6d1a9df22c",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/corpus/smoke_p1_corpus.py",
+      "git_blob": "2151fbefd75c198ddd55badc60ce280b37f5e056",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/diagnostic-validation-policy-proposal.md",
+      "git_blob": "707c80e265dba6a6d28a39556c33ed9b06fd6bae",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence-index.md",
+      "git_blob": "f42bbd7beea25aa70bcfe67f0773f6ce1bd4c137",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/delayed-relations-profile-analysis/README.md",
+      "git_blob": "156067dfc7f60a2eb347937de40d5514bd963e54",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/corpus/corpus-manifest.json",
+      "git_blob": "f096c32f008dfa440bb53bb7e58990a9fe3ff9e1",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/corpus/corpus-manifest.json",
+      "git_blob": "f096c32f008dfa440bb53bb7e58990a9fe3ff9e1",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/review-input/policy-review.json",
+      "git_blob": "ae7014ea07eb1990a2583345285fd546bcb2e096",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/review-input/policy-review.md",
+      "git_blob": "b6af9a3ed1f2287b0a48b3a5950bf74cc82e3b03",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/review-input/protobuf-fix-evidence.md",
+      "git_blob": "a43de4f1fb48a192aba505b5ae6852c943fc91fa",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/review-input/source-inventory.json",
+      "git_blob": "ac9a9a38ff3b674654dae900217391c08dd0833b",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/corpus/corpus-manifest.json",
+      "git_blob": "f096c32f008dfa440bb53bb7e58990a9fe3ff9e1",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/corpus/corpus-manifest.json",
+      "git_blob": "f096c32f008dfa440bb53bb7e58990a9fe3ff9e1",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/corpus/corpus-manifest.json",
+      "git_blob": "f096c32f008dfa440bb53bb7e58990a9fe3ff9e1",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/corpus/corpus-manifest.json",
+      "git_blob": "f096c32f008dfa440bb53bb7e58990a9fe3ff9e1",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/README.md",
+      "git_blob": "d330f3d1fb98b991fbad5bd7f0eeecbb63aba960",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/corpus/corpus-manifest.json",
+      "git_blob": "f096c32f008dfa440bb53bb7e58990a9fe3ff9e1",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/README.md",
+      "git_blob": "df33e26dbc4bf7ad194f6ce877aa46b0ca889e68",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/collector/cloud.py",
+      "git_blob": "1a81619ced59654d9f4d793df168dd72193fffac",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/controller/controller.py",
+      "git_blob": "df3b57af7b1928ea17b69af48e92f90236c29ee1",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/controller/manifest.json",
+      "git_blob": "4b4628f3655b2d93f0315db93372add5adf5c85f",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/controller/test_completion_controls.py",
+      "git_blob": "e63ba5ff8663c6c57e7b38bcccadf3723d7582d8",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/controller/test_controller.py",
+      "git_blob": "215f7fc8a73bbe0ebcbacd304d1274950db695d6",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/corpus/corpus-manifest.json",
+      "git_blob": "333b6303713e43c52d99b775d6d4556354fdf7c8",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/corpus/p1_scenario.py",
+      "git_blob": "34738dfa1de695dc84bf30aa4e7378be442f49ec",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/full-check-gate.json",
+      "git_blob": "4d6c5a5c394c95c2bedcda3a80c1c5c86bee4541",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/README.md",
+      "git_blob": "472638d93169e2d0dab2617b7853b7a2267c3ece",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/corpus/corpus-manifest.json",
+      "git_blob": "f096c32f008dfa440bb53bb7e58990a9fe3ff9e1",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-6f23da0a/source.sha256",
+      "git_blob": "3c68538c6d12d14184395e04984ed0c2de01863a",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d-r1/source.sha256",
+      "git_blob": "b08d0b4154c7b894411647e8152939a89efef490",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d/source.sha256",
+      "git_blob": "2f0c01fd0efee2a10d8063d8d21224ed741fc26e",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/requirements-provenance.json",
+      "git_blob": "a127cc8f24771d517ed4e0767ede072fa6147645",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/return-flow-match-reuse-20260908/README.md",
+      "git_blob": "35d8413b9da18ad720cbeb2807afee86076d8535",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/return-flow-profile-25887f69/README.md",
+      "git_blob": "7f471196ef3e2b63c7f83f7ecd3c21d4e072803c",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/review-phase-provenance.json",
+      "git_blob": "bf6f5613435d860a7cef8d6f41f080cf7b1c3755",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/ledger.md",
+      "git_blob": "15a9931df5708a87d7be2781d8c4ebc91ad4618f",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/frozen-baseline.json",
+      "git_blob": "20e5afd10c5d4346b742470933e68b3191a4315c",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-query-correctness-1c0b8e24/results-full-r2/controller.py",
+      "git_blob": "675bfeee7b228060bb6abe64cdbd7f3c7e2742c6",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-query-correctness-1c0b8e24/results/controller.py",
+      "git_blob": "2b466cf806386bf06361e3aaed4854774db7f607",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-1c0b8e24-r2/controller.py",
+      "git_blob": "10ad55638cbcbf5a5f55de2c6521b583fc6dc93f",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-1c0b8e24/controller.py",
+      "git_blob": "116bca93237da04c3648ab0316dc7c2b71cfd381",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-6cf92c9c/controller.py",
+      "git_blob": "e72dc2254473e7603350fda6bd3f8eca3ddedf33",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/run_retained_diagnostic.py",
+      "git_blob": "e26a60261f071e75794344bf9a283b6d7aaae5bc",
+      "mode": "100755"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/test_run_retained_diagnostic.py",
+      "git_blob": "3e3fb0ccfd0aabf834d1b1caa3c4d5300a6abbb5",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/p3-validation.md",
+      "git_blob": "0eba25a9739878dab56ac0ca44acde4ca2add212",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/probes/run_pinned_linux_check.py",
+      "git_blob": "7f03afd2e0f8f19d6ddb82f4eebdc2a1ce9756d7",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/probes/run_review_linux.py",
+      "git_blob": "75914f5b233c4b0819075b0d960c30d7e6122c88",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/probes/summarize_compiler_quality.py",
+      "git_blob": "3eb4ec3e19d8228c8ea7c2d32c2e318addb68fb1",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/probes/summarize_extraction.py",
+      "git_blob": "a23cb909340474baa435989181f995f0dc4f2f00",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/probes/summarize_relation_profile.py",
+      "git_blob": "781e3886751d760a9f76e01eeaf25143a2b23caf",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/remaining-release-prerequisites.md",
+      "git_blob": "eba582acff6c9aadee038d1204474801969908f0",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/resumption-plan-20260907.md",
+      "git_blob": "b7ea2993b53d6e0f1d40c633f28aa0dd61b2327d",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/reviewer-packet-v1/provenance.json",
+      "git_blob": "cbbe55e7ec31726d8bed176d49e71bcd7de29c3a",
+      "mode": "100644"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/shutdown-handoff-20260906.md",
+      "git_blob": "56a4f40e4c2addb6c0011763e296bd9f8817cc2a",
+      "mode": "100644"
+    }
   ]
 }

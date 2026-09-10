@@ -1,22 +1,14 @@
 #!/usr/bin/env python3
 """Verify archive provenance records against retained files (no extraction)."""
 from __future__ import annotations
-import argparse, gzip, hashlib, json, stat, subprocess, tarfile
+import argparse, gzip, hashlib, json, stat, tarfile
 from pathlib import Path
 
-def tree_file(repo: Path, ref: str, path: str):
-    try:
-        meta = subprocess.check_output(["git", "ls-tree", ref, "--", path], cwd=repo, text=True).strip()
-        meta = meta.split("\t", 1)[0]
-        mode, typ, blob = meta.split(None, 2)
-        payload = subprocess.check_output(["git", "cat-file", "blob", blob], cwd=repo)
-        return payload, int(mode, 8) & 0o777
-    except (subprocess.CalledProcessError, ValueError):
-        return None
-
-def verify(repo: Path, provenance: Path, offline: bool = False) -> list[str]:
+def verify(repo: Path, provenance: Path, offline: bool = False, external_archive_root: Path | None = None) -> list[str]:
     data = json.loads(provenance.read_text())
-    tree = data.get("audited_head")
+    attestation_path = provenance.with_name("precleanup-parity-attestation.json")
+    attestation = json.loads(attestation_path.read_text()) if attestation_path.is_file() else None
+    attested = {a["archive_path"]: a for a in attestation["archives"]["records"]} if attestation else {}
     removal_map_path = data.get("removal_map_path")
     removal_candidates = []
     if removal_map_path:
@@ -62,16 +54,25 @@ def verify(repo: Path, provenance: Path, offline: bool = False) -> list[str]:
                 return True
         return False
     for archive in data["archives"]:
-        ap = repo / archive["archive_path"]
+        ap = (external_archive_root / archive["archive_path"]) if external_archive_root else (repo / archive["archive_path"])
         archive_bytes = ap.read_bytes() if ap.is_file() else None
-        if archive_bytes is None and tree:
-            pinned = tree_file(repo, tree, archive["archive_path"])
-            archive_bytes = pinned[0] if pinned else None
-        if archive_bytes is None or hashlib.sha256(archive_bytes).hexdigest() != archive["archive_sha256"]:
+        source_attestation = attested.get(archive["archive_path"])
+        expected_attestation = {"archive_path":archive["archive_path"],"archive_sha256":archive["archive_sha256"],"member_count":archive["member_count"],"members":[{"member":m["member"],"member_mode":m["member_mode"],"sha256":m["sha256"]} for m in archive["members"]]}
+        if external_archive_root is not None and archive_bytes is None:
+            errors.append(f"external archive missing: {archive['archive_path']}"); continue
+        if archive_bytes is None and source_attestation != expected_attestation:
             errors.append(f"archive hash: {archive['archive_path']}")
             continue
+        if archive_bytes is not None and hashlib.sha256(archive_bytes).hexdigest() != archive["archive_sha256"]:
+            errors.append(f"archive hash: {archive['archive_path']}"); continue
         import io
-        if archive.get("archive_format") == "gzip-single-member":
+        if archive_bytes is None:
+            class AttestedMember:
+                def __init__(self, record): self.name, self.mode = record["member"], record["member_mode"]
+                def isfile(self): return True
+            members = [AttestedMember(record) for record in source_attestation["members"]]
+            payloads = {}
+        elif archive.get("archive_format") == "gzip-single-member":
             class GzipMember:
                 def __init__(self, name, mode): self.name, self.mode = name, mode
                 def isfile(self): return True
@@ -83,15 +84,15 @@ def verify(repo: Path, provenance: Path, offline: bool = False) -> list[str]:
                 members = tf.getmembers()
                 payloads = {m.name: tf.extractfile(m).read() for m in members if m.isfile()}
         by_name = {m.name: m for m in members}
-        if len(by_name) != archive["member_count"]:
+        if archive_bytes is not None and len(by_name) != archive["member_count"]:
             errors.append(f"member count: {archive['archive_path']}")
         for expected in archive["members"]:
             member = by_name.get(expected["member"])
             if member is None or not member.isfile():
                 errors.append(f"missing member: {archive['archive_path']}:{expected['member']}")
                 continue
-            payload = payloads[member.name]
-            if hashlib.sha256(payload).hexdigest() != expected["sha256"]:
+            payload = payloads.get(member.name)
+            if payload is not None and hashlib.sha256(payload).hexdigest() != expected["sha256"]:
                 errors.append(f"member hash: {archive['archive_path']}:{expected['member']}")
             if archive.get("archive_format") != "gzip-single-member" and stat.S_IMODE(member.mode) != expected["member_mode"]:
                 errors.append(f"member mode: {archive['archive_path']}:{expected['member']}")
@@ -116,9 +117,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--provenance", type=Path, required=True)
-    parser.add_argument("--offline", action="store_true", help="permit pinned-tree replacement fallback")
+    parser.add_argument("--offline", action="store_true", help="deprecated compatibility flag; never reads historical Git objects")
+    parser.add_argument("--external-archive-root", type=Path, help="tree containing the original archives; missing input fails closed")
     args = parser.parse_args()
-    errors = verify(args.repo.resolve(), args.provenance.resolve(), args.offline)
+    errors = verify(args.repo.resolve(), args.provenance.resolve(), args.offline, args.external_archive_root.resolve() if args.external_archive_root else None)
     if errors:
         print("\n".join(errors))
         return 1

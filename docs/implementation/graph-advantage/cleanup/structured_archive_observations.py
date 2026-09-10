@@ -58,12 +58,13 @@ def aggregate_trace(rows: list[dict], kind: str) -> dict:
         return {"row_count": len(rows), "event_counts": dict(sorted(collections.Counter(str(x.get("event")) for x in rows).items())), "executables": sorted({pathlib.PurePosixPath(str(x.get("exe", ""))).name for x in rows if x.get("exe")}), "source_files": sorted({pathlib.PurePosixPath(str(x.get("file", ""))).name for x in rows if x.get("file")})}
     return {"row_count": len(rows), "action_counts": dict(sorted(collections.Counter(str(x.get("Action")) for x in rows).items())), "package_counts": dict(sorted(collections.Counter(str(x.get("Package")) for x in rows if x.get("Package")).items())), "first_time": rows[0].get("Time") if rows else None, "last_time": rows[-1].get("Time") if rows else None}
 
-def build(repo: pathlib.Path) -> dict:
+def build(repo: pathlib.Path, load_member=None) -> dict:
     records=[]
+    load_member = load_member or (lambda spec: member_bytes(repo, spec))
     retained_dir = repo / "docs/implementation/graph-advantage/cleanup/archive-retained-controls"
     retained_dir.mkdir(exist_ok=True)
     for spec in SPECS:
-        payload=member_bytes(repo,spec)
+        payload=load_member(spec)
         if sha(payload) != spec["sha256"]:
             raise ValueError(f"source hash mismatch: {spec['archive']}::{spec['member']}")
         common={"archive_path":spec["archive"],"member":spec["member"],"source_sha256":spec["sha256"],"source_bytes":len(payload),"kind":spec["kind"]}

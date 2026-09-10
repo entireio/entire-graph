@@ -41,17 +41,13 @@ paused completion diagnostic are excluded from deletion.
 
 ## Proposed sequence
 
-1. Before selecting `CLEANED_TIP`, make validation independent of pre-rewrite
-   objects in a separate, reviewed normal branch commit. Current offline checks
-   intentionally recover deleted inputs with `git show` from pre-cleanup commit
-   `6c1ac1d188af711e7a0e7e361bfc3e4f139ee617`: the normal archive verifier
-   recovers 65 deleted compressed objects, the correctness mapping test
-   re-decodes five deleted archives, and the structured-observation test
-   rebuilds 37 records from deleted archives. Profile regeneration also uses
-   old profile objects, although the normal profile-JSON test is self-contained.
-   Replace those inputs with self-contained canonical fixtures or a committed
-   replacement-audit route while preserving source hashes and parity assertions.
-   The reviewed change must not silently regenerate a smaller dataset.
+1. Before selecting `CLEANED_TIP`, land and review the self-contained validation
+   commit. Normal checks must bind the full public JSON/NDJSON values to the
+   pre-cleanup parity attestation and complete preservation boundary without
+   reading old Git objects. Original-byte parity remains an explicit,
+   fail-closed external-backup audit and must be run before the purge; absence
+   of that backup is an error. The reviewed change must not silently regenerate
+   a smaller dataset.
 2. Fetch without pruning. In a temporary clone, record `CLEANED_TIP`,
    `EXPECTED_REMOTE_TIP`, the cleaned tree, all protected ref tips, the final
    allowlist digests, and repository object-format/version details. Do not

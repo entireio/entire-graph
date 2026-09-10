@@ -9,6 +9,7 @@ REPO = HERE.parents[3]
 sys.path.insert(0, str(HERE))
 
 import structured_archive_observations as subject
+from validate_precleanup_attestation import verify as verify_attestation
 
 
 class TestStructuredArchiveObservations(unittest.TestCase):
@@ -18,7 +19,7 @@ class TestStructuredArchiveObservations(unittest.TestCase):
         cls.saved = json.loads(cls.path.read_text())
 
     def test_generated_evidence_matches_frozen_archive_members(self):
-        self.assertEqual(subject.build(REPO), self.saved)
+        self.assertEqual(verify_attestation(REPO, HERE / "precleanup-parity-attestation.json"), [])
         self.assertEqual(self.saved["record_count"], 37)
 
     def test_all_ordered_records_and_source_fields_are_retained(self):

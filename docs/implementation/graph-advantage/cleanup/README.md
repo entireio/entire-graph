@@ -82,11 +82,29 @@ Only reviewed semantic facts, exact case data, reproducible fixtures, or hashes
 with a verified replacement chain are eligible. A source digest by itself does
 not prove that a unique result was preserved.
 
-Current normal archive, correctness-query, and structured-observation checks may
-recover the removed original bytes from pinned pre-cleanup Git commit `6c1ac1d`.
-That is valid for this branch phase. The proposed history cleanup is blocked
-until a reviewed normal branch commit makes those checks self-contained and a
-fresh clone without the old objects passes them.
+Normal archive, correctness-query, structured-observation, and preservation
+checks are self-contained. `precleanup-parity-attestation.json` records the
+one-time original-to-public parity result for all 65 archives and 840 members,
+the 37 structured projections, five query archives with 25 ordered cases, and
+five combination archives with 25 ordered responses. The combination records
+preserve the complete sanitized response values, failure and fixture fields,
+explicit source order, and `sources_by_stage`; the existing canonical query
+cases remain a separate dataset. Normal checks bind
+that attestation to the full public JSON/NDJSON values and verify replacement
+chains; they never recover removed bytes from Git. `preservation-boundary.json`
+contains the complete 1,901-added/56-modified path, blob, mode, and size audit.
+
+Rechecking original archive bytes is deliberately separate and fail-closed:
+pass `--external-archive-root` to `audit_archive_provenance.py`, pointing at a
+verified external backup tree. Recomputing the original admission boundary is
+likewise explicit through `verify_preservation_scope.py --external-history`.
+Neither mode falls back to historical Git objects when its source is absent.
+Before removing the old objects, regenerate the parity attestation from that
+same external tree; this command verifies source bytes before writing output:
+
+```sh
+python3 docs/implementation/graph-advantage/cleanup/build_history_cleanup_attestation.py --external-archive-root /path/to/precleanup-archive-tree
+```
 
 ## Verification
 
@@ -94,11 +112,12 @@ Run these from the repository root after the removal map and all replacement
 files are frozen:
 
 ```sh
-python3 docs/implementation/graph-advantage/evidence/canonical-v1/tools/validate.py --all
+python3 docs/implementation/graph-advantage/evidence/canonical-v1/tools/validate.py --canonical-root docs/implementation/graph-advantage/evidence/canonical-v1 --evidence-root docs/implementation/graph-advantage/evidence
 python3 -m unittest docs/implementation/graph-advantage/evidence/canonical-v1/tools/test_canonical.py
 python3 -m unittest docs/implementation/graph-advantage/probes/test_canonical_consumers.py
 python3 -m unittest discover -s docs/implementation/graph-advantage/cleanup -p 'test_*.py'
 python3 docs/implementation/graph-advantage/cleanup/audit_archive_provenance.py --repo . --provenance docs/implementation/graph-advantage/cleanup/archive-provenance.json
+python3 -c 'from pathlib import Path; import sys; sys.path.insert(0,"docs/implementation/graph-advantage/cleanup"); from validate_precleanup_attestation import verify; errors=verify(Path.cwd(),Path("docs/implementation/graph-advantage/cleanup/precleanup-parity-attestation.json")); print("\n".join(errors)); raise SystemExit(bool(errors))'
 python3 docs/implementation/graph-advantage/cleanup/validate_archive_operational.py docs/implementation/graph-advantage/cleanup/archive-operational-observations.json
 python3 docs/implementation/graph-advantage/cleanup/check_public_artifacts.py --repo .
 python3 docs/implementation/graph-advantage/cleanup/verify_preservation_scope.py --repo . --scope docs/implementation/graph-advantage/cleanup/preservation-scope.json
