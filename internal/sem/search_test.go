@@ -2228,3 +2228,75 @@ func TestSearchNameTermCoverageIsPluralTolerantAndSaturates(t *testing.T) {
 		t.Fatal("short tokens must not count as name coverage")
 	}
 }
+
+// TestSearchNameCoverageExpandsProseAbbreviations pins the entireio/cli regression: the prose
+// sentence "the main authentication function that logs a user in" returned the LOGGING package,
+// because "authentication" matched no identifier while "logs" matched RestoreLogsOnly. The name a
+// developer writes is `auth`; the word a reporter writes is "authentication".
+func TestSearchNameCoverageExpandsProseAbbreviations(t *testing.T) {
+	t.Parallel()
+	q := buildSearchQuery("the main authentication function that logs a user in")
+	login := SearchResult{QualifiedName: "runLogin"}
+	authFlag := SearchResult{QualifiedName: "addInsecureHTTPAuthFlag"}
+	logs := SearchResult{QualifiedName: "ManualCommitStrategy.RestoreLogsOnly"}
+
+	// Before the abbreviation table this was 0: "authentication" matched no token of any auth
+	// identifier, so the one signal that exists to separate the head scored the correct answers
+	// exactly as low as unrelated code.
+	if got := searchNameTermCoverage(authFlag, q, nil); got == 0 {
+		t.Fatal("an identifier spelled with the abbreviation must score for the prose spelling")
+	}
+	// Deliberately >=, not >. Both names carry exactly one of this query's terms, so at the
+	// coverage layer they TIE; the table removes the auth side's zero, it does not by itself
+	// outrank logging. Ordering the full query is BM25's job and is covered end to end by the
+	// bench, not here — asserting > would be asserting something this function does not do.
+	if a, l := searchNameTermCoverage(authFlag, q, nil), searchNameTermCoverage(logs, q, nil); a < l {
+		t.Fatalf("auth identifier %v must not score below the logging identifier %v", a, l)
+	}
+	// runLogin does score, but NOT through the abbreviation table — it has no auth token and the
+	// table invents no login/authentication synonym. It scores because searchNameContainsTerm
+	// strips the plural off "logs" and then finds "log" as a raw SUBSTRING of "runlogin", the
+	// same accident that makes "log" match RestoreLogsOnly. That conflation of login with logging
+	// is the separate token-boundary defect; pinned here so that fixing it shows up as a change
+	// to this assertion rather than as silent drift.
+	if got := searchNameTermCoverage(login, q, nil); got == 0 {
+		t.Fatal("runLogin currently scores via the substring accident; a 0 means that changed")
+	}
+	if !searchNameContainsTerm("runlogin", "logs") {
+		t.Fatal("the substring accident is the documented cause; if it is gone, update the note above")
+	}
+	if searchNameMatchesAbbreviation(searchTokenVariants("runLogin"), "authentication") {
+		t.Fatal("the table must not have invented a login/authentication synonym")
+	}
+}
+
+// TestSearchNameMatchesAbbreviationIsTokenScoped guards the false positives that a raw substring
+// test would manufacture from short abbreviations.
+func TestSearchNameMatchesAbbreviationIsTokenScoped(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		term  string
+		ident string
+		want  bool
+	}{
+		{"long alias matches token prefix", "authentication", "runAuthenticated", true},
+		{"long alias matches exact token", "configuration", "loadConfig", true},
+		{"long alias spans qualified name", "repository", "gitrepo.OpenCurrent", true},
+		{"short alias matches whole token", "context", "withCtx", true},
+		{"short alias matches whole token db", "database", "openDB", true},
+		{"short alias rejects substring", "request", "frequencyTable", false},
+		{"short alias rejects substring db", "database", "debugPrint", false},
+		{"short alias rejects substring int", "integer", "interfaceBuilder", false},
+		{"unmapped term never matches", "kubernetes", "kubeClient", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := searchNameMatchesAbbreviation(searchTokenVariants(tc.ident), tc.term)
+			if got != tc.want {
+				t.Fatalf("searchNameMatchesAbbreviation(%q, %q) = %v, want %v", tc.ident, tc.term, got, tc.want)
+			}
+		})
+	}
+}

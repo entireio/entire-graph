@@ -3349,10 +3349,11 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 // Plural-tolerant on purpose: the issue says "sections" and the symbol says "Section", and an exact
 // substring test scores that as a miss — which is precisely how the gold site lost.
 func searchNameTermCoverage(result SearchResult, q searchQuery, _ map[string]float64) float64 {
-	name := strings.ToLower(result.QualifiedName)
-	if name == "" {
-		name = strings.ToLower(result.SymbolName)
+	rawName := result.QualifiedName
+	if rawName == "" {
+		rawName = result.SymbolName
 	}
+	name := strings.ToLower(rawName)
 	if name == "" || len(q.terms) == 0 {
 		return 0
 	}
@@ -3364,9 +3365,12 @@ func searchNameTermCoverage(result SearchResult, q searchQuery, _ map[string]flo
 	// (pages + section) barely above `Pages.Reverse` (pages). Counting DISTINCT matched terms is the
 	// signal: two domain terms in one name is strong evidence, three is decisive, and beyond that the
 	// extra matches say little, so it saturates.
+	// Tokenized once per candidate, not once per term: the abbreviation test is token-scoped and
+	// the split is the only expensive part of it.
+	tokens := searchTokenVariants(rawName)
 	matched := 0
 	for _, term := range q.terms {
-		if searchNameContainsTerm(name, term) {
+		if searchNameContainsTerm(name, term) || searchNameMatchesAbbreviation(tokens, term) {
 			matched++
 		}
 	}
@@ -3391,6 +3395,134 @@ func searchNameContainsTerm(lowerName, term string) bool {
 	}
 	if strings.HasSuffix(term, "s") && len(term) > 3 && strings.Contains(lowerName, term[:len(term)-1]) {
 		return true
+	}
+	return false
+}
+
+// searchAbbreviationTermWeight is the query weight of an alias the caller did not type. It matches
+// the morphological-variant weight: same class of inference, same confidence.
+const searchAbbreviationTermWeight = 0.55
+
+// searchTermAbbreviations maps the long, prose spelling of a concept to the short spellings an
+// identifier actually uses. Prose and code disagree systematically here, and searchNameContainsTerm
+// tolerates only the plural: it is a substring test, so "authentication" scores a MISS against
+// runLogin, persistLogin and the whole `auth` package.
+//
+// Measured on entireio/cli. The query "authentication" topped out at 16.6 (rank 1
+// addInsecureHTTPAuthFlag, then slugifyTitle and HTTPErrorMessage — noise); the same concept spelled
+// the way the code spells it, "auth", scored 34.6 with a clean auth-only head. So the prose sentence
+// "the main authentication function that logs a user in" returned the LOGGING package —
+// RestoreLogsOnly and handleLogsOnlyRewindNonInteractive at 22.3 — because "logs" is spelled the way
+// code spells it and "authentication" is not. The name-coverage signal that exists to separate the
+// head scored zero on every correct answer.
+//
+// One direction only, long -> short. Query terms come from prose and identifiers carry the
+// abbreviation; the reverse is already handled, since "auth" is a substring of runAuthenticated.
+var searchTermAbbreviations = map[string][]string{
+	"address":        {"addr"},
+	"administration": {"admin"},
+	"administrator":  {"admin"},
+	"allocate":       {"alloc"},
+	"allocation":     {"alloc"},
+	"argument":       {"arg"},
+	"asynchronous":   {"async"},
+	"attribute":      {"attr"},
+	"authenticate":   {"auth"},
+	"authenticated":  {"auth"},
+	"authentication": {"auth"},
+	"authorization":  {"authz", "auth"},
+	"authorize":      {"authz", "auth"},
+	"boolean":        {"bool"},
+	"buffer":         {"buf"},
+	"calculate":      {"calc"},
+	"calculation":    {"calc"},
+	"command":        {"cmd"},
+	"configuration":  {"config", "cfg"},
+	"configure":      {"config"},
+	"connection":     {"conn"},
+	"context":        {"ctx"},
+	"database":       {"db"},
+	"declaration":    {"decl"},
+	"definition":     {"def"},
+	"delete":         {"del"},
+	"destination":    {"dest", "dst"},
+	"directory":      {"dir"},
+	"document":       {"doc"},
+	"documentation":  {"docs", "doc"},
+	"environment":    {"env"},
+	"error":          {"err"},
+	"executable":     {"exec"},
+	"execute":        {"exec"},
+	"expression":     {"expr"},
+	"identifier":     {"id"},
+	"implementation": {"impl"},
+	"information":    {"info"},
+	"initialization": {"init"},
+	"initialize":     {"init"},
+	"integer":        {"int"},
+	"iterator":       {"iter"},
+	"length":         {"len"},
+	"library":        {"lib"},
+	"maximum":        {"max"},
+	"message":        {"msg"},
+	"minimum":        {"min"},
+	"number":         {"num"},
+	"package":        {"pkg"},
+	"parameter":      {"param"},
+	"parameters":     {"params"},
+	"pointer":        {"ptr"},
+	"previous":       {"prev"},
+	"property":       {"prop"},
+	"reference":      {"ref"},
+	"repository":     {"repo"},
+	"request":        {"req"},
+	"response":       {"resp"},
+	"session":        {"sess"},
+	"source":         {"src"},
+	"specification":  {"spec"},
+	"statement":      {"stmt"},
+	"statistics":     {"stats"},
+	"synchronize":    {"sync"},
+	"synchronous":    {"sync"},
+	"temporary":      {"temp", "tmp"},
+	"transaction":    {"txn"},
+	"utility":        {"util"},
+}
+
+// searchNameMatchesAbbreviation reports whether any abbreviation of term appears as a TOKEN of the
+// identifier. Token-scoped on purpose: searchNameContainsTerm can afford a raw substring because a
+// query term is a whole word, but an abbreviation is short enough that substring matching
+// manufactures hits — "int" for "integer" would match interface, internal and print.
+//
+// Two thresholds, because the risk is length-dependent. Four characters and up may match a token
+// PREFIX OR SUFFIX, which is what carries auth -> Authenticated, config -> Configured and, at the
+// suffix end, repo -> gitrepo and auth -> oauth: package-qualified names routinely glue the
+// abbreviation onto the tail of a token. Anchoring at both ends rather than allowing a free
+// substring is what keeps spec -> inspect out, since "inspect" ends in "spect". Two and three
+// characters must match a whole token, which stops req -> frequency and db -> debug while still
+// catching the standalone ctx, req, err and db that code writes as their own token.
+//
+// Known and accepted: auth also prefixes "author", so an authentication query picks up commitAuthor
+// in a VCS codebase. Name coverage saturates at three distinct terms and is one component of the
+// score, so a single spurious term costs a third of one signal — cheap next to scoring every
+// correct answer at zero.
+func searchNameMatchesAbbreviation(tokens []string, term string) bool {
+	aliases, ok := searchTermAbbreviations[term]
+	if !ok {
+		return false
+	}
+	for _, alias := range aliases {
+		for _, token := range tokens {
+			if len(alias) >= 4 {
+				if strings.HasPrefix(token, alias) || strings.HasSuffix(token, alias) {
+					return true
+				}
+				continue
+			}
+			if token == alias {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -4770,6 +4902,28 @@ func buildSearchQuery(query string) searchQuery {
 	for _, term := range originalTerms {
 		for _, related := range morphologicalSearchTerms(term) {
 			add(related, 0.55)
+		}
+	}
+	// Abbreviations have to enter the query as TERMS, not only as a name-coverage rule.
+	//
+	// searchNameMatchesAbbreviation re-ranks: it can lift a candidate the retrieval stage already
+	// produced, and it can do nothing at all for one that stage never produced. The offline eval
+	// caught the difference. On a fixture where the identifier is the only bridge from
+	// "authentication" to the auth cluster, the query returns runLogin alone — newAuthCmd never
+	// enters the candidate pool, so there is nothing for the name rule to boost. That is also why
+	// entireio/cli improved only 16.6 -> 19.9 on "authentication" rather than reaching the 34.6
+	// that "auth" scores: those candidates were already in the pool via path and body matches, and
+	// the name rule merely reordered them.
+	//
+	// Adding the alias here puts it in front of preselection and BM25, so the auth files are
+	// RETRIEVED for a query that never says "auth".
+	//
+	// Weighted like a morphological variant rather than like a typed term: an abbreviation is
+	// strong evidence of the same concept but it is still the caller's word inferred, not written,
+	// and a full-weight alias would let an inferred term outrank one the caller actually chose.
+	for _, term := range originalTerms {
+		for _, alias := range searchTermAbbreviations[term] {
+			add(alias, searchAbbreviationTermWeight)
 		}
 	}
 	termSet := make(map[string]bool, len(weights))
