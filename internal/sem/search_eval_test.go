@@ -167,6 +167,13 @@ func searchEvalCases() []searchEvalCase {
 			distractor: []string{"RestoreLogsOnly", "runLogin"},
 		},
 		{
+			name:       "plural configuration reaches config",
+			why:        "Alias retrieval must include singular forms derived from plural prose.",
+			query:      "configurations",
+			gold:       []string{"loadConfig", "applyConfigDefaults"},
+			distractor: []string{"RestoreLogsOnly", "runLogin"},
+		},
+		{
 			name:       "noun plus preposition must not become a phrasal verb",
 			why:        "#247 defect 3 false positive. Joining 'the log in json' put login code at ranks 1-3 of a logging query.",
 			query:      "write the log entry in json format",

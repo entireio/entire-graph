@@ -3540,10 +3540,7 @@ var searchTermAbbreviations = map[string][]string{
 // score, so a single spurious term costs a third of one signal — cheap next to scoring every
 // correct answer at zero.
 func searchNameMatchesAbbreviation(tokens []string, term string) bool {
-	aliases, ok := searchTermAbbreviations[term]
-	if !ok {
-		return false
-	}
+	aliases := searchAbbreviations(term)
 	for _, alias := range aliases {
 		for _, token := range tokens {
 			if len(alias) >= 4 {
@@ -3558,6 +3555,16 @@ func searchNameMatchesAbbreviation(tokens []string, term string) bool {
 		}
 	}
 	return false
+}
+
+// Use the same plural variants for retrieval and name coverage, including -ies
+// spellings such as repositories -> repository -> repo.
+func searchAbbreviations(term string) []string {
+	var aliases []string
+	for _, variant := range searchNameWordVariants(term) {
+		aliases = appendUnique(aliases, searchTermAbbreviations[variant]...)
+	}
+	return aliases
 }
 
 // searchNameCoverageWeight is how much a fully name-covering candidate gains. Sized against the
@@ -4967,7 +4974,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 	if index+1 < len(tokens) {
 		particle := searchPhrasalVerbParticles[strings.ToLower(tokens[index+1])]
 		nounPhrase := index > 0 && searchCompoundDeterminers[strings.ToLower(tokens[index-1])]
-		if !(particle && nounPhrase) {
+		if !(particle && nounPhrase) && !searchCompoundFormatPreposition(tokens, index+1) {
 			if joined, ok := searchCompoundJoin(tokens[index], tokens[index+1]); ok {
 				out = append(out, joined)
 			}
@@ -4976,6 +4983,9 @@ func searchCompoundJoins(tokens []string, index int) []string {
 	for gap := 2; gap <= searchMaxCompoundGap+1 && index+gap < len(tokens); gap++ {
 		particle := strings.ToLower(tokens[index+gap])
 		if !searchPhrasalVerbParticles[particle] {
+			continue
+		}
+		if searchCompoundFormatPreposition(tokens, index+gap) {
 			continue
 		}
 		// The object has to look like an object. Without this, any "log" and any later "in"
@@ -4988,6 +4998,31 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		}
 	}
 	return out
+}
+
+// In "log a message in JSON", "in" introduces the output format rather than
+// completing "log in". Inspect only the immediately following noun phrase so
+// "log the user in and return JSON" still recovers login.
+func searchCompoundFormatPreposition(tokens []string, index int) bool {
+	if strings.ToLower(tokens[index]) != "in" {
+		return false
+	}
+	next := index + 1
+	if next < len(tokens) && searchCompoundDeterminers[strings.ToLower(tokens[next])] {
+		next++
+	}
+	if next >= len(tokens) {
+		return false
+	}
+	switch strings.ToLower(tokens[next]) {
+	case "json", "yaml", "yml", "xml", "csv", "tsv", "text", "plaintext",
+		"html", "toml", "ini", "binary", "hex", "hexadecimal", "base64",
+		"protobuf", "msgpack", "messagepack":
+		return true
+	case "plain":
+		return next+1 < len(tokens) && strings.EqualFold(tokens[next+1], "text")
+	}
+	return next+1 < len(tokens) && (strings.EqualFold(tokens[next+1], "format") || strings.EqualFold(tokens[next+1], "encoding"))
 }
 
 // searchCompoundJoin reports the single-identifier spelling of a word pair, if there is one. The
@@ -5124,8 +5159,14 @@ func buildSearchQuery(query string) searchQuery {
 	// Weighted like a morphological variant rather than like a typed term: an abbreviation is
 	// strong evidence of the same concept but it is still the caller's word inferred, not written,
 	// and a full-weight alias would let an inferred term outrank one the caller actually chose.
-	for _, term := range originalTerms {
-		for _, alias := range searchTermAbbreviations[term] {
+	// Snapshot after morphology, before adding aliases: inferred singular and
+	// verb forms must participate too, without recursively expanding aliases.
+	abbreviationTerms := make([]string, 0, len(weights))
+	for term := range weights {
+		abbreviationTerms = append(abbreviationTerms, term)
+	}
+	for _, term := range abbreviationTerms {
+		for _, alias := range searchAbbreviations(term) {
 			add(alias, searchAbbreviationTermWeight)
 		}
 	}

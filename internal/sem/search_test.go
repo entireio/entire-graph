@@ -2289,6 +2289,8 @@ func TestSearchNameMatchesAbbreviationIsTokenScoped(t *testing.T) {
 	}{
 		{"long alias matches token prefix", "authentication", "runAuthenticated", true},
 		{"long alias matches exact token", "configuration", "loadConfig", true},
+		{"plural long form", "configurations", "loadConfig", true},
+		{"plural ies long form", "repositories", "openRepo", true},
 		{"long alias spans qualified name", "repository", "gitrepo.OpenCurrent", true},
 		{"short alias matches whole token", "context", "withCtx", true},
 		{"short alias matches whole token db", "database", "openDB", true},
@@ -2349,6 +2351,15 @@ func TestSearchCompoundJoins(t *testing.T) {
 		{"determiner marks a noun, not a phrasal verb", "write the log in json format", "login", false},
 		// ...but the same words with a verb in front are the phrasal verb, and must still join.
 		{"no determiner, still a phrasal verb", "the user cannot log in", "login", true},
+		{"logging an error as JSON", "log the error in json", "login", false},
+		{"logging a message as JSON", "log a message in json format", "login", false},
+		{"logging as YAML", "logs the response in YAML", "login", false},
+		{"logging as plain text", "log the message in plain text", "login", false},
+		{"adjacent formatting preposition", "write log in JSON", "login", false},
+		{"format with determiner", "log the message in a binary format", "login", false},
+		{"custom format", "log the message in custom format", "login", false},
+		{"formatting words elsewhere", "log the user in and return JSON", "login", true},
+		{"login location", "log the user in from the browser", "login", true},
 		// Noun compounds are not separable; only the adjacent form counts.
 		{"noun compound is not separable", "the end of the point", "endpoint", false},
 		{"gap too wide", "logs every authenticated request payload in", "login", false},
@@ -2359,6 +2370,26 @@ func TestSearchCompoundJoins(t *testing.T) {
 			got := buildSearchQuery(tc.query).termSet[tc.want]
 			if got != tc.found {
 				t.Fatalf("buildSearchQuery(%q).termSet[%q] = %v, want %v", tc.query, tc.want, got, tc.found)
+			}
+		})
+	}
+}
+
+func TestSearchQueryAbbreviationsIncludeWordVariants(t *testing.T) {
+	t.Parallel()
+	for query, alias := range map[string]string{
+		"configurations": "config",
+		"repositories":   "repo",
+		"directories":    "dir",
+		"authenticating": "auth",
+	} {
+		t.Run(query, func(t *testing.T) {
+			q := buildSearchQuery(query)
+			if !q.termSet[alias] {
+				t.Fatalf("query %q must retrieve through %q; got %v", query, alias, q.terms)
+			}
+			if q.weights[alias] != searchAbbreviationTermWeight {
+				t.Fatalf("inferred alias weight = %v, want %v", q.weights[alias], searchAbbreviationTermWeight)
 			}
 		})
 	}
