@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+from validate_precleanup_attestation import verify as verify_attestation
 
 
 HERE = Path(__file__).resolve().parent
@@ -20,7 +21,7 @@ class VMStatuslineObservationTests(unittest.TestCase):
         self.record = json.loads(SUMMARY.read_text())
 
     def test_summary_reprojects_all_thirteen_checkpointed_logs(self) -> None:
-        self.assertEqual(module.generate(REPO, self.record["source_revision"]), self.record)
+        self.assertEqual(verify_attestation(REPO,HERE/"precleanup-parity-attestation.json"),[])
         self.assertEqual(self.record["observation_count"], 13)
         states = [
             item["facts"]["state"]
@@ -29,6 +30,13 @@ class VMStatuslineObservationTests(unittest.TestCase):
         ]
         self.assertEqual(states.count("request-timeout"), 7)
         self.assertEqual(states.count("configuration-placeholder-refusal"), 1)
+
+    def test_normalizer_projects_synthetic_statusline_content(self) -> None:
+        data=b"\x1b[31m62 passed, 78 failed in 4.5s ERROR\x1b[0m\n"
+        kind,facts=module.normalize("synthetic/mise-test-statusline.raw.log",data)
+        self.assertEqual(kind,"statusline-test-failure")
+        self.assertEqual((facts["passed"],facts["failed"],facts["duration_seconds"]),(62,78,4.5))
+        self.assertNotEqual(module.normalize("synthetic/mise-test-statusline.raw.log",data.replace(b"78",b"77"))[1],facts)
 
     def test_failed_statusline_attempt_and_render_equivalence_are_explicit(self) -> None:
         failed = next(

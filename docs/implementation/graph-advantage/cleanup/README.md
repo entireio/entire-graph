@@ -103,7 +103,7 @@ Before removing the old objects, regenerate the parity attestation from that
 same external tree; this command verifies source bytes before writing output:
 
 ```sh
-python3 docs/implementation/graph-advantage/cleanup/build_history_cleanup_attestation.py --external-archive-root /path/to/precleanup-archive-tree
+python3 docs/implementation/graph-advantage/cleanup/build_history_cleanup_attestation.py --external-archive-root /path/to/precleanup-archive-tree --external-history-root /path/to/precleanup-history-clone
 ```
 
 ## Verification

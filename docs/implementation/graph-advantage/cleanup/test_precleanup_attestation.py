@@ -33,4 +33,18 @@ class TestPrecleanupAttestation(unittest.TestCase):
             path=Path(tmp)/"attestation.json"; path.write_text(json.dumps(data))
             self.assertTrue(any(error.startswith("correctness combination projection:") for error in verify(REPO,path)))
 
+    def test_platform_projection_mutation_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data=json.loads((HERE/"precleanup-parity-attestation.json").read_text())
+            data["platform_observations"]["records"][0]["projection_sha256"]="0"*64
+            path=Path(tmp)/"attestation.json"; path.write_text(json.dumps(data))
+            self.assertIn("platform observations source-to-projection mapping",verify(REPO,path))
+
+    def test_vm_historical_revision_mutation_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data=json.loads((HERE/"precleanup-parity-attestation.json").read_text())
+            data["vm_statusline_observations"]["source_revision"]="rewritten"
+            path=Path(tmp)/"attestation.json"; path.write_text(json.dumps(data))
+            self.assertIn("vm statusline observations source-to-projection mapping",verify(REPO,path))
+
 if __name__=="__main__": unittest.main()

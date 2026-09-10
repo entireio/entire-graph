@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+from validate_precleanup_attestation import verify as verify_attestation
 
 
 HERE = Path(__file__).resolve().parent
@@ -19,16 +20,20 @@ class PlatformObservationTests(unittest.TestCase):
         self.record = json.loads(SUMMARY.read_text())
 
     def test_summary_is_exact_reprojection_of_checkpointed_wrappers(self) -> None:
-        regenerated = platform_observations.generate(REPO, self.record["source_revision"])
-        self.assertEqual(regenerated, self.record)
+        self.assertEqual(verify_attestation(REPO,HERE/"precleanup-parity-attestation.json"),[])
         self.assertEqual(self.record["observation_count"], 86)
         self.assertEqual(
             sum(item["source_bytes"] for item in self.record["observations"]),
             self.record["source_bytes"],
         )
-        for item in self.record["observations"]:
-            blob = platform_observations.git("cat-file", "blob", item["source_git_blob"], cwd=REPO)
-            self.assertEqual(hashlib.sha256(blob).hexdigest(), item["source_sha256"])
+
+    def test_normalizer_projects_synthetic_transport_content(self) -> None:
+        value={"value":[{"code":"ProvisioningState/succeeded","displayStatus":"Provisioning succeeded","level":"Info","time":"2026-01-01","message":"Upload succeeded"}]}
+        kind,facts=platform_observations.normalize_payload("synthetic/transport.json",value)
+        self.assertEqual(kind,"remote-command-status")
+        self.assertEqual(facts["statuses"][0]["message_facts"]["status_word_counts"]["succeeded"],1)
+        value["value"][0]["message"]="Upload failed"
+        self.assertNotEqual(platform_observations.normalize_payload("synthetic/transport.json",value)[1],facts)
 
     def test_expected_operational_families_are_preserved(self) -> None:
         kinds = {item["kind"] for item in self.record["observations"]}

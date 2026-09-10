@@ -5,6 +5,7 @@ import hashlib, json
 from pathlib import Path
 
 def sha(path: Path) -> str: return hashlib.sha256(path.read_bytes()).hexdigest()
+def canonical(value: object) -> str: return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=False,allow_nan=False).encode()).hexdigest()
 
 def verify(repo: Path, attestation_path: Path) -> list[str]:
     if not attestation_path.is_file(): return ["missing precleanup parity attestation"]
@@ -14,7 +15,7 @@ def verify(repo: Path, attestation_path: Path) -> list[str]:
     if data.get("schema") != "graph-advantage-precleanup-parity-attestation-v1": errors.append("attestation schema")
     archives=data.get("archives",{})
     if archives.get("count") != 65 or archives.get("member_count") != 840 or len(archives.get("records",[])) != 65: errors.append("archive attestation coverage")
-    for section in (data.get("structured",{}),data.get("correctness_queries",{})):
+    for section in (data.get("structured",{}),data.get("correctness_queries",{}),data.get("platform_observations",{}),data.get("vm_statusline_observations",{})):
         path=repo/section.get("public_path","")
         if not path.is_file(): errors.append(f"missing attested public output: {section.get('public_path')}")
         elif sha(path) != section.get("public_sha256"): errors.append(f"attested public output hash: {section.get('public_path')}")
@@ -34,4 +35,14 @@ def verify(repo: Path, attestation_path: Path) -> list[str]:
         for record in combos.get("records",[]):
             actual=byrun.get(record["run_id"])
             if actual is None or actual["response_order"]!=record["response_order"] or actual["projection_sha256"]!=record["projection_sha256"]: errors.append(f"correctness combination projection: {record['run_id']}")
+    for name,count in (("platform_observations",86),("vm_statusline_observations",13)):
+        section=data.get(name,{})
+        try: document=json.loads((repo/section["public_path"]).read_text())
+        except (KeyError,OSError,json.JSONDecodeError):
+            continue
+        records=section.get("records",[])
+        actual=[(r["source_path"],r["source_sha256"],r["source_git_blob"],r["source_bytes"],r["kind"],canonical(r["facts"])) for r in document.get("observations",[])]
+        expected=[(r.get("source_path"),r.get("source_sha256"),r.get("source_git_blob"),r.get("source_bytes"),r.get("kind"),r.get("projection_sha256")) for r in records]
+        if document.get("source_revision")!=section.get("source_revision") or document.get("observation_count")!=count or section.get("observation_count")!=count or document.get("source_bytes")!=section.get("source_bytes") or actual!=expected:
+            errors.append(f"{name.replace('_',' ')} source-to-projection mapping")
     return errors
