@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.10.7-nightly.202609080625.78a655db4.0.20260908145503-8bbfeb6d3901+dirty",
+  "checkpoint_id": "e7ba19ab8c62",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-10T11:22:05.105869Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/cleanup/README.md",
+    "docs/implementation/graph-advantage/cleanup/check_public_artifacts.py",
+    "docs/implementation/graph-advantage/cleanup/history-cleanup-proposal.md",
+    "docs/implementation/graph-advantage/cleanup/test_check_public_artifacts.py"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 584127,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 67863936,
+    "output_tokens": 84723,
+    "api_call_count": 4729
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-10T11:22:03.593411Z",
+    "agent_lines": 207,
+    "agent_removed": 0,
+    "human_added": 88224,
+    "human_modified": 97,
+    "human_removed": 0,
+    "total_committed": 88528,
+    "total_lines_changed": 253186,
+    "agent_percentage": 0.08175807509103979,
+    "metric_version": 2
+  }
+}
