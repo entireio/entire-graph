@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.7-nightly.202609080625.78a655db4.0.20260908145503-8bbfeb6d3901+dirty",
+  "checkpoint_id": "77ecbf2da107",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 4,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/77/ecbf2da107/0/metadata.json",
+      "transcript": "/77/ecbf2da107/0/full.jsonl",
+      "compact_transcript": "/77/ecbf2da107/0/transcript.jsonl",
+      "content_hash": "/77/ecbf2da107/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1026763,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 89362048,
+    "output_tokens": 116355,
+    "api_call_count": 4932
+  }
+}
