@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://entire.io/schemas/graph-advantage-evidence-v1.json",
+  "title": "Graph Advantage canonical evidence run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "kind",
+    "claim_scope",
+    "provenance",
+    "inputs",
+    "workload",
+    "execution",
+    "semantics",
+    "quality",
+    "coverage",
+    "gates",
+    "artifacts",
+    "limitations",
+    "source_records"
+  ],
+  "properties": {
+    "schema_version": {"const": "graph-advantage-evidence/v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "kind": {
+      "enum": ["correctness", "performance", "quality", "diagnostic", "integration", "unknown"]
+    },
+    "claim_scope": {"type": "string", "minLength": 1},
+    "provenance": {"$ref": "#/$defs/provenance"},
+    "inputs": {"type": "object"},
+    "workload": {"type": "object"},
+    "execution": {"$ref": "#/$defs/execution"},
+    "semantics": {"type": "object"},
+    "quality": {"type": "object"},
+    "coverage": {"type": "object"},
+    "gates": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/gate"}
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/artifact"}
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "source_records": {
+      "type": "object",
+      "description": "Sanitized structured source records; never raw command or transport output."
+    },
+    "cases": {"$ref": "#/$defs/cases"},
+    "redactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "reason"],
+        "properties": {
+          "path": {"type": "string"},
+          "reason": {"type": "string"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nullableMeasurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unavailable_reason"],
+      "properties": {
+        "value": {"type": ["integer", "number", "null"], "minimum": 0},
+        "unavailable_reason": {"type": ["string", "null"]}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "binary", "toolchain"],
+      "properties": {
+        "source": {"type": "object"},
+        "binary": {"type": "object"},
+        "toolchain": {"type": "object"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "status_reason", "exits", "timing", "peak_rss_bytes", "cache_bytes", "invocations"],
+      "properties": {
+        "status": {"enum": ["passed", "failed", "partial", "timeout", "not_run", "unknown"]},
+        "status_reason": {"type": "string", "minLength": 1},
+        "exits": {"type": "object"},
+        "timing": {"type": "object"},
+        "peak_rss_bytes": {"$ref": "#/$defs/nullableMeasurement"},
+        "cache_bytes": {"$ref": "#/$defs/nullableMeasurement"},
+        "invocations": {"type": "object"}
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "reason", "evidence_refs"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["passed", "failed", "not_established", "not_applicable", "unknown"]},
+        "reason": {"type": "string"},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "sha256", "media_type", "retention"],
+      "properties": {
+        "role": {"type": "string"},
+        "path": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.).+$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "media_type": {"type": "string"},
+        "retention": {"enum": ["canonical", "source", "legacy", "external_optional"]}
+      }
+    },
+    "cases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "count", "format"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^\\.\\./cases/[a-zA-Z0-9._-]+\\.ndjson$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "count": {"type": "integer", "minimum": 0},
+        "format": {"const": "graph-advantage-evidence-case/v1"}
+      }
+    }
+  }
+}

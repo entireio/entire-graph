@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Summarize independently generated P1.5 component timings; no speedup claim."""
+"""Summarize canonical P1.5 component timings; no speedup claim."""
 import collections
 import json
+import pathlib
 import statistics
 import sys
 
-rows = [json.loads(line) for line in open(sys.argv[1])]
+from canonical_evidence import load_run_and_rows
+
+_, rows = load_run_and_rows(pathlib.Path(sys.argv[1]))
 groups = collections.defaultdict(list)
 for row in rows:
     groups[(row['language'], row['phase'])].append(row)

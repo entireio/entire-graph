@@ -1,0 +1,2280 @@
+{
+  "admitted_head": "6c1ac1d188af711e7a0e7e361bfc3e4f139ee617",
+  "baseline_commit": "3a2a715fad1948e83dc7ebe0d307377ba29e065a",
+  "candidate_bytes": 115653653,
+  "candidate_count": 156,
+  "candidates": [
+    {
+      "additional_replacements": [
+        {
+          "kind": "canonical-run-artifact",
+          "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/advantage-combination-v1.json",
+          "retained_sha256": "3e9126b99509d1ec0a0caa55a3000b2d6cf9c4c20d887ee1802432bc715324ca",
+          "role": "structured-source",
+          "source_record_sha256": "c00f8a36e3ce3cc25c94270cbce1b3e44c48e717443e5848774f50a0b1a2d583"
+        }
+      ],
+      "bytes": 131677,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/advantage-combination-v1.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/advantage-combination-v1.json",
+        "retained_sha256": "3e9126b99509d1ec0a0caa55a3000b2d6cf9c4c20d887ee1802432bc715324ca",
+        "role": "case-source",
+        "source_record_sha256": "c00f8a36e3ce3cc25c94270cbce1b3e44c48e717443e5848774f50a0b1a2d583"
+      },
+      "source_sha256": "c00f8a36e3ce3cc25c94270cbce1b3e44c48e717443e5848774f50a0b1a2d583"
+    },
+    {
+      "additional_replacements": [
+        {
+          "kind": "canonical-run-artifact",
+          "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/advantage-combination-v2.json",
+          "retained_sha256": "a89e2be7c987c179c2284f82d577c1dd40ea9d97e759aa39c8e011a9a30eb81e",
+          "role": "structured-source",
+          "source_record_sha256": "38a43a20e6000d5a991302b22d602edd8b1f98e16d4d566f4d92577ff319a6d1"
+        }
+      ],
+      "bytes": 132896,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/advantage-combination-v2.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/advantage-combination-v2.json",
+        "retained_sha256": "a89e2be7c987c179c2284f82d577c1dd40ea9d97e759aa39c8e011a9a30eb81e",
+        "role": "case-source",
+        "source_record_sha256": "38a43a20e6000d5a991302b22d602edd8b1f98e16d4d566f4d92577ff319a6d1"
+      },
+      "source_sha256": "38a43a20e6000d5a991302b22d602edd8b1f98e16d4d566f4d92577ff319a6d1"
+    },
+    {
+      "bytes": 19782,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/baseline.cpu.pprof",
+      "reason": "raw profile archived outside Git and fully summarized",
+      "replacement": {
+        "external_content_id": "sha256:d575e3c3fb83e976b701eda691ccde01c336224505a842d0ee83986ab62a1953",
+        "kind": "structured-profile-and-content-id",
+        "path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+        "profile_index": 0,
+        "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+        "retained_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f"
+      },
+      "source_sha256": "d575e3c3fb83e976b701eda691ccde01c336224505a842d0ee83986ab62a1953"
+    },
+    {
+      "bytes": 773,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-05ad9842/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-05ad9842.json",
+        "retained_sha256": "9046811f0953f2169c63316517c92e054c3ad68f8bf85c6ff0ecab420197b37f",
+        "role": "structured-source",
+        "source_record_sha256": "33cd219373152bc0c786a4421662ebbdaade2405feaf3961f8a1f174369566ba"
+      },
+      "source_sha256": "33cd219373152bc0c786a4421662ebbdaade2405feaf3961f8a1f174369566ba"
+    },
+    {
+      "bytes": 773,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-0c9e80f5/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-0c9e80f5.json",
+        "retained_sha256": "a7fc3ed0af70cb6ad2cc66e3ace9f3cdc18479efbbef1db2fde3d3cf9d76be3b",
+        "role": "structured-source",
+        "source_record_sha256": "2b997803ec5f858470c4dc27afb7a3be25e22b52fdcf35d3da724acbbdd1551e"
+      },
+      "source_sha256": "2b997803ec5f858470c4dc27afb7a3be25e22b52fdcf35d3da724acbbdd1551e"
+    },
+    {
+      "bytes": 490,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-12574522-retry-1/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-12574522-retry-1.json",
+        "retained_sha256": "0d31e1eb30fcccb9db4a5c7655b09a2d498f971217271259698f1a4532d6403c",
+        "role": "structured-source",
+        "source_record_sha256": "afc9e4e717b957223deb544b4fd8a4aed6f95be96f0ca70701478001052f895f"
+      },
+      "source_sha256": "afc9e4e717b957223deb544b4fd8a4aed6f95be96f0ca70701478001052f895f"
+    },
+    {
+      "bytes": 2312,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-12574522-retry-2/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-12574522-retry-2.json",
+        "retained_sha256": "0259dab936ef34eaafc7bc72f829aeed865004de909e3201a3d6728fe554802a",
+        "role": "structured-source",
+        "source_record_sha256": "4125e32391c2f905e21809ad67eddf53837f0ca4607359042973eac3c9cc1881"
+      },
+      "source_sha256": "4125e32391c2f905e21809ad67eddf53837f0ca4607359042973eac3c9cc1881"
+    },
+    {
+      "bytes": 620,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-12574522/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-12574522.json",
+        "retained_sha256": "e5fb764e992b5b7eef29ee7ce7df2bd72ced275aac443d2d487d05a3b085d867",
+        "role": "structured-source",
+        "source_record_sha256": "2f54580f2e62a022394be8baa559e86e33109dd669f877db09260a1402b0c0f0"
+      },
+      "source_sha256": "2f54580f2e62a022394be8baa559e86e33109dd669f877db09260a1402b0c0f0"
+    },
+    {
+      "bytes": 431,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-1c0b8e24/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-1c0b8e24.json",
+        "retained_sha256": "1973ebe94c20cafe6cb41d0046fd53c628c9e89c171073d5705f346611e20048",
+        "role": "structured-source",
+        "source_record_sha256": "ca0d0512498f876a02665836e89902334c38be115d74d2fd6e3d54d265eeae2e"
+      },
+      "source_sha256": "ca0d0512498f876a02665836e89902334c38be115d74d2fd6e3d54d265eeae2e"
+    },
+    {
+      "bytes": 686,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-1f20f694/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-1f20f694.json",
+        "retained_sha256": "2f10c364baae1459f38a25867c6c923eb4cd1b9ebb0b8df449bba0da87b46d6e",
+        "role": "structured-source",
+        "source_record_sha256": "d2d56545a48b6a6483391a486de3730f258466cab03707adb67448324dc85562"
+      },
+      "source_sha256": "d2d56545a48b6a6483391a486de3730f258466cab03707adb67448324dc85562"
+    },
+    {
+      "bytes": 1555,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-25887f69-linux-full/result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-25887f69-linux-full.json",
+        "retained_sha256": "2fe544b491c336a900d55a144df4e39b54073b60ff1f557c62a177adcc3c5eb8",
+        "role": "structured-source",
+        "source_record_sha256": "6f6ffdddfd96781343eba0b0def6c04d4054411d7b493f4e1f2c70b86cf85e4e"
+      },
+      "source_sha256": "6f6ffdddfd96781343eba0b0def6c04d4054411d7b493f4e1f2c70b86cf85e4e"
+    },
+    {
+      "bytes": 540,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-25887f69-linux-full/source-provenance.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-25887f69-linux-full.json",
+        "retained_sha256": "2fe544b491c336a900d55a144df4e39b54073b60ff1f557c62a177adcc3c5eb8",
+        "role": "structured-source",
+        "source_record_sha256": "453b355204c762587fc052edba8c2429afa0857d08967e63e0506bbac8a4f608"
+      },
+      "source_sha256": "453b355204c762587fc052edba8c2429afa0857d08967e63e0506bbac8a4f608"
+    },
+    {
+      "bytes": 808,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-450bede9/subprocess-result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-450bede9.json",
+        "retained_sha256": "163575778e238eec0c7a14a5fffdb5484b7c502e3a2cde3a0bcc3a04220bbf54",
+        "role": "structured-source",
+        "source_record_sha256": "87fec69924cc92e98b7e9ba69add874edf69c80d344961eaeae6fc8350d04d86"
+      },
+      "source_sha256": "87fec69924cc92e98b7e9ba69add874edf69c80d344961eaeae6fc8350d04d86"
+    },
+    {
+      "bytes": 431,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-6cf92c9c/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6cf92c9c.json",
+        "retained_sha256": "d1627083222d2d405877a56ffa3cc21f4aeae8763b4fd4a4b72159a84d3b7b2a",
+        "role": "structured-source",
+        "source_record_sha256": "3cdd02a2aa98bffa13a639be94c967438877169f4719190fc995297f065e05b3"
+      },
+      "source_sha256": "3cdd02a2aa98bffa13a639be94c967438877169f4719190fc995297f065e05b3"
+    },
+    {
+      "bytes": 878,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-cpu4/subprocess-result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a-cpu4.json",
+        "retained_sha256": "6dd854d30b907d2ac6a8fa9d4f5c9ef72600122753094cf227f3521ce7ad2e28",
+        "role": "structured-source",
+        "source_record_sha256": "464577b3088f37dcc3deae4f727f33a0e8aa6307b081d6c30e7ea24174de21af"
+      },
+      "source_sha256": "464577b3088f37dcc3deae4f727f33a0e8aa6307b081d6c30e7ea24174de21af"
+    },
+    {
+      "bytes": 186,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-cache-fixtures-r2/stage-results.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a-linux-cache-fixtures-r2.json",
+        "retained_sha256": "c0a6e593115ae2a0d9a18f64d9d9fcc04e10b054b54bff10d89abb14b4ec2441",
+        "role": "structured-source",
+        "source_record_sha256": "1d5720773af57986a2c66bb637e503721c17c5a9fe8d3cb2b306d01762eaced3"
+      },
+      "source_sha256": "1d5720773af57986a2c66bb637e503721c17c5a9fe8d3cb2b306d01762eaced3"
+    },
+    {
+      "bytes": 116,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-cache-fixtures-r2/test-counts.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a-linux-cache-fixtures-r2.json",
+        "retained_sha256": "c0a6e593115ae2a0d9a18f64d9d9fcc04e10b054b54bff10d89abb14b4ec2441",
+        "role": "structured-source",
+        "source_record_sha256": "7b50e463bed05242331a2f61a1c3c5330668b68dfdbf7b495273e5560aa2d636"
+      },
+      "source_sha256": "7b50e463bed05242331a2f61a1c3c5330668b68dfdbf7b495273e5560aa2d636"
+    },
+    {
+      "bytes": 2071,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/attempt-r1/result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a-linux-full.json",
+        "retained_sha256": "657201b2cdfaa0365744d397b41d204ada09981dd6d301b4a16897616b7dcb68",
+        "role": "structured-source",
+        "source_record_sha256": "719bea662fbd9125379a6403c2a7db1e5e72f54eb1c84354c95df4567a99f659"
+      },
+      "source_sha256": "719bea662fbd9125379a6403c2a7db1e5e72f54eb1c84354c95df4567a99f659"
+    },
+    {
+      "bytes": 702,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/source-provenance.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a-linux-full.json",
+        "retained_sha256": "657201b2cdfaa0365744d397b41d204ada09981dd6d301b4a16897616b7dcb68",
+        "role": "structured-source",
+        "source_record_sha256": "bf3ef88769de8a977865685c259c759a96efcba8b57e928ca80102dccd82cb58"
+      },
+      "source_sha256": "bf3ef88769de8a977865685c259c759a96efcba8b57e928ca80102dccd82cb58"
+    },
+    {
+      "bytes": 867,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a/subprocess-result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a.json",
+        "retained_sha256": "e133ee91a536292bc0c49d42dbda8d45d42e4ad37716b847a301bd761becfb5a",
+        "role": "structured-source",
+        "source_record_sha256": "79d7801a136359b60885a5a7439a3e794df1f33bad817a7b1a0a218eaa74e7ee"
+      },
+      "source_sha256": "79d7801a136359b60885a5a7439a3e794df1f33bad817a7b1a0a218eaa74e7ee"
+    },
+    {
+      "bytes": 3963,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-8763b0d8/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-8763b0d8.json",
+        "retained_sha256": "4ff5cadde9cbcc7dc7df3981f316939c68d3e6dd1f6004c88f8f3d9d1bc53165",
+        "role": "structured-source",
+        "source_record_sha256": "977224cda01dc1274a83e7f2dda2d30e97c1e85d7b4cf961bce25d8faec4cc47"
+      },
+      "source_sha256": "977224cda01dc1274a83e7f2dda2d30e97c1e85d7b4cf961bce25d8faec4cc47"
+    },
+    {
+      "bytes": 509,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-8c8b075d/subprocess-result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-8c8b075d.json",
+        "retained_sha256": "6666ca77d0a07d15b93db6e014e0fb79746bbb2598dc8e42aaf6d602c4867eae",
+        "role": "structured-source",
+        "source_record_sha256": "84af7aff1e7653f4938cb7ff477404cf0174ea537b0627f135577ba2f0a1f611"
+      },
+      "source_sha256": "84af7aff1e7653f4938cb7ff477404cf0174ea537b0627f135577ba2f0a1f611"
+    },
+    {
+      "bytes": 1354,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-8c8b075d/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-8c8b075d.json",
+        "retained_sha256": "6666ca77d0a07d15b93db6e014e0fb79746bbb2598dc8e42aaf6d602c4867eae",
+        "role": "structured-source",
+        "source_record_sha256": "3eb7282a8f09587bf9e78cfd493278d732d058fb189b192f0333868d4c4505c6"
+      },
+      "source_sha256": "3eb7282a8f09587bf9e78cfd493278d732d058fb189b192f0333868d4c4505c6"
+    },
+    {
+      "bytes": 505,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-90ac3e16-retry-1/subprocess-result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-90ac3e16-retry-1.json",
+        "retained_sha256": "6695bd78819e724953a1e490e4b7e7a5dfd0ca04023cb1de7e0bff32310e50cf",
+        "role": "structured-source",
+        "source_record_sha256": "0f9eede60a808811a43fc08047f75f100c57473c392ad8780e508163bba4dcaa"
+      },
+      "source_sha256": "0f9eede60a808811a43fc08047f75f100c57473c392ad8780e508163bba4dcaa"
+    },
+    {
+      "bytes": 467,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-90ac3e16/subprocess-result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-90ac3e16.json",
+        "retained_sha256": "412083dd1ac74b185a33db5d307bb9420dab3a9208e78197bf941ad6cc613f1e",
+        "role": "structured-source",
+        "source_record_sha256": "3b1f87c00285875b48d80af36504380a111aa5880d29d89ef8d20219ed2b9d5c"
+      },
+      "source_sha256": "3b1f87c00285875b48d80af36504380a111aa5880d29d89ef8d20219ed2b9d5c"
+    },
+    {
+      "bytes": 2764,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-950567a3-linux-full-01/result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-950567a3-linux-full-01.json",
+        "retained_sha256": "147c4c154b283359ced8431370aeeb9d37fc2a73d6a14b6ae86a2af6d7929b26",
+        "role": "structured-source",
+        "source_record_sha256": "db88b216087bb19eca5702db6eefa9add8644406c169155bde77963c77c85db5"
+      },
+      "source_sha256": "db88b216087bb19eca5702db6eefa9add8644406c169155bde77963c77c85db5"
+    },
+    {
+      "bytes": 734,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-950567a3-linux-full-01/source-provenance.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-950567a3-linux-full-01.json",
+        "retained_sha256": "147c4c154b283359ced8431370aeeb9d37fc2a73d6a14b6ae86a2af6d7929b26",
+        "role": "structured-source",
+        "source_record_sha256": "38da6a1eb9ef8be7606213f5d396668e65c9400f78866e817f187a6bdb465e02"
+      },
+      "source_sha256": "38da6a1eb9ef8be7606213f5d396668e65c9400f78866e817f187a6bdb465e02"
+    },
+    {
+      "bytes": 963,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-aab356ae/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-aab356ae.json",
+        "retained_sha256": "97d00d8e2cfc4588638fa205a447ca1b9f19ea808320628947a0cfcefe747d34",
+        "role": "structured-source",
+        "source_record_sha256": "f72429db2d8be421d42bd16f10ac8809565109ce1ab24120be2e37c9c6ff4b0e"
+      },
+      "source_sha256": "f72429db2d8be421d42bd16f10ac8809565109ce1ab24120be2e37c9c6ff4b0e"
+    },
+    {
+      "bytes": 773,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-d793b2be/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-d793b2be.json",
+        "retained_sha256": "14d1ea36151a0ce1b181e0a760461acf1f6c46a5cd1428b01da941c8a0c53d6d",
+        "role": "structured-source",
+        "source_record_sha256": "099f338240a1bebd350e4cdb6489d965ef28351f34da736a1587bd86ef55376f"
+      },
+      "source_sha256": "099f338240a1bebd350e4cdb6489d965ef28351f34da736a1587bd86ef55376f"
+    },
+    {
+      "bytes": 3447,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-effa358f-linux-full-01/result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-effa358f-linux-full-01.json",
+        "retained_sha256": "0b47127bd6f836cc4a137f9914da87bdace71d17a5c13f05d2202f2f3d830fe3",
+        "role": "structured-source",
+        "source_record_sha256": "06e439d6a70acce9063f45625c9b143947174009231b23e05cae92e9b1f8315d"
+      },
+      "source_sha256": "06e439d6a70acce9063f45625c9b143947174009231b23e05cae92e9b1f8315d"
+    },
+    {
+      "bytes": 734,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/check-effa358f-linux-full-01/source-provenance.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-effa358f-linux-full-01.json",
+        "retained_sha256": "0b47127bd6f836cc4a137f9914da87bdace71d17a5c13f05d2202f2f3d830fe3",
+        "role": "structured-source",
+        "source_record_sha256": "a9fd2be5bb1871af2610da0d4e4c33e83b8217c6b3036770e9f7078d75e6797c"
+      },
+      "source_sha256": "a9fd2be5bb1871af2610da0d4e4c33e83b8217c6b3036770e9f7078d75e6797c"
+    },
+    {
+      "additional_replacements": [
+        {
+          "kind": "canonical-run-artifact",
+          "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/compiler-quality-v1.json",
+          "retained_sha256": "07b4c7cacb3d6c85fa3fa387e5be41fe5a0d53dae5682f5ba8acaeb2f4f8549e",
+          "role": "structured-source",
+          "source_record_sha256": "3d9d645947390b9d91a97f6eec1f3e5a586e64ff3dcdadc4daf3d90f6f4439a9"
+        }
+      ],
+      "bytes": 32422,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/compiler-quality-v1.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/compiler-quality-v1.json",
+        "retained_sha256": "07b4c7cacb3d6c85fa3fa387e5be41fe5a0d53dae5682f5ba8acaeb2f4f8549e",
+        "role": "case-source",
+        "source_record_sha256": "3d9d645947390b9d91a97f6eec1f3e5a586e64ff3dcdadc4daf3d90f6f4439a9"
+      },
+      "source_sha256": "3d9d645947390b9d91a97f6eec1f3e5a586e64ff3dcdadc4daf3d90f6f4439a9"
+    },
+    {
+      "bytes": 64407,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/correctness-05ad9842-20260906/queries.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-05ad9842-20260906.json",
+        "retained_sha256": "1d2bd2050d3f1c7bb35b405fe420adc2ee561647a52f2dd752aa1d94945a8710",
+        "role": "case-source",
+        "source_record_sha256": "c31c2f613c79c61f8aeb9daa72ec1c99e29d0cc7caebc792fa646d2bdd7647b6"
+      },
+      "source_sha256": "c31c2f613c79c61f8aeb9daa72ec1c99e29d0cc7caebc792fa646d2bdd7647b6"
+    },
+    {
+      "bytes": 1532,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/correctness-05ad9842-20260906/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-05ad9842-20260906.json",
+        "retained_sha256": "1d2bd2050d3f1c7bb35b405fe420adc2ee561647a52f2dd752aa1d94945a8710",
+        "role": "structured-source",
+        "source_record_sha256": "03524407c01eee2945112d4fd7666e3b34b493d7ccfc9e98e92bec8b3f2c9d85"
+      },
+      "source_sha256": "03524407c01eee2945112d4fd7666e3b34b493d7ccfc9e98e92bec8b3f2c9d85"
+    },
+    {
+      "bytes": 64412,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/correctness-0c9e80f5-20260906/raw/queries.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-0c9e80f5-20260906.json",
+        "retained_sha256": "f9e923d410d1cff73348ad8aa94de61aa7673e35e4722d856362921b96b5dd05",
+        "role": "case-source",
+        "source_record_sha256": "b9e7b0600d6c5ceace208eff2f73784116965dfda9bc5f5c6ffc1cecd9b70b99"
+      },
+      "source_sha256": "b9e7b0600d6c5ceace208eff2f73784116965dfda9bc5f5c6ffc1cecd9b70b99"
+    },
+    {
+      "bytes": 1405,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/correctness-0c9e80f5-20260906/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-0c9e80f5-20260906.json",
+        "retained_sha256": "f9e923d410d1cff73348ad8aa94de61aa7673e35e4722d856362921b96b5dd05",
+        "role": "structured-source",
+        "source_record_sha256": "6ca7ba72a7b414e3b210c0bb0c95d763929615d827ebd15d36fd930596e59bc2"
+      },
+      "source_sha256": "6ca7ba72a7b414e3b210c0bb0c95d763929615d827ebd15d36fd930596e59bc2"
+    },
+    {
+      "bytes": 64412,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/correctness-1c0b8e24-20260906/raw/queries.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-1c0b8e24-20260906.json",
+        "retained_sha256": "f5335a411550dafa4045375aba9cdbec21887ee6fff2b6857780ec5e8f11e896",
+        "role": "case-source",
+        "source_record_sha256": "09c50407bcd3fd1849a873876794e19c7f94db2fe645d7c8c812beb38be3026d"
+      },
+      "source_sha256": "09c50407bcd3fd1849a873876794e19c7f94db2fe645d7c8c812beb38be3026d"
+    },
+    {
+      "bytes": 1399,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/correctness-1c0b8e24-20260906/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-1c0b8e24-20260906.json",
+        "retained_sha256": "f5335a411550dafa4045375aba9cdbec21887ee6fff2b6857780ec5e8f11e896",
+        "role": "structured-source",
+        "source_record_sha256": "cd690aab2fa5ac8e6a672a2274a69371b7e14d8380919f857b08df4f33745b04"
+      },
+      "source_sha256": "cd690aab2fa5ac8e6a672a2274a69371b7e14d8380919f857b08df4f33745b04"
+    },
+    {
+      "bytes": 64412,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/correctness-6cf92c9c-20260906/raw/queries.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-6cf92c9c-20260906.json",
+        "retained_sha256": "922d1a5128d3add8ce8863a3004329689ae22f5a34d243ea3bcd56340836521f",
+        "role": "case-source",
+        "source_record_sha256": "0b419e9e93be8a90fc4ce1cb5fb7f38b6e28926e06c4b2a4a28878aa4a582717"
+      },
+      "source_sha256": "0b419e9e93be8a90fc4ce1cb5fb7f38b6e28926e06c4b2a4a28878aa4a582717"
+    },
+    {
+      "bytes": 1399,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/correctness-6cf92c9c-20260906/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-6cf92c9c-20260906.json",
+        "retained_sha256": "922d1a5128d3add8ce8863a3004329689ae22f5a34d243ea3bcd56340836521f",
+        "role": "structured-source",
+        "source_record_sha256": "49e57108a3c3137e5f7cd87debf9d10ddfe3c749c2bda621e762bcb00a5cba36"
+      },
+      "source_sha256": "49e57108a3c3137e5f7cd87debf9d10ddfe3c749c2bda621e762bcb00a5cba36"
+    },
+    {
+      "bytes": 64412,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/correctness-d793b2be-20260906/raw/queries.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-d793b2be-20260906.json",
+        "retained_sha256": "b8ca2878413ff3fff12de753473f425b6ceb3be685117e5f3e02a8230d09d2df",
+        "role": "case-source",
+        "source_record_sha256": "44ec45d128f4ed6cd9a969829e44e116a560436a5f94140baa34a907d34d0122"
+      },
+      "source_sha256": "44ec45d128f4ed6cd9a969829e44e116a560436a5f94140baa34a907d34d0122"
+    },
+    {
+      "bytes": 1365,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/correctness-d793b2be-20260906/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-d793b2be-20260906.json",
+        "retained_sha256": "b8ca2878413ff3fff12de753473f425b6ceb3be685117e5f3e02a8230d09d2df",
+        "role": "structured-source",
+        "source_record_sha256": "78cf63c4db3ee0adeed25980b13b55811b73a0aef029ca4477b167ffb375024b"
+      },
+      "source_sha256": "78cf63c4db3ee0adeed25980b13b55811b73a0aef029ca4477b167ffb375024b"
+    },
+    {
+      "bytes": 5018,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522-r2.json",
+        "retained_sha256": "fabf6775d9d54cfadd835d9f5beb1055e927beb87e9a62c6e6f9aea6838c6db4",
+        "role": "structured-source",
+        "source_record_sha256": "4aef960b6ed0eaad356340c7b962a9a48aede06d92716f60df45f3aebb33f12f"
+      },
+      "source_sha256": "4aef960b6ed0eaad356340c7b962a9a48aede06d92716f60df45f3aebb33f12f"
+    },
+    {
+      "bytes": 912,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/controller/raw/output/identity.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522-r2.json",
+        "retained_sha256": "fabf6775d9d54cfadd835d9f5beb1055e927beb87e9a62c6e6f9aea6838c6db4",
+        "role": "structured-source",
+        "source_record_sha256": "fb90ca5dcf52c4dd939e75adcb1b86683e93911b81b8f760e9aa3680d3719e32"
+      },
+      "source_sha256": "fb90ca5dcf52c4dd939e75adcb1b86683e93911b81b8f760e9aa3680d3719e32"
+    },
+    {
+      "bytes": 872,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/controller/raw/output/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522-r2.json",
+        "retained_sha256": "fabf6775d9d54cfadd835d9f5beb1055e927beb87e9a62c6e6f9aea6838c6db4",
+        "role": "structured-source",
+        "source_record_sha256": "f12570a69ebdec827427e36bf384735541b5be81a61d6b0828343a2c56982e8e"
+      },
+      "source_sha256": "f12570a69ebdec827427e36bf384735541b5be81a61d6b0828343a2c56982e8e"
+    },
+    {
+      "bytes": 992,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/controller/raw/output/outcome.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522-r2.json",
+        "retained_sha256": "fabf6775d9d54cfadd835d9f5beb1055e927beb87e9a62c6e6f9aea6838c6db4",
+        "role": "structured-source",
+        "source_record_sha256": "5be7030eac17d3990876d3aef241c56971932b7fc8c6d9f8e3b49799bd825e67"
+      },
+      "source_sha256": "5be7030eac17d3990876d3aef241c56971932b7fc8c6d9f8e3b49799bd825e67"
+    },
+    {
+      "bytes": 517,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/controller/raw/output/process.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522-r2.json",
+        "retained_sha256": "fabf6775d9d54cfadd835d9f5beb1055e927beb87e9a62c6e6f9aea6838c6db4",
+        "role": "structured-source",
+        "source_record_sha256": "566559a8daf606bfd06929147763188f76c70af8478e93c78f9a4a21135d5c13"
+      },
+      "source_sha256": "566559a8daf606bfd06929147763188f76c70af8478e93c78f9a4a21135d5c13"
+    },
+    {
+      "bytes": 3296,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/full-check-gate.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522-r2.json",
+        "retained_sha256": "fabf6775d9d54cfadd835d9f5beb1055e927beb87e9a62c6e6f9aea6838c6db4",
+        "role": "structured-source",
+        "source_record_sha256": "f35cc0e128742bf068e69815e650119be9f52e5f2715528fa504c2d37bbf11e3"
+      },
+      "source_sha256": "f35cc0e128742bf068e69815e650119be9f52e5f2715528fa504c2d37bbf11e3"
+    },
+    {
+      "bytes": 14139251,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/source.tar.gz",
+      "reason": "exact Git source subset is reconstructible",
+      "replacement": {
+        "archive_sha256": "2e4a1a4f6d2fad2fffb6b7b68ee8bd3403a83d964505c2f09db77a578ce8aa34",
+        "kind": "canonical-source-subset",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/sources.json",
+        "retained_sha256": "daf877fa0659b296e16192302cca2914e86d6b201f643029a7d2cbb097b7ddeb",
+        "source_commit": "125745228645b5b605efc3cb1b8c6075e8c14a4e",
+        "unique_subset_index": 0
+      },
+      "source_sha256": "2e4a1a4f6d2fad2fffb6b7b68ee8bd3403a83d964505c2f09db77a578ce8aa34"
+    },
+    {
+      "bytes": 3167,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522-r2.json",
+        "retained_sha256": "fabf6775d9d54cfadd835d9f5beb1055e927beb87e9a62c6e6f9aea6838c6db4",
+        "role": "structured-source",
+        "source_record_sha256": "b6a0578ea8374ff4b6e42359180ccfd7e6ea36753d9c1948b1497a0ce01f158c"
+      },
+      "source_sha256": "b6a0578ea8374ff4b6e42359180ccfd7e6ea36753d9c1948b1497a0ce01f158c"
+    },
+    {
+      "bytes": 5018,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522.json",
+        "retained_sha256": "07028054c546890095bc76a7c9ad6393dc481cb789f740458c4e4b0d158c3d20",
+        "role": "structured-source",
+        "source_record_sha256": "4aef960b6ed0eaad356340c7b962a9a48aede06d92716f60df45f3aebb33f12f"
+      },
+      "source_sha256": "4aef960b6ed0eaad356340c7b962a9a48aede06d92716f60df45f3aebb33f12f"
+    },
+    {
+      "bytes": 3296,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/full-check-gate.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522.json",
+        "retained_sha256": "07028054c546890095bc76a7c9ad6393dc481cb789f740458c4e4b0d158c3d20",
+        "role": "structured-source",
+        "source_record_sha256": "f35cc0e128742bf068e69815e650119be9f52e5f2715528fa504c2d37bbf11e3"
+      },
+      "source_sha256": "f35cc0e128742bf068e69815e650119be9f52e5f2715528fa504c2d37bbf11e3"
+    },
+    {
+      "bytes": 14139251,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/source.tar.gz",
+      "reason": "exact Git source subset is reconstructible",
+      "replacement": {
+        "archive_sha256": "2e4a1a4f6d2fad2fffb6b7b68ee8bd3403a83d964505c2f09db77a578ce8aa34",
+        "kind": "canonical-source-subset",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/sources.json",
+        "retained_sha256": "daf877fa0659b296e16192302cca2914e86d6b201f643029a7d2cbb097b7ddeb",
+        "source_commit": "125745228645b5b605efc3cb1b8c6075e8c14a4e",
+        "unique_subset_index": 0
+      },
+      "source_sha256": "2e4a1a4f6d2fad2fffb6b7b68ee8bd3403a83d964505c2f09db77a578ce8aa34"
+    },
+    {
+      "bytes": 2798,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522.json",
+        "retained_sha256": "07028054c546890095bc76a7c9ad6393dc481cb789f740458c4e4b0d158c3d20",
+        "role": "structured-source",
+        "source_record_sha256": "257cd055ec467fc92b88787433c31c8e93eab653db786535f3d39abb15940122"
+      },
+      "source_sha256": "257cd055ec467fc92b88787433c31c8e93eab653db786535f3d39abb15940122"
+    },
+    {
+      "bytes": 3472,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-1f20f694.json",
+        "retained_sha256": "fe83196b4e452fcaadcb4357d9d70a86e14ea843fe2cba425ae9321d05ab1252",
+        "role": "structured-source",
+        "source_record_sha256": "deb9384cfe6cc7e666ad65104799efb23e3ff90a2cedc94a7cd6c8a33101b6a7"
+      },
+      "source_sha256": "deb9384cfe6cc7e666ad65104799efb23e3ff90a2cedc94a7cd6c8a33101b6a7"
+    },
+    {
+      "bytes": 99209,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/raw/output/diagnostics.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-1f20f694.json",
+        "retained_sha256": "fe83196b4e452fcaadcb4357d9d70a86e14ea843fe2cba425ae9321d05ab1252",
+        "role": "structured-source",
+        "source_record_sha256": "79be6d6d2c2fafa495e9306fe93e4f67b8486d4b5af37f2aea2ceefe69ae038c"
+      },
+      "source_sha256": "79be6d6d2c2fafa495e9306fe93e4f67b8486d4b5af37f2aea2ceefe69ae038c"
+    },
+    {
+      "bytes": 1359,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/raw/output/identity.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-1f20f694.json",
+        "retained_sha256": "fe83196b4e452fcaadcb4357d9d70a86e14ea843fe2cba425ae9321d05ab1252",
+        "role": "structured-source",
+        "source_record_sha256": "a44824384f1793f680e088bf9fed8d4166cb0e0415b1007901982260d46b92c6"
+      },
+      "source_sha256": "a44824384f1793f680e088bf9fed8d4166cb0e0415b1007901982260d46b92c6"
+    },
+    {
+      "bytes": 876,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/raw/output/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-1f20f694.json",
+        "retained_sha256": "fe83196b4e452fcaadcb4357d9d70a86e14ea843fe2cba425ae9321d05ab1252",
+        "role": "structured-source",
+        "source_record_sha256": "55c7e6f4e4ed2432f18f0a3dabc04f1216719a0f8d37cc70688f50b6ac6a0cc5"
+      },
+      "source_sha256": "55c7e6f4e4ed2432f18f0a3dabc04f1216719a0f8d37cc70688f50b6ac6a0cc5"
+    },
+    {
+      "bytes": 15950,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/raw/output/observation.ndjson",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-1f20f694.json",
+        "retained_sha256": "fe83196b4e452fcaadcb4357d9d70a86e14ea843fe2cba425ae9321d05ab1252",
+        "role": "case-source",
+        "source_record_sha256": "53d762c8c23b9d49ff182f766f74da217be20b575437708028ff34bbdef9460d"
+      },
+      "source_sha256": "53d762c8c23b9d49ff182f766f74da217be20b575437708028ff34bbdef9460d"
+    },
+    {
+      "bytes": 596,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/raw/output/outcome.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-1f20f694.json",
+        "retained_sha256": "fe83196b4e452fcaadcb4357d9d70a86e14ea843fe2cba425ae9321d05ab1252",
+        "role": "structured-source",
+        "source_record_sha256": "f008c5e0323cd79d19092e3a431440e395463004df84eca996af9d0a8e8647fb"
+      },
+      "source_sha256": "f008c5e0323cd79d19092e3a431440e395463004df84eca996af9d0a8e8647fb"
+    },
+    {
+      "bytes": 507,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/raw/output/process.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-1f20f694.json",
+        "retained_sha256": "fe83196b4e452fcaadcb4357d9d70a86e14ea843fe2cba425ae9321d05ab1252",
+        "role": "structured-source",
+        "source_record_sha256": "504358a3f6f26b38d55b7f28174e5e829c96bdf0c4c0dde41da8e02c97cfcd84"
+      },
+      "source_sha256": "504358a3f6f26b38d55b7f28174e5e829c96bdf0c4c0dde41da8e02c97cfcd84"
+    },
+    {
+      "bytes": 1880,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-25887f69.json",
+        "retained_sha256": "2a230c90e36790cfc151aa28edcfd42ea4a960bf23860246ff89e45d4e545130",
+        "role": "structured-source",
+        "source_record_sha256": "9aa4393c5aced7f6a74978d1dd7ff7bbeb0a865b8736b4a7b441a68cfaf12adb"
+      },
+      "source_sha256": "9aa4393c5aced7f6a74978d1dd7ff7bbeb0a865b8736b4a7b441a68cfaf12adb"
+    },
+    {
+      "bytes": 948,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/raw/output/identity.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-25887f69.json",
+        "retained_sha256": "2a230c90e36790cfc151aa28edcfd42ea4a960bf23860246ff89e45d4e545130",
+        "role": "structured-source",
+        "source_record_sha256": "986b559b7166f3b4538653ce7e4bd5b94f6e897d0a021ab8d1222c30376af186"
+      },
+      "source_sha256": "986b559b7166f3b4538653ce7e4bd5b94f6e897d0a021ab8d1222c30376af186"
+    },
+    {
+      "bytes": 874,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/raw/output/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-25887f69.json",
+        "retained_sha256": "2a230c90e36790cfc151aa28edcfd42ea4a960bf23860246ff89e45d4e545130",
+        "role": "structured-source",
+        "source_record_sha256": "f2d6e98936cf253ca16c062629b41fd67add74fcb5bb88978e192defeb88e32f"
+      },
+      "source_sha256": "f2d6e98936cf253ca16c062629b41fd67add74fcb5bb88978e192defeb88e32f"
+    },
+    {
+      "bytes": 1907,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/raw/output/outcome.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-25887f69.json",
+        "retained_sha256": "2a230c90e36790cfc151aa28edcfd42ea4a960bf23860246ff89e45d4e545130",
+        "role": "structured-source",
+        "source_record_sha256": "6765fab38ebbfe2311a349e84b33d4a1a9ece2c89a8aadcd1397405c85bab21c"
+      },
+      "source_sha256": "6765fab38ebbfe2311a349e84b33d4a1a9ece2c89a8aadcd1397405c85bab21c"
+    },
+    {
+      "bytes": 534,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/raw/output/process.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-25887f69.json",
+        "retained_sha256": "2a230c90e36790cfc151aa28edcfd42ea4a960bf23860246ff89e45d4e545130",
+        "role": "structured-source",
+        "source_record_sha256": "e76a1db7f0b5674c6f4f59f8da37641cf91eef7f5e0d40f729b3c0bf7b8ef1f4"
+      },
+      "source_sha256": "e76a1db7f0b5674c6f4f59f8da37641cf91eef7f5e0d40f729b3c0bf7b8ef1f4"
+    },
+    {
+      "bytes": 58516,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/raw/output/relations-cpu.pprof",
+      "reason": "raw profile archived outside Git and fully summarized",
+      "replacement": {
+        "external_content_id": "sha256:49405552d91dfd00ce164c652d17bf05cb1e2c20d09a58642b4065a7e9742bb4",
+        "kind": "canonical-profile-summary-ref",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-25887f69.json",
+        "profile_id": "25887f69",
+        "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+        "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+        "retained_sha256": "2a230c90e36790cfc151aa28edcfd42ea4a960bf23860246ff89e45d4e545130"
+      },
+      "source_sha256": "49405552d91dfd00ce164c652d17bf05cb1e2c20d09a58642b4065a7e9742bb4"
+    },
+    {
+      "bytes": 2434,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/runtime-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-25887f69.json",
+        "retained_sha256": "2a230c90e36790cfc151aa28edcfd42ea4a960bf23860246ff89e45d4e545130",
+        "role": "structured-source",
+        "source_record_sha256": "0795b906bf1d18d10b238d6b18d7370d28dc6875644478a6e8a27159399657ae"
+      },
+      "source_sha256": "0795b906bf1d18d10b238d6b18d7370d28dc6875644478a6e8a27159399657ae"
+    },
+    {
+      "bytes": 4330,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/full-check-gate.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-25887f69.json",
+        "retained_sha256": "2a230c90e36790cfc151aa28edcfd42ea4a960bf23860246ff89e45d4e545130",
+        "role": "structured-source",
+        "source_record_sha256": "95651f37e5bdcda7a4d869251ca17b50466f07056f131cd1fc13b849cf462794"
+      },
+      "source_sha256": "95651f37e5bdcda7a4d869251ca17b50466f07056f131cd1fc13b849cf462794"
+    },
+    {
+      "bytes": 860,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-25887f69.json",
+        "retained_sha256": "2a230c90e36790cfc151aa28edcfd42ea4a960bf23860246ff89e45d4e545130",
+        "role": "structured-source",
+        "source_record_sha256": "4aa7e15101a6b741d531957cbe2b24d5342ab973812dd3785204cc1edeb220c6"
+      },
+      "source_sha256": "4aa7e15101a6b741d531957cbe2b24d5342ab973812dd3785204cc1edeb220c6"
+    },
+    {
+      "bytes": 3223,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-450bede9.json",
+        "retained_sha256": "b9e62bd01caa55fa852f40546fcc823e78a4427fbca2f9470dd22cd178e69f49",
+        "role": "structured-source",
+        "source_record_sha256": "80e1dafd3a861be1cbba67fec08fd717c89cd2860dd3502aab947fe73c7fe546"
+      },
+      "source_sha256": "80e1dafd3a861be1cbba67fec08fd717c89cd2860dd3502aab947fe73c7fe546"
+    },
+    {
+      "bytes": 911,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/raw/output/identity.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-450bede9.json",
+        "retained_sha256": "b9e62bd01caa55fa852f40546fcc823e78a4427fbca2f9470dd22cd178e69f49",
+        "role": "structured-source",
+        "source_record_sha256": "2b764fc8b74eb348b84eba086cdd4740dd4dfd376ed91976d588be1b4be13795"
+      },
+      "source_sha256": "2b764fc8b74eb348b84eba086cdd4740dd4dfd376ed91976d588be1b4be13795"
+    },
+    {
+      "bytes": 876,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/raw/output/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-450bede9.json",
+        "retained_sha256": "b9e62bd01caa55fa852f40546fcc823e78a4427fbca2f9470dd22cd178e69f49",
+        "role": "structured-source",
+        "source_record_sha256": "9cb7f3f1cd60d1663b133c04a941667bd1ad88578a692bc54a68ef328851b534"
+      },
+      "source_sha256": "9cb7f3f1cd60d1663b133c04a941667bd1ad88578a692bc54a68ef328851b534"
+    },
+    {
+      "bytes": 1907,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/raw/output/outcome.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-450bede9.json",
+        "retained_sha256": "b9e62bd01caa55fa852f40546fcc823e78a4427fbca2f9470dd22cd178e69f49",
+        "role": "structured-source",
+        "source_record_sha256": "279857d3ed6d73bb9c3098853fd25d56d76303c4da0aa2973bb302bc25848d94"
+      },
+      "source_sha256": "279857d3ed6d73bb9c3098853fd25d56d76303c4da0aa2973bb302bc25848d94"
+    },
+    {
+      "bytes": 516,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/raw/output/process.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-450bede9.json",
+        "retained_sha256": "b9e62bd01caa55fa852f40546fcc823e78a4427fbca2f9470dd22cd178e69f49",
+        "role": "structured-source",
+        "source_record_sha256": "c4a00cdc6cd46006dcaf068bfcb08bc968c93de315397086fa3e11a60f5009b0"
+      },
+      "source_sha256": "c4a00cdc6cd46006dcaf068bfcb08bc968c93de315397086fa3e11a60f5009b0"
+    },
+    {
+      "bytes": 29365,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/raw/output/relations-cpu.pprof",
+      "reason": "raw profile archived outside Git and fully summarized",
+      "replacement": {
+        "external_content_id": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+        "kind": "canonical-profile-summary-ref",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-450bede9.json",
+        "profile_id": "450bede9",
+        "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+        "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+        "retained_sha256": "b9e62bd01caa55fa852f40546fcc823e78a4427fbca2f9470dd22cd178e69f49"
+      },
+      "source_sha256": "8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6"
+    },
+    {
+      "bytes": 2412,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/runtime-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-450bede9.json",
+        "retained_sha256": "b9e62bd01caa55fa852f40546fcc823e78a4427fbca2f9470dd22cd178e69f49",
+        "role": "structured-source",
+        "source_record_sha256": "0424e96bfc8e00ccaebce35f98cf79b34612cc5123f1ca4bd274512cd1ea72ca"
+      },
+      "source_sha256": "0424e96bfc8e00ccaebce35f98cf79b34612cc5123f1ca4bd274512cd1ea72ca"
+    },
+    {
+      "bytes": 2815,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/full-check-gate.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-450bede9.json",
+        "retained_sha256": "b9e62bd01caa55fa852f40546fcc823e78a4427fbca2f9470dd22cd178e69f49",
+        "role": "structured-source",
+        "source_record_sha256": "067c68b10fbd417439ea64c4ed17c909c411ab26197249e0864e0a03446e5b0a"
+      },
+      "source_sha256": "067c68b10fbd417439ea64c4ed17c909c411ab26197249e0864e0a03446e5b0a"
+    },
+    {
+      "bytes": 4251,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-450bede9.json",
+        "retained_sha256": "b9e62bd01caa55fa852f40546fcc823e78a4427fbca2f9470dd22cd178e69f49",
+        "role": "structured-source",
+        "source_record_sha256": "4f286b014a9b3a5e1be42856f2cbeaee3367c74c09d3f1dfcf2bdca7ed23f5d9"
+      },
+      "source_sha256": "4f286b014a9b3a5e1be42856f2cbeaee3367c74c09d3f1dfcf2bdca7ed23f5d9"
+    },
+    {
+      "bytes": 3089,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-8689fc3d.json",
+        "retained_sha256": "a29320fc13f97820c2d5e9dc0aa9e582bcb0d5d3c586906b039bb030e8fb26c8",
+        "role": "structured-source",
+        "source_record_sha256": "12031726f8413784120050f080214ba84ad791511569f5837b710c39832626c5"
+      },
+      "source_sha256": "12031726f8413784120050f080214ba84ad791511569f5837b710c39832626c5"
+    },
+    {
+      "bytes": 916,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/controller/raw/output/identity.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-8689fc3d.json",
+        "retained_sha256": "a29320fc13f97820c2d5e9dc0aa9e582bcb0d5d3c586906b039bb030e8fb26c8",
+        "role": "structured-source",
+        "source_record_sha256": "42c33558d32adb6b49340b9fd3b1526704f4b391d991f0c12968a35f34c50639"
+      },
+      "source_sha256": "42c33558d32adb6b49340b9fd3b1526704f4b391d991f0c12968a35f34c50639"
+    },
+    {
+      "bytes": 874,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/controller/raw/output/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-8689fc3d.json",
+        "retained_sha256": "a29320fc13f97820c2d5e9dc0aa9e582bcb0d5d3c586906b039bb030e8fb26c8",
+        "role": "structured-source",
+        "source_record_sha256": "594c0a8d3e116676cf9ae27218f0f35723ed23994a4b6718c9d48cb5f7eec49e"
+      },
+      "source_sha256": "594c0a8d3e116676cf9ae27218f0f35723ed23994a4b6718c9d48cb5f7eec49e"
+    },
+    {
+      "bytes": 1907,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/controller/raw/output/outcome.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-8689fc3d.json",
+        "retained_sha256": "a29320fc13f97820c2d5e9dc0aa9e582bcb0d5d3c586906b039bb030e8fb26c8",
+        "role": "structured-source",
+        "source_record_sha256": "ad5182f2db5e3e6515f8bf167755ad5f2ef2100fbb6fed68aa6b0d45bbc6308b"
+      },
+      "source_sha256": "ad5182f2db5e3e6515f8bf167755ad5f2ef2100fbb6fed68aa6b0d45bbc6308b"
+    },
+    {
+      "bytes": 518,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/controller/raw/output/process.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-8689fc3d.json",
+        "retained_sha256": "a29320fc13f97820c2d5e9dc0aa9e582bcb0d5d3c586906b039bb030e8fb26c8",
+        "role": "structured-source",
+        "source_record_sha256": "b5644bdccb79df444bcd72eb2a00cf42bab31ca1039a890d7dc6837f084136a9"
+      },
+      "source_sha256": "b5644bdccb79df444bcd72eb2a00cf42bab31ca1039a890d7dc6837f084136a9"
+    },
+    {
+      "bytes": 31703,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/controller/raw/output/relations-cpu.pprof",
+      "reason": "raw profile archived outside Git and fully summarized",
+      "replacement": {
+        "external_content_id": "sha256:2c72e17b6089a06fb0fb991a68c30498d407c88ad5baf3777121d0f78b870776",
+        "kind": "canonical-profile-summary-ref",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-8689fc3d.json",
+        "profile_id": "8689fc3d",
+        "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+        "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+        "retained_sha256": "a29320fc13f97820c2d5e9dc0aa9e582bcb0d5d3c586906b039bb030e8fb26c8"
+      },
+      "source_sha256": "2c72e17b6089a06fb0fb991a68c30498d407c88ad5baf3777121d0f78b870776"
+    },
+    {
+      "bytes": 1902,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/controller/runtime-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-8689fc3d.json",
+        "retained_sha256": "a29320fc13f97820c2d5e9dc0aa9e582bcb0d5d3c586906b039bb030e8fb26c8",
+        "role": "structured-source",
+        "source_record_sha256": "763fc31368b12f31493bb671ad12eb7d6297b2736a49eec7dfabe7a96f154b76"
+      },
+      "source_sha256": "763fc31368b12f31493bb671ad12eb7d6297b2736a49eec7dfabe7a96f154b76"
+    },
+    {
+      "bytes": 2542,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-8689fc3d.json",
+        "retained_sha256": "a29320fc13f97820c2d5e9dc0aa9e582bcb0d5d3c586906b039bb030e8fb26c8",
+        "role": "structured-source",
+        "source_record_sha256": "e4c8bac8a1317848617417ec71c323ce8698ff1bda3a142f7aa1641d8cd7b192"
+      },
+      "source_sha256": "e4c8bac8a1317848617417ec71c323ce8698ff1bda3a142f7aa1641d8cd7b192"
+    },
+    {
+      "bytes": 2180,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-90ac3e16.json",
+        "retained_sha256": "68cacbc876c7dc2d98f4db44add20f73538144ec459689450fdfbac56733f6d1",
+        "role": "structured-source",
+        "source_record_sha256": "210ee00a9b340434bdf38e22aa18f547a2dd4dbe2db2b60128dab1033a077611"
+      },
+      "source_sha256": "210ee00a9b340434bdf38e22aa18f547a2dd4dbe2db2b60128dab1033a077611"
+    },
+    {
+      "bytes": 909,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/controller/raw/output/identity.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-90ac3e16.json",
+        "retained_sha256": "68cacbc876c7dc2d98f4db44add20f73538144ec459689450fdfbac56733f6d1",
+        "role": "structured-source",
+        "source_record_sha256": "abd1de8450adfe74a89d8f53c2a7ca6617998b90727e1f2a54147cb91953686b"
+      },
+      "source_sha256": "abd1de8450adfe74a89d8f53c2a7ca6617998b90727e1f2a54147cb91953686b"
+    },
+    {
+      "bytes": 858,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/controller/raw/output/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-90ac3e16.json",
+        "retained_sha256": "68cacbc876c7dc2d98f4db44add20f73538144ec459689450fdfbac56733f6d1",
+        "role": "structured-source",
+        "source_record_sha256": "922c7ec1f85fa5554362e5af9c7b7d2e5980fafe6c3e291f58e10e86b1f3d98a"
+      },
+      "source_sha256": "922c7ec1f85fa5554362e5af9c7b7d2e5980fafe6c3e291f58e10e86b1f3d98a"
+    },
+    {
+      "bytes": 1907,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/controller/raw/output/outcome.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-90ac3e16.json",
+        "retained_sha256": "68cacbc876c7dc2d98f4db44add20f73538144ec459689450fdfbac56733f6d1",
+        "role": "structured-source",
+        "source_record_sha256": "92373315219c2fce0978a7bbe2c2120eccff777ce8ba9649f9acf3d97a0c67df"
+      },
+      "source_sha256": "92373315219c2fce0978a7bbe2c2120eccff777ce8ba9649f9acf3d97a0c67df"
+    },
+    {
+      "bytes": 514,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/controller/raw/output/process.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-90ac3e16.json",
+        "retained_sha256": "68cacbc876c7dc2d98f4db44add20f73538144ec459689450fdfbac56733f6d1",
+        "role": "structured-source",
+        "source_record_sha256": "0c41c9016c7970b863e6c71e40c3af6fd9e2cbe99563721a2e96d805eb2d6283"
+      },
+      "source_sha256": "0c41c9016c7970b863e6c71e40c3af6fd9e2cbe99563721a2e96d805eb2d6283"
+    },
+    {
+      "bytes": 29973,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/controller/raw/output/relations-cpu.pprof",
+      "reason": "raw profile archived outside Git and fully summarized",
+      "replacement": {
+        "external_content_id": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+        "kind": "canonical-profile-summary-ref",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-90ac3e16.json",
+        "profile_id": "90ac3e16",
+        "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+        "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+        "retained_sha256": "68cacbc876c7dc2d98f4db44add20f73538144ec459689450fdfbac56733f6d1"
+      },
+      "source_sha256": "3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b"
+    },
+    {
+      "bytes": 2410,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/controller/runtime-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-90ac3e16.json",
+        "retained_sha256": "68cacbc876c7dc2d98f4db44add20f73538144ec459689450fdfbac56733f6d1",
+        "role": "structured-source",
+        "source_record_sha256": "a113a27c10dc8c065de75bb4977a2b4a8e29112981cd9295b4ea8c4ce04361c3"
+      },
+      "source_sha256": "a113a27c10dc8c065de75bb4977a2b4a8e29112981cd9295b4ea8c4ce04361c3"
+    },
+    {
+      "bytes": 2660,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/full-check-gate.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-90ac3e16.json",
+        "retained_sha256": "68cacbc876c7dc2d98f4db44add20f73538144ec459689450fdfbac56733f6d1",
+        "role": "structured-source",
+        "source_record_sha256": "8f184d500281488da18771280146c211cefcaa7ab4fd6a3855927684b87ff8b5"
+      },
+      "source_sha256": "8f184d500281488da18771280146c211cefcaa7ab4fd6a3855927684b87ff8b5"
+    },
+    {
+      "bytes": 8576,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-90ac3e16.json",
+        "retained_sha256": "68cacbc876c7dc2d98f4db44add20f73538144ec459689450fdfbac56733f6d1",
+        "role": "structured-source",
+        "source_record_sha256": "4153a4bb2cfa2281f0e99495d710ec24c77df28b2ad95ea388f6d2dff491ad6b"
+      },
+      "source_sha256": "4153a4bb2cfa2281f0e99495d710ec24c77df28b2ad95ea388f6d2dff491ad6b"
+    },
+    {
+      "bytes": 4286,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-950567a3.json",
+        "retained_sha256": "293cda44eba5ff1557b5b0e0490c42639e18d1821e6e5dc32f9649170ed56a40",
+        "role": "structured-source",
+        "source_record_sha256": "50c8936cef23e5130c54ca27d5c78688898dc076dff16a8e55a54b890157913d"
+      },
+      "source_sha256": "50c8936cef23e5130c54ca27d5c78688898dc076dff16a8e55a54b890157913d"
+    },
+    {
+      "bytes": 1018,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/raw/output/identity.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-950567a3.json",
+        "retained_sha256": "293cda44eba5ff1557b5b0e0490c42639e18d1821e6e5dc32f9649170ed56a40",
+        "role": "structured-source",
+        "source_record_sha256": "dfea3abe7243ad8f2c4e14b95d00ec6e96a9c03a8292c23db525db6a137787ec"
+      },
+      "source_sha256": "dfea3abe7243ad8f2c4e14b95d00ec6e96a9c03a8292c23db525db6a137787ec"
+    },
+    {
+      "bytes": 864,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/raw/output/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-950567a3.json",
+        "retained_sha256": "293cda44eba5ff1557b5b0e0490c42639e18d1821e6e5dc32f9649170ed56a40",
+        "role": "structured-source",
+        "source_record_sha256": "33e28b3aa4d167f46c2c9ca0332d14aa72a05c63490141fa6503301234af5350"
+      },
+      "source_sha256": "33e28b3aa4d167f46c2c9ca0332d14aa72a05c63490141fa6503301234af5350"
+    },
+    {
+      "bytes": 2094,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/raw/output/outcome.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-950567a3.json",
+        "retained_sha256": "293cda44eba5ff1557b5b0e0490c42639e18d1821e6e5dc32f9649170ed56a40",
+        "role": "structured-source",
+        "source_record_sha256": "e4948870711744e1d778008c30d9c96ad67fd0c6329ba1ea5f7f7035f8ab83da"
+      },
+      "source_sha256": "e4948870711744e1d778008c30d9c96ad67fd0c6329ba1ea5f7f7035f8ab83da"
+    },
+    {
+      "bytes": 534,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/raw/output/process.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-950567a3.json",
+        "retained_sha256": "293cda44eba5ff1557b5b0e0490c42639e18d1821e6e5dc32f9649170ed56a40",
+        "role": "structured-source",
+        "source_record_sha256": "00431feeac194643be1d19e031c77ac30ccb1b32ef146bb0af112c0ea3153cd9"
+      },
+      "source_sha256": "00431feeac194643be1d19e031c77ac30ccb1b32ef146bb0af112c0ea3153cd9"
+    },
+    {
+      "bytes": 41212,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/raw/output/relations-cpu.pprof",
+      "reason": "raw profile archived outside Git and fully summarized",
+      "replacement": {
+        "external_content_id": "sha256:f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+        "kind": "canonical-profile-summary-ref",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-950567a3.json",
+        "profile_id": "950567a3",
+        "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+        "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+        "retained_sha256": "293cda44eba5ff1557b5b0e0490c42639e18d1821e6e5dc32f9649170ed56a40"
+      },
+      "source_sha256": "f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e"
+    },
+    {
+      "bytes": 4014,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/runtime-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-950567a3.json",
+        "retained_sha256": "293cda44eba5ff1557b5b0e0490c42639e18d1821e6e5dc32f9649170ed56a40",
+        "role": "structured-source",
+        "source_record_sha256": "9339cda34c891e0773e9c665ff2dcc0cb21c71a7a04c9884dd72e498df631ed9"
+      },
+      "source_sha256": "9339cda34c891e0773e9c665ff2dcc0cb21c71a7a04c9884dd72e498df631ed9"
+    },
+    {
+      "bytes": 4357,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/full-check-gate.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-950567a3.json",
+        "retained_sha256": "293cda44eba5ff1557b5b0e0490c42639e18d1821e6e5dc32f9649170ed56a40",
+        "role": "structured-source",
+        "source_record_sha256": "91aa6b3199e63a7a8f4eac641ad186d6ad4b046e73b21a6e96dda0553b13e22e"
+      },
+      "source_sha256": "91aa6b3199e63a7a8f4eac641ad186d6ad4b046e73b21a6e96dda0553b13e22e"
+    },
+    {
+      "bytes": 2901,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-950567a3.json",
+        "retained_sha256": "293cda44eba5ff1557b5b0e0490c42639e18d1821e6e5dc32f9649170ed56a40",
+        "role": "structured-source",
+        "source_record_sha256": "406101ae121cd4a099750de6573f35f3559418cacadddc63c5fcb91527268c06"
+      },
+      "source_sha256": "406101ae121cd4a099750de6573f35f3559418cacadddc63c5fcb91527268c06"
+    },
+    {
+      "bytes": 4925,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-effa358f.json",
+        "retained_sha256": "71d01a1422d19743d70c5c27ad03cad110b833107cc85232cbf539edaf455c38",
+        "role": "structured-source",
+        "source_record_sha256": "fcb17b1b279acbfd80bde9f753b1fcad0e6cae2aef55db88e55bb319a0cecb4c"
+      },
+      "source_sha256": "fcb17b1b279acbfd80bde9f753b1fcad0e6cae2aef55db88e55bb319a0cecb4c"
+    },
+    {
+      "bytes": 1004,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/output/identity.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-effa358f.json",
+        "retained_sha256": "71d01a1422d19743d70c5c27ad03cad110b833107cc85232cbf539edaf455c38",
+        "role": "structured-source",
+        "source_record_sha256": "78b1a59ea65f1e13f229dfb86bc43e012e24e9873ae4ac61d34d588ee353c3cf"
+      },
+      "source_sha256": "78b1a59ea65f1e13f229dfb86bc43e012e24e9873ae4ac61d34d588ee353c3cf"
+    },
+    {
+      "bytes": 864,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/output/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-effa358f.json",
+        "retained_sha256": "71d01a1422d19743d70c5c27ad03cad110b833107cc85232cbf539edaf455c38",
+        "role": "structured-source",
+        "source_record_sha256": "19f6096e523b14183bb761ed03983d3ff62159623925aed75a3172dfacfe8932"
+      },
+      "source_sha256": "19f6096e523b14183bb761ed03983d3ff62159623925aed75a3172dfacfe8932"
+    },
+    {
+      "bytes": 2094,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/output/outcome.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-effa358f.json",
+        "retained_sha256": "71d01a1422d19743d70c5c27ad03cad110b833107cc85232cbf539edaf455c38",
+        "role": "structured-source",
+        "source_record_sha256": "462b942ba7bb7211f83bfb2d583ab703f8bceec409574b337d495274a82c60b3"
+      },
+      "source_sha256": "462b942ba7bb7211f83bfb2d583ab703f8bceec409574b337d495274a82c60b3"
+    },
+    {
+      "bytes": 527,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/output/process.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-effa358f.json",
+        "retained_sha256": "71d01a1422d19743d70c5c27ad03cad110b833107cc85232cbf539edaf455c38",
+        "role": "structured-source",
+        "source_record_sha256": "61284b6fde71c41fe91bee46c8527df85bfe1fdba1559dd024129372235041b3"
+      },
+      "source_sha256": "61284b6fde71c41fe91bee46c8527df85bfe1fdba1559dd024129372235041b3"
+    },
+    {
+      "bytes": 44928,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/output/relations-cpu.pprof",
+      "reason": "raw profile archived outside Git and fully summarized",
+      "replacement": {
+        "external_content_id": "sha256:9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c",
+        "kind": "canonical-profile-summary-ref",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-effa358f.json",
+        "profile_id": "effa358f",
+        "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+        "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+        "retained_sha256": "71d01a1422d19743d70c5c27ad03cad110b833107cc85232cbf539edaf455c38"
+      },
+      "source_sha256": "9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c"
+    },
+    {
+      "bytes": 3888,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/runtime-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-effa358f.json",
+        "retained_sha256": "71d01a1422d19743d70c5c27ad03cad110b833107cc85232cbf539edaf455c38",
+        "role": "structured-source",
+        "source_record_sha256": "41783f81283661545168ce81aaa547d9f12d4ae4ab0ef674d85e186463ee8aac"
+      },
+      "source_sha256": "41783f81283661545168ce81aaa547d9f12d4ae4ab0ef674d85e186463ee8aac"
+    },
+    {
+      "bytes": 4360,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/full-check-gate.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-effa358f.json",
+        "retained_sha256": "71d01a1422d19743d70c5c27ad03cad110b833107cc85232cbf539edaf455c38",
+        "role": "structured-source",
+        "source_record_sha256": "4e479ddd47200aa3626d0066c4f0e8a68276b78d81cdbae1e4caf74a0eb9cc6c"
+      },
+      "source_sha256": "4e479ddd47200aa3626d0066c4f0e8a68276b78d81cdbae1e4caf74a0eb9cc6c"
+    },
+    {
+      "bytes": 2417,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-effa358f.json",
+        "retained_sha256": "71d01a1422d19743d70c5c27ad03cad110b833107cc85232cbf539edaf455c38",
+        "role": "structured-source",
+        "source_record_sha256": "e98de0d25a62fc1046f9cc35e3bd527dc9eeef09c91de764151856d849a81eb6"
+      },
+      "source_sha256": "e98de0d25a62fc1046f9cc35e3bd527dc9eeef09c91de764151856d849a81eb6"
+    },
+    {
+      "bytes": 3002,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-graph-bench-offline-fixtures-12574522/verification.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-graph-bench-offline-fixtures-12574522.json",
+        "retained_sha256": "35aa346375ad16680c1925dfa3f9451151d9566efaa3b2b9e93a6c7763ee20dc",
+        "role": "structured-source",
+        "source_record_sha256": "22caae6bc898b3f322c78b2fb841365538d5f4aaff463349f92e15fc0ff27f5f"
+      },
+      "source_sha256": "22caae6bc898b3f322c78b2fb841365538d5f4aaff463349f92e15fc0ff27f5f"
+    },
+    {
+      "bytes": 4942,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-12574522/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-12574522.json",
+        "retained_sha256": "c17e782301c7a19d579597b33034cee93809caddadf8e1aead5326887bd2faa2",
+        "role": "structured-source",
+        "source_record_sha256": "af463afc0f75abf62d0bc4394eb9039734b94482394d6d977dec7b60d8921efa"
+      },
+      "source_sha256": "af463afc0f75abf62d0bc4394eb9039734b94482394d6d977dec7b60d8921efa"
+    },
+    {
+      "bytes": 5809,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-12574522/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-12574522.json",
+        "retained_sha256": "c17e782301c7a19d579597b33034cee93809caddadf8e1aead5326887bd2faa2",
+        "role": "structured-source",
+        "source_record_sha256": "5e2f0304a5e8a2672f96d3496f877ce301113105e360c4ed271089bb52a3dcc8"
+      },
+      "source_sha256": "5e2f0304a5e8a2672f96d3496f877ce301113105e360c4ed271089bb52a3dcc8"
+    },
+    {
+      "bytes": 14139251,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-12574522/source.tar.gz",
+      "reason": "exact Git source subset is reconstructible",
+      "replacement": {
+        "archive_sha256": "2e4a1a4f6d2fad2fffb6b7b68ee8bd3403a83d964505c2f09db77a578ce8aa34",
+        "kind": "canonical-source-subset",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/sources.json",
+        "retained_sha256": "daf877fa0659b296e16192302cca2914e86d6b201f643029a7d2cbb097b7ddeb",
+        "source_commit": "125745228645b5b605efc3cb1b8c6075e8c14a4e",
+        "unique_subset_index": 0
+      },
+      "source_sha256": "2e4a1a4f6d2fad2fffb6b7b68ee8bd3403a83d964505c2f09db77a578ce8aa34"
+    },
+    {
+      "bytes": 2064,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-12574522/test-counts.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-12574522.json",
+        "retained_sha256": "c17e782301c7a19d579597b33034cee93809caddadf8e1aead5326887bd2faa2",
+        "role": "structured-source",
+        "source_record_sha256": "0d3ed40e6b41834a921462341aa883054d11ebadc6fad28a5eeff207a6fc964d"
+      },
+      "source_sha256": "0d3ed40e6b41834a921462341aa883054d11ebadc6fad28a5eeff207a6fc964d"
+    },
+    {
+      "bytes": 1611,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-1f20f694.json",
+        "retained_sha256": "47e1a5f3a328411a04a910120a101edac617cbf799cd2944d8de386d7de6dbe9",
+        "role": "structured-source",
+        "source_record_sha256": "adb964de96fbcb5ac1746a0228fa7db7319149a517e944a0c1ba64fe1f6d34e6"
+      },
+      "source_sha256": "adb964de96fbcb5ac1746a0228fa7db7319149a517e944a0c1ba64fe1f6d34e6"
+    },
+    {
+      "bytes": 1880,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-25887f69-evaluator-build-01/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-25887f69-evaluator-build-01.json",
+        "retained_sha256": "1d8dfafe0765e18cd8ba7165230d8ed71eb82c27020c778961dc649f0b69f523",
+        "role": "structured-source",
+        "source_record_sha256": "9aa4393c5aced7f6a74978d1dd7ff7bbeb0a865b8736b4a7b441a68cfaf12adb"
+      },
+      "source_sha256": "9aa4393c5aced7f6a74978d1dd7ff7bbeb0a865b8736b4a7b441a68cfaf12adb"
+    },
+    {
+      "bytes": 3223,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-450bede9/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-450bede9.json",
+        "retained_sha256": "7efcd04c5f77f9b90d16a0585b29dd9e0627e43d32c25181e6295671f089db37",
+        "role": "structured-source",
+        "source_record_sha256": "80e1dafd3a861be1cbba67fec08fd717c89cd2860dd3502aab947fe73c7fe546"
+      },
+      "source_sha256": "80e1dafd3a861be1cbba67fec08fd717c89cd2860dd3502aab947fe73c7fe546"
+    },
+    {
+      "bytes": 1382,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-450bede9/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-450bede9.json",
+        "retained_sha256": "7efcd04c5f77f9b90d16a0585b29dd9e0627e43d32c25181e6295671f089db37",
+        "role": "structured-source",
+        "source_record_sha256": "081e94a946f08fd409ff6c10332689609aac1c5d8ea3dc480e4fcad1d2f62bef"
+      },
+      "source_sha256": "081e94a946f08fd409ff6c10332689609aac1c5d8ea3dc480e4fcad1d2f62bef"
+    },
+    {
+      "bytes": 14145679,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-450bede9/source.tar.gz",
+      "reason": "exact Git source subset is reconstructible",
+      "replacement": {
+        "archive_sha256": "d67f74b99b16dd081fdd956f820fae16be2eb524b772055914faf1fe5b72cda6",
+        "kind": "canonical-source-subset",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/sources.json",
+        "retained_sha256": "daf877fa0659b296e16192302cca2914e86d6b201f643029a7d2cbb097b7ddeb",
+        "source_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+        "unique_subset_index": 1
+      },
+      "source_sha256": "d67f74b99b16dd081fdd956f820fae16be2eb524b772055914faf1fe5b72cda6"
+    },
+    {
+      "bytes": 824,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-450bede9/test-counts.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-450bede9.json",
+        "retained_sha256": "7efcd04c5f77f9b90d16a0585b29dd9e0627e43d32c25181e6295671f089db37",
+        "role": "structured-source",
+        "source_record_sha256": "4365f97d2d6a2c4dd7e30af3117f8cd68c37807097659a73e5bca735ca4665a3"
+      },
+      "source_sha256": "4365f97d2d6a2c4dd7e30af3117f8cd68c37807097659a73e5bca735ca4665a3"
+    },
+    {
+      "bytes": 1148,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-6f23da0a/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-6f23da0a.json",
+        "retained_sha256": "2ec64952618294c499f8a4b3400816ad1df9f049cb9b5cea6f588ca86ba87462",
+        "role": "structured-source",
+        "source_record_sha256": "e68e5e5cdf8f4f352403c0522b2228beaf3e59c8da90a55c138e470d6937b725"
+      },
+      "source_sha256": "e68e5e5cdf8f4f352403c0522b2228beaf3e59c8da90a55c138e470d6937b725"
+    },
+    {
+      "bytes": 1580,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-6f23da0a/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-6f23da0a.json",
+        "retained_sha256": "2ec64952618294c499f8a4b3400816ad1df9f049cb9b5cea6f588ca86ba87462",
+        "role": "structured-source",
+        "source_record_sha256": "c6052b1ef356719acede9c1a3a1b9aba3c82eba8e8a97d4b0ba5bcb32e331f2a"
+      },
+      "source_sha256": "c6052b1ef356719acede9c1a3a1b9aba3c82eba8e8a97d4b0ba5bcb32e331f2a"
+    },
+    {
+      "bytes": 14151595,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-6f23da0a/source.tar.gz",
+      "reason": "exact Git source subset is reconstructible",
+      "replacement": {
+        "archive_sha256": "e1a42113a94d043c79833ea9d16ae568965bdb50efdd7a5ccc5f3186c883032b",
+        "kind": "canonical-source-subset",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/sources.json",
+        "retained_sha256": "daf877fa0659b296e16192302cca2914e86d6b201f643029a7d2cbb097b7ddeb",
+        "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+        "unique_subset_index": 2
+      },
+      "source_sha256": "e1a42113a94d043c79833ea9d16ae568965bdb50efdd7a5ccc5f3186c883032b"
+    },
+    {
+      "bytes": 3695,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-6f23da0a/stage-results.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-6f23da0a.json",
+        "retained_sha256": "2ec64952618294c499f8a4b3400816ad1df9f049cb9b5cea6f588ca86ba87462",
+        "role": "structured-source",
+        "source_record_sha256": "c2fe25e9e243e74ef289f40ebadef5f0b37ff16aa3ef0fff5d8e76abb5cc8820"
+      },
+      "source_sha256": "c2fe25e9e243e74ef289f40ebadef5f0b37ff16aa3ef0fff5d8e76abb5cc8820"
+    },
+    {
+      "bytes": 3650,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-6f23da0a/test-counts.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-6f23da0a.json",
+        "retained_sha256": "2ec64952618294c499f8a4b3400816ad1df9f049cb9b5cea6f588ca86ba87462",
+        "role": "structured-source",
+        "source_record_sha256": "bcd7af3982e98b83a38f4355dda1d9cfd81ed51345aa349af60dde5c092b3f93"
+      },
+      "source_sha256": "bcd7af3982e98b83a38f4355dda1d9cfd81ed51345aa349af60dde5c092b3f93"
+    },
+    {
+      "bytes": 3089,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d-r1/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-8689fc3d-r1.json",
+        "retained_sha256": "969da0d04d8f51afc604833d2dd43396b80b0d87b8144138bf0a9cc0c9f34868",
+        "role": "structured-source",
+        "source_record_sha256": "12031726f8413784120050f080214ba84ad791511569f5837b710c39832626c5"
+      },
+      "source_sha256": "12031726f8413784120050f080214ba84ad791511569f5837b710c39832626c5"
+    },
+    {
+      "bytes": 1558,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d-r1/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-8689fc3d-r1.json",
+        "retained_sha256": "969da0d04d8f51afc604833d2dd43396b80b0d87b8144138bf0a9cc0c9f34868",
+        "role": "structured-source",
+        "source_record_sha256": "cd65023615c66cb114df50ed044781bedfefeb012a5f42b2d6d67aaf70f467b4"
+      },
+      "source_sha256": "cd65023615c66cb114df50ed044781bedfefeb012a5f42b2d6d67aaf70f467b4"
+    },
+    {
+      "bytes": 14145834,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d-r1/source.tar.gz",
+      "reason": "exact Git source subset is reconstructible",
+      "replacement": {
+        "archive_sha256": "da93f88b25e6b75e19930094558475503422311e38847b3e2d570cde4a5129b4",
+        "kind": "canonical-source-subset",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/sources.json",
+        "retained_sha256": "daf877fa0659b296e16192302cca2914e86d6b201f643029a7d2cbb097b7ddeb",
+        "source_commit": "8689fc3d790e4290ce2b62500d270c96c02087b3",
+        "unique_subset_index": 3
+      },
+      "source_sha256": "da93f88b25e6b75e19930094558475503422311e38847b3e2d570cde4a5129b4"
+    },
+    {
+      "bytes": 6591,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d-r1/stage-results.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-8689fc3d-r1.json",
+        "retained_sha256": "969da0d04d8f51afc604833d2dd43396b80b0d87b8144138bf0a9cc0c9f34868",
+        "role": "structured-source",
+        "source_record_sha256": "5451dbec36aa307fc6ad18ac89379a2a73d6fa439e9455838a03b46c2282d266"
+      },
+      "source_sha256": "5451dbec36aa307fc6ad18ac89379a2a73d6fa439e9455838a03b46c2282d266"
+    },
+    {
+      "bytes": 3656,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d-r1/test-counts.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-8689fc3d-r1.json",
+        "retained_sha256": "969da0d04d8f51afc604833d2dd43396b80b0d87b8144138bf0a9cc0c9f34868",
+        "role": "structured-source",
+        "source_record_sha256": "9028ed60e7991f4f4cfb4c8e34254166039b1c2de47bb68edaca71584070ca13"
+      },
+      "source_sha256": "9028ed60e7991f4f4cfb4c8e34254166039b1c2de47bb68edaca71584070ca13"
+    },
+    {
+      "bytes": 14145834,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d/source.tar.gz",
+      "reason": "exact Git source subset is reconstructible",
+      "replacement": {
+        "archive_sha256": "da93f88b25e6b75e19930094558475503422311e38847b3e2d570cde4a5129b4",
+        "kind": "canonical-source-subset",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/sources.json",
+        "retained_sha256": "daf877fa0659b296e16192302cca2914e86d6b201f643029a7d2cbb097b7ddeb",
+        "source_commit": "8689fc3d790e4290ce2b62500d270c96c02087b3",
+        "unique_subset_index": 3
+      },
+      "source_sha256": "da93f88b25e6b75e19930094558475503422311e38847b3e2d570cde4a5129b4"
+    },
+    {
+      "bytes": 2180,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-90ac3e16.json",
+        "retained_sha256": "70af6af2e924a5a322140a25575e59f9c97f05007855b646298cf3919f786b7b",
+        "role": "structured-source",
+        "source_record_sha256": "210ee00a9b340434bdf38e22aa18f547a2dd4dbe2db2b60128dab1033a077611"
+      },
+      "source_sha256": "210ee00a9b340434bdf38e22aa18f547a2dd4dbe2db2b60128dab1033a077611"
+    },
+    {
+      "bytes": 1823,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-90ac3e16.json",
+        "retained_sha256": "70af6af2e924a5a322140a25575e59f9c97f05007855b646298cf3919f786b7b",
+        "role": "structured-source",
+        "source_record_sha256": "bf279185f63d3dad8fbabc29eee46dc730799cb86739ed3aeb8a02052eee4775"
+      },
+      "source_sha256": "bf279185f63d3dad8fbabc29eee46dc730799cb86739ed3aeb8a02052eee4775"
+    },
+    {
+      "bytes": 14144917,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/source.tar.gz",
+      "reason": "exact Git source subset is reconstructible",
+      "replacement": {
+        "archive_sha256": "c1baab3e4c3c7d412951ba8bd9ce008c6d761122f7a570806b05426c82d4635f",
+        "kind": "canonical-source-subset",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/sources.json",
+        "retained_sha256": "daf877fa0659b296e16192302cca2914e86d6b201f643029a7d2cbb097b7ddeb",
+        "source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+        "unique_subset_index": 4
+      },
+      "source_sha256": "c1baab3e4c3c7d412951ba8bd9ce008c6d761122f7a570806b05426c82d4635f"
+    },
+    {
+      "bytes": 664,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/test-counts.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-90ac3e16.json",
+        "retained_sha256": "70af6af2e924a5a322140a25575e59f9c97f05007855b646298cf3919f786b7b",
+        "role": "structured-source",
+        "source_record_sha256": "940ee31728c0d2f1f05c848c9da35f83a4cf286c5c1995fb94ac62cb23698b6e"
+      },
+      "source_sha256": "940ee31728c0d2f1f05c848c9da35f83a4cf286c5c1995fb94ac62cb23698b6e"
+    },
+    {
+      "bytes": 4286,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-950567a3-evaluator-build-01/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-950567a3-evaluator-build-01.json",
+        "retained_sha256": "e44dffc635c840570c350b043195d6917bee18099ffa00a742565a42cc9e7410",
+        "role": "structured-source",
+        "source_record_sha256": "50c8936cef23e5130c54ca27d5c78688898dc076dff16a8e55a54b890157913d"
+      },
+      "source_sha256": "50c8936cef23e5130c54ca27d5c78688898dc076dff16a8e55a54b890157913d"
+    },
+    {
+      "bytes": 755,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-aab356ae/manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-aab356ae.json",
+        "retained_sha256": "3b07fc920a2c2bb374142ff8cc52c5dd2d4d2e9d0bf206ad9e3f482a7297b066",
+        "role": "structured-source",
+        "source_record_sha256": "fc33b0bb670e3e556c3d374e177ab0d5deb3c2810db8a451d0ace4c8fd50183f"
+      },
+      "source_sha256": "fc33b0bb670e3e556c3d374e177ab0d5deb3c2810db8a451d0ace4c8fd50183f"
+    },
+    {
+      "bytes": 4925,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/build-manifest.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-effa358f-compiler-01.json",
+        "retained_sha256": "0b787619b0534fcf8cd8aff2e7c2603fd00464b4cee03bf42f76441ee7b307f3",
+        "role": "structured-source",
+        "source_record_sha256": "fcb17b1b279acbfd80bde9f753b1fcad0e6cae2aef55db88e55bb319a0cecb4c"
+      },
+      "source_sha256": "fcb17b1b279acbfd80bde9f753b1fcad0e6cae2aef55db88e55bb319a0cecb4c"
+    },
+    {
+      "bytes": 998,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/source-provenance.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-effa358f-compiler-01.json",
+        "retained_sha256": "0b787619b0534fcf8cd8aff2e7c2603fd00464b4cee03bf42f76441ee7b307f3",
+        "role": "structured-source",
+        "source_record_sha256": "df7ba8d80db52c09e82cd8bc3e267525a0fef6ea21038a85cf0f61032475a820"
+      },
+      "source_sha256": "df7ba8d80db52c09e82cd8bc3e267525a0fef6ea21038a85cf0f61032475a820"
+    },
+    {
+      "bytes": 670,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/stage-results.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-effa358f-compiler-01.json",
+        "retained_sha256": "0b787619b0534fcf8cd8aff2e7c2603fd00464b4cee03bf42f76441ee7b307f3",
+        "role": "structured-source",
+        "source_record_sha256": "2e79eb77d65302f13899b8839e7b280ba4a9eb8de4af925196361e007a037878"
+      },
+      "source_sha256": "2e79eb77d65302f13899b8839e7b280ba4a9eb8de4af925196361e007a037878"
+    },
+    {
+      "bytes": 2167,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/test-counts.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-effa358f-compiler-01.json",
+        "retained_sha256": "0b787619b0534fcf8cd8aff2e7c2603fd00464b4cee03bf42f76441ee7b307f3",
+        "role": "structured-source",
+        "source_record_sha256": "e8aa7fd162d8750a000cd9b8d9736e581a2e5f87c6e5dcc4413c1e46773eab83"
+      },
+      "source_sha256": "e8aa7fd162d8750a000cd9b8d9736e581a2e5f87c6e5dcc4413c1e46773eab83"
+    },
+    {
+      "bytes": 301106,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/extraction-paired-v1.ndjson",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/extraction-paired-v1.json",
+        "retained_sha256": "e1a890fecc3debb34f6e09c55eed6b8e6bd1673a36275019570a41068725353f",
+        "role": "case-source",
+        "source_record_sha256": "4736e3255ab688b6ad46e88f1015cdbb19c922b8b52b876c2ddb9aa159381e68"
+      },
+      "source_sha256": "4736e3255ab688b6ad46e88f1015cdbb19c922b8b52b876c2ddb9aa159381e68"
+    },
+    {
+      "bytes": 301115,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/extraction-paired-v2.ndjson",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/extraction-paired-v2.json",
+        "retained_sha256": "b4952124fc305fb0e30ecaaae8cd60aa811a04b16f52c0351e2ad71df8d07493",
+        "role": "case-source",
+        "source_record_sha256": "f08487f5593673392ace82c9b39b09eae18852e6ba651384af3b69cb1ae35620"
+      },
+      "source_sha256": "f08487f5593673392ace82c9b39b09eae18852e6ba651384af3b69cb1ae35620"
+    },
+    {
+      "bytes": 121716,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/relation-profile-v1.ndjson",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/relation-profile-v1.json",
+        "retained_sha256": "87afd6d7f7f22b95775b093d92b75002eedfddb34ec26c5adc7f8fd2e9b784ef",
+        "role": "case-source",
+        "source_record_sha256": "30a257f56a1fc1c165f07f74806e41cfd1ccdfa929ee654c655917e1d7c35f98"
+      },
+      "source_sha256": "30a257f56a1fc1c165f07f74806e41cfd1ccdfa929ee654c655917e1d7c35f98"
+    },
+    {
+      "additional_replacements": [
+        {
+          "kind": "canonical-run-artifact",
+          "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-combination-initial.json",
+          "retained_sha256": "eeedc97d1bec0da4ea73063f6e2354f39bb3823e3b2974b9da4c1caa07449427",
+          "role": "structured-source",
+          "source_record_sha256": "c96a9528234ce268fd013b8b13ca6e45f4965861bef8f108768381be1533ea94"
+        }
+      ],
+      "bytes": 134132,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/review-linux-combination-initial.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-combination-initial.json",
+        "retained_sha256": "eeedc97d1bec0da4ea73063f6e2354f39bb3823e3b2974b9da4c1caa07449427",
+        "role": "case-source",
+        "source_record_sha256": "c96a9528234ce268fd013b8b13ca6e45f4965861bef8f108768381be1533ea94"
+      },
+      "source_sha256": "c96a9528234ce268fd013b8b13ca6e45f4965861bef8f108768381be1533ea94"
+    },
+    {
+      "additional_replacements": [
+        {
+          "kind": "canonical-run-artifact",
+          "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-combination.json",
+          "retained_sha256": "31ab5872fd9f1c19eda2ef9cedb89b1aa6f01a54dc2ce1e6fb46d5f7677cc5e3",
+          "role": "structured-source",
+          "source_record_sha256": "c8fdc2528d05702aaeb3bd3c4bf245a863b29c4fce259a06195e632650ccd6ba"
+        }
+      ],
+      "bytes": 134131,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/review-linux-combination.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-combination.json",
+        "retained_sha256": "31ab5872fd9f1c19eda2ef9cedb89b1aa6f01a54dc2ce1e6fb46d5f7677cc5e3",
+        "role": "case-source",
+        "source_record_sha256": "c8fdc2528d05702aaeb3bd3c4bf245a863b29c4fce259a06195e632650ccd6ba"
+      },
+      "source_sha256": "c8fdc2528d05702aaeb3bd3c4bf245a863b29c4fce259a06195e632650ccd6ba"
+    },
+    {
+      "additional_replacements": [
+        {
+          "kind": "canonical-run-artifact",
+          "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-queries-initial.json",
+          "retained_sha256": "7290f6c67b5ca13ccb42a5eff169c308ad655da5cd621c280671da110c4fbce6",
+          "role": "structured-source",
+          "source_record_sha256": "7f4b805328d5d9904c9cc99a253f64ccb8eeeaacef888f85dc886fdeb45215d2"
+        }
+      ],
+      "bytes": 64412,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/review-linux-queries-initial.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-queries-initial.json",
+        "retained_sha256": "7290f6c67b5ca13ccb42a5eff169c308ad655da5cd621c280671da110c4fbce6",
+        "role": "case-source",
+        "source_record_sha256": "7f4b805328d5d9904c9cc99a253f64ccb8eeeaacef888f85dc886fdeb45215d2"
+      },
+      "source_sha256": "7f4b805328d5d9904c9cc99a253f64ccb8eeeaacef888f85dc886fdeb45215d2"
+    },
+    {
+      "additional_replacements": [
+        {
+          "kind": "canonical-run-artifact",
+          "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-queries.json",
+          "retained_sha256": "d2de2938f974ce741061492d6b640816121fbcee6cce189d1dbaabcbbfc0f29d",
+          "role": "structured-source",
+          "source_record_sha256": "1965e68ee164257bf10176132c5e51e478f2695e90de82c5aa7a7b2d48be6951"
+        }
+      ],
+      "bytes": 64412,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/review-linux-queries.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-queries.json",
+        "retained_sha256": "d2de2938f974ce741061492d6b640816121fbcee6cce189d1dbaabcbbfc0f29d",
+        "role": "case-source",
+        "source_record_sha256": "1965e68ee164257bf10176132c5e51e478f2695e90de82c5aa7a7b2d48be6951"
+      },
+      "source_sha256": "1965e68ee164257bf10176132c5e51e478f2695e90de82c5aa7a7b2d48be6951"
+    },
+    {
+      "bytes": 622,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a/result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/statusline-linux-actual-task-6f23da0a.json",
+        "retained_sha256": "26e1de49b85ad6f0732c3fac1336824e09575fe1c73a4ac2fbda28863ca46403",
+        "role": "structured-source",
+        "source_record_sha256": "d02ac47d4b201e4ded8874ba3df856508d6a1f86e7bc86bc9c8bebaca04a204d"
+      },
+      "source_sha256": "d02ac47d4b201e4ded8874ba3df856508d6a1f86e7bc86bc9c8bebaca04a204d"
+    },
+    {
+      "bytes": 529,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/evidence/statusline-linux-trace-6f23da0a/result.json",
+      "reason": "normalized structured/case source",
+      "replacement": {
+        "kind": "canonical-run-artifact",
+        "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/statusline-linux-trace-6f23da0a.json",
+        "retained_sha256": "86dab04f2fcc164b9b34c8fc30d4517d1d4b3af70f538393632deba0ba1468d3",
+        "role": "structured-source",
+        "source_record_sha256": "2d93994486c327f349f01b6bbd4ade52495bdba666469459bbf109bc5f039116"
+      },
+      "source_sha256": "2d93994486c327f349f01b6bbd4ade52495bdba666469459bbf109bc5f039116"
+    },
+    {
+      "bytes": 149171,
+      "disposition": "applied",
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/cold-profile-d793b2be/raw/cpu.pprof",
+      "reason": "raw profile archived outside Git and fully summarized",
+      "replacement": {
+        "external_content_id": "sha256:99070e5061fc60fba0d8e0dedd244faad7751efc173d967b9398325427122190",
+        "kind": "structured-profile-and-content-id",
+        "path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+        "profile_index": 7,
+        "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+        "retained_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f"
+      },
+      "source_sha256": "99070e5061fc60fba0d8e0dedd244faad7751efc173d967b9398325427122190"
+    }
+  ],
+  "schema": "graph-advantage-public-artifact-removal-map-v2",
+  "scope": "Only admitted status-A files with an exact canonical record, reconstruction proof, external content copy plus structured summary, or historical-control identity plus normalized run configuration. Status-M and protected untracked files are excluded. Unique logs and unresolved artifacts remain until a concise replacement exists.",
+  "status": "156 reviewed source/profile/structured removals applied; newest completion WIP retained; later candidates require separate proof and review"
+}

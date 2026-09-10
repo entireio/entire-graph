@@ -1,0 +1,88 @@
+{
+  "schema": "cleanup-critical-observations-v1",
+  "purpose": "Hand-reviewed expected facts for cleanup conversion checks; derived from retained evidence, not new measurements.",
+  "scope": "Four representative runs only; no execution, extraction, or benchmark performed.",
+  "runs": [
+    {
+      "id": "fullcheck-effa358f-linux-01",
+      "kind": "full_check",
+      "source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+      "authoritative_overall": {"status": "passed", "full_check_pass": true, "transport_exit": 0, "remote_overall_exit": 0, "mise_check_exit": 0},
+      "stage_outcomes": {
+        "fmt": "passed", "vet": "passed", "test_ci": "passed", "build": "passed",
+        "statusline": {"passed": 145, "failed": 0, "skipped": 3,
+          "skipped_names": [
+            "platform has no chflags; chmod(1) mode-match elision unasserted",
+            "platform cannot make chmod fail; foreign cache directory unverified",
+            "no foreign-owned writable directory available; ownership gate unverified"
+          ]},
+        "go_test_skips": {"total": 52, "live_compiler": 10, "other_categories": ["platform", "permission", "explicit evaluation gates"], "names_reasons": "not enumerated in retained result metadata"}
+      },
+      "consumer_facts": {"product_or_corpus_invocations": 0, "stability": "none", "release": "none", "home_observed_unset": true},
+      "evidence": {
+        "result": "docs/implementation/graph-advantage/evidence/check-effa358f-linux-full-01/result.json",
+        "source_provenance": "docs/implementation/graph-advantage/evidence/check-effa358f-linux-full-01/source-provenance.json",
+        "raw_log": "docs/implementation/graph-advantage/evidence/check-effa358f-linux-full-01/raw/mise-check.raw.log",
+        "source_archive_sha256": "81c0ba6ba6f58c61270a6f70517b6ed23db806f1e64852ab5c69c9649a45fed3",
+        "tracked_manifest_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
+        "raw_log_sha256": "05553d1353683f98af3aa92e5f2fb75cc738b23495afcb7c2d9a3d203ca0a568"
+      }
+    },
+    {
+      "id": "compiler-effa358f-linux-01",
+      "kind": "compiler_correctness_diagnostic",
+      "source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+      "authoritative_overall": {"status": "passed", "failed": 0, "skipped": 0, "product_or_corpus_invocations": 0},
+      "stage_outcomes": {"top_level_passed": 28, "required_live_named_passed": 10, "compiler_skips": 0, "compiler_failures": 0, "build_exit": 0, "compiler_test_exit": 0},
+      "consumer_facts": {"coverage_is_correctness_only": true, "does_not_establish_quality_adjudication_or_release": true},
+      "evidence": {
+        "stage_results": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/stage-results.json",
+        "test_counts": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/test-counts.json",
+        "build_manifest": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/build-manifest.json",
+        "compiler_review": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/raw/compiler-review.json",
+        "compiler_advantage": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/raw/compiler-advantage.json",
+        "binary_sha256": "f2c2940a565397a010488843af99ff469c725dd54a720c90ed190311249ed1f6",
+        "source_archive_sha256": "81c0ba6ba6f58c61270a6f70517b6ed23db806f1e64852ab5c69c9649a45fed3",
+        "tracked_manifest_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267"
+      }
+    },
+    {
+      "id": "diagnostic8-effa358f",
+      "kind": "product_diagnostic_timeout",
+      "source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+      "authoritative_overall": {"status": "issue", "admission_eligible": false, "issue": "request timed out", "review_status": "not_reviewed"},
+      "stage_outcomes": {"started": 1, "completed": 0, "product_invocations": 1, "collector_invocations": 1, "controller_invocations": 0, "exit_code": -9, "deadline_seconds": 120, "peak_rss": null, "peak_rss_reason": "missing or invalid GNU time peak RSS", "stability_batches": 0},
+      "consumer_facts": {"profile_status": "complete", "profile_is_diagnostic_only": true, "no_performance_claim": true, "relations_first": 512, "relations_latest": 672256, "relation_progress_events": 1313, "counters_are_cumulative": true},
+      "evidence": {
+        "outcome": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/output/outcome.json",
+        "process": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/output/process.json",
+        "identity": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/output/identity.json",
+        "manifest": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/output/manifest.json",
+        "profile_sha256": "9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c",
+        "source_archive_sha256": "81c0ba6ba6f58c61270a6f70517b6ed23db806f1e64852ab5c69c9649a45fed3",
+        "binary_sha256": "f2c2940a565397a010488843af99ff469c725dd54a720c90ed190311249ed1f6"
+      }
+    },
+    {
+      "id": "fullcheck-6f23da0a-linux-r1",
+      "kind": "full_check",
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+      "authoritative_overall": {"status": "failed", "full_check_pass": false, "transport_exit": 0, "remote_overall_exit": 1, "mise_check_exit": 1, "failed_task": "test:statusline"},
+      "stage_outcomes": {"fmt": "completed_dependency", "vet": "completed_dependency", "test_ci": "passed_all_reported_packages", "build": "completed_dependency", "statusline": {"passed": 62, "failed": 78, "skipped": 3,
+        "skipped_names": [
+          "platform has no chflags; chmod(1) mode-match elision unasserted",
+          "platform cannot make chmod fail; foreign cache directory unverified",
+          "no foreign-owned writable directory available; ownership gate unverified"
+        ]}},
+      "consumer_facts": {"product_or_corpus_invocations": 0, "cause": "unproven; retained log does not expose suppressed child error", "stability": "none", "release": "none"},
+      "evidence": {
+        "result": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/attempt-r1/result.json",
+        "source_provenance": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/source-provenance.json",
+        "raw_log": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/attempt-r1/raw/mise-check.raw.log",
+        "source_archive_sha256": "f9afe6ae83cdc8f396082276cb64d7890f91d368d9f87d868193c0f2e7019d2b",
+        "tracked_manifest_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c",
+        "raw_log_sha256": "e81e7acc10741a8d124b14ed1a5f381f65320a30b53537192a51eab61a923ff3"
+      }
+    }
+  ]
+}

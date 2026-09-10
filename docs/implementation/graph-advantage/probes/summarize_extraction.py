@@ -1,10 +1,13 @@
-"""Summarize raw paired observations without filtering failures or tuning."""
+"""Summarize canonical paired observations without filtering failures or tuning."""
 import collections, json, math, pathlib, statistics, sys
+
+from canonical_evidence import load_run_and_rows, source_artifact_name
+
 source=pathlib.Path(sys.argv[1])
-rows=[json.loads(line) for line in source.read_text().splitlines()]
+run,rows=load_run_and_rows(source)
 groups=collections.defaultdict(list)
 for row in rows: groups[row['size'],row['profile'],row['scenario']].append(row)
-summary={'source':source.name,'observations':len(rows),'semantic_equal':all(row['equal'] for row in rows),'scope':'generated warm-process characterization; not a release gate','groups':[]}
+summary={'source':source_artifact_name(run),'observations':len(rows),'semantic_equal':all(row['equal'] for row in rows),'scope':'generated warm-process characterization; not a release gate','groups':[]}
 for key,group in sorted(groups.items()):
     arms={reuse:[r['elapsed_ns']/1e6 for r in group if r['reuse']==reuse] for reuse in [False,True]}
     stats={str(reuse):{'n':len(values),'median_ms':statistics.median(values),'p95_ms':sorted(values)[math.ceil(.95*len(values))-1]} for reuse,values in arms.items()}

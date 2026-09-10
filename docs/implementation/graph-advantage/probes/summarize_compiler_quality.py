@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Score the frozen v1 contract corpus; no corpus selection or tuning."""
+"""Score the canonical frozen v1 contract corpus; no selection or tuning."""
 import json
 import pathlib
 import sys
 
+from canonical_evidence import load_run_and_rows, source_artifact_name
+
 source = pathlib.Path(sys.argv[1])
-data = json.loads(source.read_text())
-rows = [row for row in data['rows'] if row['category'] != 'interface_candidates']
-result = {'manifest': data['manifest'], 'label_origin': data['label_origin'],
-          'compiler_contract_pass': data['compiler_contract_pass'], 'categories': data['rows']}
+run, all_rows = load_run_and_rows(source)
+source_name = source_artifact_name(run)
+source_record = run.get('source_records', {}).get(source_name, {})
+rows = [row for row in all_rows if row['category'] != 'interface_candidates']
+result = {'manifest': source_record['manifest'], 'label_origin': run['quality']['label_origin'],
+          'compiler_contract_pass': run['quality']['compiler_contract_pass'], 'categories': all_rows}
 for arm in ('static', 'compiler'):
     counts = [row[arm + '_counts'] for row in rows]
     total = {name: sum(item[name] for item in counts) for name in

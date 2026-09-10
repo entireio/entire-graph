@@ -1,0 +1,142 @@
+{
+  "schema": "graph-advantage-source-archive-reconstruction-compact-v1",
+  "generated_at_utc": "2026-09-10T08:48:02.278592+00:00",
+  "scope": "eight tracked source archives; duplicate archive membership is recorded once with aliases; no untracked archive",
+  "source_reconstruction_predicate": "Exact regular-file inclusion set for every unique subset is cmd/**, internal/**, go.mod, go.sum, plus the five listed root files. Each included path is present in the associated Git source tree with matching blob ID, byte size, and executable mode. No archive member is unsafe, a link, extra, or content/mode-mismatched. Omitted Git-tree paths are intentional archive exclusions.",
+  "included_prefixes": [
+    "cmd/",
+    "internal/"
+  ],
+  "included_root_files": [
+    "scripts/create-nightly-tag.sh",
+    "scripts/entire-graph-statusline.sh",
+    "scripts/entire-graph-statusline_test.sh",
+    "scripts/install-local.sh",
+    "scripts/release.sh"
+  ],
+  "unique_subsets": [
+    {
+      "archive_sha256": "2e4a1a4f6d2fad2fffb6b7b68ee8bd3403a83d964505c2f09db77a578ce8aa34",
+      "source_commit": "125745228645b5b605efc3cb1b8c6075e8c14a4e",
+      "source_tree": "4692e6bad8a8af3ab28bc21087ab120ad166e72e",
+      "member_manifest_sha256": "85876eb6fc8924481b006a6e452e85c895c5f3afc15652ab1f39e4776027551e",
+      "archive_members": 846,
+      "included_count": 732,
+      "omitted_git_tree_count": 823,
+      "git_tree_files": 1555,
+      "unsafe_member_count": 0,
+      "link_member_count": 0,
+      "extra_member_count": 0,
+      "mode_mismatch_count": 0,
+      "content_mismatch_count": 0,
+      "status": "EXACT_SOURCE_SUBSET",
+      "aliases": [
+        "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/source.tar.gz",
+        "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/source.tar.gz",
+        "docs/implementation/graph-advantage/evidence/diagnostics-linux-12574522/source.tar.gz"
+      ],
+      "included_prefixes_count": {
+        "cmd/": 4,
+        "internal/": 721
+      },
+      "included_root_file_count": 5
+    },
+    {
+      "archive_sha256": "d67f74b99b16dd081fdd956f820fae16be2eb524b772055914faf1fe5b72cda6",
+      "source_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+      "source_tree": "22f8cec276cf7c5eade59f0d997dad68d4dd3fee",
+      "member_manifest_sha256": "c3a250136934529109f765c8c75f4808013b93df6a79dab955565c7d67f05094",
+      "archive_members": 848,
+      "included_count": 734,
+      "omitted_git_tree_count": 1110,
+      "git_tree_files": 1844,
+      "unsafe_member_count": 0,
+      "link_member_count": 0,
+      "extra_member_count": 0,
+      "mode_mismatch_count": 0,
+      "content_mismatch_count": 0,
+      "status": "EXACT_SOURCE_SUBSET",
+      "aliases": [
+        "docs/implementation/graph-advantage/evidence/diagnostics-linux-450bede9/source.tar.gz"
+      ],
+      "included_prefixes_count": {
+        "cmd/": 4,
+        "internal/": 723
+      },
+      "included_root_file_count": 5
+    },
+    {
+      "archive_sha256": "e1a42113a94d043c79833ea9d16ae568965bdb50efdd7a5ccc5f3186c883032b",
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+      "source_tree": "fd8b8a56476453c3757a9038d485956f8dc4d679",
+      "member_manifest_sha256": "deef6b59fd1f5e755e43802a45128751bfd86dbb971769297981a0c3ac2cfd4a",
+      "archive_members": 848,
+      "included_count": 734,
+      "omitted_git_tree_count": 1325,
+      "git_tree_files": 2059,
+      "unsafe_member_count": 0,
+      "link_member_count": 0,
+      "extra_member_count": 0,
+      "mode_mismatch_count": 0,
+      "content_mismatch_count": 0,
+      "status": "EXACT_SOURCE_SUBSET",
+      "aliases": [
+        "docs/implementation/graph-advantage/evidence/diagnostics-linux-6f23da0a/source.tar.gz"
+      ],
+      "included_prefixes_count": {
+        "cmd/": 4,
+        "internal/": 723
+      },
+      "included_root_file_count": 5
+    },
+    {
+      "archive_sha256": "da93f88b25e6b75e19930094558475503422311e38847b3e2d570cde4a5129b4",
+      "source_commit": "8689fc3d790e4290ce2b62500d270c96c02087b3",
+      "source_tree": "0dc34db54dad4802b22f622b73d276c8ee155428",
+      "member_manifest_sha256": "1b03e8a133db3ffcad085fed99861b77d62fea4013264365acfa58b0a394a7eb",
+      "archive_members": 848,
+      "included_count": 734,
+      "omitted_git_tree_count": 1222,
+      "git_tree_files": 1956,
+      "unsafe_member_count": 0,
+      "link_member_count": 0,
+      "extra_member_count": 0,
+      "mode_mismatch_count": 0,
+      "content_mismatch_count": 0,
+      "status": "EXACT_SOURCE_SUBSET",
+      "aliases": [
+        "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d-r1/source.tar.gz",
+        "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d/source.tar.gz"
+      ],
+      "included_prefixes_count": {
+        "cmd/": 4,
+        "internal/": 723
+      },
+      "included_root_file_count": 5
+    },
+    {
+      "archive_sha256": "c1baab3e4c3c7d412951ba8bd9ce008c6d761122f7a570806b05426c82d4635f",
+      "source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+      "source_tree": "20f2925a66ae25b0419cf3615d355d3a812f85e7",
+      "member_manifest_sha256": "702b0577304efcc666cd07b7a027f5a0086079d1ee597867c74cca3bea48620c",
+      "archive_members": 847,
+      "included_count": 733,
+      "omitted_git_tree_count": 995,
+      "git_tree_files": 1728,
+      "unsafe_member_count": 0,
+      "link_member_count": 0,
+      "extra_member_count": 0,
+      "mode_mismatch_count": 0,
+      "content_mismatch_count": 0,
+      "status": "EXACT_SOURCE_SUBSET",
+      "aliases": [
+        "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/source.tar.gz"
+      ],
+      "included_prefixes_count": {
+        "cmd/": 4,
+        "internal/": 722
+      },
+      "included_root_file_count": 5
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "correctness_projections": [
+    {
+      "case_count": 5,
+      "declared_case_redaction": "response.repo_root -> null",
+      "legacy_equal_after_declared_redaction": true,
+      "ordered_projection_sha256": "4e422bea0a7cf6279b057526502e56eb1ff0c55f3d55e51e3e73feccc9998cc1",
+      "run_id": "correctness-05ad9842-20260906"
+    },
+    {
+      "case_count": 5,
+      "declared_case_redaction": "response.repo_root -> null",
+      "legacy_equal_after_declared_redaction": true,
+      "ordered_projection_sha256": "3a05cd8518ad9cb451d7a62abb48113e1a47a202f71428ffc8ca940bdfcb1291",
+      "run_id": "correctness-0c9e80f5-20260906"
+    },
+    {
+      "case_count": 5,
+      "declared_case_redaction": "response.repo_root -> null",
+      "legacy_equal_after_declared_redaction": true,
+      "ordered_projection_sha256": "52877728fc9f9ed374cc43165860ddc2e4b231b40cd9fc9969b03c322528e8bf",
+      "run_id": "correctness-1c0b8e24-20260906"
+    },
+    {
+      "case_count": 5,
+      "declared_case_redaction": "response.repo_root -> null",
+      "legacy_equal_after_declared_redaction": true,
+      "ordered_projection_sha256": "fed9ef67be7c26767f28576bf81ff73267b7789f6b8793b4f683aff37addf65a",
+      "run_id": "correctness-6cf92c9c-20260906"
+    },
+    {
+      "case_count": 5,
+      "declared_case_redaction": "response.repo_root -> null",
+      "legacy_equal_after_declared_redaction": true,
+      "ordered_projection_sha256": "a2cc98a45e883a595fea8379d2eba28aff8c31d51ae978155e4077852a05d034",
+      "run_id": "correctness-d793b2be-20260906"
+    }
+  ],
+  "description": "Canonical consumer projections were compared locally with retained legacy inputs before removal; no product, benchmark, or cloud command ran.",
+  "p4_metric_recomputation": {
+    "external_evidence_mapping": "docs/implementation/graph-advantage/evidence-index.md",
+    "limitation": "The five compiler correctness projections validate response shape and order only; they are not P4 coverage or a relevance-metric oracle. No P4 dataset is deleted by this cleanup.",
+    "reason": "This branch retains P4 protocol, control evidence, and an unreviewed six-task reviewer packet, but no GraphRank per-query arm results plus adjudicated relevance-label corpus.",
+    "retained_inputs": [
+      "docs/implementation/graph-advantage/reviewer-packet-v1/tasks.json",
+      "docs/implementation/graph-advantage/reviewer-packet-v1/review.json",
+      "docs/implementation/graph-advantage/reviewer-packet-v1/provenance.json",
+      "docs/implementation/graph-advantage/p4-review.md"
+    ],
+    "status": "unavailable-preexisting"
+  },
+  "schema": "graph-advantage-canonical-consumer-parity-v1",
+  "status": "passed",
+  "summaries": [
+    {
+      "byte_equal": true,
+      "canonical_output_sha256": "07f8c276c70238113605fdf39f7b2d9cdd6f7f790989d17c16f51cf8bce827e1",
+      "canonical_run": "evidence/canonical-v1/runs/extraction-paired-v1.json",
+      "consumer": "summarize_extraction.py",
+      "legacy_input": "evidence/extraction-paired-v1.ndjson",
+      "legacy_output_sha256": "07f8c276c70238113605fdf39f7b2d9cdd6f7f790989d17c16f51cf8bce827e1"
+    },
+    {
+      "byte_equal": true,
+      "canonical_output_sha256": "a8723a3672d4a1fd0e9e33efd26f69e1bf5047496d336a176b8cb5ac90229708",
+      "canonical_run": "evidence/canonical-v1/runs/extraction-paired-v2.json",
+      "consumer": "summarize_extraction.py",
+      "legacy_input": "evidence/extraction-paired-v2.ndjson",
+      "legacy_output_sha256": "a8723a3672d4a1fd0e9e33efd26f69e1bf5047496d336a176b8cb5ac90229708"
+    },
+    {
+      "byte_equal": true,
+      "canonical_output_sha256": "e385677c2a28306367f65041657c8212f3569641d8a3b72ce74332f861a79899",
+      "canonical_run": "evidence/canonical-v1/runs/relation-profile-v1.json",
+      "consumer": "summarize_relation_profile.py",
+      "legacy_input": "evidence/relation-profile-v1.ndjson",
+      "legacy_output_sha256": "e385677c2a28306367f65041657c8212f3569641d8a3b72ce74332f861a79899"
+    },
+    {
+      "byte_equal": true,
+      "canonical_output_sha256": "19e02665a56293465b96ab372dbbac960c19dc08a2757362ea00733a61ef1065",
+      "canonical_run": "evidence/canonical-v1/runs/compiler-quality-v1.json",
+      "consumer": "summarize_compiler_quality.py",
+      "legacy_input": "evidence/compiler-quality-v1.json",
+      "legacy_output_sha256": "19e02665a56293465b96ab372dbbac960c19dc08a2757362ea00733a61ef1065"
+    }
+  ],
+  "tests": {
+    "command": "python3 -m unittest -v docs/implementation/graph-advantage/probes/test_canonical_consumers.py",
+    "failed": 0,
+    "passed": 2
+  }
+}
