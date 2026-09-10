@@ -1,0 +1,1 @@
+use entire CLI and tell me who wrote the authentication function using what model, when, where and what was the original prompt that created it?
