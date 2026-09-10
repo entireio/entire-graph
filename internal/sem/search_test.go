@@ -2300,3 +2300,59 @@ func TestSearchNameMatchesAbbreviationIsTokenScoped(t *testing.T) {
 		})
 	}
 }
+
+// TestSearchCompoundJoinSeparablePhrasalVerbs pins the entireio/cli regression. The motivating
+// sentence is "the main authentication function that logs a user in", where the phrasal verb is
+// split around its object: `logs` and `in` are four tokens apart, so an adjacent-pair scan sees
+// nothing. Before the joined term existed the query returned the LOGGING package with no auth in
+// the top five.
+func TestSearchCompoundJoinSeparablePhrasalVerbs(t *testing.T) {
+	t.Parallel()
+	q := buildSearchQuery("the main authentication function that logs a user in")
+	if !q.termSet["login"] {
+		t.Fatalf("separated phrasal verb must yield the joined term; got %v", q.terms)
+	}
+	// Added, never substituted: the split spelling has to survive for repos that use it.
+	if !q.termSet["logs"] && !q.termSet["log"] {
+		t.Fatalf("the split spelling must survive alongside the joined one; got %v", q.terms)
+	}
+}
+
+func TestSearchCompoundJoins(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		query string
+		want  string
+		found bool
+	}{
+		{"adjacent phrasal verb", "cannot log in", "login", true},
+		{"separated by determiner", "logs a user in", "login", true},
+		{"separated, possessive object", "log the user out", "logout", true},
+		{"inflected verb", "logging a user in", "login", true},
+		{"past tense", "logged the user in", "login", true},
+		{"adjacent noun compound", "the end point returns 404", "endpoint", true},
+		{"other phrasal verb", "roll the migration back", "rollback", true},
+		// The object-head requirement keeps an unrelated SEPARATED particle out: no determiner
+		// directly after "log", so the gap scan must not reach the trailing "in".
+		{"no object head, no separated join", "write every log entry in json", "login", false},
+		// noun + preposition, not a phrasal verb. The determiner in front of "log" marks it as a
+		// noun, which is the only cue English gives. Without this check the query returned
+		// persistLogin, RecordLoginContext and runLogin at ranks 1-3.
+		{"determiner marks a noun, not a phrasal verb", "write the log in json format", "login", false},
+		// ...but the same words with a verb in front are the phrasal verb, and must still join.
+		{"no determiner, still a phrasal verb", "the user cannot log in", "login", true},
+		// Noun compounds are not separable; only the adjacent form counts.
+		{"noun compound is not separable", "the end of the point", "endpoint", false},
+		{"gap too wide", "logs every authenticated request payload in", "login", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildSearchQuery(tc.query).termSet[tc.want]
+			if got != tc.found {
+				t.Fatalf("buildSearchQuery(%q).termSet[%q] = %v, want %v", tc.query, tc.want, got, tc.found)
+			}
+		})
+	}
+}

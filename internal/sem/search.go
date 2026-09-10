@@ -4832,6 +4832,160 @@ func regionsAroundHits(hits []int, lower, upper, context, maxLines int) [][2]int
 	return regions
 }
 
+// searchCompoundPhrases maps a two-word prose spelling to the single identifier code uses for it.
+// Keyed on the BASE form of the first word; searchCompoundJoin handles the inflections.
+//
+// Two kinds of entry. Phrasal verbs ("log in", "roll back") are the ones prose almost always
+// splits and code almost never does. Noun compounds ("end point", "meta data") are the ones prose
+// splits inconsistently. Both lose the joined token today.
+var searchCompoundPhrases = map[string]string{
+	"back up":      "backup",
+	"black list":   "blacklist",
+	"break down":   "breakdown",
+	"call back":    "callback",
+	"check in":     "checkin",
+	"check out":    "checkout",
+	"clean up":     "cleanup",
+	"data base":    "database",
+	"drop down":    "dropdown",
+	"end point":    "endpoint",
+	"fall back":    "fallback",
+	"fall through": "fallthrough",
+	"hand off":     "handoff",
+	"life cycle":   "lifecycle",
+	"log in":       "login",
+	"log out":      "logout",
+	"look up":      "lookup",
+	"meta data":    "metadata",
+	"name space":   "namespace",
+	"place holder": "placeholder",
+	"roll back":    "rollback",
+	"roll out":     "rollout",
+	"run time":     "runtime",
+	"set up":       "setup",
+	"shut down":    "shutdown",
+	"sign in":      "signin",
+	"sign out":     "signout",
+	"sign up":      "signup",
+	"start up":     "startup",
+	"tear down":    "teardown",
+	"time out":     "timeout",
+	"time stamp":   "timestamp",
+	"warm up":      "warmup",
+	"web hook":     "webhook",
+	"white list":   "whitelist",
+	"work around":  "workaround",
+	"work flow":    "workflow",
+}
+
+// searchPhrasalVerbParticles are the second halves of the SEPARABLE entries in the table above.
+// English splits a phrasal verb around its object — "logs A USER in", "roll THE CHANGE back" — so
+// an adjacent-pair scan never sees the pair at all. This was the first version of this fix and it
+// changed nothing on the very query that motivated it, because the motivating sentence is "the
+// authentication function that logs a user in": `logs` and `in` are four tokens apart.
+//
+// Noun compounds ("end point", "meta data") are NOT separable and stay adjacent-only.
+var searchPhrasalVerbParticles = map[string]bool{
+	"back":    true,
+	"down":    true,
+	"in":      true,
+	"off":     true,
+	"out":     true,
+	"through": true,
+	"up":      true,
+}
+
+// searchCompoundObjectHeads are the words that can open the object a phrasal verb splits around.
+// Requiring one is what separates "logs a user in" from "write the log in JSON": the first has a
+// determiner immediately after the verb, the second does not.
+var searchCompoundObjectHeads = map[string]bool{
+	"a": true, "an": true, "the": true, "this": true, "that": true, "these": true, "those": true,
+	"its": true, "their": true, "his": true, "her": true, "our": true, "my": true, "your": true,
+	"it": true, "them": true, "him": true, "us": true, "me": true, "you": true,
+}
+
+// searchMaxCompoundGap is how many tokens may sit between a phrasal verb and its particle. Three
+// covers the object phrases that actually occur ("logs a user in", "roll the failed change back")
+// without letting the scan reach across a clause boundary.
+const searchMaxCompoundGap = 3
+
+// searchCompoundDeterminers mark the following word as a NOUN. This is the cue that separates the
+// phrasal verb "cannot log in" from the noun-plus-preposition "write THE log in json format" —
+// two token sequences English spells identically and distinguishes only by part of speech.
+//
+// Without this check the false positive is not a rounding error: "write the log in json format"
+// returned persistLogin, RecordLoginContext and runLogin at ranks 1-3, hijacking a legitimate
+// logging query outright. Measured, after an earlier version of this comment claimed the cost was
+// bounded because the joined term is only ADDED. It is not bounded; an added term that matches a
+// dense cluster of real identifiers wins.
+//
+// Applied to phrasal verbs only. Noun compounds ("the end point", "the meta data") are nouns
+// already and a determiner in front of them is expected, not disqualifying.
+var searchCompoundDeterminers = map[string]bool{
+	"a": true, "an": true, "the": true, "this": true, "that": true, "these": true, "those": true,
+	"my": true, "your": true, "his": true, "her": true, "its": true, "our": true, "their": true,
+	"each": true, "every": true, "any": true, "some": true, "no": true, "one": true,
+}
+
+// searchCompoundJoins returns the single-identifier spellings implied by the token at index: the
+// adjacent pair, plus — for a separable phrasal verb — the particle found a few tokens later.
+func searchCompoundJoins(tokens []string, index int) []string {
+	var out []string
+	if index+1 < len(tokens) {
+		particle := searchPhrasalVerbParticles[strings.ToLower(tokens[index+1])]
+		nounPhrase := index > 0 && searchCompoundDeterminers[strings.ToLower(tokens[index-1])]
+		if !(particle && nounPhrase) {
+			if joined, ok := searchCompoundJoin(tokens[index], tokens[index+1]); ok {
+				out = append(out, joined)
+			}
+		}
+	}
+	for gap := 2; gap <= searchMaxCompoundGap+1 && index+gap < len(tokens); gap++ {
+		particle := strings.ToLower(tokens[index+gap])
+		if !searchPhrasalVerbParticles[particle] {
+			continue
+		}
+		// The object has to look like an object. Without this, any "log" and any later "in"
+		// in the same sentence would manufacture a login term.
+		if !searchCompoundObjectHeads[strings.ToLower(tokens[index+1])] {
+			continue
+		}
+		if joined, ok := searchCompoundJoin(tokens[index], particle); ok {
+			out = append(out, joined)
+		}
+	}
+	return out
+}
+
+// searchCompoundJoin reports the single-identifier spelling of a word pair, if there is one. The
+// first word is matched on its base form as well as its literal one, because the sentence a
+// reporter writes conjugates the verb the table cannot: "logs in", "logged in" and "logging in"
+// all mean login, and only "log in" is in the table.
+func searchCompoundJoin(first, second string) (string, bool) {
+	head := strings.ToLower(first)
+	tail := strings.ToLower(second)
+	if joined, ok := searchCompoundPhrases[head+" "+tail]; ok {
+		return joined, true
+	}
+	for _, suffix := range []string{"ing", "ed", "es", "s"} {
+		if !strings.HasSuffix(head, suffix) || len(head) <= len(suffix)+1 {
+			continue
+		}
+		stem := head[:len(head)-len(suffix)]
+		if joined, ok := searchCompoundPhrases[stem+" "+tail]; ok {
+			return joined, true
+		}
+		// English doubles the final consonant before -ing/-ed, so "logging" stems to "logg" and
+		// "logg in" is in no table. Collapse the double and try once more.
+		if n := len(stem); n >= 2 && stem[n-1] == stem[n-2] {
+			if joined, ok := searchCompoundPhrases[stem[:n-1]+" "+tail]; ok {
+				return joined, true
+			}
+		}
+	}
+	return "", false
+}
+
 func buildSearchQuery(query string) searchQuery {
 	// Strip before anything reads the text, so terms, words and rawLower are all derived from
 	// the same URL-state-free query. SearchResponse.Query still echoes the caller's original.
@@ -4885,6 +5039,22 @@ func buildSearchQuery(query string) searchQuery {
 				weight = 1.1
 			}
 			add(term, weight)
+		}
+	}
+	// Prose splits compounds that code writes as one identifier, and the split throws away the
+	// most informative token in the query. `search` is documented to take "the task or bug in one
+	// plain sentence", and English writes this verb as two words: "the authentication function
+	// that logs a user IN". Measured on entireio/cli, that sentence returned the LOGGING package
+	// (RestoreLogsOnly, handleLogsOnlyRewindNonInteractive) with no auth in the top five, while the
+	// same sentence carrying `login` as one token returned fetchCurrentUserLogin, persistLogin,
+	// RecordLoginContext and NewRefreshingLoginProvider — every hit auth, logging gone.
+	//
+	// ADDED, never substituted. "logs" and "log" stay in the query: a repo is free to spell the
+	// concept as two words in prose, a doc comment or a test name, and dropping the split form to
+	// chase the joined one would trade this blind spot for its mirror image.
+	for index := range rawTokens {
+		for _, joined := range searchCompoundJoins(rawTokens, index) {
+			add(joined, 1.0)
 		}
 	}
 	for _, entity := range constraints.Entities {
