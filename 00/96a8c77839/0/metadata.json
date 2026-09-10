@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.7-nightly.202609080625.78a655db4.0.20260908145503-8bbfeb6d3901+dirty",
+  "checkpoint_id": "0096a8c77839",
+  "session_id": "01a08cf2-0f8e-79a0-a409-85fbe6bbbd40",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-10T20:29:02.384005Z",
+  "branch": "fix/search-prose-query-ranking",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 124769,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 3619840,
+    "output_tokens": 12792,
+    "api_call_count": 43
+  },
+  "session_metrics": {
+    "turn_count": 1
+  }
+}
