@@ -17,7 +17,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 MANIFEST = HERE / "corpus-manifest.json"
-DEST = Path(os.environ.get("P1_CORPUS_ROOT", "/Users/thomi/Projects/graph-advantage-p1-corpus")).resolve()
+def corpus_root() -> Path:
+    value = os.environ.get("P1_CORPUS_ROOT", "").strip()
+    if not value:
+        raise SystemExit("P1_CORPUS_ROOT is required")
+    return Path(value).resolve()
 
 
 def run(*args: str, cwd: Path, check: bool = True) -> str:
@@ -31,7 +35,7 @@ def repo_path(value: str) -> tuple[str, Path, dict]:
     record = None
     for record in data["repositories"]:
         if record["id"] == value:
-            p = DEST / value
+            p = corpus_root() / value
             break
     else:
         p = Path(value).resolve()

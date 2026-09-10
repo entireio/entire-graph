@@ -1,0 +1,378 @@
+{
+  "alias_count": 24,
+  "aliases": [
+    {
+      "bytes": 343724,
+      "family": "check-25887f69-linux-full",
+      "group_sha256": "1691ddc7be3f1e8f274779197e0b741a04a3fe717b063488effdc08a2d85fb07",
+      "lines": 2292,
+      "path": "docs/implementation/graph-advantage/evidence/check-25887f69-linux-full/raw/after-tracked-manifest.tsv",
+      "role": "after",
+      "source_commit": "25887f6954fc06e35bc3a7c699e3c524213dada4",
+      "source_sha256": "1691ddc7be3f1e8f274779197e0b741a04a3fe717b063488effdc08a2d85fb07"
+    },
+    {
+      "bytes": 343724,
+      "family": "check-25887f69-linux-full",
+      "group_sha256": "1691ddc7be3f1e8f274779197e0b741a04a3fe717b063488effdc08a2d85fb07",
+      "lines": 2292,
+      "path": "docs/implementation/graph-advantage/evidence/check-25887f69-linux-full/raw/before-tracked-manifest.tsv",
+      "role": "before",
+      "source_commit": "25887f6954fc06e35bc3a7c699e3c524213dada4",
+      "source_sha256": "1691ddc7be3f1e8f274779197e0b741a04a3fe717b063488effdc08a2d85fb07"
+    },
+    {
+      "bytes": 343724,
+      "family": "check-25887f69-linux-full",
+      "group_sha256": "1691ddc7be3f1e8f274779197e0b741a04a3fe717b063488effdc08a2d85fb07",
+      "lines": 2292,
+      "path": "docs/implementation/graph-advantage/evidence/check-25887f69-linux-full/review/expected-tracked-manifest.tsv",
+      "role": "expected",
+      "source_commit": "25887f6954fc06e35bc3a7c699e3c524213dada4",
+      "source_sha256": "1691ddc7be3f1e8f274779197e0b741a04a3fe717b063488effdc08a2d85fb07"
+    },
+    {
+      "bytes": 303826,
+      "family": "check-6f23da0a-linux-full",
+      "group_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c",
+      "lines": 2059,
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/attempt-r1/raw/after-tracked-manifest-r1.tsv",
+      "role": "after",
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+      "source_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c"
+    },
+    {
+      "bytes": 303826,
+      "family": "check-6f23da0a-linux-full",
+      "group_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c",
+      "lines": 2059,
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/attempt-r1/raw/before-tracked-manifest-r1.tsv",
+      "role": "before",
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+      "source_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c"
+    },
+    {
+      "bytes": 303826,
+      "family": "check-6f23da0a-linux-full",
+      "group_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c",
+      "lines": 2059,
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/attempt-r1/review/expected-tracked-manifest.tsv",
+      "role": "expected",
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+      "source_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c"
+    },
+    {
+      "bytes": 297649,
+      "family": "check-6f23da0a-linux-full",
+      "group_sha256": "98a007c6a0024ad567609bc08b286378dd413b955fa22d073f90ae48e484d8d4",
+      "lines": 2059,
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/raw/after-tracked-manifest.tsv",
+      "role": "after",
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+      "source_sha256": "98a007c6a0024ad567609bc08b286378dd413b955fa22d073f90ae48e484d8d4"
+    },
+    {
+      "bytes": 297649,
+      "family": "check-6f23da0a-linux-full",
+      "group_sha256": "98a007c6a0024ad567609bc08b286378dd413b955fa22d073f90ae48e484d8d4",
+      "lines": 2059,
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/raw/before-tracked-manifest.tsv",
+      "role": "before",
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+      "source_sha256": "98a007c6a0024ad567609bc08b286378dd413b955fa22d073f90ae48e484d8d4"
+    },
+    {
+      "bytes": 297649,
+      "family": "check-6f23da0a-linux-full",
+      "group_sha256": "73d51ec719e3b807c9e56bceaa108da3cd0f9b62063ca790671e3d152a660c62",
+      "lines": 2059,
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/review/expected-tracked-manifest.tsv",
+      "role": "expected",
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+      "source_sha256": "73d51ec719e3b807c9e56bceaa108da3cd0f9b62063ca790671e3d152a660c62"
+    },
+    {
+      "bytes": 362231,
+      "family": "check-950567a3-linux-full-01",
+      "group_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371",
+      "lines": 2398,
+      "path": "docs/implementation/graph-advantage/evidence/check-950567a3-linux-full-01/raw/after-tracked-manifest.tsv",
+      "role": "after",
+      "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+      "source_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371"
+    },
+    {
+      "bytes": 362231,
+      "family": "check-950567a3-linux-full-01",
+      "group_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371",
+      "lines": 2398,
+      "path": "docs/implementation/graph-advantage/evidence/check-950567a3-linux-full-01/raw/before-tracked-manifest.tsv",
+      "role": "before",
+      "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+      "source_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371"
+    },
+    {
+      "bytes": 362231,
+      "family": "check-950567a3-linux-full-01",
+      "group_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371",
+      "lines": 2398,
+      "path": "docs/implementation/graph-advantage/evidence/check-950567a3-linux-full-01/review/expected-tracked-manifest.tsv",
+      "role": "expected",
+      "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+      "source_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371"
+    },
+    {
+      "bytes": 382274,
+      "family": "check-effa358f-linux-full-01",
+      "group_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
+      "lines": 2512,
+      "path": "docs/implementation/graph-advantage/evidence/check-effa358f-linux-full-01/raw/after-tracked-manifest.tsv",
+      "role": "after",
+      "source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+      "source_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267"
+    },
+    {
+      "bytes": 382274,
+      "family": "check-effa358f-linux-full-01",
+      "group_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
+      "lines": 2512,
+      "path": "docs/implementation/graph-advantage/evidence/check-effa358f-linux-full-01/raw/before-tracked-manifest.tsv",
+      "role": "before",
+      "source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+      "source_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267"
+    },
+    {
+      "bytes": 382274,
+      "family": "check-effa358f-linux-full-01",
+      "group_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
+      "lines": 2512,
+      "path": "docs/implementation/graph-advantage/evidence/check-effa358f-linux-full-01/review/expected-tracked-manifest.tsv",
+      "role": "expected",
+      "source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+      "source_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267"
+    },
+    {
+      "bytes": 343724,
+      "family": "diagnostics-linux-25887f69-evaluator-build-01",
+      "group_sha256": "1691ddc7be3f1e8f274779197e0b741a04a3fe717b063488effdc08a2d85fb07",
+      "lines": 2292,
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-25887f69-evaluator-build-01/raw/after-tracked-manifest.tsv",
+      "role": "after",
+      "source_commit": "25887f6954fc06e35bc3a7c699e3c524213dada4",
+      "source_sha256": "1691ddc7be3f1e8f274779197e0b741a04a3fe717b063488effdc08a2d85fb07"
+    },
+    {
+      "bytes": 343724,
+      "family": "diagnostics-linux-25887f69-evaluator-build-01",
+      "group_sha256": "1691ddc7be3f1e8f274779197e0b741a04a3fe717b063488effdc08a2d85fb07",
+      "lines": 2292,
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-25887f69-evaluator-build-01/raw/before-tracked-manifest.tsv",
+      "role": "before",
+      "source_commit": "25887f6954fc06e35bc3a7c699e3c524213dada4",
+      "source_sha256": "1691ddc7be3f1e8f274779197e0b741a04a3fe717b063488effdc08a2d85fb07"
+    },
+    {
+      "bytes": 362231,
+      "family": "diagnostics-linux-950567a3-evaluator-build-01",
+      "group_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371",
+      "lines": 2398,
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-950567a3-evaluator-build-01/raw/after-tracked-manifest.tsv",
+      "role": "after",
+      "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+      "source_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371"
+    },
+    {
+      "bytes": 362231,
+      "family": "diagnostics-linux-950567a3-evaluator-build-01",
+      "group_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371",
+      "lines": 2398,
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-950567a3-evaluator-build-01/raw/before-tracked-manifest.tsv",
+      "role": "before",
+      "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+      "source_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371"
+    },
+    {
+      "bytes": 382274,
+      "family": "diagnostics-linux-effa358f-compiler-01",
+      "group_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
+      "lines": 2512,
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/raw/after-tracked-manifest.tsv",
+      "role": "after",
+      "source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+      "source_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267"
+    },
+    {
+      "bytes": 382274,
+      "family": "diagnostics-linux-effa358f-compiler-01",
+      "group_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
+      "lines": 2512,
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/raw/before-tracked-manifest.tsv",
+      "role": "before",
+      "source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+      "source_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267"
+    },
+    {
+      "bytes": 303826,
+      "family": "statusline-linux-actual-task-6f23da0a-r1",
+      "group_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c",
+      "lines": 2059,
+      "path": "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/after-tracked-manifest-r1.tsv",
+      "role": "after",
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+      "source_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c"
+    },
+    {
+      "bytes": 303826,
+      "family": "statusline-linux-actual-task-6f23da0a-r1",
+      "group_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c",
+      "lines": 2059,
+      "path": "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/before-tracked-manifest-r1.tsv",
+      "role": "before",
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+      "source_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c"
+    },
+    {
+      "bytes": 0,
+      "family": "statusline-linux-actual-task-6f23da0a",
+      "group_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "lines": 0,
+      "path": "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a/raw/after-manifest.tsv",
+      "role": "failed-attempt-empty-output",
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "group_count": 7,
+  "groups": [
+    {
+      "aliases": 5,
+      "bytes": 343724,
+      "content_mismatch_count": 0,
+      "content_path_equal_to_git": true,
+      "exact_git_manifest": true,
+      "extra_path_count": 0,
+      "line_count": 2292,
+      "manifest_sha256": "1691ddc7be3f1e8f274779197e0b741a04a3fe717b063488effdc08a2d85fb07",
+      "missing_path_count": 0,
+      "mode_counts": {
+        "100644": 2270,
+        "100755": 22
+      },
+      "mode_mismatch_count": 0,
+      "row_order_matches_git": true,
+      "source_commit": "25887f6954fc06e35bc3a7c699e3c524213dada4"
+    },
+    {
+      "aliases": 1,
+      "bytes": 297649,
+      "content_mismatch_count": 0,
+      "content_path_equal_to_git": true,
+      "exact_git_manifest": false,
+      "extra_path_count": 0,
+      "line_count": 2059,
+      "manifest_sha256": "73d51ec719e3b807c9e56bceaa108da3cd0f9b62063ca790671e3d152a660c62",
+      "missing_path_count": 0,
+      "mode_counts": {
+        "644": 2042,
+        "755": 17
+      },
+      "mode_mismatch_count": 2059,
+      "row_order_matches_git": true,
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1"
+    },
+    {
+      "aliases": 5,
+      "bytes": 303826,
+      "content_mismatch_count": 0,
+      "content_path_equal_to_git": true,
+      "exact_git_manifest": true,
+      "extra_path_count": 0,
+      "line_count": 2059,
+      "manifest_sha256": "7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c",
+      "missing_path_count": 0,
+      "mode_counts": {
+        "100644": 2042,
+        "100755": 17
+      },
+      "mode_mismatch_count": 0,
+      "row_order_matches_git": true,
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1"
+    },
+    {
+      "aliases": 5,
+      "bytes": 362231,
+      "content_mismatch_count": 0,
+      "content_path_equal_to_git": true,
+      "exact_git_manifest": true,
+      "extra_path_count": 0,
+      "line_count": 2398,
+      "manifest_sha256": "7b5854a5927df8968d82df143125234538dc86be411f385f564590e49d8a9371",
+      "missing_path_count": 0,
+      "mode_counts": {
+        "100644": 2375,
+        "100755": 23
+      },
+      "mode_mismatch_count": 0,
+      "row_order_matches_git": true,
+      "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d"
+    },
+    {
+      "aliases": 2,
+      "bytes": 297649,
+      "content_mismatch_count": 0,
+      "content_path_equal_to_git": true,
+      "exact_git_manifest": false,
+      "extra_path_count": 0,
+      "line_count": 2059,
+      "manifest_sha256": "98a007c6a0024ad567609bc08b286378dd413b955fa22d073f90ae48e484d8d4",
+      "missing_path_count": 0,
+      "mode_counts": {
+        "664": 2042,
+        "775": 17
+      },
+      "mode_mismatch_count": 2059,
+      "row_order_matches_git": true,
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1"
+    },
+    {
+      "aliases": 5,
+      "bytes": 382274,
+      "content_mismatch_count": 0,
+      "content_path_equal_to_git": true,
+      "exact_git_manifest": true,
+      "extra_path_count": 0,
+      "line_count": 2512,
+      "manifest_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
+      "missing_path_count": 0,
+      "mode_counts": {
+        "100644": 2488,
+        "100755": 24
+      },
+      "mode_mismatch_count": 0,
+      "row_order_matches_git": true,
+      "source_commit": "effa358f2ceaca2b9accd829984272598fa78078"
+    },
+    {
+      "aliases": 1,
+      "bytes": 0,
+      "content_mismatch_count": 0,
+      "content_path_equal_to_git": false,
+      "exact_git_manifest": false,
+      "extra_path_count": 0,
+      "line_count": 0,
+      "manifest_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "missing_path_count": 2059,
+      "mode_counts": {},
+      "mode_mismatch_count": 0,
+      "row_order_matches_git": false,
+      "source_commit": "6f23da0ad4fa704da8c7bac53e1065030c89a4f1"
+    }
+  ],
+  "limitations": [
+    "The failed first 6f23 mode-format captures are not represented as exact row streams; their complete path/content equality and mode distributions/mismatch counts are retained.",
+    "The zero-byte failed-attempt output records absence and is not claimed reconstructible."
+  ],
+  "reconstruction_algorithm": "sort Git blob paths; emit Git mode, SHA-256 of blob bytes, and path separated by tabs with newline termination",
+  "schema": "graph-advantage-tracked-manifest-provenance-v1",
+  "scope": "24 tracked manifest TSV artifacts; exact row data is reconstructible from the recorded Git commit when exact_git_manifest=true; failed mode encodings retain mismatch counts"
+}

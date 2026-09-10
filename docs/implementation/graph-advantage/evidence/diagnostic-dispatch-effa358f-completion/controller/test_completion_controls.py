@@ -1,12 +1,14 @@
 import errno
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import socket
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 
 HERE = Path(__file__).resolve().parent
@@ -22,7 +24,42 @@ def load_module(name, path):
 
 collector = load_module("completion_controls_collector", PACKAGE / "collector/run_remote.py")
 observer = load_module("completion_controls_observer", PACKAGE / "collector/observe_remote.py")
+cloud = load_module("completion_controls_cloud", PACKAGE / "collector/cloud.py")
 controller = load_module("completion_controls_controller", HERE / "controller.py")
+
+
+class CompletionConfigurationTests(unittest.TestCase):
+    def test_requires_and_returns_explicit_public_configuration(self):
+        values = {
+            "GRAPH_ADVANTAGE_AZURE_RESOURCE_GROUP": "resource-group",
+            "GRAPH_ADVANTAGE_AZURE_STORAGE_ACCOUNT": "storageaccount",
+            "GRAPH_ADVANTAGE_AZURE_STORAGE_CONTAINER": "container",
+            "GRAPH_ADVANTAGE_VALIDATION_VM": "validation-vm",
+            "GRAPH_ADVANTAGE_WORKER_2_VM": "worker-2-vm",
+            "GRAPH_ADVANTAGE_WORKER_3_VM": "worker-3-vm",
+        }
+        with mock.patch.dict(os.environ, values, clear=True):
+            self.assertEqual(
+                cloud.config(),
+                {
+                    "resource_group": "resource-group",
+                    "storage_account": "storageaccount",
+                    "storage_container": "container",
+                    "validation_vm": "validation-vm",
+                    "worker_2_vm": "worker-2-vm",
+                    "worker_3_vm": "worker-3-vm",
+                },
+            )
+            self.assertEqual(
+                controller.configured_vms(),
+                ("validation-vm", "worker-2-vm", "worker-3-vm"),
+            )
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "GRAPH_ADVANTAGE_AZURE_RESOURCE_GROUP"):
+                cloud.config()
+            with self.assertRaisesRegex(RuntimeError, "GRAPH_ADVANTAGE_VALIDATION_VM"):
+                controller.configured_vms()
 
 
 class CompletionRuntimeBoundaryTests(unittest.TestCase):

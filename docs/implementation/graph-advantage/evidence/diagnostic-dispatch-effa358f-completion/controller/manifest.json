@@ -1,8 +1,8 @@
 {
   "status": "prepared only; no VM, cloud, collector, product, corpus, or benchmark execution",
-  "validation_gate_kind": "full-check-archive-v1",
+  "validation_gate_kind": "full-check-canonical-v1",
   "full_check_gate": "full-check-gate.json",
-  "full_check_gate_sha256": "4e479ddd47200aa3626d0066c4f0e8a68276b78d81cdbae1e4caf74a0eb9cc6c",
+  "full_check_gate_sha256": "813150b62035ef40ff123312ae27a3d656062285e85bf08beb5d5c2e1f0ed81a",
   "dispatch_id": "p1-diag-effa358f-k8s-late-relations-off-01",
   "repository": "kubernetes-kubernetes",
   "frozen_repository_commit": "b2ec8b6fefac451a2dedafc4dd71f2f16c7a6abe",
@@ -58,6 +58,8 @@
     "statusline_passed": 145,
     "statusline_failed": 0,
     "statusline_platform_skips": 3,
-    "full_coverage_claimed": false
+    "full_coverage_claimed": false,
+    "canonical_run_sha256": "0b47127bd6f836cc4a137f9914da87bdace71d17a5c13f05d2202f2f3d830fe3",
+    "canonical_verification_sha256": "14ae0d3ba8a363ca5ff6ec0ee335d396959852abcf07a2a320be6525a857d290"
   }
 }

@@ -41,5 +41,22 @@ checks do not establish behavioral correctness.
 
 No cloud command, VM start, dispatch or worker claim, evaluator invocation,
 product invocation, or corpus run was launched from this WIP. The retained
-`build-manifest.json`, `full-check-gate.json`, and corpus files are copied input
-bindings only; their presence does not admit this package for execution.
+`build-manifest.json`, canonical `full-check-gate.json`, and corpus files are
+input bindings only; their presence does not admit this package for execution.
+The full-check gate now reads the canonical effa run and canonical verification
+record, so it no longer depends on the historical raw log, manifest, exit, or
+transport files. This cleanup migration does not complete the paused runtime.
+
+The paused source now requires these configuration variables instead of
+persisting deployment identities or local paths:
+
+- `GRAPH_ADVANTAGE_AZURE_RESOURCE_GROUP`
+- `GRAPH_ADVANTAGE_AZURE_STORAGE_ACCOUNT`
+- `GRAPH_ADVANTAGE_AZURE_STORAGE_CONTAINER`
+- `GRAPH_ADVANTAGE_VALIDATION_VM`
+- `GRAPH_ADVANTAGE_WORKER_2_VM`
+- `GRAPH_ADVANTAGE_WORKER_3_VM`
+- `P1_CORPUS_ROOT`
+
+Their values are deliberately absent. This records the future configuration
+boundary only and does not make the WIP ready to execute.

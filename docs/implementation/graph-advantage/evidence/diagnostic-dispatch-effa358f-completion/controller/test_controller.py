@@ -16,7 +16,7 @@ controller = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(controller)
 
 
-class ArchiveFullCheckControllerTests(unittest.TestCase):
+class CanonicalFullCheckControllerTests(unittest.TestCase):
     def setUp(self):
         self.package = HERE.parent
         self.evidence = self.package.parent
@@ -26,14 +26,9 @@ class ArchiveFullCheckControllerTests(unittest.TestCase):
 
     def test_real_artifacts_validate_one_unclaimed_diagnostic(self):
         self.assertFalse((HERE / "dispatch-claim.json").exists())
-        value = controller.read_manifest()
-        self.assertEqual(value["validated_batch"]["derived_invocations"], 1)
-        self.assertEqual(value["validated_gate"], {
-            "kind": "full-check-archive-v1",
-            "sha256": value["full_check_gate_sha256"],
-            "admission_eligible": False,
-        })
-        self.assertEqual(value["reserved_product_invocations"], 0)
+        value = self._validate_gate(self.package, self.gate)
+        self.assertEqual(value["schema"], "full-check-canonical-v1")
+        self.assertFalse(value["admission_eligible"])
         self.assertFalse((HERE / "dispatch-claim.json").exists())
 
     def _copied_gate(self):
@@ -41,11 +36,7 @@ class ArchiveFullCheckControllerTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         gate = copy.deepcopy(self.gate)
-        for field in (
-            "full_check_result_path", "full_check_log_path", "before_tracked_manifest_path",
-            "after_tracked_manifest_path", "source_provenance_path", "overall_exit_path",
-            "check_exit_path", "producer_path",
-        ):
+        for field in ("canonical_run_path", "canonical_verification_path"):
             source = (self.package / gate[field]).resolve()
             target = root / source.name
             shutil.copy2(source, target)
@@ -66,50 +57,52 @@ class ArchiveFullCheckControllerTests(unittest.TestCase):
         path.write_text(json.dumps(value, indent=2) + "\n")
         gate[hash_field] = controller.sha256(path)
 
-    def test_rejects_false_integer_exit_and_changed_artifact_hash(self):
+    def test_rejects_false_integer_exit_and_changed_canonical_hash(self):
         root, gate = self._copied_gate()
-        self._rewrite_json_artifact(gate, "full_check_result_path", "full_check_result_sha256",
-                                    lambda result: result.__setitem__("remote_overall_exit", False))
+        self._rewrite_json_artifact(
+            gate, "canonical_run_path", "canonical_run_sha256",
+            lambda run: run["source_records"]["result.json"].__setitem__("remote_overall_exit", False),
+        )
         with self.assertRaisesRegex(RuntimeError, "remote_overall_exit"):
             self._validate_gate(root, gate)
         root, gate = self._copied_gate()
-        gate["full_check_result_sha256"] = "f" * 64
-        with self.assertRaisesRegex(RuntimeError, "result artifact is missing or changed"):
+        gate["canonical_run_sha256"] = "f" * 64
+        with self.assertRaisesRegex(RuntimeError, "canonical run artifact is missing or changed"):
             self._validate_gate(root, gate)
 
     def test_rejects_false_statusline_failed_count(self):
         root, gate = self._copied_gate()
         self._rewrite_json_artifact(
-            gate, "full_check_result_path", "full_check_result_sha256",
-            lambda result: result["task_results"]["test_statusline"].__setitem__("failed", False),
+            gate, "canonical_run_path", "canonical_run_sha256",
+            lambda run: run["source_records"]["result.json"]["task_results"]["test_statusline"].__setitem__("failed", False),
         )
         with self.assertRaisesRegex(RuntimeError, "statusline result"):
             self._validate_gate(root, gate)
 
-    def test_rejects_altered_manifest_and_source_provenance(self):
+    def test_rejects_altered_source_identity_and_provenance(self):
         root, gate = self._copied_gate()
-        before = (self.package / gate["before_tracked_manifest_path"]).resolve()
-        before.write_text(before.read_text().replace("100644", "100755", 1))
-        gate["before_tracked_manifest_sha256"] = controller.sha256(before)
-        with self.assertRaisesRegex(RuntimeError, "tracked manifest hash changed"):
+        self._rewrite_json_artifact(
+            gate, "canonical_run_path", "canonical_run_sha256",
+            lambda run: run["source_records"]["result.json"].__setitem__("before_after_identity_equal", False),
+        )
+        with self.assertRaisesRegex(RuntimeError, "before_after_identity_equal"):
             self._validate_gate(root, gate)
         root, gate = self._copied_gate()
-        self._rewrite_json_artifact(gate, "source_provenance_path", "source_provenance_sha256",
-                                    lambda provenance: provenance.__setitem__("source_commit", "0" * 40))
+        self._rewrite_json_artifact(
+            gate, "canonical_run_path", "canonical_run_sha256",
+            lambda run: run["source_records"]["source-provenance.json"].__setitem__("source_commit", "0" * 40),
+        )
         with self.assertRaisesRegex(RuntimeError, "source provenance mismatch"):
             self._validate_gate(root, gate)
 
-    def test_rejects_missing_required_raw_task_with_refreshed_bindings(self):
+    def test_rejects_missing_required_canonical_task_with_refreshed_binding(self):
         root, gate = self._copied_gate()
-        log = (self.package / gate["full_check_log_path"]).resolve()
-        log.write_text("".join(line for line in log.read_text().splitlines(keepends=True)
-                               if line != "[build] $ go build -o entire-graph ./cmd/entire-graph\n"))
-        gate["full_check_log_sha256"] = controller.sha256(log)
-        result = (self.package / gate["full_check_result_path"]).resolve()
-        value = json.loads(result.read_text())
-        value["raw_log_sha256"] = gate["full_check_log_sha256"]
-        result.write_text(json.dumps(value, indent=2) + "\n")
-        gate["full_check_result_sha256"] = controller.sha256(result)
+        self._rewrite_json_artifact(
+            gate, "canonical_run_path", "canonical_run_sha256",
+            lambda run: run["source_records"]["result.json"]["ordered_task_commands"].remove(
+                "[build] $ go build -o entire-graph ./cmd/entire-graph"
+            ),
+        )
         with self.assertRaisesRegex(RuntimeError, "ordered task commands changed"):
             self._validate_gate(root, gate)
 

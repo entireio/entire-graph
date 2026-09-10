@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "schema": "full-check-archive-v1",
+  "schema": "full-check-canonical-v1",
   "status": "passed",
   "required_for_execution": true,
   "admission_eligible": false,
@@ -12,23 +12,8 @@
   "source_archive_sha256": "81c0ba6ba6f58c61270a6f70517b6ed23db806f1e64852ab5c69c9649a45fed3",
   "tracked_manifest_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
   "tracked_file_count": 2512,
-  "full_check_evidence": "../check-effa358f-linux-full-01/",
-  "full_check_result_path": "../check-effa358f-linux-full-01/result.json",
-  "full_check_result_sha256": "06e439d6a70acce9063f45625c9b143947174009231b23e05cae92e9b1f8315d",
-  "full_check_log_path": "../check-effa358f-linux-full-01/raw/mise-check.raw.log",
+  "full_check_evidence": "../canonical-v1/runs/check-effa358f-linux-full-01.json",
   "full_check_log_sha256": "05553d1353683f98af3aa92e5f2fb75cc738b23495afcb7c2d9a3d203ca0a568",
-  "before_tracked_manifest_path": "../check-effa358f-linux-full-01/raw/before-tracked-manifest.tsv",
-  "before_tracked_manifest_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
-  "after_tracked_manifest_path": "../check-effa358f-linux-full-01/raw/after-tracked-manifest.tsv",
-  "after_tracked_manifest_sha256": "ac4cf87f80b0140d1e9b0ebb21c5a8350a90d7e2e3e22d74ad073b79a33ef267",
-  "source_provenance_path": "../check-effa358f-linux-full-01/source-provenance.json",
-  "source_provenance_sha256": "a9fd2be5bb1871af2610da0d4e4c33e83b8217c6b3036770e9f7078d75e6797c",
-  "overall_exit_path": "../check-effa358f-linux-full-01/raw/overall.exit.txt",
-  "overall_exit_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
-  "check_exit_path": "../check-effa358f-linux-full-01/raw/check.exit.txt",
-  "check_exit_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
-  "producer_path": "../check-effa358f-linux-full-01/review/remote-template.sh",
-  "producer_sha256": "28518e3931f73ffd7c66235009e4cb306bc281e3681fa8dd06137ea710ebb569",
   "ordered_task_commands": [
     "[fmt] $ gofmt -s -w .",
     "[vet] $ go vet ./...",
@@ -87,5 +72,9 @@
     "performance": "none",
     "stability": "none",
     "release": "none"
-  }
+  },
+  "canonical_run_path": "../canonical-v1/runs/check-effa358f-linux-full-01.json",
+  "canonical_run_sha256": "0b47127bd6f836cc4a137f9914da87bdace71d17a5c13f05d2202f2f3d830fe3",
+  "canonical_verification_path": "../canonical-v1/verification.json",
+  "canonical_verification_sha256": "14ae0d3ba8a363ca5ff6ec0ee335d396959852abcf07a2a320be6525a857d290"
 }

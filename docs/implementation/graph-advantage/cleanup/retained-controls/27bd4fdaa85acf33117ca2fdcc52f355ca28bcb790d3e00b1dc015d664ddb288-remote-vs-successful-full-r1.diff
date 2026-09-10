@@ -1,0 +1,183 @@
+--- docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/attempt-r1/review/remote-template.sh	2026-09-07 20:35:47
++++ docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/review/remote-template.sh	2026-09-07 21:25:23
+@@ -2,23 +2,59 @@
+ set -u
+-INPUT_URL=$(printf '%s' '__INPUT_URL_B64__' | base64 -d 2>/dev/null) || exit 72
++
+ RESULT_URL=$(printf '%s' '__RESULT_URL_B64__' | base64 -d 2>/dev/null) || exit 72
+-case "$INPUT_URL" in '${GRAPH_ADVANTAGE_BLOB_URL}'?*) ;; *) exit 72;; esac
+-case "$RESULT_URL" in '${GRAPH_ADVANTAGE_BLOB_URL}'?*) ;; *) exit 72;; esac
+-ROOT=/opt/graph-validation/check-6f23da0a-linux-full-r1
++case "$RESULT_URL" in
++  '${GRAPH_ADVANTAGE_BLOB_URL}'?*) ;;
++  *) exit 72 ;;
++esac
++
++BASE=/opt/graph-validation/check-6f23da0a-linux-full-r1
++SOURCE=$BASE/src
++ROOT=/opt/graph-validation/statusline-linux-actual-task-6f23da0a-r1
++SYSTEM_GO=/usr/local/go/bin/go
+ [ ! -e "$ROOT" ] || exit 71
+-mkdir -p "$ROOT/raw" "$ROOT/input" "$ROOT/src" "$ROOT/mise-data" "$ROOT/mise-config" "$ROOT/mise-cache"
++mkdir -p "$ROOT/raw"
++
+ OVERALL=0
+-/usr/bin/curl --fail --silent --show-error "$INPUT_URL" -o "$ROOT/input.tar.gz" || OVERALL=73
+-[ "$OVERALL" -ne 0 ] || echo 'db5677fd458b2b9d0f56fc87755af9f7442c8750b9c7da57f7fdc1ab9816a63f  '"$ROOT/input.tar.gz" | sha256sum -c - >"$ROOT/raw/input-identity.txt" 2>&1 || OVERALL=74
+-[ "$OVERALL" -ne 0 ] || tar -xzf "$ROOT/input.tar.gz" -C "$ROOT/input" >>"$ROOT/raw/input-identity.txt" 2>&1 || OVERALL=75
+-[ "$OVERALL" -ne 0 ] || echo 'f9afe6ae83cdc8f396082276cb64d7890f91d368d9f87d868193c0f2e7019d2b  '"$ROOT/input/source.tar.gz" | sha256sum -c - >>"$ROOT/raw/input-identity.txt" 2>&1 || OVERALL=76
+-[ "$OVERALL" -ne 0 ] || echo '7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c  '"$ROOT/input/tracked-manifest-r1.tsv" | sha256sum -c - >>"$ROOT/raw/input-identity.txt" 2>&1 || OVERALL=77
+-[ "$OVERALL" -ne 0 ] || echo '00ec58da20aac5c9cfab08aa3210fbacec9353d4217f964a8c318612a38f5d33  '"$ROOT/input/mise" | sha256sum -c - >>"$ROOT/raw/input-identity.txt" 2>&1 || OVERALL=78
+-[ "$OVERALL" -ne 0 ] || tar -xzf "$ROOT/input/source.tar.gz" -C "$ROOT/src" || OVERALL=79
+-manifest() { (cd "$ROOT/src" && while IFS=$'\t' read -r mode sha path; do if [ -x "$path" ]; then actual_mode=100755; else actual_mode=100644; fi; actual_sha=$(sha256sum "$path"|awk '{print $1}') || return; printf '%s\t%s\t%s\n' "$actual_mode" "$actual_sha" "$path"; done < "$ROOT/input/tracked-manifest-r1.tsv"); }
+-if [ "$OVERALL" -eq 0 ]; then manifest >"$ROOT/raw/before-tracked-manifest-r1.tsv" || OVERALL=80; fi
+-if [ "$OVERALL" -eq 0 ]; then cmp "$ROOT/input/tracked-manifest-r1.tsv" "$ROOT/raw/before-tracked-manifest-r1.tsv" >"$ROOT/raw/before-identity.txt" 2>&1 || OVERALL=81; fi
+-chmod 755 "$ROOT/input/mise"
++MISE=$BASE/input/mise
++MANIFEST=$BASE/input/tracked-manifest-r1.tsv
++HOME_BEFORE=${HOME-}
++
++manifest() {
++  (
++    cd "$SOURCE" || return
++    while IFS=$'\t' read -r mode sha path; do
++      if [ -x "$path" ]; then
++        actual_mode=100755
++      else
++        actual_mode=100644
++      fi
++      actual_sha=$(sha256sum "$path" | awk '{print $1}') || return
++      printf '%s\t%s\t%s\n' "$actual_mode" "$actual_sha" "$path"
++    done < "$MANIFEST"
++  )
++}
++
++if [ ! -d "$SOURCE" ] || [ ! -x "$MISE" ] || [ ! -f "$MANIFEST" ] || [ ! -x "$SYSTEM_GO" ]; then
++  OVERALL=73
++fi
++if [ "$OVERALL" -eq 0 ]; then
++  echo '7572d7a7212a5bb16a964ab0a697a6751efa7fd8226dac6c38d9309f1e0e6f5c  '"$MANIFEST" | sha256sum -c - >"$ROOT/raw/input-identity.txt" 2>&1 || OVERALL=74
++fi
++if [ "$OVERALL" -eq 0 ]; then
++  echo '00ec58da20aac5c9cfab08aa3210fbacec9353d4217f964a8c318612a38f5d33  '"$MISE" | sha256sum -c - >>"$ROOT/raw/input-identity.txt" 2>&1 || OVERALL=74
++fi
++if [ "$OVERALL" -eq 0 ]; then
++  MANIFEST_LINES=$(wc -l < "$MANIFEST" | awk '{print $1}')
++  printf 'tracked_manifest_lines=%s\n' "$MANIFEST_LINES" >"$ROOT/raw/manifest-count.txt"
++  [ "$MANIFEST_LINES" -eq 2059 ] || OVERALL=75
++fi
++if [ "$OVERALL" -eq 0 ]; then
++  manifest >"$ROOT/raw/before-tracked-manifest-r1.tsv" || OVERALL=76
++fi
++if [ "$OVERALL" -eq 0 ]; then
++  cmp "$MANIFEST" "$ROOT/raw/before-tracked-manifest-r1.tsv" >"$ROOT/raw/before-identity.txt" 2>&1 || OVERALL=77
++fi
++
+ export PATH=/usr/local/go/bin:/usr/bin:/bin
+-export MISE_DATA_DIR="$ROOT/mise-data" MISE_CONFIG_DIR="$ROOT/mise-config" MISE_CACHE_DIR="$ROOT/mise-cache"
++export MISE_DATA_DIR="$BASE/mise-data" MISE_CONFIG_DIR="$BASE/mise-config" MISE_CACHE_DIR="$BASE/mise-cache"
+ export GOPATH=/opt/graph-validation/gopath GOCACHE=/opt/graph-validation/cache GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOTELEMETRY=off
+@@ -26,29 +62,75 @@
+ export MISE_JOBS=1 GOFLAGS='-p=1 -v' GOMAXPROCS=4 MISE_YES=1
+-MISE="$ROOT/input/mise"
++
+ if [ "$OVERALL" -eq 0 ]; then
+- set +e
+- "$MISE" link -f go@1.26 /usr/local/go >"$ROOT/raw/mise-link.txt" 2>&1
+- LINK_RC=$?
+- "$MISE" trust "$ROOT/src/mise.toml" >"$ROOT/raw/mise-trust.txt" 2>&1
+- TRUST_RC=$?
+- SELECTED_GO=$(cd "$ROOT/src" && "$MISE" which go 2>&1); WHICH_RC=$?
+- SELECTED_VERSION=$([ "$WHICH_RC" -eq 0 ] && "$SELECTED_GO" version 2>&1); VERSION_RC=$?
+- "$MISE" --version >"$ROOT/raw/mise-version.txt" 2>&1; MISE_RC=$?
+- set -e
+- { printf 'link_exit=%s\ntrust_exit=%s\nwhich_exit=%s\nversion_exit=%s\nmise_exit=%s\nselected_go=%s\nselected_version=%s\n' "$LINK_RC" "$TRUST_RC" "$WHICH_RC" "$VERSION_RC" "$MISE_RC" "$SELECTED_GO" "$SELECTED_VERSION"; } >"$ROOT/raw/toolchain.txt"
+- if [ "$LINK_RC" -ne 0 ] || [ "$TRUST_RC" -ne 0 ] || [ "$WHICH_RC" -ne 0 ] || [ "$VERSION_RC" -ne 0 ] || [ "$MISE_RC" -ne 0 ] || [ "$(readlink -f "$SELECTED_GO")" != "$(readlink -f /usr/local/go/bin/go)" ] || [ "$SELECTED_VERSION" != 'go version go1.26.1 linux/amd64' ]; then OVERALL=82; fi
++  {
++    printf 'HOME=%s\n' "$HOME_BEFORE"
++    printf 'PATH=%s\n' "$PATH"
++    printf 'MISE_DATA_DIR=%s\n' "$MISE_DATA_DIR"
++    printf 'MISE_CONFIG_DIR=%s\n' "$MISE_CONFIG_DIR"
++    printf 'MISE_CACHE_DIR=%s\n' "$MISE_CACHE_DIR"
++    printf 'GOPATH=%s\n' "$GOPATH"
++    printf 'GOCACHE=%s\n' "$GOCACHE"
++    printf 'GOPROXY=%s\n' "$GOPROXY"
++    printf 'GOSUMDB=%s\n' "$GOSUMDB"
++    printf 'GOTOOLCHAIN=%s\n' "$GOTOOLCHAIN"
++    printf 'GOTELEMETRY=%s\n' "$GOTELEMETRY"
++    printf 'GIT_CONFIG_GLOBAL=%s\n' "$GIT_CONFIG_GLOBAL"
++    printf 'GIT_CONFIG_SYSTEM=%s\n' "$GIT_CONFIG_SYSTEM"
++    printf 'GIT_TERMINAL_PROMPT=%s\n' "$GIT_TERMINAL_PROMPT"
++    printf 'MISE_JOBS=%s\n' "$MISE_JOBS"
++    printf 'GOFLAGS=%s\n' "$GOFLAGS"
++    printf 'GOMAXPROCS=%s\n' "$GOMAXPROCS"
++    printf 'MISE_YES=%s\n' "$MISE_YES"
++    printf 'UMASK=%s\n' "$(umask)"
++    command -V env sh awk stat base64 cmp sha256sum wc readlink date tar curl
++    stat -c '%a %s %n' "$SOURCE/scripts/entire-graph-statusline.sh" "$SOURCE/scripts/entire-graph-statusline_test.sh" "$SOURCE/entire-graph"
++  } >"$ROOT/raw/safe-environment.txt" 2>&1 || OVERALL=78
++  if [ "${HOME-}" != "$HOME_BEFORE" ]; then OVERALL=78; fi
+ fi
++
+ if [ "$OVERALL" -eq 0 ]; then
+- START=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+- set +e
+- (cd "$ROOT/src" && "$MISE" run check) >"$ROOT/raw/mise-check.raw.log" 2>&1
+- CHECK_RC=$?
+- set -e
+- END=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+- printf '%s\n' "$CHECK_RC" >"$ROOT/raw/check.exit.txt"
+- printf 'start=%s\nend=%s\n' "$START" "$END" >"$ROOT/raw/timing.txt"
+- [ "$CHECK_RC" -eq 0 ] || OVERALL=$CHECK_RC
++  SELECTED_GO=$(cd "$SOURCE" && "$MISE" which go 2>&1)
++  WHICH_RC=$?
++  SELECTED_VERSION=$([ "$WHICH_RC" -eq 0 ] && "$SELECTED_GO" version 2>&1)
++  VERSION_RC=$?
++  SELECTED_REALPATH=$([ "$WHICH_RC" -eq 0 ] && readlink -f "$SELECTED_GO" 2>&1)
++  SELECTED_REALPATH_RC=$?
++  SYSTEM_REALPATH=$(readlink -f "$SYSTEM_GO" 2>&1)
++  SYSTEM_REALPATH_RC=$?
++  MISE_VERSION=$("$MISE" --version 2>&1)
++  MISE_RC=$?
++  {
++    printf 'which_exit=%s\n' "$WHICH_RC"
++    printf 'version_exit=%s\n' "$VERSION_RC"
++    printf 'selected_realpath_exit=%s\n' "$SELECTED_REALPATH_RC"
++    printf 'system_realpath_exit=%s\n' "$SYSTEM_REALPATH_RC"
++    printf 'mise_exit=%s\n' "$MISE_RC"
++    printf 'selected_go=%s\n' "$SELECTED_GO"
++    printf 'selected_go_realpath=%s\n' "$SELECTED_REALPATH"
++    printf 'system_go_realpath=%s\n' "$SYSTEM_REALPATH"
++    printf 'selected_version=%s\n' "$SELECTED_VERSION"
++    printf 'mise_version=%s\n' "$MISE_VERSION"
++  } >"$ROOT/raw/toolchain.txt"
++  if [ "$WHICH_RC" -ne 0 ] || [ "$VERSION_RC" -ne 0 ] || [ "$SELECTED_REALPATH_RC" -ne 0 ] || [ "$SYSTEM_REALPATH_RC" -ne 0 ] || [ "$MISE_RC" -ne 0 ] || [ "$SELECTED_REALPATH" != "$SYSTEM_REALPATH" ] || [ "$SELECTED_VERSION" != 'go version go1.26.1 linux/amd64' ]; then
++    OVERALL=79
++  fi
+ fi
+-manifest >"$ROOT/raw/after-tracked-manifest-r1.tsv" 2>"$ROOT/raw/after-identity.txt" || [ "$OVERALL" -ne 0 ] || OVERALL=83
+-cmp "$ROOT/input/tracked-manifest-r1.tsv" "$ROOT/raw/after-tracked-manifest-r1.tsv" >>"$ROOT/raw/after-identity.txt" 2>&1 || [ "$OVERALL" -ne 0 ] || OVERALL=84
++
++if [ "$OVERALL" -eq 0 ]; then
++  START=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
++  (cd "$SOURCE" && "$MISE" run test:statusline) >"$ROOT/raw/mise-test-statusline.raw.log" 2>&1
++  TASK_RC=$?
++  END=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
++  printf '%s\n' "$TASK_RC" >"$ROOT/raw/task.exit.txt"
++  printf 'start=%s\nend=%s\n' "$START" "$END" >"$ROOT/raw/timing.txt"
++  [ "$TASK_RC" -eq 0 ] || OVERALL=$TASK_RC
++fi
++
++if [ -d "$SOURCE" ] && [ -f "$MANIFEST" ]; then
++  manifest >"$ROOT/raw/after-tracked-manifest-r1.tsv" 2>"$ROOT/raw/after-identity.txt" || [ "$OVERALL" -ne 0 ] || OVERALL=80
++  cmp "$MANIFEST" "$ROOT/raw/after-tracked-manifest-r1.tsv" >>"$ROOT/raw/after-identity.txt" 2>&1 || [ "$OVERALL" -ne 0 ] || OVERALL=81
++else
++  printf 'source or tracked manifest unavailable\n' >"$ROOT/raw/after-identity.txt"
++fi
++
+ printf '%s\n' "$OVERALL" >"$ROOT/raw/overall.exit.txt"
+@@ -57,3 +139,3 @@
+ UPLOAD=$?
+-printf 'LINUX_FULLCHECK_UPLOAD_ACK overall=%s upload=%s\n' "$OVERALL" "$UPLOAD"
++printf 'STATUSLINE_ACTUAL_TASK_R1_UPLOAD_ACK overall=%s upload=%s\n' "$OVERALL" "$UPLOAD"
+ [ "$UPLOAD" -eq 0 ] || exit "$UPLOAD"

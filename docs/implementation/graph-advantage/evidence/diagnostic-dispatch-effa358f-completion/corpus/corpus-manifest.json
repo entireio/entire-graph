@@ -5,8 +5,8 @@
   "provenance": {
     "benchmarks": "not run",
     "competitor_implementations": "not consulted",
-    "plan": "/Users/thomi/Projects/entire-plan/entire-graph-advantage-implementation-plan.md",
-    "product_checkout": "/Users/thomi/Projects/entire-graph-advantage"
+    "plan": "external implementation plan; local path intentionally not persisted",
+    "product_checkout": "current Entire Graph checkout; local path intentionally not persisted"
   },
   "query": "trace request routing and graph traversal",
   "repositories": [

@@ -1,0 +1,97 @@
+{
+  "record_count": 10,
+  "records": [
+    {
+      "bytes": 0,
+      "family": "check-450bede9",
+      "meaning": "captured git-status stream was empty",
+      "path": "docs/implementation/graph-advantage/evidence/check-450bede9/after-status.bin",
+      "phase": "after",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_commit": null
+    },
+    {
+      "bytes": 0,
+      "family": "check-450bede9",
+      "meaning": "captured git-status stream was empty",
+      "path": "docs/implementation/graph-advantage/evidence/check-450bede9/before-status.bin",
+      "phase": "before",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_commit": null
+    },
+    {
+      "bytes": 0,
+      "family": "check-6f23da0a",
+      "meaning": "captured git-status stream was empty",
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a/after-status.bin",
+      "phase": "after",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_commit": null
+    },
+    {
+      "bytes": 0,
+      "family": "check-6f23da0a",
+      "meaning": "captured git-status stream was empty",
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a/before-status.bin",
+      "phase": "before",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_commit": null
+    },
+    {
+      "bytes": 0,
+      "family": "check-6f23da0a-cpu4",
+      "meaning": "captured git-status stream was empty",
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-cpu4/after-status.bin",
+      "phase": "after",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_commit": null
+    },
+    {
+      "bytes": 0,
+      "family": "check-6f23da0a-cpu4",
+      "meaning": "captured git-status stream was empty",
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-cpu4/before-status.bin",
+      "phase": "before",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_commit": null
+    },
+    {
+      "bytes": 0,
+      "family": "check-90ac3e16",
+      "meaning": "captured git-status stream was empty",
+      "path": "docs/implementation/graph-advantage/evidence/check-90ac3e16/after-status.bin",
+      "phase": "after",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_commit": null
+    },
+    {
+      "bytes": 0,
+      "family": "check-90ac3e16",
+      "meaning": "captured git-status stream was empty",
+      "path": "docs/implementation/graph-advantage/evidence/check-90ac3e16/before-status.bin",
+      "phase": "before",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_commit": null
+    },
+    {
+      "bytes": 0,
+      "family": "check-90ac3e16-retry-1",
+      "meaning": "captured git-status stream was empty",
+      "path": "docs/implementation/graph-advantage/evidence/check-90ac3e16-retry-1/after-status.bin",
+      "phase": "after",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_commit": null
+    },
+    {
+      "bytes": 0,
+      "family": "check-90ac3e16-retry-1",
+      "meaning": "captured git-status stream was empty",
+      "path": "docs/implementation/graph-advantage/evidence/check-90ac3e16-retry-1/before-status.bin",
+      "phase": "before",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_commit": null
+    }
+  ],
+  "schema": "graph-advantage-empty-binary-marker-v1",
+  "scope": "ten zero-byte before/after git-status captures; no product or corpus result"
+}

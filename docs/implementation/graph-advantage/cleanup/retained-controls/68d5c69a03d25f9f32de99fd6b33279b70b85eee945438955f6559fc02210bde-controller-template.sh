@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+RG=rg-entire-graph-advantage-20260905; VM=graph-validation-linux; ACCOUNT=entiregraphadv20260905; CONTAINER=validation; PREFIX=statusline-linux-actual-task-6f23da0a
+REPO=${GRAPH_ADVANTAGE_REPO_ROOT}; EV="$REPO/docs/implementation/graph-advantage/evidence/$PREFIX"
+cleanup() { az vm deallocate -g "$RG" -n "$VM" --no-wait >/dev/null 2>&1 || true; for _ in $(seq 1 120); do s=$(az vm get-instance-view -g "$RG" -n "$VM" --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code | [0]" -o tsv 2>/dev/null || true); [ "$s" = PowerState/deallocated ] && break; sleep 5; done; az vm get-instance-view -g "$RG" -n "$VM" -o json >"$EV/vm-terminal.json" 2>/dev/null || true; az vm list -g "$RG" -d --query '[].{name:name,powerState:powerState}' -o json >"$EV/all-vms-terminal.json" 2>/dev/null || true; }
+trap cleanup EXIT
+KEY=$(az storage account keys list -g "$RG" -n "$ACCOUNT" --query '[0].value' -o tsv)
+az storage blob exists --account-name "$ACCOUNT" --account-key "$KEY" --container-name "$CONTAINER" --name "$PREFIX/results.tar.gz" --query exists -o tsv >"$EV/result-blob-exists-before.txt"; test "$(cat "$EV/result-blob-exists-before.txt")" = false
+EXPIRY=$(date -u -v+2H '+%Y-%m-%dT%H:%MZ'); SAS=$(az storage blob generate-sas --account-name "$ACCOUNT" --account-key "$KEY" --container-name "$CONTAINER" --name "$PREFIX/results.tar.gz" --permissions cw --expiry "$EXPIRY" --https-only -o tsv); URL="https://$ACCOUNT.blob.core.windows.net/$CONTAINER/$PREFIX/results.tar.gz?$SAS"; B64=$(printf '%s' "$URL"|base64|tr -d '\n'); SCRIPT=$(sed "s|__RESULT_URL_B64__|$B64|" "$EV/review/remote-template.sh"); unset SAS URL B64 KEY
+az vm start -g "$RG" -n "$VM" --only-show-errors >/dev/null
+set +e; az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --scripts "$SCRIPT" -o json >"$EV/transport.json" 2>"$EV/transport.stderr.txt"; RC=$?; set -e; unset SCRIPT; printf '%s\n' "$RC" >"$EV/transport.exit.txt"
+KEY=$(az storage account keys list -g "$RG" -n "$ACCOUNT" --query '[0].value' -o tsv); az storage blob exists --account-name "$ACCOUNT" --account-key "$KEY" --container-name "$CONTAINER" --name "$PREFIX/results.tar.gz" --query exists -o tsv >"$EV/result-blob-exists.txt"; if [ "$(cat "$EV/result-blob-exists.txt")" = true ]; then az storage blob download --account-name "$ACCOUNT" --account-key "$KEY" --container-name "$CONTAINER" --name "$PREFIX/results.tar.gz" --file "$EV/results.tar.gz" --only-show-errors >/dev/null; tar -xzf "$EV/results.tar.gz" -C "$EV"; fi; unset KEY; exit "$RC"

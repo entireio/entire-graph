@@ -40,8 +40,11 @@ GIT_TIMEOUT_SECONDS = 10
 EXPECTED_SYSTEMD_UNIT = "p1-diag-effa358f-k8s-completion-off-01.service"
 EXPECTED_MEMORY_MAX_BYTES = 15032385536
 EXPECTED_TASKS_MAX = 512
-VALIDATION_VM = "graph-validation-linux"
-ALL_VMS = (VALIDATION_VM, "graph-p1-worker-2", "graph-p1-worker-3")
+VM_ENV_NAMES = (
+    "GRAPH_ADVANTAGE_VALIDATION_VM",
+    "GRAPH_ADVANTAGE_WORKER_2_VM",
+    "GRAPH_ADVANTAGE_WORKER_3_VM",
+)
 EXPECTED_FULL_CHECK_COMMANDS = (
     "[fmt] $ gofmt -s -w .",
     "[vet] $ go vet ./...",
@@ -57,6 +60,14 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def configured_vms() -> tuple[str, str, str]:
+    values = tuple(os.environ.get(name, "").strip() for name in VM_ENV_NAMES)
+    missing = [name for name, value in zip(VM_ENV_NAMES, values) if not value]
+    if missing:
+        raise RuntimeError("missing required completion diagnostic configuration: " + ", ".join(missing))
+    return values
 
 
 def prepared_member(name: str) -> Path:
@@ -139,7 +150,7 @@ def _validate_scoped_full_check_gate(document: dict, gate_path: Path, build_path
     if sha256(gate_path) != document.get("full_check_gate_sha256"):
         raise RuntimeError("scoped full-check gate artifact hash changed")
     gate = _load_json(gate_path, "scoped full-check gate")
-    if gate.get("version") != 1 or gate.get("schema") != "full-check-archive-v1":
+    if gate.get("version") != 1 or gate.get("schema") != "full-check-canonical-v1":
         raise RuntimeError("unsupported scoped full-check gate version")
     if gate.get("evaluator_source_commit") != document.get("source_commit"):
         raise RuntimeError("scoped gate evaluator source does not match prepared source")
@@ -183,14 +194,8 @@ def _validate_scoped_full_check_gate(document: dict, gate_path: Path, build_path
     if gate.get("status") != "passed":
         raise RuntimeError(f"scoped full-check gate is not passed: {gate.get('status')}")
     artifact_fields = {
-        "result": ("full_check_result_path", "full_check_result_sha256"),
-        "log": ("full_check_log_path", "full_check_log_sha256"),
-        "before manifest": ("before_tracked_manifest_path", "before_tracked_manifest_sha256"),
-        "after manifest": ("after_tracked_manifest_path", "after_tracked_manifest_sha256"),
-        "source provenance": ("source_provenance_path", "source_provenance_sha256"),
-        "overall exit": ("overall_exit_path", "overall_exit_sha256"),
-        "check exit": ("check_exit_path", "check_exit_sha256"),
-        "producer": ("producer_path", "producer_sha256"),
+        "canonical run": ("canonical_run_path", "canonical_run_sha256"),
+        "canonical verification": ("canonical_verification_path", "canonical_verification_sha256"),
     }
     artifacts = {}
     for label, (path_field, hash_field) in artifact_fields.items():
@@ -203,9 +208,15 @@ def _validate_scoped_full_check_gate(document: dict, gate_path: Path, build_path
         if not path.is_file() or sha256(path) != expected_hash:
             raise RuntimeError(f"scoped full-check {label} artifact is missing or changed")
         artifacts[label] = path
-    result_path, log_path = artifacts["result"], artifacts["log"]
-    before_path, after_path = artifacts["before manifest"], artifacts["after manifest"]
-    result = _load_json(result_path, "scoped full-check result")
+    run = _load_json(artifacts["canonical run"], "canonical full-check run")
+    if run.get("schema_version") != "graph-advantage-evidence/v1" or run.get("run_id") != "check-effa358f-linux-full-01" or run.get("kind") != "integration":
+        raise RuntimeError("canonical full-check run identity changed")
+    if run.get("execution", {}).get("status") != "passed":
+        raise RuntimeError("canonical full-check run is not passed")
+    result = run.get("source_records", {}).get("result.json")
+    provenance = run.get("source_records", {}).get("source-provenance.json")
+    if not isinstance(result, dict) or not isinstance(provenance, dict):
+        raise RuntimeError("canonical full-check source records are missing")
     required_result = {
         "source_commit": full_check_revision, "transport_exit": 0,
         "remote_overall_exit": 0, "mise_check_exit": 0, "full_check_pass": True,
@@ -240,33 +251,23 @@ def _validate_scoped_full_check_gate(document: dict, gate_path: Path, build_path
         ],
     }:
         raise RuntimeError("scoped full-check statusline result or disclosed skips changed")
-    if artifacts["overall exit"].read_text() != "0\n" or artifacts["check exit"].read_text() != "0\n":
-        raise RuntimeError("scoped full-check raw exit is not zero")
-    expected_manifest = gate.get("tracked_manifest_sha256")
-    if sha256(before_path) != expected_manifest or sha256(after_path) != expected_manifest:
-        raise RuntimeError("scoped full-check tracked manifest hash changed")
-    if before_path.read_bytes() != after_path.read_bytes():
-        raise RuntimeError("scoped full-check tracked manifests differ")
-    manifest_lines = before_path.read_text().splitlines()
-    if len(manifest_lines) != 2512 or any(not re.fullmatch(r"100(?:644|755)\t[0-9a-f]{64}\t.+", line) for line in manifest_lines):
-        raise RuntimeError("scoped full-check tracked manifest shape or Git mode is invalid")
-    provenance = _load_json(artifacts["source provenance"], "scoped full-check source provenance")
     if provenance.get("source_commit") != full_check_revision or provenance.get("source_archive_sha256") != gate.get("source_archive_sha256") or provenance.get("tracked_file_count") != 2512:
         raise RuntimeError("scoped full-check source provenance mismatch")
-    try:
-        log_text = log_path.read_text(errors="replace")
-        log_lines = [line for line in log_text.splitlines()
-                     if re.match(r"^\[[^]]+\] \$ ", line)]
-    except OSError as error:
-        raise RuntimeError(f"scoped full-check raw log cannot be read: {error}") from error
     if gate.get("ordered_task_commands") != list(EXPECTED_FULL_CHECK_COMMANDS):
         raise RuntimeError("scoped full-check gate task commands changed")
-    if log_lines != list(EXPECTED_FULL_CHECK_COMMANDS):
+    if result.get("ordered_task_commands") != list(EXPECTED_FULL_CHECK_COMMANDS):
         raise RuntimeError("scoped full-check ordered task commands changed")
-    if "145 passed, 0 failed" not in log_text or not re.search(r"Finished in [0-9]+(?:\.[0-9]+)?s", log_text):
-        raise RuntimeError("scoped full-check raw log lacks terminal success proof")
-    if not gate.get("full_check_evidence"):
-        raise RuntimeError("scoped full-check evidence path is missing")
+    if run.get("coverage", {}).get("task_results") != tasks:
+        raise RuntimeError("canonical full-check task projection changed")
+    if run.get("semantics", {}).get("equal") is not True:
+        raise RuntimeError("canonical full-check source equality changed")
+    verification = _load_json(artifacts["canonical verification"], "canonical verification")
+    commands = verification.get("commands")
+    if verification.get("schema") != "graph-advantage-canonical-verification-v1" or not isinstance(commands, list) or not any(
+        item.get("command", "").startswith("python3 validate.py ") and item.get("result") == "passed" and item.get("validated_runs") == 66
+        for item in commands if isinstance(item, dict)
+    ):
+        raise RuntimeError("canonical evidence verification is not passed")
     if gate.get("disclosed_limitations") != {"statusline_platform_skips": 3, "full_coverage_claimed": False}:
         raise RuntimeError("scoped full-check disclosed limitations changed")
     return gate
@@ -518,7 +519,7 @@ def read_manifest(*, require_unclaimed=True) -> dict:
         build_root = match.group(1) if match else None
     if build_root != document.get("remote_source_root"):
         raise RuntimeError("prepared remote source root does not match build manifest")
-    if document.get("validation_gate_kind") != "full-check-archive-v1":
+    if document.get("validation_gate_kind") != "full-check-canonical-v1":
         raise RuntimeError("unsupported validation gate kind")
     _validate_scoped_full_check_gate(document, gate_path, build_path)
     batch = _validate_batch(document, batch_path, build_path)
@@ -687,8 +688,9 @@ def _create_dispatch_claim(document: dict) -> dict:
 
 
 def _deallocate_all(cloud, env) -> dict:
+    all_vms = configured_vms()
     errors = []
-    for vm in ALL_VMS:
+    for vm in all_vms:
         try:
             cloud.deallocate(vm, env)
         except Exception as error:
@@ -696,7 +698,7 @@ def _deallocate_all(cloud, env) -> dict:
     states = cloud.states(env)
     record = {"states": states, "errors": errors}
     _write_json(PREP / "vm-terminal-final.json", record)
-    if errors or set(states) != set(ALL_VMS) or any(value != "VM deallocated" for value in states.values()):
+    if errors or set(states) != set(all_vms) or any(value != "VM deallocated" for value in states.values()):
         raise RuntimeError("not all completion diagnostic VMs are deallocated")
     return record
 
@@ -766,12 +768,14 @@ def execute(cloud_module=None) -> dict:
     }
     _write_json(HANDLE_PATH, handle)
     env = cloud.environment()
+    all_vms = configured_vms()
+    validation_vm = all_vms[0]
     states = cloud.states(env)
-    if set(states) != set(ALL_VMS) or any(value != "VM deallocated" for value in states.values()):
+    if set(states) != set(all_vms) or any(value != "VM deallocated" for value in states.values()):
         raise RuntimeError("completion diagnostic requires all three VMs initially deallocated")
     remote_start_maybe = False
     try:
-        cloud.start(VALIDATION_VM, env)
+        cloud.start(validation_vm, env)
         handle["state"] = "vm_started"
         _write_json(HANDLE_PATH, handle)
         control_blob = document["dispatch_id"] + "-control.tar.gz"
@@ -780,7 +784,7 @@ def execute(cloud_module=None) -> dict:
         _write_json(HANDLE_PATH, handle)
         remote_start_maybe = True
         response = cloud.run(
-            VALIDATION_VM,
+            validation_vm,
             remote_start_script(document, cloud.url(control_blob, "r", env)),
         )
         (PREP / "start-transport.json").write_text(response + "\n")
@@ -805,9 +809,10 @@ def observe(cloud_module=None) -> dict:
     handle = _read_handle(document)
     cloud = cloud_module or load_cloud_transport()
     env = cloud.environment()
+    validation_vm = configured_vms()[0]
     result_blob = document["dispatch_id"] + "-results.tar.gz"
     response = cloud.run(
-        VALIDATION_VM,
+        validation_vm,
         remote_observe_script(document, cloud.url(result_blob, "cw", env)),
     )
     OBSERVATIONS_PATH.mkdir(exist_ok=True)

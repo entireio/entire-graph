@@ -1,5 +1,5 @@
 {
-  "origin": "/Users/thomi/Projects/graphmark-advantage-evaluation/advantage-ranking-20260905",
+  "origin": "GraphMark branch codex/graph-advantage-evaluation, directory advantage-ranking-20260905",
   "source_tasks_sha256": "a8488fc569ead4ad7184db6b3b4da96d9f3dfdcfe1c396ab3578bb3fff79223d",
   "selection": "All six existing synthetic development tasks; no selection from scores",
   "withheld": [

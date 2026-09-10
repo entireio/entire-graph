@@ -1,0 +1,30 @@
+--- /tmp/remote-linux-8689.sh	2026-09-07 16:45:27
++++ /tmp/remote-linux-8689-r1.sh	2026-09-07 16:54:06
+@@ -1,10 +1,13 @@
+ #!/bin/bash
+ set -u
+-SOURCE_URL="$1"
+-RESULT_URL="$2"
+-SOURCE_SHA="$3"
+-ROOT=/opt/graph-validation/diagnostics-linux-8689fc3d
+-ARCHIVE=/tmp/diagnostics-linux-8689fc3d-source.tar.gz
++SOURCE_URL_B64='__SOURCE_URL_B64__'
++RESULT_URL_B64='__RESULT_URL_B64__'
++SOURCE_SHA='__SOURCE_SHA__'
++SOURCE_URL=$(printf '%s' "$SOURCE_URL_B64" | base64 -d)
++RESULT_URL=$(printf '%s' "$RESULT_URL_B64" | base64 -d)
++test -n "$SOURCE_URL" && test -n "$RESULT_URL" && test ${#SOURCE_SHA} -eq 64 || exit 72
++ROOT=/opt/graph-validation/diagnostics-linux-8689fc3d-r1
++ARCHIVE=/tmp/diagnostics-linux-8689fc3d-r1-source.tar.gz
+ if [ -e "$ROOT" ]; then echo 'REMOTE_ROOT_ALREADY_EXISTS' >&2; exit 71; fi
+ mkdir -p "$ROOT/raw" "$ROOT/src"
+ OVERALL=0
+@@ -24,7 +27,7 @@
+ cd "$ROOT/src" || OVERALL=$?
+ if [ "$OVERALL" -eq 0 ]; then
+   set +e
+-  { go version; /opt/graph-tools/gopls version; sha256sum /usr/local/go/bin/go /opt/graph-tools/gopls; env | LC_ALL=C sort | grep -E '^(GO|GIT_CONFIG|GIT_TERMINAL|PATH=)'; } > "$ROOT/raw/environment.txt" 2>&1
++  { uname -a; go version; /opt/graph-tools/gopls version; git --version; sha256sum /usr/local/go/bin/go /opt/graph-tools/gopls; env | LC_ALL=C sort | grep -E '^(GO|GIT_CONFIG|GIT_TERMINAL|PATH=)'; test "$(go version)" = 'go version go1.26.1 linux/amd64'; test "$(/opt/graph-tools/gopls version)" = 'golang.org/x/tools/gopls v0.20.0'; } > "$ROOT/raw/environment.txt" 2>&1
+   RC=$?
+   set -e
+   printf '%s\n' "$RC" > "$ROOT/raw/toolchain.exit.txt"

@@ -34,6 +34,43 @@ class CleanupRecordTest(unittest.TestCase):
         )
 
 
+
+
+    def test_empty_binary_markers_are_structured(self) -> None:
+        record = json.loads((HERE / "empty-binary-markers.json").read_text())
+        self.assertEqual(record["schema"], "graph-advantage-empty-binary-marker-v1")
+        self.assertEqual(record["record_count"], 10)
+        self.assertTrue(all(item["bytes"] == 0 for item in record["records"]))
+        self.assertTrue(all(item["meaning"] == "captured git-status stream was empty" for item in record["records"]))
+
+
+    def test_tracked_manifest_groups_preserve_identity_and_failures(self) -> None:
+        record = json.loads((HERE / "tracked-manifest-provenance.json").read_text())
+        self.assertEqual(record["schema"], "graph-advantage-tracked-manifest-provenance-v1")
+        self.assertEqual(record["alias_count"], 24)
+        self.assertEqual(record["group_count"], 7)
+        self.assertEqual(sum(group["aliases"] for group in record["groups"]), 24)
+        self.assertTrue(any(group["exact_git_manifest"] for group in record["groups"]))
+        self.assertTrue(any(group["mode_mismatch_count"] > 0 for group in record["groups"]))
+        self.assertTrue(any(group["line_count"] == 0 for group in record["groups"]))
+
+    def test_historical_controls_keep_one_bound_source_per_content_group(self) -> None:
+        record = json.loads((HERE / "historical-control-provenance.json").read_text())
+        self.assertEqual(record["schema"], "graph-advantage-historical-control-provenance-v1")
+        self.assertEqual(record["summary"]["removed_historical_copies"], 157)
+        self.assertEqual(record["summary"]["retained_content_groups"], 79)
+        repo = HERE.parents[3]
+        self.assertEqual(len(record["retained_groups"]), 79)
+        for group in record["retained_groups"]:
+            retained = repo / group["retained_path"]
+            self.assertTrue(retained.is_file())
+            self.assertEqual(__import__("hashlib").sha256(retained.read_bytes()).hexdigest(), group["retained_sha256"])
+        for item in record["records"]:
+            self.assertFalse((repo / item["legacy_path"]).exists())
+            self.assertRegex(item["sha256"], r"^[0-9a-f]{64}$")
+            self.assertRegex(item["retained_source_sha256"], r"^[0-9a-f]{64}$")
+
+
     def test_removal_map_only_contains_explicitly_replaced_files(self) -> None:
         record = json.loads((HERE / "removal-map.json").read_text())
         self.assertEqual(record["schema"], "graph-advantage-public-artifact-removal-map-v2")
@@ -46,6 +83,11 @@ class CleanupRecordTest(unittest.TestCase):
                 "normalized structured/case source",
                 "raw profile archived outside Git and fully summarized",
                 "exact Git source subset is reconstructible",
+                "empty operational marker captured by log observation",
+                "historical control normalized to retained authored source",
+                "fully parsed special-format observation",
+                "empty source-status marker captured structurally",
+                "tracked manifest identity and reconstruction facts retained",
             },
         )
         repo = HERE.parents[3]
