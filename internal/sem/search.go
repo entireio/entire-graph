@@ -3370,7 +3370,7 @@ func searchNameTermCoverage(result SearchResult, q searchQuery, _ map[string]flo
 	tokens := searchTokenVariants(rawName)
 	matched := 0
 	for _, term := range q.terms {
-		if searchNameContainsTerm(name, term) || searchNameMatchesAbbreviation(tokens, term) {
+		if searchNameTokenMatchesTerm(tokens, term) || searchNameMatchesAbbreviation(tokens, term) {
 			matched++
 		}
 	}
@@ -3380,23 +3380,56 @@ func searchNameTermCoverage(result SearchResult, q searchQuery, _ map[string]flo
 	return minFloat64(float64(matched), 3) / 3
 }
 
-// searchNameContainsTerm matches a query term against an identifier, tolerating the one
-// morphological difference that dominates issue text: a plural in the prose against a singular in
-// the identifier ("sections" vs getPagesInSection).
-func searchNameContainsTerm(lowerName, term string) bool {
+// searchNameTokenMatchesTerm matches a query term against the TOKENS of an identifier, tolerating
+// the one morphological difference that dominates issue text: a plural in the prose against a
+// singular in the identifier ("sections" vs getPagesInSection).
+//
+// This replaced a raw substring test over the lowercased name, which could not tell login from
+// logging. `strings.Contains("runlogin", "log")` is true, so the plural-stripped term "logs" from
+// "the function that logs a user in" matched runLogin and RestoreLogsOnly identically — the one
+// signal that could have separated the two clusters scored them the same. Tokenizing first makes
+// "log" a match for the token "logs" and a non-match for the token "login", which is the
+// distinction the substring form structurally could not express.
+//
+// The cost is derivational prefixes: "config" no longer matches the token "configure", where the
+// substring form did. That is deliberate. The abbreviation path is where prefix reach belongs,
+// because it knows WHICH short forms are real (searchNameMatchesAbbreviation), and applying prefix
+// reach to every query term is precisely what produced the login/logging collision.
+func searchNameTokenMatchesTerm(tokens []string, term string) bool {
 	if len(term) < 3 {
 		return false
 	}
-	if strings.Contains(lowerName, term) {
-		return true
-	}
-	if strings.HasSuffix(term, "es") && len(term) > 4 && strings.Contains(lowerName, term[:len(term)-2]) {
-		return true
-	}
-	if strings.HasSuffix(term, "s") && len(term) > 3 && strings.Contains(lowerName, term[:len(term)-1]) {
-		return true
+	termVariants := searchNameWordVariants(term)
+	for _, token := range tokens {
+		for _, tokenVariant := range searchNameWordVariants(token) {
+			for _, termVariant := range termVariants {
+				if tokenVariant == termVariant {
+					return true
+				}
+			}
+		}
 	}
 	return false
+}
+
+// searchNameWordVariants returns the singular forms a word might be matched through. Both sides of
+// the comparison are expanded rather than one, because the query is as likely to carry the plural
+// as the identifier is: "sections" against Section, and "file" against files.
+//
+// Every candidate form is emitted rather than one chosen by rule, since the rules disagree — "-es"
+// stripping is right for "processes" and wrong for "files".
+func searchNameWordVariants(word string) []string {
+	out := []string{word}
+	if strings.HasSuffix(word, "ies") && len(word) > 4 {
+		out = append(out, word[:len(word)-3]+"y")
+	}
+	if strings.HasSuffix(word, "es") && len(word) > 4 {
+		out = append(out, word[:len(word)-2])
+	}
+	if strings.HasSuffix(word, "s") && !strings.HasSuffix(word, "ss") && len(word) > 3 {
+		out = append(out, word[:len(word)-1])
+	}
+	return out
 }
 
 // searchAbbreviationTermWeight is the query weight of an alias the caller did not type. It matches

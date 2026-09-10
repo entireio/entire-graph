@@ -2211,7 +2211,7 @@ func TestSearchNameTermCoverageIsPluralTolerantAndSaturates(t *testing.T) {
 		t.Fatalf("gold name coverage %v must exceed single-term rival %v", g, r)
 	}
 	// "sections" (plural, from the issue) must match "Section" inside the identifier.
-	if !searchNameContainsTerm("pagemap.getpagesinsection", "sections") {
+	if !searchNameTokenMatchesTerm(searchTokenVariants("pageMap.getPagesInSection"), "sections") {
 		t.Fatal("plural query term must match the singular identifier")
 	}
 	// Saturation: a name carrying many terms is not unboundedly better than one carrying three.
@@ -2224,7 +2224,7 @@ func TestSearchNameTermCoverageIsPluralTolerantAndSaturates(t *testing.T) {
 		t.Fatalf("unrelated name must score 0, got %v", got)
 	}
 	// Short tokens must not match: a 2-char fragment appears in almost any identifier.
-	if searchNameContainsTerm("pagemap.getpagesinsection", "in") {
+	if searchNameTokenMatchesTerm(searchTokenVariants("pageMap.getPagesInSection"), "in") {
 		t.Fatal("short tokens must not count as name coverage")
 	}
 }
@@ -2253,17 +2253,24 @@ func TestSearchNameCoverageExpandsProseAbbreviations(t *testing.T) {
 	if a, l := searchNameTermCoverage(authFlag, q, nil), searchNameTermCoverage(logs, q, nil); a < l {
 		t.Fatalf("auth identifier %v must not score below the logging identifier %v", a, l)
 	}
-	// runLogin does score, but NOT through the abbreviation table — it has no auth token and the
-	// table invents no login/authentication synonym. It scores because searchNameContainsTerm
-	// strips the plural off "logs" and then finds "log" as a raw SUBSTRING of "runlogin", the
-	// same accident that makes "log" match RestoreLogsOnly. That conflation of login with logging
-	// is the separate token-boundary defect; pinned here so that fixing it shows up as a change
-	// to this assertion rather than as silent drift.
+	// runLogin scores, and the REASON is what this pins. It must match through "login" — the term
+	// compound joining recovers from the split phrasal verb — and must NOT match through "logs".
+	// Under the old substring test the situation was exactly inverted: there was no "login" term
+	// at all, and runLogin scored because plural-stripped "logs" was found inside "runlogin", the
+	// same accident that matched RestoreLogsOnly. Right answer, wrong reason, and a signal that
+	// could not separate the two clusters.
 	if got := searchNameTermCoverage(login, q, nil); got == 0 {
-		t.Fatal("runLogin currently scores via the substring accident; a 0 means that changed")
+		t.Fatal("runLogin must match the recovered login term")
 	}
-	if !searchNameContainsTerm("runlogin", "logs") {
-		t.Fatal("the substring accident is the documented cause; if it is gone, update the note above")
+	loginTokens := searchTokenVariants("runLogin")
+	if !searchNameTokenMatchesTerm(loginTokens, "login") {
+		t.Fatal("runLogin must match through the joined compound")
+	}
+	if searchNameTokenMatchesTerm(loginTokens, "logs") {
+		t.Fatal("login must not match a logging term at token boundaries")
+	}
+	if !searchNameTokenMatchesTerm(searchTokenVariants("ManualCommitStrategy.RestoreLogsOnly"), "logs") {
+		t.Fatal("a genuine logging identifier must still match the logging term")
 	}
 	if searchNameMatchesAbbreviation(searchTokenVariants("runLogin"), "authentication") {
 		t.Fatal("the table must not have invented a login/authentication synonym")
