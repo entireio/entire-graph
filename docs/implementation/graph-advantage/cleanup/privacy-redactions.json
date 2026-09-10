@@ -646,8 +646,12 @@
           "replacement": "<REPO_ROOT>"
         }
       ],
-      "retained_bytes": 10036,
-      "retained_sha256": "1036e28f86c439e9cb10f4060bf3150f75ecdcc648a9bbb296edbf0d3e0d9ee9",
+      "follow_up_refresh": {
+        "prior_retained_sha256": "1036e28f86c439e9cb10f4060bf3150f75ecdcc648a9bbb296edbf0d3e0d9ee9",
+        "reason": "authoritative takeover refresh after the approved history rewrite; original source and measured outcome identities remain unchanged"
+      },
+      "retained_bytes": 15632,
+      "retained_sha256": "fd38d91a4c442446f21f0b296a8a65c492870388e1ef69dc15ba3c8c5012b4a6",
       "source_bytes": 10102,
       "source_sha256": "5d9364f89a0edbcd286eaf75f0d260692aba2aac4dd2e54166b00eec914e3dbc"
     }
