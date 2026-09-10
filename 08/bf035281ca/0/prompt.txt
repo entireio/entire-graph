@@ -1,0 +1,1 @@
+Let's ensure that the repository is in the right state and start with fixing item 1 and let's also document all of this in an issue on the entire-graph repo so that we can work on this later as well
