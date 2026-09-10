@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.10.7-nightly.202609080625.78a655db4.0.20260908145503-8bbfeb6d3901+dirty",
+  "checkpoint_id": "65c366a2d2ca",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-10T18:31:57.404793Z",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 2,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "a422b4b63c23",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 784815,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 82881280,
+    "output_tokens": 105210,
+    "api_call_count": 4878
+  },
+  "session_metrics": {
+    "turn_count": 4
+  }
+}
