@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "a092d917ddcf",
+  "strategy": "manual-commit",
+  "branch": "fix/search-prose-query-ranking",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/a0/92d917ddcf/0/metadata.json",
+      "transcript": "/a0/92d917ddcf/0/full.jsonl",
+      "compact_transcript": "/a0/92d917ddcf/0/transcript.jsonl",
+      "content_hash": "/a0/92d917ddcf/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 340,
+    "cache_creation_tokens": 413494,
+    "cache_read_tokens": 33715818,
+    "output_tokens": 162216,
+    "api_call_count": 171
+  }
+}
