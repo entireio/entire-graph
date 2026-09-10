@@ -4991,8 +4991,11 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		if !searchCompoundObjectHeads[strings.ToLower(tokens[index+1])] {
 			continue
 		}
+		// Here the verb already has its object before "in", so a following
+		// format describes that object for any verb ("sign the request in JSON").
+		// Adjacent "check in a JSON file" instead places the object after "in".
 		if joined, ok := searchCompoundJoin(tokens[index], particle); ok &&
-			(joined != "login" || !searchCompoundFormatPreposition(tokens, index+gap)) {
+			!searchCompoundFormatPreposition(tokens, index+gap) {
 			out = append(out, joined)
 		}
 	}
