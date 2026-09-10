@@ -2360,6 +2360,8 @@ func TestSearchCompoundJoins(t *testing.T) {
 		{"custom format", "log the message in custom format", "login", false},
 		{"formatting words elsewhere", "log the user in and return JSON", "login", true},
 		{"login location", "log the user in from the browser", "login", true},
+		{"check in binary files", "check in binary files", "checkin", true},
+		{"check in a JSON file", "check in a JSON file", "checkin", true},
 		// Noun compounds are not separable; only the adjacent form counts.
 		{"noun compound is not separable", "the end of the point", "endpoint", false},
 		{"gap too wide", "logs every authenticated request payload in", "login", false},

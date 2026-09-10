@@ -4974,8 +4974,9 @@ func searchCompoundJoins(tokens []string, index int) []string {
 	if index+1 < len(tokens) {
 		particle := searchPhrasalVerbParticles[strings.ToLower(tokens[index+1])]
 		nounPhrase := index > 0 && searchCompoundDeterminers[strings.ToLower(tokens[index-1])]
-		if !(particle && nounPhrase) && !searchCompoundFormatPreposition(tokens, index+1) {
-			if joined, ok := searchCompoundJoin(tokens[index], tokens[index+1]); ok {
+		if !(particle && nounPhrase) {
+			if joined, ok := searchCompoundJoin(tokens[index], tokens[index+1]); ok &&
+				(joined != "login" || !searchCompoundFormatPreposition(tokens, index+1)) {
 				out = append(out, joined)
 			}
 		}
@@ -4985,15 +4986,13 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		if !searchPhrasalVerbParticles[particle] {
 			continue
 		}
-		if searchCompoundFormatPreposition(tokens, index+gap) {
-			continue
-		}
 		// The object has to look like an object. Without this, any "log" and any later "in"
 		// in the same sentence would manufacture a login term.
 		if !searchCompoundObjectHeads[strings.ToLower(tokens[index+1])] {
 			continue
 		}
-		if joined, ok := searchCompoundJoin(tokens[index], particle); ok {
+		if joined, ok := searchCompoundJoin(tokens[index], particle); ok &&
+			(joined != "login" || !searchCompoundFormatPreposition(tokens, index+gap)) {
 			out = append(out, joined)
 		}
 	}
