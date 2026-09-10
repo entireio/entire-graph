@@ -1,6 +1,7 @@
 from pathlib import Path
-import sys,json,hashlib,shlex,tarfile
+import sys,json,hashlib,shlex,tarfile,os
 base=Path(__file__).resolve().parents[2];sys.path.insert(0,str(base));import cloud
+validation_vm=os.environ['GRAPH_ADVANTAGE_VALIDATION_VM']
 out=base/'retained-query-correctness-1c0b8e24/results';out.mkdir(exist_ok=False)
 archive=out/'runner-inputs.tar.gz'
 with tarfile.open(archive,'w:gz') as t:
@@ -15,7 +16,7 @@ script+='(/usr/bin/time --version; /usr/local/go/bin/go version; sha256sum /usr/
 script+='tar --exclude="retained-query-correctness-1c0b8e24/cache-*" -czf '+q(source+'/query-correctness-results.tar.gz')+' -C /opt/graph-validation retained-query-correctness-1c0b8e24\n'
 script+='curl -fsS -X PUT -H "x-ms-blob-type: BlockBlob" --upload-file '+q(source+'/query-correctness-results.tar.gz')+' '+q(cloud.url(result_blob,'cw',env))+' >/dev/null\necho RETAINED_QUERY_UPLOAD_ACK\n'
 (out/'invocation.json').write_text(json.dumps({'command':args,'input_archive_sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'script_sha256':hashlib.sha256(script.encode()).hexdigest(),'result_blob':result_blob,'purpose':'At most three retained profile correctness pairs; first failure halts; no performance score'},indent=2)+'\n')
-r=cloud.run(__import__('os').environ['GRAPH_ADVANTAGE_VALIDATION_VM'],script);(out/'transport.json').write_text(r+'\n')
+r=cloud.run(validation_vm,script);(out/'transport.json').write_text(r+'\n')
 if 'RETAINED_QUERY_UPLOAD_ACK' not in r:raise RuntimeError('No acknowledgement: inspect existing remote outcome before any retry')
 cloud.download(result_blob,out/'results.tar.gz',env)
 with tarfile.open(out/'results.tar.gz') as f:f.extractall(out/'raw',filter='data')

@@ -1,5 +1,12 @@
 # Laptop shutdown handoff — 2026-09-06
 
+This is the historical operational handoff. Current machine-readable evidence
+is indexed by [evidence/canonical-v1/index.json](evidence/canonical-v1/index.json),
+and [cleanup/removal-map.json](cleanup/removal-map.json) resolves removed raw or
+duplicate paths to retained replacements. Paths and local checkout details below
+describe the recorded handoff state; they are historical citations rather than
+instructions to recreate that filesystem layout.
+
 Paused explicitly at the user’s request. Do not resume work, heartbeat or
 benchmarks until the user requests it. Branch `codex/graph-advantage`, worktree
 `<REPO_ROOT>`. Commit and push, no merge.

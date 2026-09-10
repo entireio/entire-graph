@@ -1,0 +1,51 @@
+name: graph-advantage-evidence
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/graph-advantage-evidence.yml"
+      - "docs/implementation/graph-advantage/**"
+  pull_request:
+    paths:
+      - ".github/workflows/graph-advantage-evidence.yml"
+      - "docs/implementation/graph-advantage/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Validate canonical evidence and public artifact hygiene
+        run: |
+          python -B docs/implementation/graph-advantage/evidence/canonical-v1/tools/validate.py \
+            --canonical-root docs/implementation/graph-advantage/evidence/canonical-v1 \
+            --evidence-root docs/implementation/graph-advantage/evidence
+          python -B -m unittest discover -v \
+            -s docs/implementation/graph-advantage/evidence/canonical-v1/tools \
+            -p 'test_*.py'
+          python -B -m unittest discover -v \
+            -s docs/implementation/graph-advantage/probes \
+            -p 'test_*.py'
+          python -B -m unittest discover -v \
+            -s docs/implementation/graph-advantage/cleanup \
+            -p 'test_*.py'
+          python -B docs/implementation/graph-advantage/cleanup/audit_archive_provenance.py \
+            --repo . \
+            --provenance docs/implementation/graph-advantage/cleanup/archive-provenance.json
+          python -B docs/implementation/graph-advantage/cleanup/validate_archive_operational.py \
+            docs/implementation/graph-advantage/cleanup/archive-operational-observations.json
+          python -B docs/implementation/graph-advantage/cleanup/check_public_artifacts.py
+          python -B docs/implementation/graph-advantage/cleanup/verify_preservation_scope.py \
+            --repo . \
+            --scope docs/implementation/graph-advantage/cleanup/preservation-scope.json

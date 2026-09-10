@@ -1,0 +1,657 @@
+{
+  "record_count": 40,
+  "records": [
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/corpus/README.md",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "corpus workspace normalized to configuration placeholder",
+          "replacement": "<P1_CORPUS_ROOT>"
+        }
+      ],
+      "retained_bytes": 931,
+      "retained_sha256": "41c10f3adbd669df9df8d6a3185d208383feda617f4054fbf6ddba94153c34ef",
+      "source_bytes": 962,
+      "source_sha256": "47f770eba1637c8bdcedb8d5c192bb0b5107b2f3cedd40d613da203043d381f8"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/corpus/corpus-manifest.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        },
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 24294,
+      "retained_sha256": "fb826c31f14a897a035cfc81dcbfcbd3735aaf50b83fa9d43b8dddb60716c058",
+      "source_bytes": 24349,
+      "source_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/corpus/p1_scenario.py",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "corpus workspace normalized to configuration placeholder",
+          "replacement": "<P1_CORPUS_ROOT>"
+        }
+      ],
+      "retained_bytes": 8073,
+      "retained_sha256": "6ebcf3d71db94f1040cc227daae4384c7989116712a6f4509fa0014fc318e25b",
+      "source_bytes": 8025,
+      "source_sha256": "6ccd93a8cf57eb9c00e45ae9a8c11e7e60371ae247567d8a33106f4eaa8ede75"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/corpus/prepare_p1_corpus.py",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        },
+        {
+          "occurrences": 1,
+          "reason": "corpus workspace normalized to configuration placeholder",
+          "replacement": "<P1_CORPUS_ROOT>"
+        }
+      ],
+      "retained_bytes": 13908,
+      "retained_sha256": "3a388ea91ca11430d297255d8225516cc70ea4371078c54c5ac4b9cb3cf834be",
+      "source_bytes": 13938,
+      "source_sha256": "7eb10a1df513926d4688b4fb90a55f63d62e100b2914fc970d7b45368b7b97bf"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/corpus/smoke_p1_corpus.py",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "corpus workspace normalized to configuration placeholder",
+          "replacement": "<P1_CORPUS_ROOT>"
+        }
+      ],
+      "retained_bytes": 2116,
+      "retained_sha256": "5f958de580e63064f3040fcff219ecf4db743581b9fc60864ac975d859ae0c47",
+      "source_bytes": 2032,
+      "source_sha256": "37981d2a9f0fd606f4a89576f10c1be7aedcffead30251f925c6e658e55ecbf1"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/diagnostic-validation-policy-proposal.md",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        }
+      ],
+      "retained_bytes": 10690,
+      "retained_sha256": "bcc1d661ebf57b5cbb49059c92ee0c9e21883cd2714dc32f4ba85ad766e875c1",
+      "source_bytes": 10712,
+      "source_sha256": "a1a4fda2b3b818599efe8e43188616a30064d258cbdddcbb6d2f08429dec74cb"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/delayed-relations-profile-analysis/README.md",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        }
+      ],
+      "retained_bytes": 4028,
+      "retained_sha256": "0b969924e85540c0c35a9138b36a2d64ab0d86a41b336076300ac98342b7c373",
+      "source_bytes": 4050,
+      "source_sha256": "b89baa8223a14896cbda0d72d12ce65730577e727abc2d40304f667eff49765c"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/corpus/corpus-manifest.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        },
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 24294,
+      "retained_sha256": "fb826c31f14a897a035cfc81dcbfcbd3735aaf50b83fa9d43b8dddb60716c058",
+      "source_bytes": 24349,
+      "source_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/corpus/corpus-manifest.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        },
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 24294,
+      "retained_sha256": "fb826c31f14a897a035cfc81dcbfcbd3735aaf50b83fa9d43b8dddb60716c058",
+      "source_bytes": 24349,
+      "source_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/review-input/policy-review.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "corpus workspace normalized to configuration placeholder",
+          "replacement": "<P1_CORPUS_ROOT>"
+        }
+      ],
+      "retained_bytes": 18390,
+      "retained_sha256": "2d3961454498fef771d68012bb95c141eb4e3c2163534114bbbaccc9f667d839",
+      "source_bytes": 18421,
+      "source_sha256": "1763ae6f524d17946b8bd973233cff42f09145b5befff0a89b4d174aaf3aa25f"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/review-input/policy-review.md",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "corpus workspace normalized to configuration placeholder",
+          "replacement": "<P1_CORPUS_ROOT>"
+        }
+      ],
+      "retained_bytes": 4627,
+      "retained_sha256": "01885c7471e877f1b3dc6d033b4be793bb33657a759c72c17dcc91b097fc5627",
+      "source_bytes": 4658,
+      "source_sha256": "b1832ce8caef656797089bc7a1339042d99dcf01bb876ca0c0b84793d0362deb"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/review-input/protobuf-fix-evidence.md",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "corpus workspace normalized to configuration placeholder",
+          "replacement": "<P1_CORPUS_ROOT>"
+        }
+      ],
+      "retained_bytes": 3944,
+      "retained_sha256": "68ef27ada9117d0c36d11a0b7afaa3c3f69292bd23ea1daf70261e305044e0aa",
+      "source_bytes": 3975,
+      "source_sha256": "51b43f2a691f87736a43a6469bfdec362ca3b224f69737484f61277b513cbfbd"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/review-input/source-inventory.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "corpus workspace normalized to configuration placeholder",
+          "replacement": "<P1_CORPUS_ROOT>"
+        }
+      ],
+      "retained_bytes": 1995,
+      "retained_sha256": "75110d7545c0aebd030de3431bdb28e94f374a8d1fe89ae9431274a4646879eb",
+      "source_bytes": 2026,
+      "source_sha256": "da9b7d4ae88f049d3f9353d5216957d3085a034c3c85c3fd95ab551a584fe8f7"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/corpus/corpus-manifest.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        },
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 24294,
+      "retained_sha256": "fb826c31f14a897a035cfc81dcbfcbd3735aaf50b83fa9d43b8dddb60716c058",
+      "source_bytes": 24349,
+      "source_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/corpus/corpus-manifest.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        },
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 24294,
+      "retained_sha256": "fb826c31f14a897a035cfc81dcbfcbd3735aaf50b83fa9d43b8dddb60716c058",
+      "source_bytes": 24349,
+      "source_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/corpus/corpus-manifest.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        },
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 24294,
+      "retained_sha256": "fb826c31f14a897a035cfc81dcbfcbd3735aaf50b83fa9d43b8dddb60716c058",
+      "source_bytes": 24349,
+      "source_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/corpus/corpus-manifest.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        },
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 24294,
+      "retained_sha256": "fb826c31f14a897a035cfc81dcbfcbd3735aaf50b83fa9d43b8dddb60716c058",
+      "source_bytes": 24349,
+      "source_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/README.md",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        }
+      ],
+      "retained_bytes": 10324,
+      "retained_sha256": "88897bb2ca87e44c64923c3487ec87fd4ce2c2f36305b90a06e014bfe9aadcd3",
+      "source_bytes": 10346,
+      "source_sha256": "b75972d33f83baf00f5fe4cc0331eb3ae52f520807315eaae4f521d2ec408d95"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/corpus/corpus-manifest.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        },
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 24294,
+      "retained_sha256": "fb826c31f14a897a035cfc81dcbfcbd3735aaf50b83fa9d43b8dddb60716c058",
+      "source_bytes": 24349,
+      "source_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/README.md",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        }
+      ],
+      "retained_bytes": 4592,
+      "retained_sha256": "88efb6e8db64c664e6a94879eefb6a8b3656d5a892fbf95c6f636dc1e4fa28bd",
+      "source_bytes": 4614,
+      "source_sha256": "4d3d9c46fd5a6f96b6863fd738e6e3eafe2d594aafcd29dd3881866a1cd7bf83"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/corpus/corpus-manifest.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        },
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 24294,
+      "retained_sha256": "fb826c31f14a897a035cfc81dcbfcbd3735aaf50b83fa9d43b8dddb60716c058",
+      "source_bytes": 24349,
+      "source_sha256": "d2fdce2a59befb3a0a02bcc7fc5a531eb8571a1788b0070b6fd2147e92e273e0"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-6f23da0a/source.sha256",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 164,
+      "retained_sha256": "fea616f4a32bcaf6b2f66372bc6811708b5f9fe513875473b7240cb815e54114",
+      "source_bytes": 197,
+      "source_sha256": "53140d7c3cab769cdb2ecbf696752fe3409607b34af4eddd0c4af029ce9f8319"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d-r1/source.sha256",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 167,
+      "retained_sha256": "59e6f9fbedfd26c61c0320068bb7f65c0483c703cea6ed23cd6a0861425f4591",
+      "source_bytes": 200,
+      "source_sha256": "b3ec541dc03276e061589b94c10614d046eae45fed6a2cb29873526ab7b4cf34"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d/source.sha256",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 164,
+      "retained_sha256": "3e3e713c00506068aba6e8e79f73500e08d75e637641fa3e2e34f9a39991932e",
+      "source_bytes": 197,
+      "source_sha256": "7649f9bcc86e444c3735c197419ba90f7e6addb97f0e85294868b44624a347b4"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/requirements-provenance.json",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        }
+      ],
+      "retained_bytes": 419,
+      "retained_sha256": "cf222477c4e14a1af653ed2d0434c062081e7daeb9003602fe82037c191e7890",
+      "source_bytes": 441,
+      "source_sha256": "c6c613bdd87dfff9635a890b7adbdb0f4868dcc12404d8558894d9034c1d0138"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/return-flow-match-reuse-20260908/README.md",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        }
+      ],
+      "retained_bytes": 3784,
+      "retained_sha256": "be4162c1d5274f4a5d62206a4e04e897df2443bf5f4b7a457b88860b4cb9386f",
+      "source_bytes": 3806,
+      "source_sha256": "294c2643bf670c002c262a26ab2b3428bb1613e529701fcb07a16a6f3225977e"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/return-flow-profile-25887f69/README.md",
+      "redactions": [
+        {
+          "occurrences": 2,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        }
+      ],
+      "retained_bytes": 6294,
+      "retained_sha256": "426cba5d6e555faf392272e2ae94200c4ea3c1859a96af6ad27593b220b90d16",
+      "source_bytes": 6338,
+      "source_sha256": "78426863f002105ec3b116faf4b4677f241fdd9eb7e0d76e51abefab80d340ae"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/evidence/review-phase-provenance.json",
+      "redactions": [
+        {
+          "occurrences": 2,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        }
+      ],
+      "retained_bytes": 638,
+      "retained_sha256": "67738570a64de91abe072241b2220bbdae4342726cabcc4d4513dc80d4811d9e",
+      "source_bytes": 682,
+      "source_sha256": "8d7764dc7a27a024373836fcc9da0f154ed0d1075321e3e81a2b402d45061001"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/ledger.md",
+      "redactions": [
+        {
+          "occurrences": 2,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        }
+      ],
+      "retained_bytes": 35670,
+      "retained_sha256": "ac0c80b60115a3c0c1b9da9f1910e9c66632eeec0844c1300ab32ca7eb7d28bf",
+      "source_bytes": 35714,
+      "source_sha256": "66f8090f44718a7d8095a4d4336e531be341c3bbd3863c2a1860a53591364524"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/frozen-baseline.json",
+      "redactions": [
+        {
+          "occurrences": 6,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 39564,
+      "retained_sha256": "a3e142b81d110d584f4a6f4853268a9e7c418a714b4eec6afc5cd6dd2bcbade6",
+      "source_bytes": 39762,
+      "source_sha256": "d8cad7cedd18922aa7bfbaaf5d73a8b84b52b3608f0e7c8e9cec8d1dbc724d6d"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-query-correctness-1c0b8e24/results-full-r2/controller.py",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 3685,
+      "retained_sha256": "7ec4126172c6eda1b4924d1dc962832ff53f04317bda88e5d882e82df4174eb9",
+      "source_bytes": 3707,
+      "source_sha256": "77722136ca2915fd34f1921d473ebb8261bd6eb6f027d569ce3c25bed5704af6"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-query-correctness-1c0b8e24/results/controller.py",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 3482,
+      "retained_sha256": "a7e96fbcc80afa9dd59a7cc339b789bee5a210649bc8a453862b279ca81c89c7",
+      "source_bytes": 3504,
+      "source_sha256": "a086e03b24da324da6b166d3bb6827c8c5dab4f45bc278239b22d577f6df614d"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-1c0b8e24-r2/controller.py",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 2963,
+      "retained_sha256": "70b54243436880e4f5daf5d317f1f1ed860294afcf9dd78d72198a98842add78",
+      "source_bytes": 2985,
+      "source_sha256": "710c41bcf3fc370b57ec19094443113e29e6d4e69a603d3b6a68fc0d8e60ed17"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-1c0b8e24/controller.py",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 2897,
+      "retained_sha256": "3638b7408356f557cd38b23b6b851713cd04f990243584e7259ad828dc42bcc4",
+      "source_bytes": 2919,
+      "source_sha256": "dc518522ddeff1676d4da46685378bf08578a7efe22fd197fd6ab4ad845a10ac"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-6cf92c9c/controller.py",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 3246,
+      "retained_sha256": "fafc43f9fb9474b4716e35f9871318433ba996b680dc13624ef95b86d67bddaf",
+      "source_bytes": 3268,
+      "source_sha256": "3fd10ff44e2c33e846b3e49f2648994b75e6c307b65963c0f29c4ef801576282"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/p3-validation.md",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        }
+      ],
+      "retained_bytes": 4327,
+      "retained_sha256": "31294e8661a29d08acf1b39f865ae1bfa7b3a2b5d303f6463de7c05ee3741870",
+      "source_bytes": 4349,
+      "source_sha256": "58fdc206c7802ac6b5c35c82942cea9c8c077d71b00e03ea76f5290c783d289a"
+    },
+    {
+      "claim": "configuration-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/probes/run_review_linux.py",
+      "redactions": [
+        {
+          "occurrences": 7,
+          "reason": "Azure resource group, storage account, container, and VM identities replaced by required configuration",
+          "replacement": "GRAPH_ADVANTAGE_AZURE_* environment variables"
+        }
+      ],
+      "retained_bytes": 4732,
+      "retained_sha256": "0ccd57daef7b8b39ed3a73d41aa59cd15261f9d4eab875bdb3ea47a959f5d8f9",
+      "source_bytes": 4238,
+      "source_sha256": "5e36724d15b0c636ea61e70ccdc9f82f82e9e70825bc822c67b0c319e237fb46"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/remaining-release-prerequisites.md",
+      "redactions": [
+        {
+          "occurrences": 7,
+          "reason": "external plan path normalized to logical repository path",
+          "replacement": "entire-plan/"
+        }
+      ],
+      "retained_bytes": 11730,
+      "retained_sha256": "d2d2a11d6b8b83de7985302915f490e0f77459aa990c307f0d5b32445457e51a",
+      "source_bytes": 11884,
+      "source_sha256": "7fbb9296f2a5591bde8687a3ab97294e5abe2c57c879ac871f785ffae65aa2d2"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/resumption-plan-20260907.md",
+      "redactions": [
+        {
+          "occurrences": 1,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 8983,
+      "retained_sha256": "21032b900989a7e2866c5eca1de2de8f1efeeefb72c00c57df386dec358f45f4",
+      "source_bytes": 9016,
+      "source_sha256": "3ea397b2c2bc52a4f65b588f2c42eda1f6c6ca07ac681e7ce0123955e9acbdbd"
+    },
+    {
+      "claim": "path-only sanitation; measured source commit and outcome fields unchanged",
+      "path": "docs/implementation/graph-advantage/shutdown-handoff-20260906.md",
+      "redactions": [
+        {
+          "occurrences": 2,
+          "reason": "checkout path normalized to repository placeholder",
+          "replacement": "<REPO_ROOT>"
+        }
+      ],
+      "retained_bytes": 10036,
+      "retained_sha256": "1036e28f86c439e9cb10f4060bf3150f75ecdcc648a9bbb296edbf0d3e0d9ee9",
+      "source_bytes": 10102,
+      "source_sha256": "5d9364f89a0edbcd286eaf75f0d260692aba2aac4dd2e54166b00eec914e3dbc"
+    }
+  ],
+  "schema": "graph-advantage-privacy-redactions-v1",
+  "scope": "Branch-added public documents, manifests, and historical controls containing machine-local absolute paths."
+}

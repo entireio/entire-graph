@@ -1,0 +1,915 @@
+{
+  "schema": "graph-advantage-archive-profile-summaries-v2",
+  "scope": "12 archive profile members plus 24 bounded profile-derived text artifacts mapped to verified profile summaries",
+  "record_count": 36,
+  "records": [
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a/live-sample-addr2line.txt",
+      "source_sha256": "371998209a21b16f6781f3569e2361bc0ea15c610ca78eb1c225da90318f52af",
+      "source_bytes": 42,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "bounded authored or tool outcome retained verbatim; no raw sample lines",
+      "no_performance_claim": true,
+      "preserved_lines": [
+        "?",
+        "?:0",
+        "?",
+        "?:0",
+        "?",
+        "?:0",
+        "?",
+        "?:0",
+        "?",
+        "?:0",
+        "?",
+        "?:0",
+        "?",
+        "?:0"
+      ]
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof",
+      "source_sha256": "49405552d91dfd00ce164c652d17bf05cb1e2c20d09a58642b4065a7e9742bb4",
+      "profile_bytes": 58516,
+      "kind": "profile_summary_reference",
+      "profile_summary_ref": "cleanup/profile-summaries.json",
+      "run_id": "25887f69",
+      "content_id": "sha256:49405552d91dfd00ce164c652d17bf05cb1e2c20d09a58642b4065a7e9742bb4",
+      "summary_sha256": "16b15c870a36911a619ebe43bc6610f8bc890a97b5ead30b8f83384fb7c2bb56",
+      "no_performance_claim": true
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof.json",
+      "source_sha256": "664a0babf66078c10505fcbee6e41f1a61f3f1c5de77ec776bf98075a9f1f84d",
+      "profile_bytes": 313,
+      "kind": "profile_metadata",
+      "metadata": {
+        "status": "complete",
+        "trigger_elapsed_ns": 54201833659,
+        "window_ns": 20000000000,
+        "actual_ns": 20031384297,
+        "bytes": 58516,
+        "sha256": "49405552d91dfd00ce164c652d17bf05cb1e2c20d09a58642b4065a7e9742bb4",
+        "diagnostic_only": true,
+        "no_performance_claim": true,
+        "profile_overhead_present": true
+      },
+      "pprof_companion": "output/relations-cpu.pprof"
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof",
+      "source_sha256": "8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "profile_bytes": 29365,
+      "kind": "profile_summary_reference",
+      "profile_summary_ref": "cleanup/profile-summaries.json",
+      "run_id": "450bede9",
+      "content_id": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "summary_sha256": "a580058f1aafcd2d28252b2cd914668d585d2223a066d8de6992f58f18aebfa3",
+      "no_performance_claim": true
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof.json",
+      "source_sha256": "3e689b64e766a30403cd9771e2188ab693c478b7488e3e0cb9d20d70d24b942c",
+      "profile_bytes": 313,
+      "kind": "profile_metadata",
+      "metadata": {
+        "status": "complete",
+        "trigger_elapsed_ns": 54142677379,
+        "window_ns": 20000000000,
+        "actual_ns": 20022278726,
+        "bytes": 29365,
+        "sha256": "8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+        "diagnostic_only": true,
+        "no_performance_claim": true,
+        "profile_overhead_present": true
+      },
+      "pprof_companion": "output/relations-cpu.pprof"
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof",
+      "source_sha256": "2c72e17b6089a06fb0fb991a68c30498d407c88ad5baf3777121d0f78b870776",
+      "profile_bytes": 31703,
+      "kind": "profile_summary_reference",
+      "profile_summary_ref": "cleanup/profile-summaries.json",
+      "run_id": "8689fc3d",
+      "content_id": "sha256:2c72e17b6089a06fb0fb991a68c30498d407c88ad5baf3777121d0f78b870776",
+      "summary_sha256": "72ef254ba38bd0e8164a16c2c9401e078aff91f6b231c1f7814e0efd069a5630",
+      "no_performance_claim": true
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof.json",
+      "source_sha256": "da2260081a3e16ba69316ea8b13e07db08e1918604b7c5ce115f6272a571367e",
+      "profile_bytes": 313,
+      "kind": "profile_metadata",
+      "metadata": {
+        "status": "complete",
+        "trigger_elapsed_ns": 52795297548,
+        "window_ns": 20000000000,
+        "actual_ns": 20026779682,
+        "bytes": 31703,
+        "sha256": "2c72e17b6089a06fb0fb991a68c30498d407c88ad5baf3777121d0f78b870776",
+        "diagnostic_only": true,
+        "no_performance_claim": true,
+        "profile_overhead_present": true
+      },
+      "pprof_companion": "output/relations-cpu.pprof"
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof",
+      "source_sha256": "3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "profile_bytes": 29973,
+      "kind": "profile_summary_reference",
+      "profile_summary_ref": "cleanup/profile-summaries.json",
+      "run_id": "90ac3e16",
+      "content_id": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "summary_sha256": "a571336bf1b38157a4f5510f68be58407968ecac0afe5c77b343fed89e8d2a4f",
+      "no_performance_claim": true
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof.json",
+      "source_sha256": "0fe27f5aa37cc1fceda253c4705f12abcafcfc29d944f8dc5a9831653d26e356",
+      "profile_bytes": 313,
+      "kind": "profile_metadata",
+      "metadata": {
+        "status": "complete",
+        "trigger_elapsed_ns": 53435075004,
+        "window_ns": 20000000000,
+        "actual_ns": 20028516076,
+        "bytes": 29973,
+        "sha256": "3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+        "diagnostic_only": true,
+        "no_performance_claim": true,
+        "profile_overhead_present": true
+      },
+      "pprof_companion": "output/relations-cpu.pprof"
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/raw/pprof-receiver-call-relations-list.txt",
+      "source_sha256": "73687af200a7a80806c9d90a278189ec69f82de38162a2bd51b15ac72aab987a",
+      "source_bytes": 122819,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "950567a3",
+      "raw_profile_sha256": "f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+      "raw_profile_git_blob": "2b567d8ed2a04fe0f4b400e407d5981f74c83952",
+      "external_content_id": "sha256:f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+      "external_copy_verified": true,
+      "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "list receiverCallRelations",
+        "input": "sha256:f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-list=receiverCallRelations",
+          "-trim_path=<derived-profile-source-prefix>",
+          "-source_path=<pinned-source-root>",
+          "<raw-profile-from-content-id>"
+        ],
+        "trim_path_derivation": "prefix of the profile's recorded source filename before /internal/sem",
+        "source_materialization": {
+          "git_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+          "path": "internal/sem",
+          "destination": "<pinned-source-root>/internal/sem"
+        },
+        "tested_argv_sha256": "7776c5ffed84b20f1f730e6fb129e910fb08dc056326181eca27f4e04bc0d1ce"
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/raw/pprof-return-flow-list.txt",
+      "source_sha256": "86a5a8b1cd39c5cb0975ae47ab77726cf754701ffac60188305ea71b41631164",
+      "source_bytes": 8459,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "950567a3",
+      "raw_profile_sha256": "f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+      "raw_profile_git_blob": "2b567d8ed2a04fe0f4b400e407d5981f74c83952",
+      "external_content_id": "sha256:f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+      "external_copy_verified": true,
+      "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "list returnFlowCalls",
+        "input": "sha256:f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-list=returnFlowCalls",
+          "-trim_path=<derived-profile-source-prefix>",
+          "-source_path=<pinned-source-root>",
+          "<raw-profile-from-content-id>"
+        ],
+        "trim_path_derivation": "prefix of the profile's recorded source filename before /internal/sem",
+        "source_materialization": {
+          "git_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+          "path": "internal/sem",
+          "destination": "<pinned-source-root>/internal/sem"
+        }
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/raw/pprof-top-cumulative.txt",
+      "source_sha256": "555ef8ae7f74e5507b9c844bf94de8123ab3c4796751d8fe41ca4557ecebc8b9",
+      "source_bytes": 5913,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "950567a3",
+      "raw_profile_sha256": "f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+      "raw_profile_git_blob": "2b567d8ed2a04fe0f4b400e407d5981f74c83952",
+      "external_content_id": "sha256:f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+      "external_copy_verified": true,
+      "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "top -cum",
+        "input": "sha256:f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-top",
+          "-cum",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/raw/pprof-top.txt",
+      "source_sha256": "3109a2ad2e61c1a6ceb40d7d7c4adc04368d931cf40b71c44651c5f81a703b72",
+      "source_bytes": 3409,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "950567a3",
+      "raw_profile_sha256": "f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+      "raw_profile_git_blob": "2b567d8ed2a04fe0f4b400e407d5981f74c83952",
+      "external_content_id": "sha256:f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+      "external_copy_verified": true,
+      "source_commit": "950567a3c2796c99c9f46af84f7c0a8afac3351d",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "top",
+        "input": "sha256:f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-top",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof",
+      "source_sha256": "f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+      "profile_bytes": 41212,
+      "kind": "profile_summary_reference",
+      "profile_summary_ref": "cleanup/profile-summaries.json",
+      "run_id": "950567a3",
+      "content_id": "sha256:f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+      "summary_sha256": "48306c83c8688cb2f4e99d40c06aaa884873e0ad52fc8df8645a9ab011e527a1",
+      "no_performance_claim": true
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof.json",
+      "source_sha256": "8bee76909aaf1ad370e5c598a51fa630566d3c369196abb82c3a31931c66fc18",
+      "profile_bytes": 490,
+      "kind": "profile_metadata",
+      "metadata": {
+        "status": "complete",
+        "trigger_elapsed_ns": 88012954726,
+        "requested_start_after_ns": 88000000000,
+        "actual_start_elapsed_ns": 88012954726,
+        "window_ns": 20000000000,
+        "actual_ns": 20033042049,
+        "bytes": 41212,
+        "sha256": "f1d82515bf50daee3caf05a30c0a37d81c8f3ca92b20f4baf77506f9ce8f253e",
+        "relations_first": 512,
+        "relations_latest": 666624,
+        "relation_progress_events": 1302,
+        "diagnostic_only": true,
+        "no_performance_claim": true,
+        "profile_overhead_present": true
+      },
+      "pprof_companion": "output/relations-cpu.pprof"
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/pprof-top-cumulative.txt",
+      "source_sha256": "7948aa71e16ff8cbf35a7edf27ceb839131fc790508ff40af41a2866c86b042a",
+      "source_bytes": 10723,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "effa358f",
+      "raw_profile_sha256": "9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c",
+      "raw_profile_git_blob": "427bff1b7ad136095cb93eeb4d2aec851b60a6b8",
+      "external_content_id": "sha256:9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c",
+      "external_copy_verified": true,
+      "source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "top -cum",
+        "input": "sha256:9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-top",
+          "-cum",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/pprof-top.txt",
+      "source_sha256": "5d2cc6adfae47077bd2c9be4203de0fa4be30f8e866ec1cb00971a0d46d623ff",
+      "source_bytes": 10723,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "effa358f",
+      "raw_profile_sha256": "9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c",
+      "raw_profile_git_blob": "427bff1b7ad136095cb93eeb4d2aec851b60a6b8",
+      "external_content_id": "sha256:9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c",
+      "external_copy_verified": true,
+      "source_commit": "effa358f2ceaca2b9accd829984272598fa78078",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "top",
+        "input": "sha256:9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-top",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof",
+      "source_sha256": "9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c",
+      "profile_bytes": 44928,
+      "kind": "profile_summary_reference",
+      "profile_summary_ref": "cleanup/profile-summaries.json",
+      "run_id": "effa358f",
+      "content_id": "sha256:9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c",
+      "summary_sha256": "50ac91b1b4ba3f9f11a40d7c736ff1eecdc949fd2fc460485ab55c4d5e3b1468",
+      "no_performance_claim": true
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/results.tar.gz",
+      "member": "output/relations-cpu.pprof.json",
+      "source_sha256": "ec9c4937c2be5812ca7d8592a1113ea1bb124747bd89a108ae81a52c544b82d8",
+      "profile_bytes": 490,
+      "kind": "profile_metadata",
+      "metadata": {
+        "status": "complete",
+        "trigger_elapsed_ns": 88012898811,
+        "requested_start_after_ns": 88000000000,
+        "actual_start_elapsed_ns": 88012898811,
+        "window_ns": 20000000000,
+        "actual_ns": 20031817991,
+        "bytes": 44928,
+        "sha256": "9a453aee29907d31995e3009fe779e06eaaa06d2c95dc4648fc04407c0229b4c",
+        "relations_first": 512,
+        "relations_latest": 672256,
+        "relation_progress_events": 1313,
+        "diagnostic_only": true,
+        "no_performance_claim": true,
+        "profile_overhead_present": true
+      },
+      "pprof_companion": "output/relations-cpu.pprof"
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-450bede9/pprof-call-tree.txt",
+      "source_sha256": "4fc16fa8123f1af122da470fd7dec35358fe7ca306e4a90488029489e11c21a6",
+      "source_bytes": 32481,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "450bede9",
+      "raw_profile_sha256": "8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "raw_profile_git_blob": "32cf709739ce64e96246c7ceba5e82d5507b380d",
+      "external_content_id": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "external_copy_verified": true,
+      "source_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "tree",
+        "input": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-tree",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-450bede9/pprof-list-go-http-route-registrations.txt",
+      "source_sha256": "e1bc1d0f5a1ee6d1a3391a13eceea5d3619f8ab2b9d21c957821c68709b52d16",
+      "source_bytes": 5577,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "450bede9",
+      "raw_profile_sha256": "8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "raw_profile_git_blob": "32cf709739ce64e96246c7ceba5e82d5507b380d",
+      "external_content_id": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "external_copy_verified": true,
+      "source_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "list goHTTPRouteRegistrations",
+        "input": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-list=goHTTPRouteRegistrations",
+          "-trim_path=<derived-profile-source-prefix>",
+          "-source_path=<pinned-source-root>",
+          "<raw-profile-from-content-id>"
+        ],
+        "trim_path_derivation": "prefix of the profile's recorded source filename before /internal/sem",
+        "source_materialization": {
+          "git_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+          "path": "internal/sem",
+          "destination": "<pinned-source-root>/internal/sem"
+        }
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-450bede9/pprof-list-go-http-route-relations.txt",
+      "source_sha256": "08659c4b8d9d47319406716882cdea9f2db3d3cd292b1cebb542ec3f886686e8",
+      "source_bytes": 2307,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "450bede9",
+      "raw_profile_sha256": "8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "raw_profile_git_blob": "32cf709739ce64e96246c7ceba5e82d5507b380d",
+      "external_content_id": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "external_copy_verified": true,
+      "source_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "list goHTTPRouteRelations",
+        "input": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-list=goHTTPRouteRelations",
+          "-trim_path=<derived-profile-source-prefix>",
+          "-source_path=<pinned-source-root>",
+          "<raw-profile-from-content-id>"
+        ],
+        "trim_path_derivation": "prefix of the profile's recorded source filename before /internal/sem",
+        "source_materialization": {
+          "git_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+          "path": "internal/sem",
+          "destination": "<pinned-source-root>/internal/sem"
+        }
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-450bede9/pprof-list-static-string-constants.txt",
+      "source_sha256": "590975b31e04c3772e27c06ba1f09043359f72452823cb02676e8f3f18126378",
+      "source_bytes": 1010,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "450bede9",
+      "raw_profile_sha256": "8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "raw_profile_git_blob": "32cf709739ce64e96246c7ceba5e82d5507b380d",
+      "external_content_id": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "external_copy_verified": true,
+      "source_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "list staticStringConstants",
+        "input": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-list=staticStringConstants",
+          "-trim_path=<derived-profile-source-prefix>",
+          "-source_path=<pinned-source-root>",
+          "<raw-profile-from-content-id>"
+        ],
+        "trim_path_derivation": "prefix of the profile's recorded source filename before /internal/sem",
+        "source_materialization": {
+          "git_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+          "path": "internal/sem",
+          "destination": "<pinned-source-root>/internal/sem"
+        }
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-450bede9/pprof-top-cumulative.txt",
+      "source_sha256": "2841dabffa2b5ddb84f6d619163701e268a81dd087b311b780c70f37a9307f96",
+      "source_bytes": 6171,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "450bede9",
+      "raw_profile_sha256": "8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "raw_profile_git_blob": "32cf709739ce64e96246c7ceba5e82d5507b380d",
+      "external_content_id": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "external_copy_verified": true,
+      "source_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "top -cum",
+        "input": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-top",
+          "-cum",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-450bede9/pprof-top.txt",
+      "source_sha256": "f1474d214784e33003e25eebb0ae456c6ee3a730d1219dc10f9018dff286f8d1",
+      "source_bytes": 6171,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "450bede9",
+      "raw_profile_sha256": "8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "raw_profile_git_blob": "32cf709739ce64e96246c7ceba5e82d5507b380d",
+      "external_content_id": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+      "external_copy_verified": true,
+      "source_commit": "450bede9970e05c994d80986cf105dd068e9fc29",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "top",
+        "input": "sha256:8bec6b6a1d1a4d83ac1a3ba1c9addff49afbfefa840def5a7b240c54e86521c6",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-top",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-450bede9/source-pointers.txt",
+      "source_sha256": "15611982391ad499846b7af50a41fff287958f8062f23d8ad746018e9db3680e",
+      "source_bytes": 641,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "bounded authored or tool outcome retained verbatim; no raw sample lines",
+      "no_performance_claim": true,
+      "preserved_lines": [
+        "Exact provider source: 450bede9970e05c994d80986cf105dd068e9fc29",
+        "internal/sem/provider.go:23668-23681 \u2014 reads each Go file, then applies goHTTPRouteCandidate before handler/constants work.",
+        "internal/sem/provider.go:23740-23751 \u2014 current guard accepts any occurrence of broad prefixes including Handle, .Group, .Get, .Head, and .Options.",
+        "internal/sem/provider.go:23754-23830 \u2014 every accepted file still receives five whole-file route regex scans; each accepted name is immediately followed by `\\s*\\(` in its production regex.",
+        "internal/sem/provider.go:24926-24944 \u2014 accepted files also receive one to five static-assignment regex scans."
+      ]
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-90ac3e16/pprof-call-tree.txt",
+      "source_sha256": "6f1ab8838c1bb3e74684599774eab82a1691536ae6972e60cb6b041206e7858f",
+      "source_bytes": 30201,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "90ac3e16",
+      "raw_profile_sha256": "3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "raw_profile_git_blob": "cae597dc55c90970ce5346f6f839b2c39eaf91c1",
+      "external_content_id": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "external_copy_verified": true,
+      "source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "tree",
+        "input": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-tree",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-90ac3e16/pprof-list-go-http-route-registrations.txt",
+      "source_sha256": "2b96303e2b8cd29379a07aa6731936df832267ffb4d65516e1f9f37f84228758",
+      "source_bytes": 5577,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "90ac3e16",
+      "raw_profile_sha256": "3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "raw_profile_git_blob": "cae597dc55c90970ce5346f6f839b2c39eaf91c1",
+      "external_content_id": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "external_copy_verified": true,
+      "source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "list goHTTPRouteRegistrations",
+        "input": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-list=goHTTPRouteRegistrations",
+          "-trim_path=<derived-profile-source-prefix>",
+          "-source_path=<pinned-source-root>",
+          "<raw-profile-from-content-id>"
+        ],
+        "trim_path_derivation": "prefix of the profile's recorded source filename before /internal/sem",
+        "source_materialization": {
+          "git_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+          "path": "internal/sem",
+          "destination": "<pinned-source-root>/internal/sem"
+        }
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-90ac3e16/pprof-list-go-http-route-relations.txt",
+      "source_sha256": "a34f0a231f9bf8c5792b7524fbd8fd24ace0fd87a18f5026356bf30d8e98eb89",
+      "source_bytes": 2166,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "90ac3e16",
+      "raw_profile_sha256": "3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "raw_profile_git_blob": "cae597dc55c90970ce5346f6f839b2c39eaf91c1",
+      "external_content_id": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "external_copy_verified": true,
+      "source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "list goHTTPRouteRelations",
+        "input": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-list=goHTTPRouteRelations",
+          "-trim_path=<derived-profile-source-prefix>",
+          "-source_path=<pinned-source-root>",
+          "<raw-profile-from-content-id>"
+        ],
+        "trim_path_derivation": "prefix of the profile's recorded source filename before /internal/sem",
+        "source_materialization": {
+          "git_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+          "path": "internal/sem",
+          "destination": "<pinned-source-root>/internal/sem"
+        }
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-90ac3e16/pprof-list-static-string-constants.txt",
+      "source_sha256": "16ae80fe599e9e3688874c9a2523f5d2d3f49186a2abc8478924000a74a23a68",
+      "source_bytes": 1010,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "90ac3e16",
+      "raw_profile_sha256": "3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "raw_profile_git_blob": "cae597dc55c90970ce5346f6f839b2c39eaf91c1",
+      "external_content_id": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "external_copy_verified": true,
+      "source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "list staticStringConstants",
+        "input": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-list=staticStringConstants",
+          "-trim_path=<derived-profile-source-prefix>",
+          "-source_path=<pinned-source-root>",
+          "<raw-profile-from-content-id>"
+        ],
+        "trim_path_derivation": "prefix of the profile's recorded source filename before /internal/sem",
+        "source_materialization": {
+          "git_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+          "path": "internal/sem",
+          "destination": "<pinned-source-root>/internal/sem"
+        }
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-90ac3e16/pprof-top-cumulative.txt",
+      "source_sha256": "68db5a56cc2e77813486a8d79655bac12032b42f0718f9c6d277387eba3c109c",
+      "source_bytes": 5506,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "90ac3e16",
+      "raw_profile_sha256": "3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "raw_profile_git_blob": "cae597dc55c90970ce5346f6f839b2c39eaf91c1",
+      "external_content_id": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "external_copy_verified": true,
+      "source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "top -cum",
+        "input": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-top",
+          "-cum",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-90ac3e16/pprof-top.txt",
+      "source_sha256": "a9f41488905b29dfa990d882654a1d4e0e724fb6b585b2748bbeb46ec71167d4",
+      "source_bytes": 5506,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "90ac3e16",
+      "raw_profile_sha256": "3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "raw_profile_git_blob": "cae597dc55c90970ce5346f6f839b2c39eaf91c1",
+      "external_content_id": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+      "external_copy_verified": true,
+      "source_commit": "90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "top",
+        "input": "sha256:3f9b2fbe80daff71816e2d6cf2e8d66db0203cda5b08aca758aaa88a47cab88b",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-top",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/evidence/relations-cpu-analysis-90ac3e16/source-pointers.txt",
+      "source_sha256": "19baf2f93f07024b473a1a5ff9d803e6e4039135409d678e007e6bbd846f7947",
+      "source_bytes": 782,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "bounded authored or tool outcome retained verbatim; no raw sample lines",
+      "no_performance_claim": true,
+      "preserved_lines": [
+        "Exact source: commit 90ac3e16b96c34ab219ecd2a90eca4600fd0c586",
+        "internal/sem/provider.go:4944-4945 \u2014 HANDLES_ROUTE invokes the whole-repository Go route pass.",
+        "internal/sem/provider.go:23668-23693 \u2014 every .go file is read and unconditionally passed through constantsByFile.forFile plus goHTTPRouteRegistrations.",
+        "internal/sem/provider.go:23737-23813 \u2014 one group regex and four registration regexes each scan the entire file; four regexes are also compiled per invocation.",
+        "internal/sem/provider.go:24911-24929 \u2014 staticStringConstants scans the entire file with staticStringAssignRe up to five fixed-point iterations.",
+        "internal/sem/file_string_constants.go:17-39 \u2014 results are cached by file, preventing a second derivation later, but the first unconditional derivation remains."
+      ]
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/cold-profile-d793b2be/raw/cumulative.txt",
+      "source_sha256": "79a73472d68e46a118e2596a7badddbd190802b4fb27948ef59474210f05f519",
+      "source_bytes": 20512,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "d793b2be",
+      "raw_profile_sha256": "99070e5061fc60fba0d8e0dedd244faad7751efc173d967b9398325427122190",
+      "raw_profile_git_blob": "d5863a8818d10a30b53abb285971c33a05910e1d",
+      "external_content_id": "sha256:99070e5061fc60fba0d8e0dedd244faad7751efc173d967b9398325427122190",
+      "external_copy_verified": true,
+      "source_commit": "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "top -cum",
+        "input": "sha256:99070e5061fc60fba0d8e0dedd244faad7751efc173d967b9398325427122190",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-top",
+          "-cum",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/cold-profile-d793b2be/raw/top-recovered.txt",
+      "source_sha256": "70cee065115cfe49bc9910b7381e176cd77e4cce39e21f7881fc848c28fd7b39",
+      "source_bytes": 20509,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "exact offline reconstruction from retained raw profile, source commit, and pprof selector; raw sample lines intentionally not duplicated",
+      "no_performance_claim": true,
+      "run_id": "d793b2be",
+      "raw_profile_sha256": "99070e5061fc60fba0d8e0dedd244faad7751efc173d967b9398325427122190",
+      "raw_profile_git_blob": "d5863a8818d10a30b53abb285971c33a05910e1d",
+      "external_content_id": "sha256:99070e5061fc60fba0d8e0dedd244faad7751efc173d967b9398325427122190",
+      "external_copy_verified": true,
+      "source_commit": "d793b2be90f2800fcd4bbe5910ae27a766b5237d",
+      "reconstruction": {
+        "tool": "go tool pprof",
+        "selector": "top",
+        "input": "sha256:99070e5061fc60fba0d8e0dedd244faad7751efc173d967b9398325427122190",
+        "argv_template": [
+          "go",
+          "tool",
+          "pprof",
+          "-top",
+          "<raw-profile-from-content-id>"
+        ]
+      }
+    },
+    {
+      "kind": "profile_text_summary_reference",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/cold-profile-d793b2be/raw/top.txt",
+      "source_sha256": "13b87143b31255e321a4d0eec9fa6aab162097a8768a5bfbd9cca3499cc28f87",
+      "source_bytes": 124,
+      "profile_summary_path": "docs/implementation/graph-advantage/cleanup/profile-summaries.json",
+      "profile_summary_sha256": "61dac8ab4169c886be76af88806c51a967bb389ca2d46712e44533a97673ff9f",
+      "projection": "bounded authored or tool outcome retained verbatim; no raw sample lines",
+      "no_performance_claim": true,
+      "preserved_lines": [
+        "build cache is required, but could not be located: GOCACHE is not defined and neither $XDG_CACHE_HOME nor $HOME are defined"
+      ]
+    }
+  ],
+  "representative_reconstruction_proof": {
+    "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/raw/pprof-receiver-call-relations-list.txt",
+    "source_sha256": "73687af200a7a80806c9d90a278189ec69f82de38162a2bd51b15ac72aab987a",
+    "method": "offline pprof only; exact raw profile Git blob and pinned 950567a3 internal/sem source; argv template recorded on member",
+    "comparison": "byte-for-byte full output",
+    "status": "passed",
+    "reconstructed_sha256": "73687af200a7a80806c9d90a278189ec69f82de38162a2bd51b15ac72aab987a"
+  }
+}

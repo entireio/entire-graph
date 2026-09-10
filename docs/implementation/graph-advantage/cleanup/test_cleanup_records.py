@@ -88,6 +88,17 @@ class CleanupRecordTest(unittest.TestCase):
                 "fully parsed special-format observation",
                 "empty source-status marker captured structurally",
                 "tracked manifest identity and reconstruction facts retained",
+                "reviewed metadata-log semantics retained",
+                "sanitized platform and transport facts retained",
+                "duplicate VM terminal state normalized once",
+                "collector and statusline outcomes retained without raw environment",
+                "residual diagnostic semantics and numeric process rows retained",
+                "profile-derived text reconstructed or bounded outcome retained",
+                "compressed artifact members retained by verified replacement chains",
+                "structured archive member normalized with complete ordered data",
+                "exact duplicate of an already normalized source artifact",
+                "typed runtime values retained with explicit redactions",
+                "unique historical control retained with explicit configuration placeholders",
             },
         )
         repo = HERE.parents[3]

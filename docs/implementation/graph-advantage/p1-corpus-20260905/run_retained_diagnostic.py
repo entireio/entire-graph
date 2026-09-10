@@ -26,6 +26,7 @@ from collect import download_immutable, require_upload_ack
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[3]
+LOCAL_RUNS = HERE.parent / "evidence" / ".local-runs"
 CORPUS_ROOT = HERE.parent / "corpus"
 EXPECTED_INPUTS = HERE / "expected-inputs.json"
 DIAGNOSTIC_SOURCE = HERE / "retained-search-diagnostic.go.txt"
@@ -308,7 +309,8 @@ def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--source-commit", required=True)
     ap.add_argument("--run-id", required=True)
-    ap.add_argument("--output", type=pathlib.Path, required=True)
+    ap.add_argument("--output", type=pathlib.Path,
+                    help="local output directory (default: ignored evidence/.local-runs/<run-id>)")
     ap.add_argument("--source-root", type=pathlib.Path, default=REPO_ROOT)
     ap.add_argument("--vm", default=DEFAULT_VM)
     return ap
@@ -325,7 +327,7 @@ def run(args: argparse.Namespace, *, transport: Any = cloud,
         downloader: Callable[..., Any] = download_immutable) -> dict[str, Any]:
     if not RUN_ID_RE.fullmatch(args.run_id):
         raise ValueError("invalid run id")
-    output = args.output.resolve()
+    output = (args.output or LOCAL_RUNS / args.run_id).resolve()
     if output.exists():
         raise FileExistsError("refusing to reuse diagnostic output directory: " + str(output))
     source_root = args.source_root.resolve()

@@ -4,6 +4,14 @@ Requirements: `entire-plan/entire-graph-advantage-implementation-plan.md` and th
 Baseline: fetched main `3a2a715fad1948e83dc7ebe0d307377ba29e065a`.
 Branch: `codex/graph-advantage`, isolated worktree; primary checkout preserved. No merge.
 
+Current machine-readable evidence navigation is
+[evidence/canonical-v1/index.json](evidence/canonical-v1/index.json). The exact
+historical-path to retained-replacement map is
+[cleanup/removal-map.json](cleanup/removal-map.json). Historical evidence paths
+below remain citations to the outcomes originally reviewed; when a raw path was
+removed, the removal map and canonical run preserve its source digest, status,
+coverage, and replacement rather than relabeling that outcome.
+
 ## Current phase
 
 **Resumption policy revised 2026-09-07:** use batches capped at 100 total

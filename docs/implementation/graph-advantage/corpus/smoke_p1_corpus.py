@@ -13,6 +13,8 @@ HERE = Path(__file__).resolve().parent
 MANIFEST = json.loads((HERE / "corpus-manifest.json").read_text())
 SCENARIOS = [s["id"] for s in MANIFEST["scenarios"]]
 RUNNER = HERE / "p1_scenario.py"
+DEFAULT_CORPUS_ROOT = HERE.resolve().parents[4] / "graph-advantage-p1-corpus"
+CORPUS_ROOT = Path(os.environ.get("P1_CORPUS_ROOT", DEFAULT_CORPUS_ROOT)).resolve()
 
 
 def invoke(repo: str, command: str, scenario: str | None = None, fast: bool = True) -> dict:
@@ -37,7 +39,7 @@ def main() -> int:
             result = invoke(repo, "apply", scenario)
             assert result["scenario"] == scenario
             if scenario == "manifest-edit":
-                root = Path(os.environ.get("P1_CORPUS_ROOT", str(HERE.resolve().parents[4] / "graph-advantage-p1-corpus"))) / repo
+                root = CORPUS_ROOT / repo
                 if (root / "package.json").is_file():
                     json.loads((root / "package.json").read_text())
             invoke(repo, "reset")

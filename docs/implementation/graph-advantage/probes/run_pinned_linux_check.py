@@ -21,7 +21,9 @@ def main():
     if not args.run_id or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in args.run_id):
         parser.error("run-id must contain lowercase letters, digits and hyphens")
     commit = subprocess.check_output(["git", "rev-parse", "--verify", args.commit + "^{commit}"], text=True).strip()
-    out = BASE / "evidence" / args.run_id
+    local_runs = BASE / "evidence" / ".local-runs"
+    local_runs.mkdir(parents=True, exist_ok=True)
+    out = local_runs / args.run_id
     out.mkdir(exist_ok=False)
     archive = out / "source.tar.gz"
     with archive.open("wb") as stream:

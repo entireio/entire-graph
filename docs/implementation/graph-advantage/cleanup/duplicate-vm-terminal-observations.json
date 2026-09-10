@@ -1,0 +1,115 @@
+{
+  "alias_count": 15,
+  "aliases": [
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-25887f69-linux-full/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-cache-fixtures-r1/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-cache-fixtures-r2/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-cache-fixtures/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/attempt-r1/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-950567a3-linux-full-01/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-effa358f-linux-full-01/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-25887f69-evaluator-build-01/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-6f23da0a/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-950567a3-evaluator-build-01/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-trace-6f23da0a/all-vms-terminal.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    }
+  ],
+  "normalized_state": [
+    {
+      "power_state": "VM deallocated",
+      "role": "worker-2"
+    },
+    {
+      "power_state": "VM deallocated",
+      "role": "worker-3"
+    },
+    {
+      "power_state": "VM deallocated",
+      "role": "validation"
+    }
+  ],
+  "redactions": [
+    "provider VM names are represented only as validation, worker-2, and worker-3 roles"
+  ],
+  "schema": "graph-advantage-duplicate-vm-terminal-observations-v1",
+  "source_bytes": 3585,
+  "source_revision": "b622ce2ea82b4d39d952ec713a53df3218e00ca0"
+}

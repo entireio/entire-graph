@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_DEST = Path(os.environ.get("P1_CORPUS_ROOT", str(ROOT.parent / "graph-advantage-p1-corpus")))
+DEFAULT_DEST = Path(os.environ.get("P1_CORPUS_ROOT", ROOT.parent / "graph-advantage-p1-corpus"))
 ENTIRE_COMMIT = "88dd1dc95a996999ae4e456879b6dd86d8027f71"
 QUERY = "trace request routing and graph traversal"
 SEED = 20260905

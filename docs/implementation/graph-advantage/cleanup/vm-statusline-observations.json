@@ -1,0 +1,189 @@
+{
+  "observation_count": 13,
+  "observations": [
+    {
+      "facts": {
+        "line_count": 1,
+        "state": "request-timeout"
+      },
+      "kind": "collector-terminal-message",
+      "source_bytes": 18,
+      "source_git_blob": "0857e7a01b3068a356d139cca1f5121fe058b89c",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/controller/raw/collector.log",
+      "source_sha256": "fe37d563cf87595eb141374a73f3f5e88cf7f097d56eebc2c34e766bdc66f7c7"
+    },
+    {
+      "facts": {
+        "line_count": 1,
+        "state": "configuration-placeholder-refusal"
+      },
+      "kind": "collector-terminal-message",
+      "source_bytes": 59,
+      "source_git_blob": "f4735f91314ec4c824a9df144664bfcb8273df15",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/raw/collector.log",
+      "source_sha256": "94d328b28830b416232cab885b37cf5dcd514701c51a42ae3f6d194f3dd88931"
+    },
+    {
+      "facts": {
+        "line_count": 1,
+        "state": "request-timeout"
+      },
+      "kind": "collector-terminal-message",
+      "source_bytes": 18,
+      "source_git_blob": "0857e7a01b3068a356d139cca1f5121fe058b89c",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/raw/collector.log",
+      "source_sha256": "fe37d563cf87595eb141374a73f3f5e88cf7f097d56eebc2c34e766bdc66f7c7"
+    },
+    {
+      "facts": {
+        "line_count": 1,
+        "state": "request-timeout"
+      },
+      "kind": "collector-terminal-message",
+      "source_bytes": 18,
+      "source_git_blob": "0857e7a01b3068a356d139cca1f5121fe058b89c",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/raw/collector.log",
+      "source_sha256": "fe37d563cf87595eb141374a73f3f5e88cf7f097d56eebc2c34e766bdc66f7c7"
+    },
+    {
+      "facts": {
+        "line_count": 1,
+        "state": "request-timeout"
+      },
+      "kind": "collector-terminal-message",
+      "source_bytes": 18,
+      "source_git_blob": "0857e7a01b3068a356d139cca1f5121fe058b89c",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/controller/raw/collector.log",
+      "source_sha256": "fe37d563cf87595eb141374a73f3f5e88cf7f097d56eebc2c34e766bdc66f7c7"
+    },
+    {
+      "facts": {
+        "line_count": 1,
+        "state": "request-timeout"
+      },
+      "kind": "collector-terminal-message",
+      "source_bytes": 18,
+      "source_git_blob": "0857e7a01b3068a356d139cca1f5121fe058b89c",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/controller/raw/collector.log",
+      "source_sha256": "fe37d563cf87595eb141374a73f3f5e88cf7f097d56eebc2c34e766bdc66f7c7"
+    },
+    {
+      "facts": {
+        "line_count": 1,
+        "state": "request-timeout"
+      },
+      "kind": "collector-terminal-message",
+      "source_bytes": 18,
+      "source_git_blob": "0857e7a01b3068a356d139cca1f5121fe058b89c",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/raw/collector.log",
+      "source_sha256": "fe37d563cf87595eb141374a73f3f5e88cf7f097d56eebc2c34e766bdc66f7c7"
+    },
+    {
+      "facts": {
+        "line_count": 1,
+        "state": "request-timeout"
+      },
+      "kind": "collector-terminal-message",
+      "source_bytes": 18,
+      "source_git_blob": "0857e7a01b3068a356d139cca1f5121fe058b89c",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/raw/collector.log",
+      "source_sha256": "fe37d563cf87595eb141374a73f3f5e88cf7f097d56eebc2c34e766bdc66f7c7"
+    },
+    {
+      "facts": {
+        "ansi_sequence_count": 0,
+        "duration_seconds": 9.11,
+        "failed": 78,
+        "line_count": 301,
+        "passed": 62,
+        "terminal_error": true
+      },
+      "kind": "statusline-test-failure",
+      "source_bytes": 14650,
+      "source_git_blob": "c2c2db038eefd2d8d86e8e2c7ff896ac1c9b86a6",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/raw/mise-test-statusline.raw.log",
+      "source_sha256": "bea5bbb4326e10d9234eb23bbb94653c04081d17892db2f8400e3b16b6c83ac4"
+    },
+    {
+      "facts": {
+        "ansi_sequence_count": 12,
+        "environment_case": "clean",
+        "line_count": 1,
+        "rendered_bytes": 91,
+        "rendered_sha256": "a7fcca3439d3a3fc356c6f294d9a022e5fa43f66f644511eb911ff78bd8988ec"
+      },
+      "kind": "statusline-render",
+      "source_bytes": 151,
+      "source_git_blob": "8f4cdecb606c4726ec06c34165b12622e2f8188e",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-trace-6f23da0a/raw/clean.stdout.txt",
+      "source_sha256": "f13c4e75488bdfc3402ac36cb4d7bcefccfecfc2a14347156b549321479eb46a"
+    },
+    {
+      "facts": {
+        "ansi_sequence_count": 60,
+        "command_counts": {
+          "[": 31,
+          "awk": 3,
+          "find": 3,
+          "other": 44,
+          "printf": 5,
+          "return": 3,
+          "tr": 1
+        },
+        "environment_case": "clean",
+        "home_reference_count": 0,
+        "line_count": 285,
+        "xtrace_command_count": 90
+      },
+      "kind": "statusline-shell-trace",
+      "source_bytes": 13732,
+      "source_git_blob": "2e96052c182681798e18e9eb6d94a75e0d9f7f23",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-trace-6f23da0a/raw/clean.trace.txt",
+      "source_sha256": "7bb543780635b7da48d014f61e77e844ec263e69a9be7d17c95a442fe1e8fbf2"
+    },
+    {
+      "facts": {
+        "ansi_sequence_count": 12,
+        "environment_case": "inherited",
+        "line_count": 1,
+        "rendered_bytes": 91,
+        "rendered_sha256": "a7fcca3439d3a3fc356c6f294d9a022e5fa43f66f644511eb911ff78bd8988ec"
+      },
+      "kind": "statusline-render",
+      "source_bytes": 151,
+      "source_git_blob": "8f4cdecb606c4726ec06c34165b12622e2f8188e",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-trace-6f23da0a/raw/inherited.stdout.txt",
+      "source_sha256": "f13c4e75488bdfc3402ac36cb4d7bcefccfecfc2a14347156b549321479eb46a"
+    },
+    {
+      "facts": {
+        "ansi_sequence_count": 60,
+        "command_counts": {
+          "[": 31,
+          "awk": 3,
+          "find": 3,
+          "other": 43,
+          "printf": 6,
+          "return": 3,
+          "tr": 2
+        },
+        "environment_case": "inherited",
+        "home_reference_count": 0,
+        "line_count": 285,
+        "xtrace_command_count": 91
+      },
+      "kind": "statusline-shell-trace",
+      "source_bytes": 13832,
+      "source_git_blob": "6f46d34facc5ed2d0a0999a96ca2e1a743908c40",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-trace-6f23da0a/raw/inherited.trace.txt",
+      "source_sha256": "c870cf397c937c7d9709021a8341839d5dd5d3e8a5e42c543520bd7204126d32"
+    }
+  ],
+  "redactions": [
+    "raw collector messages are reduced to two reviewed lifecycle states",
+    "statusline rendering and traces retain results and command counts without raw paths or environment values"
+  ],
+  "schema": "graph-advantage-vm-statusline-observations-v1",
+  "source_bytes": 42701,
+  "source_revision": "b622ce2ea82b4d39d952ec713a53df3218e00ca0"
+}

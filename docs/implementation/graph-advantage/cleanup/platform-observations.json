@@ -1,0 +1,2659 @@
+{
+  "limitations": [
+    "The normalized record preserves operational state and configuration facts, not verbatim provider responses.",
+    "The fifteen all-vms-terminal.json duplicates are outside this 86-file normalization batch."
+  ],
+  "observation_count": 86,
+  "observations": [
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 84,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "7f2dd93fa2133c7b5d875dfc41c9fdc5355db6abb3395db33709e72c738ee89d",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 259,
+      "source_git_blob": "dcd17df6c34728ceb338953b65939e0b506dbd4c",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-25887f69-linux-full/transport.json",
+      "source_sha256": "30bd1281bfd97cd1b331a05a5adc695e9891493deb2306fa74afbae7fab47a75"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T20:02:55.6660172+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "60059e41534083845e16deec25567d56e9e5945f",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-25887f69-linux-full/vm-terminal.json",
+      "source_sha256": "b7bccfb4ddd67a725ca5f21c881fb79dcd2618cdb505ad79d328fc2e4eda70d9"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 88,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "c66dc8229458cdfcfc961314341df66c2a99f631163d9edcc239285bc70a5594",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 263,
+      "source_git_blob": "888a1984c7d6d3985e94e71621db49a52bf42fcf",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-cache-fixtures-r1/transport.json",
+      "source_sha256": "307f611808ebc29bb2f3713e7a91fcfa03cd7a11cd56eaba0c4b20c72615d72c"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T18:11:09.3143381+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "00262a76948567903363e491762ea32090049f36",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-cache-fixtures-r1/vm-terminal.json",
+      "source_sha256": "0171c4e0a153f7998414004b24384a9b5cd5b65878ace81b0663d1be4cd270bc"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 87,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "b0acf06b62a335e6729536616688c872a42e6adff64465e381ad3ecea032eda3",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 262,
+      "source_git_blob": "6eec9c5da9c764a42213bd9a8e4cb2def20c65c6",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-cache-fixtures-r2/transport.json",
+      "source_sha256": "38d4850a873eff43fb702f9f63c8b59884fea6592d971a58b68cd6fed4385e1a"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T18:19:59.3182442+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "ca913c0abfebeb6a8901740fb60368c6c575a6b4",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-cache-fixtures-r2/vm-terminal.json",
+      "source_sha256": "9957c3c6d114b72636c95c9795fb54c39eb918fa818d95457c1d70e28ae2f3f8"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 38,
+              "line_count": 4,
+              "mentions_upload": false,
+              "sha256": "6cc379f56a87e6f3afa490db3e1c89854e1864bbf1b743a29bee20d0571123c8",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 212,
+      "source_git_blob": "068d1a7b19966743297b4ff440c70bd7ecc94323",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-cache-fixtures/transport.json",
+      "source_sha256": "5f2564652432ab34e3a3a959e3f9639eaefb416e09f36efc491a02e973d54f8e"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T17:55:22.0425321+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "9aa2149b4847f432a0977ac7084ead76a0dfbccc",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-cache-fixtures/vm-terminal.json",
+      "source_sha256": "94d62db74b41814f9450c7a646e62a6a5cd2b75f82e304b26566b50a1d2e03a2"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 84,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "b8ce53fe1e40bae08736b137dcf50ff7ae99e126cae9d6a470e23238291d88f9",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 259,
+      "source_git_blob": "850aeeea7c8f95e588f95193dce315f95d39b5db",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/attempt-r1/transport.json",
+      "source_sha256": "a67f460057a646c4231b788ae7c2c09efa79c58216c05c1db16c3699f189cbd4"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T18:51:13.3872217+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "13494e60de4cbd55fca37d7bd32e4766ebd1a36a",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/attempt-r1/vm-terminal.json",
+      "source_sha256": "e4e02d4e8953e56bc835b9151d98377c4b50a6244b0c51d54adad730269a77c8"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 85,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "11272cb44b22e1a7090307ec9c4234cba01d794689357b0dfaee874530b7d106",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 260,
+      "source_git_blob": "b5fb365056dcbfb238e3f21349e121d929311ca0",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/transport.json",
+      "source_sha256": "ca3fae14399ba47c7fec0f9afaafa349132ec6b557c9eff66daa3b3a4b691a46"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T18:34:10.6388675+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "c525c7269b3c0e94ee7516c365f90ada1993ce28",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/vm-terminal.json",
+      "source_sha256": "bf7f91623fa34cd33f0e0efbcbb1d0d25e7da49f7537f194f459a2323f2d8ada"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 84,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "7f2dd93fa2133c7b5d875dfc41c9fdc5355db6abb3395db33709e72c738ee89d",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 259,
+      "source_git_blob": "dcd17df6c34728ceb338953b65939e0b506dbd4c",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-950567a3-linux-full-01/transport.json",
+      "source_sha256": "30bd1281bfd97cd1b331a05a5adc695e9891493deb2306fa74afbae7fab47a75"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T22:19:18.4766188+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "db6ec97a51e1290a5ceb6ff4e00e0972ad931a88",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-950567a3-linux-full-01/vm-terminal.json",
+      "source_sha256": "3a1d2682b6f8d291b46abf670b3de6b7fe46c97bfc0bec3a58fbb1623b46119e"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 84,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "7f2dd93fa2133c7b5d875dfc41c9fdc5355db6abb3395db33709e72c738ee89d",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 259,
+      "source_git_blob": "dcd17df6c34728ceb338953b65939e0b506dbd4c",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-effa358f-linux-full-01/transport.json",
+      "source_sha256": "30bd1281bfd97cd1b331a05a5adc695e9891493deb2306fa74afbae7fab47a75"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-08T00:11:14.060266+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3672,
+      "source_git_blob": "416d593969aab93307687203b05961d0697f4e6f",
+      "source_path": "docs/implementation/graph-advantage/evidence/check-effa358f-linux-full-01/vm-terminal.json",
+      "source_sha256": "7062ea20ef8e2d8a768ec19ef00a0ba823ef213b9cfebd9759ffb0150b7286e9"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 62,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "87e61e007afdc8ae173d39878fc93deb4735c4e05d94f97bb99162814fc1aa92",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 76,
+      "source_git_blob": "832e3b22a025599f4c2afd8e7c918c3bba5e55ad",
+      "source_path": "docs/implementation/graph-advantage/evidence/correctness-05ad9842-20260906/transport.json",
+      "source_sha256": "1b5197f45e39964b7efaca201370162733c4af9f312c5c9160ad0a78ce320cd2"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 62,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "87e61e007afdc8ae173d39878fc93deb4735c4e05d94f97bb99162814fc1aa92",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 76,
+      "source_git_blob": "832e3b22a025599f4c2afd8e7c918c3bba5e55ad",
+      "source_path": "docs/implementation/graph-advantage/evidence/correctness-0c9e80f5-20260906/transport.json",
+      "source_sha256": "1b5197f45e39964b7efaca201370162733c4af9f312c5c9160ad0a78ce320cd2"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 62,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "87e61e007afdc8ae173d39878fc93deb4735c4e05d94f97bb99162814fc1aa92",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 76,
+      "source_git_blob": "832e3b22a025599f4c2afd8e7c918c3bba5e55ad",
+      "source_path": "docs/implementation/graph-advantage/evidence/correctness-1c0b8e24-20260906/transport.json",
+      "source_sha256": "1b5197f45e39964b7efaca201370162733c4af9f312c5c9160ad0a78ce320cd2"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "evaluator-build",
+        "output_facts": {
+          "bytes": 137,
+          "line_count": 6,
+          "mentions_upload": false,
+          "sha256": "83d829df1d3a785cb96a25ea42bf9338bd5f2c78ae51a3785e9678aea8bcae31",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 152,
+      "source_git_blob": "575e7ce96b27aa249b906f66c149cc8fb9a8b0d1",
+      "source_path": "docs/implementation/graph-advantage/evidence/correctness-6cf92c9c-20260906/evaluator-build-transport.json",
+      "source_sha256": "de2ec5d8fb7ec0f0ffc1223213cb99a4b09ac04fe368e543ef91734c4ce900f0"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 62,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "87e61e007afdc8ae173d39878fc93deb4735c4e05d94f97bb99162814fc1aa92",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 76,
+      "source_git_blob": "832e3b22a025599f4c2afd8e7c918c3bba5e55ad",
+      "source_path": "docs/implementation/graph-advantage/evidence/correctness-6cf92c9c-20260906/transport.json",
+      "source_sha256": "1b5197f45e39964b7efaca201370162733c4af9f312c5c9160ad0a78ce320cd2"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 62,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "87e61e007afdc8ae173d39878fc93deb4735c4e05d94f97bb99162814fc1aa92",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 76,
+      "source_git_blob": "832e3b22a025599f4c2afd8e7c918c3bba5e55ad",
+      "source_path": "docs/implementation/graph-advantage/evidence/correctness-d793b2be-20260906/transport.json",
+      "source_sha256": "1b5197f45e39964b7efaca201370162733c4af9f312c5c9160ad0a78ce320cd2"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 300,
+          "line_count": 13,
+          "mentions_upload": false,
+          "sha256": "eb35913103380207594bdce0d55c796b69a654608b6fb1475167cc1a3739a730",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 322,
+      "source_git_blob": "062a0bb6278c630262ae00c8ec548cf30d1bfff1",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522-r2/controller/transport.json",
+      "source_sha256": "6ef449ff4c5bbb075aeb442bf2ae0e0c0cb195ebd88547d20813ab18d2ed4203"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 300,
+          "line_count": 13,
+          "mentions_upload": false,
+          "sha256": "eb35913103380207594bdce0d55c796b69a654608b6fb1475167cc1a3739a730",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 322,
+      "source_git_blob": "062a0bb6278c630262ae00c8ec548cf30d1bfff1",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-12574522/controller/transport.json",
+      "source_sha256": "6ef449ff4c5bbb075aeb442bf2ae0e0c0cb195ebd88547d20813ab18d2ed4203"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 984,
+          "line_count": 17,
+          "mentions_upload": false,
+          "sha256": "b9e1f8eb2c2f8b9e8f343c0a540027fae0871ed3e14b85e12b53e837cb78c268",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 1010,
+      "source_git_blob": "4e43b46e186004b89f66dc00021b453fbe07b8c6",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-1f20f694/transport.json",
+      "source_sha256": "5a79d1fbb0e4c7932a49805bbe913854b6c63860a433d7914ed93eebacf5ad9a"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 1185,
+          "line_count": 24,
+          "mentions_upload": false,
+          "sha256": "1737a8112a98ec5a512274f7e806e94f2a744e580243c1a58d3128630bb1a5df",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 1218,
+      "source_git_blob": "008d9b8f610dffd60733ce325a5e6819eba03b21",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/transport.json",
+      "source_sha256": "0450dec90e8498e319e2b7c82ef679a4a272c892b582965b2d8957106ebb1766"
+    },
+    {
+      "facts": {
+        "vms": [
+          {
+            "power_state": "VM deallocated",
+            "role": "worker-2"
+          },
+          {
+            "power_state": "VM deallocated",
+            "role": "worker-3"
+          },
+          {
+            "power_state": "VM deallocated",
+            "role": "validation"
+          }
+        ]
+      },
+      "kind": "vm-power-state",
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-25887f69/controller/vm-terminal-final.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 300,
+          "line_count": 13,
+          "mentions_upload": false,
+          "sha256": "eb35913103380207594bdce0d55c796b69a654608b6fb1475167cc1a3739a730",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 322,
+      "source_git_blob": "062a0bb6278c630262ae00c8ec548cf30d1bfff1",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/transport.json",
+      "source_sha256": "6ef449ff4c5bbb075aeb442bf2ae0e0c0cb195ebd88547d20813ab18d2ed4203"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T14:28:54.0182246+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3672,
+      "source_git_blob": "65c0c3836afa74703e8f1d189624a9400bb0008c",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-450bede9/controller/vm-terminal.json",
+      "source_sha256": "b52534361c9298961446a010b308896e0de8f07bcfc6375afbe64c9347a1ca28"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 1196,
+          "line_count": 24,
+          "mentions_upload": false,
+          "sha256": "6ae0755dcdf8e4b872c71b1dfc93210d394d71ddb76e8f30b5f2154f2ebc99ba",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 1229,
+      "source_git_blob": "6f0672e612b9ec57762ac605f330776c4a52dd0f",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/controller/transport.json",
+      "source_sha256": "75911758000a931f87a42fc0e4d3403efbed80917d0bd0f39459539f5436babb"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T15:24:40.4030206+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "a1768cd41739450f8da321c9fdde3670385e854f",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-8689fc3d/controller/vm-terminal.json",
+      "source_sha256": "a7b95fccd71a68696853eb16cefbbcb45feb7a3584784ca0c84b5658e312a425"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 300,
+          "line_count": 13,
+          "mentions_upload": false,
+          "sha256": "eb35913103380207594bdce0d55c796b69a654608b6fb1475167cc1a3739a730",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 322,
+      "source_git_blob": "062a0bb6278c630262ae00c8ec548cf30d1bfff1",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/controller/transport.json",
+      "source_sha256": "6ef449ff4c5bbb075aeb442bf2ae0e0c0cb195ebd88547d20813ab18d2ed4203"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T13:36:05.507576+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3671,
+      "source_git_blob": "d19fc3285c444338fcacddd38d7adf1e11326637",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-90ac3e16/controller/vm-terminal.json",
+      "source_sha256": "3c212acc94c5ce64707c832c067dfef31769c48fea92880047b55d879cac1fa7"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 1185,
+          "line_count": 24,
+          "mentions_upload": false,
+          "sha256": "1737a8112a98ec5a512274f7e806e94f2a744e580243c1a58d3128630bb1a5df",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 1218,
+      "source_git_blob": "008d9b8f610dffd60733ce325a5e6819eba03b21",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/transport.json",
+      "source_sha256": "0450dec90e8498e319e2b7c82ef679a4a272c892b582965b2d8957106ebb1766"
+    },
+    {
+      "facts": {
+        "vms": [
+          {
+            "power_state": "VM deallocated",
+            "role": "worker-2"
+          },
+          {
+            "power_state": "VM deallocated",
+            "role": "worker-3"
+          },
+          {
+            "power_state": "VM deallocated",
+            "role": "validation"
+          }
+        ]
+      },
+      "kind": "vm-power-state",
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-950567a3/controller/vm-terminal-final.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 1185,
+          "line_count": 24,
+          "mentions_upload": false,
+          "sha256": "1737a8112a98ec5a512274f7e806e94f2a744e580243c1a58d3128630bb1a5df",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 1218,
+      "source_git_blob": "008d9b8f610dffd60733ce325a5e6819eba03b21",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/transport.json",
+      "source_sha256": "0450dec90e8498e319e2b7c82ef679a4a272c892b582965b2d8957106ebb1766"
+    },
+    {
+      "facts": {
+        "vms": [
+          {
+            "power_state": "VM deallocated",
+            "role": "worker-2"
+          },
+          {
+            "power_state": "VM deallocated",
+            "role": "worker-3"
+          },
+          {
+            "power_state": "VM deallocated",
+            "role": "validation"
+          }
+        ]
+      },
+      "kind": "vm-power-state",
+      "source_bytes": 239,
+      "source_git_blob": "dfd6990842b977b0127e62a1a96b0fe89e4b526b",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f/controller/vm-terminal-final.json",
+      "source_sha256": "8211bf4115a75c70ffc43130644097c24698a55879a9a2be4c13177226678909"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 138,
+          "line_count": 6,
+          "mentions_upload": false,
+          "sha256": "4a0a35c9349bece4ed74967de665cf5b482f81ee6c81f64cd2fecdb7045e8d6f",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 153,
+      "source_git_blob": "8ea72df35465f2dea6038e88a7c3ebe07c79a3fc",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-12574522/transport.json",
+      "source_sha256": "b8ff9b5e7eddbc553a3e23efe8e3e93a71c07c4932bc6f599dd4d0000dbd0ad0"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T10:34:11.4453853+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3672,
+      "source_git_blob": "27ef32992ce5c24c17e70e81d7a4bff787ac3b6f",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-12574522/vm-terminal.json",
+      "source_sha256": "92ffc20cf8fe2e583f77bc6cc566a2bfb7f31374fed7bcf76eef3dae0712d89c"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 67,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "e0179e0dd5f3f71c5a24866ccf481d34ad6ff7bc3171983f79227f059a96b0c1",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 81,
+      "source_git_blob": "8458de4e5b7752ffddfb779346baaf0a473ad635",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-1f20f694/transport.json",
+      "source_sha256": "c60bd25f1df59fa8d76220db65a720f165a92b0d68f72f15c3aa59091bd8bbe3"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 91,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "5961e4efb82e8c2f6ae8d333392fca8f8f5f58b0aa601188f11b329a65053a26",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 266,
+      "source_git_blob": "7331e255b1b92ed7bf505c984292641c3c6084e6",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-25887f69-evaluator-build-01/transport.json",
+      "source_sha256": "68a1d1db8aded3120097e6741296a1699dd1f2c7a23d95c05c4e438f736fe745"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T20:13:19.6934536+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "419cc6bcbc1f757765b9ca3365c348b5c99e6320",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-25887f69-evaluator-build-01/vm-terminal.json",
+      "source_sha256": "f7cf2cfd8db87a091c8a12760c2860ddd1cc1619e0e2a684785322bc2047640b"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 134,
+              "line_count": 6,
+              "mentions_upload": false,
+              "sha256": "9747f9a1ed518fcb0e4b40905eef426952419b3f226c097da2a9acea81851d8c",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 310,
+      "source_git_blob": "3b72a3d9d885704db1d8c33d9332cc2bfb098e9f",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-450bede9/transport.json",
+      "source_sha256": "94ea2ec20223b18ce6a6ce0b41746a31f597b8623360876563398bc29ec29ca8"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T13:58:35.73426+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3670,
+      "source_git_blob": "c4e1dcfbb67f3d810277b4845010c9aaf6ae2807",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-450bede9/vm-terminal.json",
+      "source_sha256": "9d4bd68ab1f7a3c90f8e731dc41c22f18252577c84b4ec66b18b9297b490ee67"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 146,
+              "line_count": 6,
+              "mentions_upload": true,
+              "sha256": "9a40a3056ea599af739c8a8a3431726f124d6f6cbf7b2cc501aeed14234b58e3",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 322,
+      "source_git_blob": "cdb60d4ea6533130dfeef10af0e71471812053a2",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-6f23da0a/transport.json",
+      "source_sha256": "bea70b3802de176006ba0b5c395e5471ae0ede3b982b6299b1c2521129d30bfe"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T16:11:09.0464684+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "3268b1796ab248afd150f7fed9bdcc954b5f7d5b",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-6f23da0a/vm-terminal.json",
+      "source_sha256": "0c95b1d3dc3177f1c9a803cf56e54fde22321753f1efac8843347b086b4e96dd"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 149,
+              "line_count": 6,
+              "mentions_upload": true,
+              "sha256": "50291b28c832bfcd68af3ad0ed76a6537247effe9520ccbbd7b09e70e708fdb6",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 325,
+      "source_git_blob": "197a009e5e68b8c2b9283a3e11d2065974dc93d6",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d-r1/transport.json",
+      "source_sha256": "fde9fb4fd967ea9869b147c5dc71c780ebe577d4c01cd0fd19a6661a733a8913"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T14:58:40.0526354+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3672,
+      "source_git_blob": "4ad57f2608fe854116daa18397cc3d69545299f4",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d-r1/vm-terminal.json",
+      "source_sha256": "4b85ceec1b7f984a14d0a2933d2e6c7aa5ca71af15a677f577dd9d5e73623529"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 466,
+              "line_count": 7,
+              "mentions_upload": false,
+              "sha256": "46bc7013e78732ca75a1ad14a808016cbd40856e9d37bab4e93627b383a78f8c",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 643,
+      "source_git_blob": "341163c224f5a39bcaf3d462af65ceb2dc740f43",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d/transport.json",
+      "source_sha256": "ecace5a8f6cdb2137302dc40bbfb4526d0d9e35d181b887b8a3db7fcdefeeac9"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T14:47:25.4150538+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3672,
+      "source_git_blob": "23ff3b58ce10e4d7dc3462ae2e6412fa777e9df1",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-8689fc3d/vm-terminal.json",
+      "source_sha256": "2ad059219b0517f485dfd3907d37691440e026e1b61dcf2a3eaa245aea4f514e"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 128,
+              "line_count": 6,
+              "mentions_upload": false,
+              "sha256": "eed1b8d9c15581ec13e8fc76d3927f17606ce6d339067d69420ae470e0f24e53",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 304,
+      "source_git_blob": "7883f18052b29ae2d588e5daef761eaf9f9b1ee5",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/transport.json",
+      "source_sha256": "3ff54de8fc216659acf99e71c92c7cc6f743feff1e01da094124c42045614db8"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T13:00:46.6194559+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3672,
+      "source_git_blob": "74bbf130ecbe9195fb0f0618ca0275ce9d66b660",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-90ac3e16/vm-terminal.json",
+      "source_sha256": "c475d4d746e6efce78f6fba2e43d9ec3af15b52a6152c5980f600b3125f1aa6a"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 91,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "5961e4efb82e8c2f6ae8d333392fca8f8f5f58b0aa601188f11b329a65053a26",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 266,
+      "source_git_blob": "7331e255b1b92ed7bf505c984292641c3c6084e6",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-950567a3-evaluator-build-01/transport.json",
+      "source_sha256": "68a1d1db8aded3120097e6741296a1699dd1f2c7a23d95c05c4e438f736fe745"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T22:24:19.8282829+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "9885021d52389e92ed90f2b979ba40f0f4130bd0",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-950567a3-evaluator-build-01/vm-terminal.json",
+      "source_sha256": "1e0bdb0a33ffbeac2da4ed3798d38957ec9e6c1adbc51f2dc5ba7cb6df8d13ad"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 116,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "8cc4312dc4312cf2d2c4a2ffc317c8fe10e1d809b20300b206faf66a416120a1",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 291,
+      "source_git_blob": "1ae02a0cb357ef1e74aae774364e28b05de03f3b",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/transport.json",
+      "source_sha256": "193436e9f31aca3f89fb70c5e891ca8f271c82f0d3ee6551e56eaba66bb91927"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-08T00:47:27.6213361+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "00fdb911aa1dbab57e8a3b96416d5fa11eef1d3d",
+      "source_path": "docs/implementation/graph-advantage/evidence/diagnostics-linux-effa358f-compiler-01/vm-terminal.json",
+      "source_sha256": "2059be0195f307576fa9b833416c8d3f40b6540385955a33ac47b8b6913cb1e6"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 94,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "51d1d2aeed5b1f6ef0c1a8f90eb9d5b13b262c1debfdf16ee1a44bdda052ab68",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 269,
+      "source_git_blob": "bf4aba4cc07a3cb68ba299d55dd6fa895540fbcd",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/transport.json",
+      "source_sha256": "1fa124d9f7e1a15ff76433143a8b298f97adba868e2e889e4db2789f9222b059"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T19:31:43.1780463+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "2b16510d9419682cc0890159d19c9c4cdd84f156",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a-r1/vm-terminal.json",
+      "source_sha256": "e6314117f434b77a6171c99c1dc81d8995cc685d97ea593878952bd742b8dcc2"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 92,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "2b677485973774fa4ef4ad83a7e19c84829ffc87219f07ea095bc4f7dc04a1af",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 267,
+      "source_git_blob": "92f13de324fb196667126159f7c434057167aeb4",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a/transport.json",
+      "source_sha256": "7fe4d17da120bf51092a28415a8cb30e8ef78d19509d4b641ad1a1781d477bf8"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T19:11:05.9810654+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "e121c3d57c9b4fc3ea7c451698647483201536f4",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-actual-task-6f23da0a/vm-terminal.json",
+      "source_sha256": "5ea02ab2fadccfa637ed578e32d8bb4581ee5d0120715f470c78bfe402bd4dbb"
+    },
+    {
+      "facts": {
+        "statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "message_facts": {
+              "bytes": 85,
+              "line_count": 5,
+              "mentions_upload": true,
+              "sha256": "e896629e9cdf136b36c1b5fc17eab27c747495d0a68cabc4ddce233002d9b604",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            }
+          }
+        ]
+      },
+      "kind": "remote-command-status",
+      "source_bytes": 260,
+      "source_git_blob": "205d7d631849a4d7f0361a2e8a3a00acb5401a7a",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-trace-6f23da0a/transport.json",
+      "source_sha256": "947f758cfb9d6f95e4bc64293dad6bb037c33b618fe4109249c23cba85ef9c7e"
+    },
+    {
+      "facts": {
+        "created_at": "2026-09-05T16:52:48.4136398+00:00",
+        "disk_status_counts": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "count": 1,
+            "display_status": "Provisioning succeeded",
+            "level": "Info"
+          }
+        ],
+        "image": {
+          "exactVersion": "22.04.202608060",
+          "offer": "0001-com-ubuntu-server-jammy",
+          "publisher": "Canonical",
+          "sku": "22_04-lts-gen2",
+          "version": "latest"
+        },
+        "instance_statuses": [
+          {
+            "code": "ProvisioningState/succeeded",
+            "displayStatus": "Provisioning succeeded",
+            "level": "Info",
+            "time": "2026-09-07T19:01:49.6356471+00:00"
+          },
+          {
+            "code": "PowerState/deallocated",
+            "displayStatus": "VM deallocated",
+            "level": "Info"
+          }
+        ],
+        "os_type": "Linux",
+        "provisioning_state": "Succeeded",
+        "resource_class": "Standard_D4s_v5",
+        "role": "validation",
+        "security_type": "Standard"
+      },
+      "kind": "vm-terminal-state",
+      "source_bytes": 3673,
+      "source_git_blob": "93b63d4bbd9e1d13b383c5cf6a037e3729cc42d8",
+      "source_path": "docs/implementation/graph-advantage/evidence/statusline-linux-trace-6f23da0a/vm-terminal.json",
+      "source_sha256": "9fb5049e74e505302ea777cc37f648ea03721a1f952c1d062f777d4a3cd20036"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-collection",
+        "output_facts": {
+          "bytes": 59,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "01b3d02229387838b3f78195174d077ac5dbcb22bd5cc572dc800eeded45fadf",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 73,
+      "source_git_blob": "8e95b07fd9682257ce315b7c1456a6a713d58b83",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/cold-profile-d793b2be/collection-transport.json",
+      "source_sha256": "68e4fa539c4e5cbab1483451397cdfedb7497a2c90e11982a2a6123cae5d07bd"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-recovery",
+        "output_facts": {
+          "bytes": 297,
+          "line_count": 10,
+          "mentions_upload": false,
+          "sha256": "7ff0822364c1190f8a7a7ee45170c087bba256ef8f1c3aca42844f95eee809da",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 316,
+      "source_git_blob": "4cb71a617de1b3ab0961e673a85c3dae034a71f5",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/cold-profile-d793b2be/recovery-transport.json",
+      "source_sha256": "5af04af968070d784262b42fdc457339233266f3a4b8cad2f95a5795bcbbcc52"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 107,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "c8790bc792317d71b2671e35db942e534a248752862d453782668b006d9dbdae",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 121,
+      "source_git_blob": "4ac3c78d16d3d58abb38ec30c911a5d394a135a8",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/cold-profile-d793b2be/transport.json",
+      "source_sha256": "38c5bdb7fd7b8c0fe9a4228a743d417323f60cb04f4f8909a954cdf28230dbb8"
+    },
+    {
+      "facts": {
+        "vms": [
+          {
+            "role": "validation",
+            "states": [
+              "PowerState/deallocated"
+            ]
+          },
+          {
+            "role": "worker-2",
+            "states": [
+              "PowerState/deallocated"
+            ]
+          },
+          {
+            "role": "worker-3",
+            "states": [
+              "PowerState/deallocated"
+            ]
+          }
+        ]
+      },
+      "kind": "vm-paused-state",
+      "source_bytes": 284,
+      "source_git_blob": "f435bddcb8fd03892e35ba8a24649a2a5fe6d752",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/paused-vm-state.json",
+      "source_sha256": "ed9f91147fc54ddd5ed8e7980772bfa22055ebcd7fd3cb1b34e7b814fd0a25f0"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 64,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "e511103b380f2f31b16091d588592519bf3faf11a6c5367d559214a79ff29fbc",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 78,
+      "source_git_blob": "cb36fbc797d03319b797a5759df7febc51f69ba0",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-query-correctness-1c0b8e24/results-full-r2/transport.json",
+      "source_sha256": "5c8fa87f82ec37b46b861b867807c6b7a235bf833ae570335201aa9286f12951"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 127,
+          "line_count": 6,
+          "mentions_upload": false,
+          "sha256": "7812d96a83927b9a1d2aa52057bc1b544a68af1934e2944be21ece345423da4c",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 1
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 142,
+      "source_git_blob": "20b770e508dedc7d159083d1b8f6d162540fe7be",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-query-correctness-1c0b8e24/results/transport.json",
+      "source_sha256": "a038dc2319fbbb750bb08e43613a55aef4a268b15003b3eac934a731c4efbec7"
+    },
+    {
+      "facts": {
+        "purpose": "setup retry; prior attempt never analyzed source",
+        "python_sha256": "a4873057fcfcf9c44f45b745cb38811763e217a5b229f52e8c03de0080c93ea4",
+        "redacted_artifact_identifiers": {
+          "blob": {
+            "present": true,
+            "sha256": "5eb81e93491b221164361b2ae8ffc26d534246efe6395d7a8edbeff9f27f5450"
+          },
+          "remote_root": {
+            "present": true,
+            "sha256": "da860e118c275334007b14fd0ca5320026a2e5aef0c228dda47a9dd96d063b64"
+          }
+        },
+        "script_sha256": "dc87f1b1cbe06b971fc444839ad21b1cdde2469cd98f2c06f3cd4605c8861b0f",
+        "signed_urls_redacted": true
+      },
+      "kind": "transport-configuration",
+      "source_bytes": 432,
+      "source_git_blob": "d7f9f7003814898c94e39ac47db851b159cb74c9",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-05ad9842-retry/transport-metadata.json",
+      "source_sha256": "e7552d6e3716d5664d3064bcfcc4df26e2d42e840beab1b93fa543daca1ac375"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 91,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "784bae7ed382559d378af20b852b658c4972e9d142455d636aeb97062667e6be",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 105,
+      "source_git_blob": "5ef3ba04ac815f450126df8d8888fc15c6f65118",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-05ad9842-retry/transport.json",
+      "source_sha256": "5c873bb28a07ead6edc622d13a3afd43dd92f5523f805def9c71adad2bd73321"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "evaluator-build",
+        "output_facts": {
+          "bytes": 136,
+          "line_count": 6,
+          "mentions_upload": false,
+          "sha256": "6a0911efca553fe0aedd3b305aa49205b3ec4c1a2bef6952954d93291aa5bf7c",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 151,
+      "source_git_blob": "dc7f48ac8e537af9890d364f0aa14d993a217db9",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-0c9e80f5/build-transport.json",
+      "source_sha256": "d689c1ef78df33ddcfa3004d1195c7c7be3e2ff3b04037d01bb021d253391c79"
+    },
+    {
+      "facts": {
+        "command_facts": {
+          "argument_count": 16,
+          "operation": "remote-command",
+          "sha256": "c3d284292d3893617010e07a76ecceaf7048d642d1ed8d720a5567b904abed5d"
+        },
+        "redacted_artifact_identifiers": {
+          "result_blob": {
+            "present": true,
+            "sha256": "8737a8b3422886724eabf443e048cd4af7a472d39595edb7b5be6065ee5705e4"
+          },
+          "runner_blob": {
+            "present": true,
+            "sha256": "49e18fb5a6b6f944ccb382190922cf3f727c36f9a83d73ffeae244b28f797a3c"
+          },
+          "runner_origin": {
+            "present": true,
+            "sha256": "ac7524f8d40d7c0b4a711859ebb0ffae21914a8de3213419cb723f79e00b72b6"
+          }
+        },
+        "script_sha256": "edacf73b5e7bfc6e3baec1b041b1c49850482244d36c6d4223480fae79b2bb5c",
+        "signed_urls_redacted": true,
+        "source_commit": "0c9e80f523ed433cb81ccdaa87b3f8f0c3e6d0dd"
+      },
+      "kind": "transport-configuration",
+      "source_bytes": 1183,
+      "source_git_blob": "36238264752517d78c256584ca784ccc0df483fa",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-0c9e80f5/transport-metadata.json",
+      "source_sha256": "af91b7176fce554407a96ad46e8e1aa5bcdfdecc2ed1219a035fb25b9356cc92"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 57,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "7d45013b798f5652741c4a82d6414f98053435fab3ee50564fdeaa8e69e05ac0",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 71,
+      "source_git_blob": "57263d48a280c8da8a5686e9007e1a17d4617a17",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-0c9e80f5/transport.json",
+      "source_sha256": "1e5f49ef62c8d1b0350d90256c2997d288d61dd5556f4712f02aeeb2e1a60c5f"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "evaluator-build",
+        "output_facts": {
+          "bytes": 137,
+          "line_count": 6,
+          "mentions_upload": false,
+          "sha256": "0b255ef375ae690e7e905f7a20e1a1d46a555605e132e876a70fbc7bab98c7d6",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 151,
+      "source_git_blob": "f3d171a8ff0ffb75c5201de3b75c5cb73f665e60",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-1c0b8e24-r2/build-transport.json",
+      "source_sha256": "7e545f5bd7e20c251d2c5859f65b7327bed40181f91b6dffa140a8657d3f1155"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 69,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "8e1bd614676c2a20576460271452f60bc7081e85bae10cc0287455cec3bda9e9",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 83,
+      "source_git_blob": "62e34ed0bf5184bb30f0158413f995dd4c277a4d",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-1c0b8e24-r2/transport.json",
+      "source_sha256": "b0ec8439d11b586f92cc0ab2a992a8ced5ae52a196f290fd4fb21311f1738e55"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "evaluator-build",
+        "output_facts": {
+          "bytes": 137,
+          "line_count": 6,
+          "mentions_upload": false,
+          "sha256": "0b255ef375ae690e7e905f7a20e1a1d46a555605e132e876a70fbc7bab98c7d6",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 151,
+      "source_git_blob": "f3d171a8ff0ffb75c5201de3b75c5cb73f665e60",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-1c0b8e24/build-transport.json",
+      "source_sha256": "7e545f5bd7e20c251d2c5859f65b7327bed40181f91b6dffa140a8657d3f1155"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 101,
+          "line_count": 6,
+          "mentions_upload": false,
+          "sha256": "388d476ce21efef5148263aa68e1795fa1d5739db2e0a2e204f0e60c6617e676",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 1,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 116,
+      "source_git_blob": "249a548075ca111c4532b7310b8f54183e59a1c1",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-1c0b8e24/transport.json",
+      "source_sha256": "c052a521e61e53813eba898649d055472ae2cf81ca6b4d82c27048ec1654fd12"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "evaluator-build",
+        "output_facts": {
+          "bytes": 137,
+          "line_count": 6,
+          "mentions_upload": false,
+          "sha256": "83d829df1d3a785cb96a25ea42bf9338bd5f2c78ae51a3785e9678aea8bcae31",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 152,
+      "source_git_blob": "575e7ce96b27aa249b906f66c149cc8fb9a8b0d1",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-6cf92c9c/build-transport.json",
+      "source_sha256": "de2ec5d8fb7ec0f0ffc1223213cb99a4b09ac04fe368e543ef91734c4ce900f0"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 69,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "8e1bd614676c2a20576460271452f60bc7081e85bae10cc0287455cec3bda9e9",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 83,
+      "source_git_blob": "62e34ed0bf5184bb30f0158413f995dd4c277a4d",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-6cf92c9c/transport.json",
+      "source_sha256": "b0ec8439d11b586f92cc0ab2a992a8ced5ae52a196f290fd4fb21311f1738e55"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "evaluator-build",
+        "output_facts": {
+          "bytes": 136,
+          "line_count": 6,
+          "mentions_upload": false,
+          "sha256": "0c3db3e1d885fa7d90639c23b2be3d81d71921a43736937a7a1cb57cb2506e04",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 151,
+      "source_git_blob": "4e1c5a9e920aca839f478d9befe5539f5a48fbb1",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-d793b2be/build-transport.json",
+      "source_sha256": "8aeb6b348b1349994561f729b88e49b9127f32f284a860f7fa5ee2bcd484d04e"
+    },
+    {
+      "facts": {
+        "command_facts": {
+          "argument_count": 16,
+          "operation": "remote-command",
+          "sha256": "d3f46f57736faffe038b928469ac87653b5e741960c079006eba2c3620971588"
+        },
+        "redacted_artifact_identifiers": {
+          "result_blob": {
+            "present": true,
+            "sha256": "8e533c07e1bc0e5dfc9893f0667f723e1262c880b928affceabd12a77601387d"
+          },
+          "runner_blob": {
+            "present": true,
+            "sha256": "d2fadcb12323adaf90aa07cde0d913c7af831d55263d978f48506fbd137c67e0"
+          }
+        },
+        "script_sha256": "e9e5767645ef74e7866f357afbc7561339e246aeac979edd2dfef509b994ab80",
+        "signed_urls_redacted": true,
+        "source_commit": "d793b2be90f2800fcd4bbe5910ae27a766b5237d"
+      },
+      "kind": "transport-configuration",
+      "source_bytes": 1110,
+      "source_git_blob": "8d966491e6a87cc12b97306a8783b74ff2b07d86",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-d793b2be/transport-metadata.json",
+      "source_sha256": "9c1f8eae53cf69284c4dc2e032cf2d5b49c32129629b4238ca34b4ef3fbed05e"
+    },
+    {
+      "facts": {
+        "message_count": 1,
+        "operation": "artifact-transfer",
+        "output_facts": {
+          "bytes": 57,
+          "line_count": 5,
+          "mentions_upload": false,
+          "sha256": "7d45013b798f5652741c4a82d6414f98053435fab3ee50564fdeaa8e69e05ac0",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        }
+      },
+      "kind": "transport-output",
+      "source_bytes": 71,
+      "source_git_blob": "57263d48a280c8da8a5686e9007e1a17d4617a17",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/retained-snapshot-d793b2be/transport.json",
+      "source_sha256": "1e5f49ef62c8d1b0350d90256c2997d288d61dd5556f4712f02aeeb2e1a60c5f"
+    },
+    {
+      "facts": {
+        "recorded_raw_sha256": "2635167accd484b75322a6d116fd0a0ed5896f33983072e69b7d3016b5478a96",
+        "response_facts": {
+          "bytes": 198,
+          "line_count": 3,
+          "mentions_upload": false,
+          "sha256": "2635167accd484b75322a6d116fd0a0ed5896f33983072e69b7d3016b5478a96",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        },
+        "role": "worker-2"
+      },
+      "kind": "redacted-terminal-status",
+      "source_bytes": 364,
+      "source_git_blob": "0a8bfb7bfefad1a09529fe53ab2149d8fa1e73b8",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/stopgap-live-smoke/run-0c9e80f5/terminal-status-graph-p1-worker-2.json",
+      "source_sha256": "c3f73f55ce55f2584c640aabde135852ef14a3db699455e54eb931efe547f4a3"
+    },
+    {
+      "facts": {
+        "recorded_raw_sha256": "2635167accd484b75322a6d116fd0a0ed5896f33983072e69b7d3016b5478a96",
+        "response_facts": {
+          "bytes": 198,
+          "line_count": 3,
+          "mentions_upload": false,
+          "sha256": "2635167accd484b75322a6d116fd0a0ed5896f33983072e69b7d3016b5478a96",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        },
+        "role": "worker-3"
+      },
+      "kind": "redacted-terminal-status",
+      "source_bytes": 364,
+      "source_git_blob": "0a8bfb7bfefad1a09529fe53ab2149d8fa1e73b8",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/stopgap-live-smoke/run-0c9e80f5/terminal-status-graph-p1-worker-3.json",
+      "source_sha256": "c3f73f55ce55f2584c640aabde135852ef14a3db699455e54eb931efe547f4a3"
+    },
+    {
+      "facts": {
+        "recorded_raw_sha256": "df09690828a4911a9fcddc304ccdd2242ce37c3c314f3b4ee744f68ccc32fb71",
+        "response_facts": {
+          "bytes": 197,
+          "line_count": 3,
+          "mentions_upload": false,
+          "sha256": "df09690828a4911a9fcddc304ccdd2242ce37c3c314f3b4ee744f68ccc32fb71",
+          "status_word_counts": {
+            "error": 0,
+            "failed": 0,
+            "succeeded": 1,
+            "timeout": 0,
+            "warning": 0
+          }
+        },
+        "role": "validation"
+      },
+      "kind": "redacted-terminal-status",
+      "source_bytes": 363,
+      "source_git_blob": "32e14d6939c054729a0fe391676ce96b3da9d8a3",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/stopgap-live-smoke/run-0c9e80f5/terminal-status-graph-validation-linux.json",
+      "source_sha256": "977e77413df90df947512145621ce95a4a98452d79ac6386410e2dbb08093e80"
+    },
+    {
+      "facts": {
+        "vms": [
+          {
+            "output_facts": {
+              "bytes": 85,
+              "line_count": 5,
+              "mentions_upload": false,
+              "sha256": "823a019268b9ce7928a01187874494d4a4578661fe09eef387697d72b32bd340",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            },
+            "role": "validation"
+          },
+          {
+            "output_facts": {
+              "bytes": 85,
+              "line_count": 5,
+              "mentions_upload": false,
+              "sha256": "823a019268b9ce7928a01187874494d4a4578661fe09eef387697d72b32bd340",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            },
+            "role": "worker-2"
+          },
+          {
+            "output_facts": {
+              "bytes": 85,
+              "line_count": 5,
+              "mentions_upload": false,
+              "sha256": "823a019268b9ce7928a01187874494d4a4578661fe09eef387697d72b32bd340",
+              "status_word_counts": {
+                "error": 0,
+                "failed": 0,
+                "succeeded": 1,
+                "timeout": 0,
+                "warning": 0
+              }
+            },
+            "role": "worker-3"
+          }
+        ]
+      },
+      "kind": "vm-cleanup-status",
+      "source_bytes": 503,
+      "source_git_blob": "39b85429ef56f66ff208902d2989bb4974c0f528",
+      "source_path": "docs/implementation/graph-advantage/p1-corpus-20260905/transport-cleanup.json",
+      "source_sha256": "9049e43f83de37a51dd49bdb4d04d57421f7120a995863f1e054db506e6fee8d"
+    }
+  ],
+  "redactions": [
+    "Azure subscription, resource-group, VM, NIC, disk, account, container, and blob identifiers",
+    "administrator usernames, SSH public keys, local and remote filesystem paths, and signed URLs",
+    "raw command output and transport messages; only bounded status counts and content digests remain"
+  ],
+  "schema": "graph-advantage-platform-observations-v1",
+  "source_bytes": 105306,
+  "source_revision": "b622ce2ea82b4d39d952ec713a53df3218e00ca0"
+}

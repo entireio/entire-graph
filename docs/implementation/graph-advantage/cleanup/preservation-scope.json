@@ -1,0 +1,632 @@
+{
+  "schema": "graph-advantage-preservation-scope-v1",
+  "baseline_commit": "3a2a715fad1948e83dc7ebe0d307377ba29e065a",
+  "precleanup_commit": "6c1ac1d188af711e7a0e7e361bfc3e4f139ee617",
+  "scope": "Content-addressed admission boundary for branch-added Graph Advantage work; baseline-modified files must remain byte-identical to pre-cleanup",
+  "added_boundary": {
+    "count": 1901,
+    "records_sha256": "84b4f0af323ca60694239496b3824dd31bead22957951d7090b4ec0fe8f3651c",
+    "record_fields": [
+      "path",
+      "mode",
+      "git_blob",
+      "bytes"
+    ]
+  },
+  "modified_boundary": {
+    "count": 56,
+    "records_sha256": "d785867c8f217bb6f882d1f49a439ac7c4be9b0c42959a988d5929fc9075f7e5",
+    "record_fields": [
+      "path",
+      "mode",
+      "git_blob",
+      "bytes"
+    ],
+    "preservation": "current file must retain pre-cleanup Git blob"
+  },
+  "optional_local_artifacts": [
+    {
+      "path": "docs/implementation/graph-advantage/evidence/check-25887f69-linux-full/review/local-prep-dir.txt",
+      "sha256": "850ccbc7469e82ef4294f34d77f5862b7f00a965363a510f936c20ece3d5f73e",
+      "required": false,
+      "tracking": "must remain untracked when present"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/check-6f23da0a-linux-full/source.tar.gz",
+      "sha256": "f9afe6ae83cdc8f396082276cb64d7890f91d368d9f87d868193c0f2e7019d2b",
+      "required": false,
+      "tracking": "must remain untracked when present"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/frozen-baseline-initial.json",
+      "sha256": "1fbdbdb20ea88f0cfd0a9f4a0df0a3dec8a7ae6d6ceb92965e54f3a50e6c38de",
+      "required": false,
+      "tracking": "must remain untracked when present"
+    },
+    {
+      "path": "docs/implementation/graph-advantage/p1-corpus-20260905/frozen-baseline-pre-counts.json",
+      "sha256": "8ba77f8971e655d915ab4881f22a6a142d8da1f3725aca85aa71e7ca4f8adf9d",
+      "required": false,
+      "tracking": "must remain untracked when present"
+    }
+  ],
+  "cleanup_admission_commit": "b622ce2ea82b4d39d952ec713a53df3218e00ca0",
+  "approved_post_precleanup_files": [
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/README.md",
+      "mode": "100644",
+      "git_blob": "1096895e6a1b8d1dad1188b1d06a5ec1e1479439",
+      "bytes": 3335
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/advantage-combination-v1.ndjson",
+      "mode": "100644",
+      "git_blob": "ecea744f68ffcc5a16387cc9cbb4aab5e89dc041",
+      "bytes": 71206
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/advantage-combination-v2.ndjson",
+      "mode": "100644",
+      "git_blob": "8d379308b9843e53fc08f5cbc51ac17301f7dbbd",
+      "bytes": 72185
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/compiler-quality-v1.ndjson",
+      "mode": "100644",
+      "git_blob": "8e94f1623609f774439d09447831a4bad31c9695",
+      "bytes": 5111
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/correctness-05ad9842-20260906.ndjson",
+      "mode": "100644",
+      "git_blob": "a3107026ffbd261245e3e0895ec6c49cee14e67d",
+      "bytes": 37998
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/correctness-0c9e80f5-20260906.ndjson",
+      "mode": "100644",
+      "git_blob": "d31f4a89c4160fe97908ecc2bd49baad941e0fd3",
+      "bytes": 37998
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/correctness-1c0b8e24-20260906.ndjson",
+      "mode": "100644",
+      "git_blob": "2e8a59029efeecd859e9c9595145df7b054055b5",
+      "bytes": 37998
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/correctness-6cf92c9c-20260906.ndjson",
+      "mode": "100644",
+      "git_blob": "0497aaefb7f6c4a2ce66d6ac3cbaba38bd3f3eec",
+      "bytes": 37998
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/correctness-d793b2be-20260906.ndjson",
+      "mode": "100644",
+      "git_blob": "4758febecd2ae659554e5cdc3784b69f21126359",
+      "bytes": 37998
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/diagnostic-dispatch-1f20f694.ndjson",
+      "mode": "100644",
+      "git_blob": "c4f1872488d8b15fc960e82a1bed379bc879d6d9",
+      "bytes": 16179
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/extraction-paired-v1.ndjson",
+      "mode": "100644",
+      "git_blob": "0e0c4e83b74c96a91dd9e582407502edc2242df8",
+      "bytes": 763586
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/extraction-paired-v2.ndjson",
+      "mode": "100644",
+      "git_blob": "76283cf77c9fa02d96db2dcf93404dcaffe69973",
+      "bytes": 763595
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/p1-corpus-baseline.ndjson",
+      "mode": "100644",
+      "git_blob": "75e33bcf46d38e7095de31671c08ade5ab9bf0b2",
+      "bytes": 483013
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/p1-corpus-campaign.ndjson",
+      "mode": "100644",
+      "git_blob": "26f9b698306c7b5e447efa85bdc8319c943d7986",
+      "bytes": 952917
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/relation-profile-v1.ndjson",
+      "mode": "100644",
+      "git_blob": "d233df695b88cb57e083c0c2907e66d913c84471",
+      "bytes": 250336
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/review-linux-combination-initial.ndjson",
+      "mode": "100644",
+      "git_blob": "04097315fb4c27e5b3f90f67b092910ce6319c9d",
+      "bytes": 72923
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/review-linux-combination.ndjson",
+      "mode": "100644",
+      "git_blob": "d189e84d84997a5d5b33a7a9bffe3cd65a52eadd",
+      "bytes": 72842
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/review-linux-queries-initial.ndjson",
+      "mode": "100644",
+      "git_blob": "dbfc7e1c0537ef79bc8202dd459a935815608975",
+      "bytes": 37883
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/cases/review-linux-queries.ndjson",
+      "mode": "100644",
+      "git_blob": "00b9c4511b23718c50e1b80432acff386118e3c9",
+      "bytes": 37803
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/critical-observations.json",
+      "mode": "100644",
+      "git_blob": "0f67e1a4a5129fd6094727e98288ab8f4fe1d0af",
+      "bytes": 7031
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/index.json",
+      "mode": "100644",
+      "git_blob": "b1224ecf693199b427b5a92bed937acb98d5d0cc",
+      "bytes": 10684
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/advantage-combination-v1.json",
+      "mode": "100644",
+      "git_blob": "c993ff04eb2b59c8a95e0d5062610689a1317470",
+      "bytes": 2668
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/advantage-combination-v2.json",
+      "mode": "100644",
+      "git_blob": "5a9b74b2ded1413042a85a0b11cbc4ab605f29a8",
+      "bytes": 2668
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-05ad9842.json",
+      "mode": "100644",
+      "git_blob": "4792024da3219be30b5071e4b798e1dc84fabee0",
+      "bytes": 2471
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-0c9e80f5.json",
+      "mode": "100644",
+      "git_blob": "91106d607348733b8638df58bbcfd95ff2680b0b",
+      "bytes": 2471
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-12574522-retry-1.json",
+      "mode": "100644",
+      "git_blob": "9eaa6c82aff52fa01dfd5bf4bf6263a0f009e184",
+      "bytes": 2255
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-12574522-retry-2.json",
+      "mode": "100644",
+      "git_blob": "810c534a4442b502122112e801151bf7737d8f37",
+      "bytes": 3822
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-12574522.json",
+      "mode": "100644",
+      "git_blob": "b592b8dedcfa080ae392c7fddda3e734b263f51c",
+      "bytes": 2365
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-1c0b8e24.json",
+      "mode": "100644",
+      "git_blob": "14929231788d197b30a4446092c6dcb5d9483cef",
+      "bytes": 2197
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-1f20f694.json",
+      "mode": "100644",
+      "git_blob": "617e45c67bce4d1efc21d8c5697a49feea82bd1b",
+      "bytes": 2344
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-25887f69-linux-full.json",
+      "mode": "100644",
+      "git_blob": "a77b0293ef26afe4e3f137869163463284e44768",
+      "bytes": 4597
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-450bede9.json",
+      "mode": "100644",
+      "git_blob": "8a6ce650a64857a11966bd343435f740c0603478",
+      "bytes": 2521
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6cf92c9c.json",
+      "mode": "100644",
+      "git_blob": "f8775b5c63a10f15c611c61cf139cb2b57521328",
+      "bytes": 2197
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a-cpu4.json",
+      "mode": "100644",
+      "git_blob": "dd61d4a88174f78c0928348d31523afd1c6cbbd8",
+      "bytes": 2596
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a-linux-cache-fixtures-r1.json",
+      "mode": "100644",
+      "git_blob": "f92a96e6ae8313a2d25e40db7a909c4feb34afd7",
+      "bytes": 1501
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a-linux-cache-fixtures-r2.json",
+      "mode": "100644",
+      "git_blob": "93006e61a09ea08dc8cacd0132dbb422d45bde3a",
+      "bytes": 2243
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a-linux-cache-fixtures.json",
+      "mode": "100644",
+      "git_blob": "aca4028e9a5fb86ebbbbb7cadb34a13bc3407125",
+      "bytes": 1498
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a-linux-full.json",
+      "mode": "100644",
+      "git_blob": "884d2c68bf5e7784dcb9310baff68284f7002778",
+      "bytes": 4992
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-6f23da0a.json",
+      "mode": "100644",
+      "git_blob": "e4b221c2524910b9dc11b72976d1185bea135891",
+      "bytes": 2579
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-8763b0d8.json",
+      "mode": "100644",
+      "git_blob": "ea65d1bc903cf0bb7ce8a2e2e856df7b1fd9beae",
+      "bytes": 5167
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-8c8b075d.json",
+      "mode": "100644",
+      "git_blob": "cbc7b813815519c6eec773377d25cdc8a84c1577",
+      "bytes": 3783
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-90ac3e16-retry-1.json",
+      "mode": "100644",
+      "git_blob": "bb787555d3b8ed08c7889a3254491a371e43f37e",
+      "bytes": 2195
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-90ac3e16.json",
+      "mode": "100644",
+      "git_blob": "f1e92b7f4809a8f4c90f0811e22cfe86e2fb92bb",
+      "bytes": 2146
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-950567a3-linux-full-01.json",
+      "mode": "100644",
+      "git_blob": "c2f8d85e458f17740f9fe7bb8bbb6325960a23ee",
+      "bytes": 5888
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-aab356ae.json",
+      "mode": "100644",
+      "git_blob": "d011c3905c375550360698ae5672ca3434f60ca4",
+      "bytes": 2667
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-d793b2be.json",
+      "mode": "100644",
+      "git_blob": "3d004f0e6d5508d05d4699a5cf13cdce4b1b91d9",
+      "bytes": 2471
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/check-effa358f-linux-full-01.json",
+      "mode": "100644",
+      "git_blob": "c58efc08c527e07dd6bf32e65edfe621365a9a38",
+      "bytes": 6554
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/compiler-quality-v1.json",
+      "mode": "100644",
+      "git_blob": "c48793617e18ca4bd75ac8c36797d2120720db3b",
+      "bytes": 2803
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-05ad9842-20260906.json",
+      "mode": "100644",
+      "git_blob": "5f79dfdc4f256abed6c31fc2e19a14fe4d956508",
+      "bytes": 3412
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-0c9e80f5-20260906.json",
+      "mode": "100644",
+      "git_blob": "1bff8db2fe52166e6bbe2e54bb504555f24dc1bb",
+      "bytes": 3269
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-1c0b8e24-20260906.json",
+      "mode": "100644",
+      "git_blob": "e1c97718cca02b24b9d9eeb939d4ef599ee7085a",
+      "bytes": 3332
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-6cf92c9c-20260906.json",
+      "mode": "100644",
+      "git_blob": "c49360d9925b71fbedc6f30983e08be123cb1d51",
+      "bytes": 3332
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/correctness-d793b2be-20260906.json",
+      "mode": "100644",
+      "git_blob": "8f8dc40d3ae31cb8fba5438aaf27a4844e9cc8fb",
+      "bytes": 3301
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522-r2.json",
+      "mode": "100644",
+      "git_blob": "f1f5bb7c63a949ed3a9c3f61cb6efbc4442b5a15",
+      "bytes": 16741
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-12574522.json",
+      "mode": "100644",
+      "git_blob": "8acea8a6644f279b5e81c773dd4d537a4b44aa09",
+      "bytes": 11632
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-1f20f694.json",
+      "mode": "100644",
+      "git_blob": "9ea7931c3f811ec76af818815084618886dfb262",
+      "bytes": 110417
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-25887f69.json",
+      "mode": "100644",
+      "git_blob": "7a603afc97a1bb7a737a5daa3aa0e34fdcee69fe",
+      "bytes": 17856
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-450bede9.json",
+      "mode": "100644",
+      "git_blob": "ac92359c743be95ab6861fd28094960df126499c",
+      "bytes": 20811
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-8689fc3d.json",
+      "mode": "100644",
+      "git_blob": "5d6c554d5fc6c422ed672cec4dd74bed229cc661",
+      "bytes": 15532
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-90ac3e16.json",
+      "mode": "100644",
+      "git_blob": "f9fb7475bd96b11f116536d2067f1d50f780fe46",
+      "bytes": 22888
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-950567a3.json",
+      "mode": "100644",
+      "git_blob": "425492c47b74e9fc2e7da0436a13a5b2ec8993f6",
+      "bytes": 24131
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-effa358f-completion.json",
+      "mode": "100644",
+      "git_blob": "abd22b48590c23a670640690d3d16f9a2daea7bb",
+      "bytes": 10491
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-dispatch-effa358f.json",
+      "mode": "100644",
+      "git_blob": "74b3492216179f4711fe318172051e86b0e8c261",
+      "bytes": 24151
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostic-graph-bench-offline-fixtures-12574522.json",
+      "mode": "100644",
+      "git_blob": "02f076ab30acd93b56aa6eaa92fb3a33aef0d8d2",
+      "bytes": 4966
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-12574522.json",
+      "mode": "100644",
+      "git_blob": "979b3103038cacdbdf0a7fe7b6d6716e1564bdf6",
+      "bytes": 12361
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-1f20f694.json",
+      "mode": "100644",
+      "git_blob": "b74bf887261dd680d167074a3c6620b3a934b79d",
+      "bytes": 3458
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-25887f69-evaluator-build-01.json",
+      "mode": "100644",
+      "git_blob": "cd5e190a6e9ab39c8cfe431b918a711992de03a0",
+      "bytes": 4083
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-450bede9.json",
+      "mode": "100644",
+      "git_blob": "b1cfb1c65f457d2c7e79709a0ce35ed242810cdc",
+      "bytes": 7484
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-6f23da0a.json",
+      "mode": "100644",
+      "git_blob": "605db1bf46adf6718e7ca65e529cbd886184fb03",
+      "bytes": 11891
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-8689fc3d-r1.json",
+      "mode": "100644",
+      "git_blob": "401588f8ee9b10178e0db06e8a036e63d81e1e8b",
+      "bytes": 15871
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-8689fc3d.json",
+      "mode": "100644",
+      "git_blob": "a271292c43de3bbd5d0376d458c9823493a780af",
+      "bytes": 1485
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-90ac3e16.json",
+      "mode": "100644",
+      "git_blob": "4bf0e4bf5b6d0140f37981dca16b2d8be3d3838a",
+      "bytes": 6719
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-950567a3-evaluator-build-01.json",
+      "mode": "100644",
+      "git_blob": "ec14240d65cdb2da4c916ce0009bd146b4d39825",
+      "bytes": 6550
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-aab356ae.json",
+      "mode": "100644",
+      "git_blob": "df9e7be919c92343c4293119ecb90acc59378a64",
+      "bytes": 2510
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/diagnostics-linux-effa358f-compiler-01.json",
+      "mode": "100644",
+      "git_blob": "da46c0d3e10d2ff3abb16242e629351e82b335f9",
+      "bytes": 11863
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/extraction-paired-v1.json",
+      "mode": "100644",
+      "git_blob": "03f5e8d8ce734e9effbb6f93ddcb89defa9182c3",
+      "bytes": 1864
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/extraction-paired-v2.json",
+      "mode": "100644",
+      "git_blob": "34f4faa98d279f4cc353d34a8aee29a09b06db90",
+      "bytes": 1864
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/p1-corpus-baseline.json",
+      "mode": "100644",
+      "git_blob": "f6e2ee1762bf251cb8c0b9fe1429a2bcb1ebf7e2",
+      "bytes": 28147
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/p1-corpus-campaign.json",
+      "mode": "100644",
+      "git_blob": "2b03366c7118fb12d5a9feedd245e48640abe643",
+      "bytes": 31055
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/relation-profile-v1.json",
+      "mode": "100644",
+      "git_blob": "df93e8d572d9c1096b3091c1fd3636a4b99feb7b",
+      "bytes": 1860
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-combination-initial.json",
+      "mode": "100644",
+      "git_blob": "8db398701b3b7ea48f80e0887efbb92c87a33bcf",
+      "bytes": 2708
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-combination.json",
+      "mode": "100644",
+      "git_blob": "3637fb3bdb2ddae0c5f59876f2e391dd3ee28966",
+      "bytes": 2668
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-queries-initial.json",
+      "mode": "100644",
+      "git_blob": "e4c8bd184af970df0c94ca648b6be0980aae2c91",
+      "bytes": 2744
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/review-linux-queries.json",
+      "mode": "100644",
+      "git_blob": "169784af5884f76f8a5f652e44a2500261f65555",
+      "bytes": 2704
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/statusline-linux-actual-task-6f23da0a-r1.json",
+      "mode": "100644",
+      "git_blob": "b1eaff7d0c95a87c98d969ef339d17490b0441e2",
+      "bytes": 1503
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/statusline-linux-actual-task-6f23da0a.json",
+      "mode": "100644",
+      "git_blob": "e6963dd810e8e9d9accd8b6622c1e55f5473b0bd",
+      "bytes": 2398
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/runs/statusline-linux-trace-6f23da0a.json",
+      "mode": "100644",
+      "git_blob": "cada66f78a7f558db7997c4a6f66dab9573ab3cb",
+      "bytes": 2226
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/schema.json",
+      "mode": "100644",
+      "git_blob": "f6943cee08cc0e5cec3ee0eb02ea92cd3c0e26cd",
+      "bytes": 4441
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/sources.json",
+      "mode": "100644",
+      "git_blob": "913f4ffbc752855add70704a3e1d506a6dc68e46",
+      "bytes": 5831
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/tools/compat.py",
+      "mode": "100644",
+      "git_blob": "7ea4d1ffb2f90a525b1eea488e0dcd2f7b00619b",
+      "bytes": 1962
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/tools/convert.py",
+      "mode": "100644",
+      "git_blob": "1b727c86e9b75ba5d1cc0391b32263afcf62070c",
+      "bytes": 39855
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/tools/test_canonical.py",
+      "mode": "100644",
+      "git_blob": "4fe33ec31c6d3abee1b5afafc52b13af52a32b21",
+      "bytes": 12281
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/tools/validate.py",
+      "mode": "100644",
+      "git_blob": "16698401c970654008e6da10f0b03beda443de7a",
+      "bytes": 24152
+    },
+    {
+      "path": "docs/implementation/graph-advantage/evidence/canonical-v1/verification.json",
+      "mode": "100644",
+      "git_blob": "0c361383a7edae1feb97754f56882466646af509",
+      "bytes": 1008
+    },
+    {
+      "path": "docs/implementation/graph-advantage/probes/canonical_evidence.py",
+      "mode": "100644",
+      "git_blob": "16858162cb1a7615ca18e7baa0607658a15d13bf",
+      "bytes": 1122
+    },
+    {
+      "path": "docs/implementation/graph-advantage/probes/test_canonical_consumers.py",
+      "mode": "100644",
+      "git_blob": "6d8da546868ce48b4b1b25150c02ce28f3be7d2a",
+      "bytes": 3592
+    }
+  ]
+}

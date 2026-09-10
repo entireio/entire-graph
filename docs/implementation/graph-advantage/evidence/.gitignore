@@ -1,0 +1,13 @@
+# Generated diagnostic and cloud-control outputs belong outside public history.
+.local-runs/
+**/raw/
+**/raw-evidence/
+**/*.bin
+**/*.log
+**/*.pprof
+**/*.tar.gz
+**/*.gz
+**/transport.json
+**/transport.exit.txt
+**/transport.stderr.txt
+**/vm-terminal.json

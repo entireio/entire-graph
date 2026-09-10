@@ -184,6 +184,11 @@ class RetainedDiagnosticTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 diagnostic.parser().parse_args(['--source-commit', 'HEAD', '--output', '/tmp/o'])
 
+        args = diagnostic.parser().parse_args(['--source-commit', 'HEAD', '--run-id', 'local-run'])
+        self.assertIsNone(args.output)
+        self.assertEqual(diagnostic.LOCAL_RUNS / args.run_id,
+                         diagnostic.HERE.parent / 'evidence' / '.local-runs' / 'local-run')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -17,7 +17,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 MANIFEST = HERE / "corpus-manifest.json"
-DEST = Path(os.environ.get("P1_CORPUS_ROOT", str(HERE.resolve().parents[4] / "graph-advantage-p1-corpus"))).resolve()
+DEFAULT_CORPUS_ROOT = HERE.resolve().parents[4] / "graph-advantage-p1-corpus"
+DEST = Path(os.environ.get("P1_CORPUS_ROOT", DEFAULT_CORPUS_ROOT)).resolve()
 
 
 def run(*args: str, cwd: Path, check: bool = True) -> str:

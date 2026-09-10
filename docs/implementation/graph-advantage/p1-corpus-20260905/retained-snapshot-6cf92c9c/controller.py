@@ -1,7 +1,8 @@
 from pathlib import Path
-import sys,json,hashlib,shlex,tarfile,shutil
+import sys,json,hashlib,shlex,tarfile,os,shutil
 base=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(base));import cloud
+validation_vm=os.environ['GRAPH_ADVANTAGE_VALIDATION_VM']
 check=json.loads((base.parent/'evidence/check-6cf92c9c/verification.json').read_text())
 if check.get('exit_code') != 0 or not check.get('immutable') or check.get('source_commit') != '6cf92c9ccff1882bb2ab63aa9edeb8da0d633cc3': raise RuntimeError('Immutable correctness gate is not satisfied')
 out=base/'retained-snapshot-6cf92c9c';out.mkdir(exist_ok=False)
@@ -16,7 +17,7 @@ script+='set +e\n'+shlex.join(args)+'\nstatus=$?\nset -e\nprintf "%s\\n" "$statu
 script+='tar --exclude="snapshot-resource-diagnostic-r2/cache-*" -czf '+q(source+'/snapshot-resource-r2-results.tar.gz')+' -C '+q(source)+' snapshot-resource-diagnostic-r2 snapshot-resource-r2-exit.txt\n'
 script+='curl -fsS -X PUT -H "x-ms-blob-type: BlockBlob" --upload-file '+q(source+'/snapshot-resource-r2-results.tar.gz')+' '+q(cloud.url(result_blob,'cw',env))+' >/dev/null\necho CORRECTIVE_RESOURCE_UPLOAD_ACK\n'
 (out/'invocation.json').write_text(json.dumps({'command':args,'runner_sha256':hashlib.sha256(runner.read_bytes()).hexdigest(),'script_sha256':hashlib.sha256(script.encode()).hexdigest(),'result_blob':result_blob,'purpose':'One corrective pair after immutable and pinned correctness; no campaign expansion'},indent=2)+'\n')
-r=cloud.run(__import__('os').environ['GRAPH_ADVANTAGE_VALIDATION_VM'],script);(out/'transport.json').write_text(r+'\n')
+r=cloud.run(validation_vm,script);(out/'transport.json').write_text(r+'\n')
 if 'CORRECTIVE_RESOURCE_UPLOAD_ACK' not in r:raise RuntimeError('No result acknowledgement; inspect remote state, never blindly retry')
 cloud.download(result_blob,out/'results.tar.gz',env)
 with tarfile.open(out/'results.tar.gz') as f:f.extractall(out/'raw',filter='data')

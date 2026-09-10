@@ -1,0 +1,111 @@
+{
+  "case_stream_path": "docs/implementation/graph-advantage/cleanup/correctness-query-cases.ndjson",
+  "case_stream_sha256": "336ba98fe6aabd043b06670287a2071f455191ee2a319c6474a36872ed5f0083",
+  "dataset": "queries",
+  "parity": {
+    "cases_compared": 25,
+    "comparison_sha256": "9e819c5a18a95af106e51e35afa9718684182254a1610f4299074ae7c5abb7d0",
+    "measurement": "No product execution or new evaluation.",
+    "members_compared": 5,
+    "method": "offline decode of each original queries.json; ordered case IDs, fixture_origin, failed flag, every response field after declared path/transport redaction, and sources object compared",
+    "status": "passed"
+  },
+  "records": [
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/correctness-05ad9842-20260906/results.tar.gz",
+      "case_count": 5,
+      "case_ids": [
+        "compiler-impact-1",
+        "compiler-impact-2",
+        "compiler-search-Pulse",
+        "compiler-search-ReviewEntry",
+        "static-impact"
+      ],
+      "fixture_origin": "hand-authored interim review F2 promoted-method and alias correctness fixture",
+      "member": "queries.json",
+      "response_projection": "All response fields retained after path/transport redaction; keyed by original case id.",
+      "run_id": "05ad9842-20260906",
+      "sanitized_responses_sha256": "6610e1baf5c9385227811888743261743ab63260013d36ee2e22c73a7c56c719",
+      "source_field": "sources",
+      "source_field_sha256": "518994f3556382df3e2cd2be3cfd7cee02d2e8bd82a167cafeb6b6899fc0e3b1",
+      "source_member_sha256": "c31c2f613c79c61f8aeb9daa72ec1c99e29d0cc7caebc792fa646d2bdd7647b6"
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/correctness-0c9e80f5-20260906/results.tar.gz",
+      "case_count": 5,
+      "case_ids": [
+        "compiler-impact-1",
+        "compiler-impact-2",
+        "compiler-search-Pulse",
+        "compiler-search-ReviewEntry",
+        "static-impact"
+      ],
+      "fixture_origin": "hand-authored interim review F2 promoted-method and alias correctness fixture",
+      "member": "queries.json",
+      "response_projection": "All response fields retained after path/transport redaction; keyed by original case id.",
+      "run_id": "0c9e80f5-20260906",
+      "sanitized_responses_sha256": "097afc7ded3e403251a3ab73f326a7f6c1fd87aeed42b9339a8b1197d2495d54",
+      "source_field": "sources",
+      "source_field_sha256": "518994f3556382df3e2cd2be3cfd7cee02d2e8bd82a167cafeb6b6899fc0e3b1",
+      "source_member_sha256": "b9e7b0600d6c5ceace208eff2f73784116965dfda9bc5f5c6ffc1cecd9b70b99"
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/correctness-1c0b8e24-20260906/results.tar.gz",
+      "case_count": 5,
+      "case_ids": [
+        "compiler-impact-1",
+        "compiler-impact-2",
+        "compiler-search-Pulse",
+        "compiler-search-ReviewEntry",
+        "static-impact"
+      ],
+      "fixture_origin": "hand-authored interim review F2 promoted-method and alias correctness fixture",
+      "member": "queries.json",
+      "response_projection": "All response fields retained after path/transport redaction; keyed by original case id.",
+      "run_id": "1c0b8e24-20260906",
+      "sanitized_responses_sha256": "e1991c38f6e9e35018bae315646a0c550fe32ec2f0c1af5a1d145b4d134615e1",
+      "source_field": "sources",
+      "source_field_sha256": "518994f3556382df3e2cd2be3cfd7cee02d2e8bd82a167cafeb6b6899fc0e3b1",
+      "source_member_sha256": "09c50407bcd3fd1849a873876794e19c7f94db2fe645d7c8c812beb38be3026d"
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/correctness-6cf92c9c-20260906/results.tar.gz",
+      "case_count": 5,
+      "case_ids": [
+        "compiler-impact-1",
+        "compiler-impact-2",
+        "compiler-search-Pulse",
+        "compiler-search-ReviewEntry",
+        "static-impact"
+      ],
+      "fixture_origin": "hand-authored interim review F2 promoted-method and alias correctness fixture",
+      "member": "queries.json",
+      "response_projection": "All response fields retained after path/transport redaction; keyed by original case id.",
+      "run_id": "6cf92c9c-20260906",
+      "sanitized_responses_sha256": "73cce643b05d50308ee4d95353f488a826be29c6c7d5957869ae69222156169a",
+      "source_field": "sources",
+      "source_field_sha256": "518994f3556382df3e2cd2be3cfd7cee02d2e8bd82a167cafeb6b6899fc0e3b1",
+      "source_member_sha256": "0b419e9e93be8a90fc4ce1cb5fb7f38b6e28926e06c4b2a4a28878aa4a582717"
+    },
+    {
+      "archive_path": "docs/implementation/graph-advantage/evidence/correctness-d793b2be-20260906/results.tar.gz",
+      "case_count": 5,
+      "case_ids": [
+        "compiler-impact-1",
+        "compiler-impact-2",
+        "compiler-search-Pulse",
+        "compiler-search-ReviewEntry",
+        "static-impact"
+      ],
+      "fixture_origin": "hand-authored interim review F2 promoted-method and alias correctness fixture",
+      "member": "queries.json",
+      "response_projection": "All response fields retained after path/transport redaction; keyed by original case id.",
+      "run_id": "d793b2be-20260906",
+      "sanitized_responses_sha256": "879b13ebdbcdb0b582f419d70743a44297a92fd852d447fb61459c995bea331d",
+      "source_field": "sources",
+      "source_field_sha256": "518994f3556382df3e2cd2be3cfd7cee02d2e8bd82a167cafeb6b6899fc0e3b1",
+      "source_member_sha256": "44ec45d128f4ed6cd9a969829e44e116a560436a5f94140baa34a907d34d0122"
+    }
+  ],
+  "schema": "graph-advantage-correctness-query-metadata-v1"
+}
