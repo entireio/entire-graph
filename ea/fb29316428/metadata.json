@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.10.7-nightly.202609080625.78a655db4.0.20260908145503-8bbfeb6d3901+dirty",
+  "checkpoint_id": "eafb29316428",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/README.md",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/collector/cloud.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/controller/controller.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/corpus/corpus-manifest.json",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/corpus/p1_scenario.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ea/fb29316428/0/metadata.json",
+      "transcript": "/ea/fb29316428/0/full.jsonl",
+      "compact_transcript": "/ea/fb29316428/0/transcript.jsonl",
+      "content_hash": "/ea/fb29316428/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 440033,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 45749120,
+    "output_tokens": 56310,
+    "api_call_count": 4514
+  }
+}
