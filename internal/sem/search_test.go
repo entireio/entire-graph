@@ -2293,10 +2293,10 @@ func TestSearchNameMatchesAbbreviationIsTokenScoped(t *testing.T) {
 		{"plural long form", "configurations", "loadConfig", true},
 		{"plural ies long form", "repositories", "openRepo", true},
 		{"long alias spans qualified name", "repository", "gitrepo.OpenCurrent", true},
-		{"short alias matches whole token", "context", "withCtx", true},
-		{"short alias matches whole token db", "database", "openDB", true},
-		{"short alias rejects substring", "request", "frequencyTable", false},
-		{"short alias rejects substring db", "database", "debugPrint", false},
+		{"short alias matches whole token", "environment", "setEnv", true},
+		{"short alias matches whole token max", "maximum", "maxRetries", true},
+		{"short alias rejects substring", "minimum", "adminPanel", false},
+		{"pruned entry no longer fires", "context", "withCtx", false},
 		{"short alias rejects substring int", "integer", "interfaceBuilder", false},
 		{"unmapped term never matches", "kubernetes", "kubeClient", false},
 	}
@@ -2440,7 +2440,7 @@ func TestSearchQueryAbbreviationsIncludeWordVariants(t *testing.T) {
 	for query, alias := range map[string]string{
 		"configurations": "config",
 		"repositories":   "repo",
-		"directories":    "dir",
+		"utilities":      "util",
 		"authenticating": "auth",
 	} {
 		t.Run(query, func(t *testing.T) {
