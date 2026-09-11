@@ -34,7 +34,38 @@ func TestBuildSearchVerifyGradleUndeclaredProjectFallback(t *testing.T) {
 			if got.Tier != searchVerifyTierNone {
 				t.Fatalf("tier = %q, want %q: no command is established for the undeclared project", got.Tier, searchVerifyTierNone)
 			}
+			wantCommand := "none derivable (no safe verification command found) - syntax-check the file you edited and stop."
+			if got.Command != wantCommand {
+				t.Fatalf("command = %q, want %q", got.Command, wantCommand)
+			}
+			wantDerivedFrom := "repository evidence did not establish a safe verification command"
+			if got.DerivedFrom != wantDerivedFrom {
+				t.Fatalf("derived from = %q, want %q", got.DerivedFrom, wantDerivedFrom)
+			}
 		})
+	}
+}
+
+func TestBuildSearchVerifyGradleDeclinedChildDoesNotFallBackToParent(t *testing.T) {
+	files := map[string]string{
+		"gradlew":                               "",
+		"settings.gradle":                       "include ':parent'\n",
+		"parent/build.gradle":                   "",
+		"parent/child/build.gradle":             "",
+		"parent/child/src/main/java/A.java":     "",
+		"parent/child/src/test/java/ATest.java": "",
+	}
+	results := []SearchResult{
+		{Rank: 1, FilePath: "parent/child/src/main/java/A.java", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "parent/child/src/test/java/ATest.java", Section: searchSectionCoveringTest},
+	}
+	got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(files))
+	if got == nil {
+		t.Fatal("expected an explicit verification result")
+	}
+	t.Logf("tier = %q; generated command = %q", got.Tier, got.Command)
+	if got.Tier != searchVerifyTierNone {
+		t.Fatalf("tier = %q, want %q: the parent command does not cover the undeclared child", got.Tier, searchVerifyTierNone)
 	}
 }
 

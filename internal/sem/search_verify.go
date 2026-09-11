@@ -87,8 +87,9 @@ const (
 	// searchVerifyNoneCommand is the residual floor. A payload with ranked results and no derivable
 	// command used to emit NOTHING, and silent absence is the worst outcome available: paired with the
 	// stop-early doctrine it lets an agent ship unverified, and it is indistinguishable from a bug in
-	// the deriver. One line that states the fact and prescribes the fallback costs 96 bytes.
-	searchVerifyNoneCommand = "none derivable (no build manifest found) - syntax-check the file you edited and stop."
+	// the deriver. The message names the unresolved command state rather than guessing why derivation
+	// failed; a manifest may exist without proving a safe command.
+	searchVerifyNoneCommand = "none derivable (no safe verification command found) - syntax-check the file you edited and stop."
 
 	// searchVerifyRunnerNote annotates a command whose runner is not installed HERE. It is an
 	// annotation and never a suppression: the command is still the right one, and a caller who cannot
@@ -311,8 +312,8 @@ func searchVerifyControlBytes(command string) bool {
 	return termsafe.EscapesLine(command)
 }
 
-// searchVerifyResidualFloor is the last rung: no manifest, no test file, no single-file checker. It
-// states the fact and prescribes the fallback, which is strictly better than the silence it replaces.
+// searchVerifyResidualFloor is the last rung when repository evidence does not establish a safe
+// command. It prescribes a fallback, which is strictly better than the silence it replaces.
 func searchVerifyResidualFloor(sourcePath, prefix, preFixStatus string) *SearchVerifyCommand {
 	targets := sourcePath
 	if targets == "" {
@@ -321,7 +322,7 @@ func searchVerifyResidualFloor(sourcePath, prefix, preFixStatus string) *SearchV
 	return &SearchVerifyCommand{
 		Command:      searchVerifyNoneCommand,
 		Targets:      targets,
-		DerivedFrom:  "no manifest, no test file, no single-file checker for this language",
+		DerivedFrom:  "repository evidence did not establish a safe verification command",
 		Tier:         searchVerifyTierNone,
 		Prefix:       prefix,
 		PreFixStatus: preFixStatus,
@@ -508,9 +509,11 @@ func searchVerifyMirrorTest(sourcePath string, evidence *searchVerifyEvidence) s
 // deriveSearchVerifyCommand walks from the subject's own directory towards the repository root and
 // stops at the FIRST manifest that licenses a narrow command.
 //
-// A manifest that exists but licenses nothing does not stop the walk: a `Cargo.toml` that is only a
-// workspace stanza, or a monorepo leaf `package.json` with no test runner in it, is evidence about
-// the tree, not about how to run a test, so the walk continues outward to the manifest that is.
+// A manifest that exists but licenses nothing generally does not stop the walk: a `Cargo.toml` that
+// is only a workspace stanza, or a monorepo leaf `package.json` with no test runner in it, is evidence
+// about the tree, not about how to run a test, so the walk continues outward to the manifest that is.
+// Gradle is different: an ancestor project can accept the same test pattern without owning the
+// nested project's sources, so a Gradle manifest that declines is a hard boundary.
 func deriveSearchVerifyCommand(subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	dir := path.Dir(subject.sourcePath)
 	if dir == "." || dir == "/" {
@@ -521,6 +524,9 @@ func deriveSearchVerifyCommand(subject searchVerifySubject, evidence *searchVeri
 			if command := derive(dir, subject, evidence); command != nil {
 				return command
 			}
+		}
+		if searchVerifyGradleManifest(dir, evidence) != "" {
+			return nil
 		}
 		if dir == "" {
 			break
@@ -567,7 +573,7 @@ func deriveSearchVerifySuiteCommand(subject searchVerifySubject, evidence *searc
 			}
 		}
 		// An ancestor suite is not evidence of coverage for a Gradle project that declined here.
-		if evidence.exists(searchVerifyJoin(dir, "build.gradle")) || evidence.exists(searchVerifyJoin(dir, "build.gradle.kts")) {
+		if searchVerifyGradleManifest(dir, evidence) != "" {
 			return nil
 		}
 		if dir == "" {
@@ -641,14 +647,18 @@ func deriveSearchVerifySuiteMaven(dir string, evidence *searchVerifyEvidence) *S
 	return searchVerifySuiteCommandLiteral(searchVerifyMavenCommand(dir, "test", evidence), manifest)
 }
 
-func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
-	manifest := ""
+func searchVerifyGradleManifest(dir string, evidence *searchVerifyEvidence) string {
 	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
-		if evidence.exists(searchVerifyJoin(dir, name)) {
-			manifest = searchVerifyJoin(dir, name)
-			break
+		manifest := searchVerifyJoin(dir, name)
+		if evidence.exists(manifest) {
+			return manifest
 		}
 	}
+	return ""
+}
+
+func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	manifest := searchVerifyGradleManifest(dir, evidence)
 	if manifest == "" {
 		return nil
 	}
@@ -1999,13 +2009,7 @@ func searchVerifyModuleLabel(dir string) string {
 // because `:module:test` without `--tests` is the whole module and Gradle's project path is only
 // worth deriving when it buys a filter.
 func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
-	manifest := ""
-	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
-		if evidence.exists(searchVerifyJoin(dir, name)) {
-			manifest = searchVerifyJoin(dir, name)
-			break
-		}
-	}
+	manifest := searchVerifyGradleManifest(dir, evidence)
 	if manifest == "" || !evidence.exists("gradlew") {
 		return nil
 	}
@@ -2025,13 +2029,6 @@ func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence 
 			return nil
 		}
 		project += ":"
-	} else {
-		for _, name := range []string{"build.gradle", "build.gradle.kts"} {
-			owner, _, found := searchVerifyAncestorFile(path.Dir(subject.sourcePath), name, evidence)
-			if found && owner != "" {
-				return nil
-			}
-		}
 	}
 	class := searchVerifyStem(subject.testPath)
 	classArg := shellQuote(class)
