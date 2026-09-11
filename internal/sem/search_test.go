@@ -2699,6 +2699,9 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 		if response.Stats.PreselectionBackend != "git-index-grep+go-content" {
 			t.Fatalf("expected large worktree path: %#v", response.Stats)
 		}
+		if query == "integer common" && response.Stats.PreselectionPasses != 3 {
+			t.Fatalf("ordinary terms must share one Git scan: %#v", response.Stats)
+		}
 		want := "readInt"
 		if query == "issue authentication" {
 			want = "İssueNeedle"
@@ -2877,5 +2880,30 @@ func TestSearchProseHeadingCoveragePreservesTextMatching(t *testing.T) {
 		if got := searchNameCoversQuery(result, q); got != want {
 			t.Errorf("%s covers=%v", kind, got)
 		}
+	}
+}
+
+func TestSearchReviewRoundEightRegressions(t *testing.T) {
+	for _, query := range []string{"the function that logs in", "service that logs in", "handlers that log in", "logs authenticated users in", "logs newly authenticated users in"} {
+		if !buildSearchQuery(query).termSet["login"] {
+			t.Errorf("lost login for %q", query)
+		}
+	}
+	for query, term := range map[string]string{"write the check in JSON format": "checkin", "archive that log in sequence": "login"} {
+		if buildSearchQuery(query).termSet[term] {
+			t.Errorf("false %s for %q", term, query)
+		}
+	}
+	if searchGitAliasScansFit(buildSearchQuery("authentication configuration database integer identifier environment")) {
+		t.Error("excess aliases must fall back")
+	}
+	if !searchGitAliasScansFit(buildSearchQuery("authentication")) {
+		t.Error("ordinary alias should use bounded scans")
+	}
+	q := buildSearchQuery("authentication")
+	counts := map[string]int{}
+	tokens := []string{"unrelated", "needle"}
+	if got := testing.AllocsPerRun(100, func() { countSearchAliases(counts, q, tokens) }); got != 0 {
+		t.Errorf("nonmatching tokens allocated %v", got)
 	}
 }

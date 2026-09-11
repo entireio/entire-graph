@@ -2052,9 +2052,32 @@ func preselectSearchFiles(
 		var grepErr error
 		if len(q.inferredAbbreviations) > 0 {
 			gitIndexPasses = 0
-			// One first-hit scan per term bounds output while retaining a rare
-			// alias even when a common query term occurs earlier in the file.
-			for _, term := range searchGitAliasTerms(q) {
+			if !searchGitAliasScansFit(q) {
+				grepErr = fmt.Errorf("query exceeds alias scan budget")
+			}
+			// Preserve the ordinary-term sample in one scan. Alias evidence
+			// gets independent first-hit scans, so common terms cannot hide it.
+			var primary []string
+			for _, term := range searchGitGrepPreselectionPatterns(q) {
+				if !q.inferredAbbreviations[term] {
+					primary = append(primary, term)
+				}
+			}
+			if len(primary) > 0 && grepErr == nil {
+				if patterns := searchGitAliasPatternsForTerms(q, primary); patterns == nil {
+					grepErr = fmt.Errorf("query requires content preselection")
+				} else {
+					gitIndexPasses++
+					grepErr = gitutil.GrepIndexPatternSample(ctx, source.absRepo, patterns, record)
+				}
+			}
+			for _, term := range q.terms {
+				if grepErr != nil {
+					break
+				}
+				if !q.inferredAbbreviations[term] {
+					continue
+				}
 				patterns := searchGitAliasPatternsForTerms(q, []string{term})
 				if patterns == nil {
 					grepErr = fmt.Errorf("query requires content preselection")
@@ -5249,6 +5272,41 @@ var searchCompoundBareObjects = map[string]bool{
 	"connection": true, "connections": true, "process": true, "processes": true,
 }
 
+// A determiner+noun or a plural/software subject makes "that" relative.
+func searchCompoundRelativeSubject(tokens []string, index int) bool {
+	if index < 0 {
+		return false
+	}
+	word := searchCompoundToken(tokens[index])
+	if searchCompoundBareObjects[word] || (strings.HasSuffix(word, "s") && len(word) > 3) {
+		return true
+	}
+	if index > 0 && searchCompoundDeterminers[searchCompoundToken(tokens[index-1])] {
+		return true
+	}
+	switch word {
+	case "function", "service", "handler", "method", "worker", "agent", "module", "component", "command", "program", "routine", "thread", "job":
+		return true
+	}
+	return false
+}
+
+func searchCompoundModifiedObject(tokens []string) bool {
+	if len(tokens) == 0 || !searchCompoundBareObjects[searchCompoundToken(tokens[len(tokens)-1])] {
+		return false
+	}
+	if len(tokens) == 2 && strings.HasSuffix(searchCompoundToken(tokens[0]), "ly") {
+		return false
+	}
+	for _, raw := range tokens[:len(tokens)-1] {
+		word := searchCompoundToken(raw)
+		if searchStopWords[word] || searchPhrasalVerbParticles[word] {
+			return false
+		}
+	}
+	return true
+}
+
 func searchCompoundJoins(tokens []string, index int) []string {
 	var out []string
 	if strings.ContainsAny(tokens[index], ";!?,") || strings.HasSuffix(tokens[index], ".") {
@@ -5261,10 +5319,10 @@ func searchCompoundJoins(tokens []string, index int) []string {
 			previous = searchCompoundToken(tokens[index-1])
 		}
 		nounPhrase := searchCompoundDeterminers[previous]
-		if previous == "that" && index >= 2 && searchCompoundBareObjects[searchCompoundToken(tokens[index-2])] {
+		if previous == "that" && searchCompoundRelativeSubject(tokens, index-2) {
 			nounPhrase = false
 		}
-		if ok && !(joined == "login" && nounPhrase) && (joined != "login" || !searchCompoundFormatPreposition(tokens, index+1)) {
+		if ok && !(joined == "login" && nounPhrase) && !((joined == "login" || nounPhrase) && searchCompoundFormatPreposition(tokens, index+1)) {
 			out = append(out, joined)
 		}
 	}
@@ -5279,7 +5337,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		// The object has to look like an object. Without this, any "log" and any later "in"
 		// in the same sentence would manufacture a login term.
 		if head := searchCompoundToken(tokens[index+1]); !searchCompoundObjectHeads[head] && !searchCompoundDeterminers[head] &&
-			!(gap == 2 && searchCompoundBareObjects[head]) {
+			!searchCompoundModifiedObject(tokens[index+1:index+gap]) {
 			continue
 		}
 		// Here the verb already has its object before "in", so a following
@@ -5862,9 +5920,12 @@ func countSearchAliases(counts map[string]int, q searchQuery, tokens []string) {
 	if len(q.aliasTokens) == 0 {
 		return
 	}
-	seen := map[string]bool{}
+	var seen map[string]bool
 	for _, token := range tokens {
 		for _, alias := range q.aliasTokens[token] {
+			if seen == nil {
+				seen = make(map[string]bool)
+			}
 			if !seen[alias] {
 				counts[alias]++
 				seen[alias] = true

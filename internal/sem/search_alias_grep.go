@@ -11,6 +11,13 @@ import (
 // Oversized expansions use the existing content-scanning fallback.
 const maxSearchGitAliasPatternBytes = 128 * 1024
 
+// At most one ordinary-term scan and four alias scans on a large worktree.
+const maxSearchGitAliasScans = 4
+
+func searchGitAliasScansFit(q searchQuery) bool {
+	return len(q.inferredAbbreviations) <= maxSearchGitAliasScans
+}
+
 // Expressions reject substring-only hits before the provider reads content.
 func searchGitAliasPatterns(q searchQuery) []string {
 	return searchGitAliasPatternsForTerms(q, searchGitAliasTerms(q))

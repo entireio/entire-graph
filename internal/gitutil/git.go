@@ -628,7 +628,12 @@ func GrepIndexMatches(ctx context.Context, repo string, patterns []string, maxPe
 // case-sensitive POSIX expressions, returning only the first match per file.
 // Callers needing separate term evidence must scan each term independently.
 func GrepIndexPatternLines(ctx context.Context, repo string, patterns []string, visit func(GrepMatch) error) error {
-	return grepPatternLines(ctx, repo, "", patterns, visit)
+	return grepPatternLines(ctx, repo, "", patterns, 1, visit)
+}
+
+// GrepIndexPatternSample retains the legacy bounded sample for ordinary terms.
+func GrepIndexPatternSample(ctx context.Context, repo string, patterns []string, visit func(GrepMatch) error) error {
+	return grepPatternLines(ctx, repo, "", patterns, 32, visit)
 }
 
 // GrepTreePatternLines streams matches from the specified immutable tree and
@@ -637,15 +642,15 @@ func GrepTreePatternLines(ctx context.Context, repo, treeish string, patterns []
 	if treeish == "" || strings.HasPrefix(treeish, "-") || strings.ContainsRune(treeish, '\x00') {
 		return fmt.Errorf("invalid git grep treeish %q", treeish)
 	}
-	return grepPatternLines(ctx, repo, treeish, patterns, visit)
+	return grepPatternLines(ctx, repo, treeish, patterns, 1, visit)
 }
 
-func grepPatternLines(ctx context.Context, repo, treeish string, patterns []string, visit func(GrepMatch) error) error {
+func grepPatternLines(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, visit func(GrepMatch) error) error {
 
 	if len(patterns) == 0 {
 		return nil
 	}
-	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E", "-m", "1", "-f", "-"}
+	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E", "-m", strconv.Itoa(maxPerFile), "-f", "-"}
 	if treeish != "" {
 		args = append(args, treeish)
 	}

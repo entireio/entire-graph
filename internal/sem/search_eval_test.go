@@ -229,8 +229,8 @@ func TestSearchRetrievalEval(t *testing.T) {
 						tc.gold, len(response.Results), tc.why, formatEvalRanking(response.Results))
 				}
 				distractorRank, distractorFound := rankOfCluster(response.Results, tc.distractor)
-				if distractorFound && distractorRank < goldRank {
-					t.Fatalf("distractor %v outranks gold %v (%d vs %d)\nwhy this case exists: %s\ngot: %s",
+				if distractorFound && distractorRank <= goldRank {
+					t.Fatalf("distractor %v ties or outranks gold %v (%d vs %d)\nwhy this case exists: %s\ngot: %s",
 						tc.distractor, tc.gold, distractorRank, goldRank, tc.why,
 						formatEvalRanking(response.Results))
 				}

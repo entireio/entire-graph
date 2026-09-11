@@ -3062,6 +3062,14 @@ func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
 	if len(matches) != 1 || matches[0].Path != "source.go" || matches[0].Text != "func readInt() {}" {
 		t.Fatalf("lost boundary context or case: %#v", matches)
 	}
+	matches = nil
+	err = GrepIndexPatternSample(t.Context(), repo, patterns, func(match GrepMatch) error { matches = append(matches, match); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 32 {
+		t.Fatalf("ordinary-term sample returned %d lines, want 32", len(matches))
+	}
 }
 
 func TestGrepTreePatternLinesPinsCommittedContent(t *testing.T) {
