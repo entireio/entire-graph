@@ -3044,7 +3044,7 @@ func TestChangedFilesReportsTreeEntryModes(t *testing.T) {
 func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	content := "func readInt() {}\nfunc readint() {}\nfunc Print() {}\n"
+	content := "func readInt() {}\n" + strings.Repeat("func otherInt() {}\n", 1000) + "func readint() {}\nfunc Print() {}\n"
 	if err := os.WriteFile(filepath.Join(repo, "source.go"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}

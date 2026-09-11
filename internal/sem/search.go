@@ -1971,8 +1971,18 @@ func preselectSearchFiles(
 				grepErr = fmt.Errorf("query requires Unicode content preselection")
 			} else {
 				grepErr = gitutil.GrepTreePatternLines(ctx, source.absRepo, source.commit, patterns, func(match gitutil.GrepMatch) error {
-					if allowed[match.Path] && !seen[match.Path] && textMatchesSearchQuery(q, match.Text) {
-						matches = append(matches, match.Path)
+					if allowed[match.Path] && !seen[match.Path] {
+						text := match.Text
+						if !textMatchesSearchQuery(q, text) {
+							// A conservative locale boundary may need validation.
+							if content, ok := source.read(match.Path); ok {
+								text = content
+								selection.filesContentRead++
+							}
+						}
+						if textMatchesSearchQuery(q, text) {
+							matches = append(matches, match.Path)
+						}
 						seen[match.Path] = true
 					}
 					return ctx.Err()
@@ -2009,6 +2019,7 @@ func preselectSearchFiles(
 	matcher := newSearchQueryTermMatcher(q)
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
+	gitIndexPasses := 1
 	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
 		allowed := make(map[string]bool, len(source.paths))
 		for _, filePath := range source.paths {
@@ -2040,10 +2051,37 @@ func preselectSearchFiles(
 		}
 		var grepErr error
 		if len(q.inferredAbbreviations) > 0 {
-			if patterns := searchGitAliasPatterns(q); patterns != nil {
-				grepErr = gitutil.GrepIndexPatternLines(ctx, source.absRepo, patterns, record)
-			} else {
-				grepErr = fmt.Errorf("query requires Unicode content preselection")
+			gitIndexPasses = 0
+			// One first-hit scan per term bounds output while retaining a rare
+			// alias even when a common query term occurs earlier in the file.
+			for _, term := range searchGitAliasTerms(q) {
+				patterns := searchGitAliasPatternsForTerms(q, []string{term})
+				if patterns == nil {
+					grepErr = fmt.Errorf("query requires content preselection")
+					break
+				}
+				gitIndexPasses++
+				grepErr = gitutil.GrepIndexPatternLines(ctx, source.absRepo, patterns, func(match gitutil.GrepMatch) error {
+					if !allowed[match.Path] || saturated[match.Path] {
+						return ctx.Err()
+					}
+					if !searchQueryTermMatches(q, match.Text, strings.ToLower(match.Text), term) {
+						// Validate conservative regex boundaries once per file.
+						if content, ok := source.read(match.Path); ok {
+							selection.filesContentRead++
+							match.Text = content
+							if err := record(match); err != nil {
+								return err
+							}
+							saturated[match.Path] = true
+							return nil
+						}
+					}
+					return record(match)
+				})
+				if grepErr != nil {
+					break
+				}
 			}
 		} else {
 			var matches []gitutil.GrepMatch
@@ -2268,7 +2306,7 @@ func preselectSearchFiles(
 	if usedGitIndexPreselection {
 		selection.preselectionBackend = "git-index-grep+go-content"
 		if !progressive {
-			selection.preselectionPasses++
+			selection.preselectionPasses += gitIndexPasses
 		}
 		selection.preselectionFilesExamined += len(source.paths)
 		// The content pass ran over a Git-narrowed pool, so the posting lists cover only part of
@@ -5201,13 +5239,17 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		return out
 	}
 	if index+1 < len(tokens) {
-		particle := searchPhrasalVerbParticles[searchCompoundToken(tokens[index+1])]
-		nounPhrase := index > 0 && searchCompoundDeterminers[searchCompoundToken(tokens[index-1])]
-		if !(particle && nounPhrase && searchCompoundToken(tokens[index]) == "log") {
-			if joined, ok := searchCompoundJoin(tokens[index], tokens[index+1]); ok &&
-				(joined != "login" || !searchCompoundFormatPreposition(tokens, index+1)) {
-				out = append(out, joined)
-			}
+		joined, ok := searchCompoundJoin(tokens[index], tokens[index+1])
+		previous := ""
+		if index > 0 {
+			previous = searchCompoundToken(tokens[index-1])
+		}
+		nounPhrase := searchCompoundDeterminers[previous]
+		if previous == "that" && index >= 2 && searchCompoundBareObjects[searchCompoundToken(tokens[index-2])] {
+			nounPhrase = false
+		}
+		if ok && !(joined == "login" && nounPhrase) && (joined != "login" || !searchCompoundFormatPreposition(tokens, index+1)) {
+			out = append(out, joined)
 		}
 	}
 	for gap := 2; gap <= searchMaxCompoundGap+1 && index+gap < len(tokens); gap++ {

@@ -2524,7 +2524,7 @@ func TestSearchReviewRoundTwoRegressions(t *testing.T) {
 			}
 		}
 	})
-	t.Run("all aliases reach one bounded Git scan", func(t *testing.T) {
+	t.Run("all aliases reach bounded Git scans", func(t *testing.T) {
 		q := buildSearchQuery("authentication configuration database request response context")
 		patterns := searchGitAliasPatterns(q)
 		if len(patterns) > maxSearchQueryTerms {
@@ -2676,7 +2676,7 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 		}
 		write(t, repo, fmt.Sprintf("a_%05d.go", index), content)
 	}
-	write(t, repo, "z_value.go", "package app\n"+strings.Repeat("// common\n", 40)+"func readInt() {}\n")
+	write(t, repo, "z_value.go", "package app\nfunc αint() {}\n"+strings.Repeat("// common\n", 40)+"func readInt() {}\n")
 	write(t, repo, "z_unicode.go", "package app\nfunc İssueNeedle() {}\n")
 	write(t, repo, "b_other.go", "package app\nfunc AuthHelp() {}\n")
 	git(t, repo, "add", ".")
@@ -2686,7 +2686,7 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		limit := 1
+		limit := 2 // one conservative Unicode first-hit fallback plus selected content
 		if query != "integer" {
 			limit = 4
 		}
@@ -2847,5 +2847,18 @@ func TestSearchReviewRoundSixRegressions(t *testing.T) {
 	}
 	if !searchQueryNameTermMatches(q, "writeLogs", "log") {
 		t.Error("lost plural name match")
+	}
+}
+
+func TestSearchReviewRoundSevenRegressions(t *testing.T) {
+	for _, query := range []string{"archive the logs in sequence", "archive the logging in sequence"} {
+		if buildSearchQuery(query).termSet["login"] {
+			t.Errorf("noun query inferred login: %q", query)
+		}
+	}
+	for _, query := range []string{"users that log in", "accounts that logged in", "clients that are logging in"} {
+		if !buildSearchQuery(query).termSet["login"] {
+			t.Errorf("relative clause lost login: %q", query)
+		}
 	}
 }

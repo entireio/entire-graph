@@ -625,8 +625,8 @@ func GrepIndexMatches(ctx context.Context, repo string, patterns []string, maxPe
 }
 
 // GrepIndexPatternLines streams whole matching lines for caller-built,
-// case-sensitive POSIX expressions. There is no shared per-file match cap:
-// callers can retain compact per-term evidence without buffering every line.
+// case-sensitive POSIX expressions, returning only the first match per file.
+// Callers needing separate term evidence must scan each term independently.
 func GrepIndexPatternLines(ctx context.Context, repo string, patterns []string, visit func(GrepMatch) error) error {
 	return grepPatternLines(ctx, repo, "", patterns, visit)
 }
@@ -645,7 +645,7 @@ func grepPatternLines(ctx context.Context, repo, treeish string, patterns []stri
 	if len(patterns) == 0 {
 		return nil
 	}
-	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E", "-f", "-"}
+	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E", "-m", "1", "-f", "-"}
 	if treeish != "" {
 		args = append(args, treeish)
 	}

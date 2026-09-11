@@ -11,10 +11,24 @@ import (
 // Oversized expansions use the existing content-scanning fallback.
 const maxSearchGitAliasPatternBytes = 128 * 1024
 
-// One Git scan evaluates all alias routes. Its expressions reject substring-only
-// hits while streaming, so the provider need not hydrate noise.
+// Expressions reject substring-only hits before the provider reads content.
 func searchGitAliasPatterns(q searchQuery) []string {
-	return searchGitAliasPatternsForTerms(q, searchGitGrepPreselectionPatterns(q))
+	return searchGitAliasPatternsForTerms(q, searchGitAliasTerms(q))
+}
+
+func searchGitAliasTerms(q searchQuery) []string {
+	terms := searchGitGrepPreselectionPatterns(q)
+	seen := map[string]bool{}
+	for _, term := range terms {
+		seen[term] = true
+	}
+	for _, term := range q.terms {
+		if q.inferredAbbreviations[term] && !seen[term] {
+			terms = append(terms, term)
+			seen[term] = true
+		}
+	}
+	return terms
 }
 
 func searchGitAliasPatternsForTerms(q searchQuery, terms []string) []string {
@@ -27,13 +41,21 @@ func searchGitAliasPatternsForTerms(q searchQuery, terms []string) []string {
 			patterns = append(patterns, searchFoldedLiteral(term))
 		}
 	}
-	for _, alias := range q.terms {
+	for _, alias := range terms {
 		if !q.inferredAbbreviations[alias] {
 			continue
 		}
 		forms := make([]string, 0, len(searchAliasForms[alias]))
-		for form := range searchAliasForms[alias] {
-			forms = append(forms, form)
+		for form, routes := range q.aliasTokens {
+			for _, route := range routes {
+				if route == alias {
+					forms = append(forms, form)
+					break
+				}
+			}
+		}
+		if len(forms) == 0 {
+			continue
 		}
 		sort.Strings(forms)
 		var alternatives []string
