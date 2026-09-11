@@ -3107,3 +3107,28 @@ func TestSearchReviewRoundSeventeenRegressions(t *testing.T) {
 		t.Fatal("valid terminal particle lost")
 	}
 }
+
+func TestSearchPreindexedAliasAboveLoweredParseLimit(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv("LC_ALL", "C")
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "value.go", "package app\nfunc πint() {}\n"+strings.Repeat("// padding\n", 100)+"func readInt() {}\n")
+	for i := 0; i < 4; i++ {
+		write(t, repo, fmt.Sprintf("plain%d.go", i), "package app\nfunc Helper() {}\n")
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "alias above parse cap")
+	cacheDir := t.TempDir()
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test", ProviderSnapshotOptions{Profile: ProfileSyntaxOnly, MaxParseBytes: 128}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	response, err := SearchRepository(t.Context(), repo, "test", "integer", SearchOptions{Profile: ProfileSyntaxOnly, MaxParseBytes: 128, CacheDir: cacheDir, TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) == 0 || response.Results[0].FilePath != "value.go" {
+		t.Fatalf("lost lexical result above lowered parse limit: %#v", response.Results)
+	}
+}

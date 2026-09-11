@@ -1976,6 +1976,18 @@ func preselectSearchFiles(
 		var matches []string
 		var grepErr error
 		if len(q.inferredAbbreviations) > 0 {
+			validationRead := source.read
+			if limit := resolveMaxParseBytes(options.MaxParseBytes); limit > 0 && limit < defaultMaxParseBytes {
+				// Preindexed lexical results may exceed a caller-lowered parser
+				// limit. Validate conservative alias hits with the same bounded
+				// reader used to display those results, not the parser's cap.
+				read, closeRead, err := openSearchContentReader(ctx, source.absRepo, source.commit, true, options.IgnoreFiles, options.IncludeFiles, options.MaxParseBytes)
+				if err != nil {
+					return selection, err
+				}
+				defer closeRead()
+				validationRead = read
+			}
 			allowed := map[string]bool{}
 			for _, path := range source.paths {
 				allowed[path] = true
@@ -1990,7 +2002,7 @@ func preselectSearchFiles(
 						text := match.Text
 						if !textMatchesSearchQuery(q, text) {
 							// A conservative locale boundary may need validation.
-							if content, ok := source.read(match.Path); ok {
+							if content, ok := validationRead(match.Path); ok {
 								text = content
 								selection.filesContentRead++
 							}
