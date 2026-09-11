@@ -2007,7 +2007,16 @@ func preselectSearchFiles(
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
 	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
-		matches, grepErr := gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
+		var matches []gitutil.GrepMatch
+		var grepErr error
+		for _, batch := range searchGitGrepPreselectionBatches(q) {
+			var found []gitutil.GrepMatch
+			found, grepErr = gitutil.GrepIndexMatches(ctx, source.absRepo, batch, 32)
+			if grepErr != nil {
+				break
+			}
+			matches = append(matches, found...)
+		}
 		tracked, trackedErr := gitutil.ListIndexFiles(ctx, source.absRepo)
 		if grepErr == nil && trackedErr == nil {
 			usedGitIndexPreselection = true
@@ -2025,6 +2034,18 @@ func preselectSearchFiles(
 					continue
 				}
 				seen := termMatches[match.Path]
+				if len(q.inferredAbbreviations) > 0 {
+					// Git -o emits only the substring, without identifier boundaries.
+					// Read each matched file once before the provisional pool is capped.
+					if seen != nil {
+						continue
+					}
+					if content, ok := source.read(match.Path); ok {
+						selection.filesContentRead++
+						termMatches[match.Path] = matcher.match(content)
+						continue
+					}
+				}
 				if seen == nil {
 					seen = make([]bool, len(q.terms))
 				}
@@ -2044,6 +2065,9 @@ func preselectSearchFiles(
 					}
 				}
 				pathScore := pathSearchScore(q, filePath)
+				if pathScore == 0 && matchedWeight == 0 {
+					continue
+				}
 				contentScore := matchedWeight
 				provisional = append(provisional, searchFileCandidate{
 					path:          filePath,
@@ -2229,7 +2253,7 @@ func preselectSearchFiles(
 	// An explicit MaxIndexedFiles is an exact compatibility limit, so the bridge
 	// spends only what preselection left unused.
 	selection.files = bridgeRegistrationHandlerFiles(ctx, source, selection.files, options.MaxIndexedFiles-len(selection.files))
-	selection.filesContentRead = contentReads
+	selection.filesContentRead += contentReads
 	selection.preselectionBackend = "go-content"
 	selection.preselectionFilesExamined = len(scanPaths)
 	if usedGitIndexPreselection {
@@ -2780,13 +2804,33 @@ func searchPreselectionPatterns(q searchQuery) []string {
 	return patterns
 }
 
-func searchGitGrepPreselectionPatterns(q searchQuery) []string {
-	// Aliases are independent retrieval routes. The query's global term cap
-	// bounds fanout; dropping any alias here can hide an entire code cluster.
-	if len(q.inferredAbbreviations) > 0 {
-		return append([]string(nil), q.terms...)
+// Each Git invocation retains its six-pattern budget. Additional alias routes
+// use bounded batches, with total terms bounded by maxSearchQueryTerms.
+func searchGitGrepPreselectionBatches(q searchQuery) [][]string {
+	primary := searchGitGrepPreselectionPatterns(q)
+	batches := [][]string{primary}
+	seen := map[string]bool{}
+	for _, term := range primary {
+		seen[term] = true
 	}
+	var extra []string
+	for _, term := range q.terms {
+		if !q.inferredAbbreviations[term] || seen[term] {
+			continue
+		}
+		extra = append(extra, term)
+		if len(extra) == 6 {
+			batches = append(batches, extra)
+			extra = nil
+		}
+	}
+	if len(extra) > 0 {
+		batches = append(batches, extra)
+	}
+	return batches
+}
 
+func searchGitGrepPreselectionPatterns(q searchQuery) []string {
 	patterns := searchPreselectionPatterns(q)
 	// Each additional fixed-string pattern makes Git scan and emit more of a
 	// large index. Preserve one derived morphological/fragment fallback rather
@@ -3403,6 +3447,9 @@ func searchNameTermCoverage(result SearchResult, q searchQuery, _ map[string]flo
 	tokens := searchTokenVariants(rawName)
 	matched := 0
 	for _, term := range q.terms {
+		if q.inferredAbbreviations[term] {
+			continue
+		}
 		if searchNameTokenMatchesTerm(tokens, term) || searchNameMatchesAbbreviation(tokens, term) {
 			matched++
 		}
@@ -3567,7 +3614,7 @@ var searchKnownAbbreviations = func() map[string]bool {
 
 func searchNameMatchesAlias(tokens []string, alias string) bool {
 	for _, token := range tokens {
-		if token == alias || (len(alias) >= 4 && (strings.HasPrefix(token, alias) || strings.HasSuffix(token, alias))) {
+		if token == alias || token == alias+"s" || (len(alias) >= 4 && (strings.HasPrefix(token, alias) || strings.HasSuffix(token, alias))) {
 			return true
 		}
 	}
@@ -5036,11 +5083,15 @@ var searchCompoundDeterminers = map[string]bool{
 
 // searchCompoundJoins returns the single-identifier spellings implied by the token at index: the
 // adjacent pair, plus — for a separable phrasal verb — the particle found a few tokens later.
+func searchCompoundToken(raw string) string {
+	return strings.ToLower(strings.Trim(raw, ".:;-"))
+}
+
 func searchCompoundJoins(tokens []string, index int) []string {
 	var out []string
 	if index+1 < len(tokens) {
-		particle := searchPhrasalVerbParticles[strings.ToLower(tokens[index+1])]
-		nounPhrase := index > 0 && searchCompoundDeterminers[strings.ToLower(tokens[index-1])]
+		particle := searchPhrasalVerbParticles[searchCompoundToken(tokens[index+1])]
+		nounPhrase := index > 0 && searchCompoundDeterminers[searchCompoundToken(tokens[index-1])]
 		if !(particle && nounPhrase) {
 			if joined, ok := searchCompoundJoin(tokens[index], tokens[index+1]); ok &&
 				(joined != "login" || !searchCompoundFormatPreposition(tokens, index+1)) {
@@ -5049,13 +5100,14 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		}
 	}
 	for gap := 2; gap <= searchMaxCompoundGap+1 && index+gap < len(tokens); gap++ {
-		particle := strings.ToLower(tokens[index+gap])
+		particle := searchCompoundToken(tokens[index+gap])
 		if !searchPhrasalVerbParticles[particle] {
 			continue
 		}
 		// The object has to look like an object. Without this, any "log" and any later "in"
 		// in the same sentence would manufacture a login term.
-		if head := strings.ToLower(tokens[index+1]); !searchCompoundObjectHeads[head] && !searchCompoundDeterminers[head] {
+		if head := searchCompoundToken(tokens[index+1]); !searchCompoundObjectHeads[head] && !searchCompoundDeterminers[head] &&
+			!(gap == 2 && len(head) > 1 && !searchStopWords[head] && !searchPhrasalVerbParticles[head]) {
 			continue
 		}
 		// Here the verb already has its object before "in", so a following
@@ -5073,11 +5125,11 @@ func searchCompoundJoins(tokens []string, index int) []string {
 // completing "log in". Inspect only the immediately following noun phrase so
 // "log the user in and return JSON" still recovers login.
 func searchCompoundFormatPreposition(tokens []string, index int) bool {
-	if strings.ToLower(tokens[index]) != "in" {
+	if searchCompoundToken(tokens[index]) != "in" {
 		return false
 	}
 	next := index + 1
-	if next < len(tokens) && searchCompoundDeterminers[strings.ToLower(tokens[next])] {
+	if next < len(tokens) && searchCompoundDeterminers[searchCompoundToken(tokens[next])] {
 		next++
 	}
 	if next >= len(tokens) {
@@ -5086,7 +5138,7 @@ func searchCompoundFormatPreposition(tokens []string, index int) bool {
 	// Allow a bounded number of modifiers ("compact JSON format"), but do
 	// not cross a clause boundary ("log the user in and return JSON").
 	for end := minInt(next+3, len(tokens)); next < end; next++ {
-		word := strings.ToLower(tokens[next])
+		word := searchCompoundToken(tokens[next])
 		switch word {
 		case "and", "or", "then", "to", "with", "when", "while", "before", "after", "for", "from", "using", "without", "by", "via", "so", "but":
 			return false
@@ -5099,7 +5151,7 @@ func searchCompoundFormatPreposition(tokens []string, index int) bool {
 }
 
 func searchCompoundComplementWord(word string) bool {
-	encoding := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(word), "-", ""), "_", "")
+	encoding := strings.ReplaceAll(strings.ReplaceAll(searchCompoundToken(word), "-", ""), "_", "")
 	switch encoding {
 	case "json", "yaml", "yml", "xml", "csv", "tsv", "text", "plaintext",
 		"html", "toml", "ini", "binary", "hex", "hexadecimal", "base64",
@@ -5117,8 +5169,8 @@ func searchCompoundComplementWord(word string) bool {
 // reporter writes conjugates the verb the table cannot: "logs in", "logged in" and "logging in"
 // all mean login, and only "log in" is in the table.
 func searchCompoundJoin(first, second string) (string, bool) {
-	head := strings.ToLower(first)
-	tail := strings.ToLower(second)
+	head := searchCompoundToken(first)
+	tail := searchCompoundToken(second)
 	if joined, ok := searchCompoundPhrases[head+" "+tail]; ok {
 		return joined, true
 	}
@@ -5542,6 +5594,9 @@ func searchTokenVariants(raw string) []string {
 		if len(current) > 0 && unicode.IsUpper(r) {
 			previous := runes[i-1]
 			nextLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
+			if i+1 < len(runes) && runes[i+1] == 's' && (i+2 == len(runes) || !unicode.IsLower(runes[i+2])) {
+				nextLower = false
+			}
 			if unicode.IsLower(previous) || unicode.IsDigit(previous) || (unicode.IsUpper(previous) && nextLower) {
 				flush()
 			}
@@ -5592,10 +5647,14 @@ func sparseSearchTermCounts(text string, q searchQuery) (map[string]int, int) {
 	counts := map[string]int{}
 	tokens := sparseSearchTokens(text)
 	for _, token := range tokens {
-		if q.termSet[token] {
+		if q.termSet[token] && !q.inferredAbbreviations[token] {
 			counts[token]++
 		}
-		countSearchAliases(counts, q, token)
+	}
+	if len(q.inferredAbbreviations) > 0 {
+		for _, raw := range searchWordPattern.FindAllString(text, -1) {
+			countSearchAliases(counts, q, searchTokenVariants(raw))
+		}
 	}
 	return counts, len(tokens)
 }
@@ -5604,24 +5663,25 @@ func searchTermCounts(text string, q searchQuery) (map[string]int, int) {
 	counts := map[string]int{}
 	length := 0
 	for _, raw := range searchWordPattern.FindAllString(text, -1) {
-		for _, token := range searchTokenVariants(raw) {
+		tokens := searchTokenVariants(raw)
+		for _, token := range tokens {
 			if len(token) < 2 {
 				continue
 			}
 			length++
-			if q.termSet[token] {
+			if q.termSet[token] && !q.inferredAbbreviations[token] {
 				counts[token]++
 			}
-			countSearchAliases(counts, q, token)
 		}
+		countSearchAliases(counts, q, tokens)
 	}
 	return counts, length
 }
 
-// Count derived spellings without counting an exact alias token twice.
-func countSearchAliases(counts map[string]int, q searchQuery, token string) {
+// Overlapping full-identifier and camel-case variants describe one occurrence.
+func countSearchAliases(counts map[string]int, q searchQuery, tokens []string) {
 	for alias := range q.inferredAbbreviations {
-		if q.termSet[alias] && alias != token && searchNameMatchesAlias([]string{token}, alias) {
+		if q.termSet[alias] && searchNameMatchesAlias(tokens, alias) {
 			counts[alias]++
 		}
 	}

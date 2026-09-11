@@ -2522,7 +2522,13 @@ func TestSearchReviewRoundTwoRegressions(t *testing.T) {
 	})
 	t.Run("all aliases reach large worktree grep", func(t *testing.T) {
 		q := buildSearchQuery("authentication configuration database request response context")
-		patterns := searchGitGrepPreselectionPatterns(q)
+		var patterns []string
+		for _, batch := range searchGitGrepPreselectionBatches(q) {
+			if len(batch) > 6 {
+				t.Fatalf("unbounded batch: %v", batch)
+			}
+			patterns = append(patterns, batch...)
+		}
 		for term := range q.inferredAbbreviations {
 			if !containsString(patterns, term) {
 				t.Errorf("missing %s in %v", term, patterns)
@@ -2609,5 +2615,68 @@ func TestSearchPathOnlyAliasInCommittedAndWorkingTrees(t *testing.T) {
 		if len(response.Results) == 0 || response.Results[0].FilePath != "config.yaml" {
 			t.Fatalf("worktree=%v: lost path-only config alias: %#v", worktree, response.Results)
 		}
+	}
+}
+
+func TestSearchReviewRoundThreeRegressions(t *testing.T) {
+	t.Run("one alias frequency per occurrence", func(t *testing.T) {
+		q := buildSearchQuery("authentication")
+		counts, _ := searchTermCounts("AuthThing AuthThing", q)
+		if counts["auth"] != 2 {
+			t.Fatalf("auth frequency=%d, want 2", counts["auth"])
+		}
+	})
+	t.Run("one concept in name coverage", func(t *testing.T) {
+		result := SearchResult{SymbolName: "Auth"}
+		if got, want := searchNameTermCoverage(result, buildSearchQuery("authentication"), nil), searchNameTermCoverage(result, buildSearchQuery("auth"), nil); got != want {
+			t.Fatalf("alias coverage=%v, direct=%v", got, want)
+		}
+	})
+	for _, tc := range []struct {
+		query, term string
+		want        bool
+	}{
+		{"logs users in", "login", true}, {"sign requests in", "signin", true},
+		{"logs a user in.", "login", true}, {"log a message in JSON.", "login", false},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			if got := buildSearchQuery(tc.query).termSet[tc.term]; got != tc.want {
+				t.Fatalf("%s=%v, want %v", tc.term, got, tc.want)
+			}
+		})
+	}
+	t.Run("plural short aliases", func(t *testing.T) {
+		for _, name := range []string{"ids", "getIDs", "getIDsForUser"} {
+			if !searchTextMatchesAlias(name, "id") {
+				t.Errorf("lost id in %s", name)
+			}
+		}
+	})
+}
+
+func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	for index := 0; index < minGitGrepPreselectionFiles-1; index++ {
+		content := "package app\n"
+		if index < 12 {
+			content += "func Print() {}\n"
+		}
+		write(t, repo, fmt.Sprintf("a_%05d.go", index), content)
+	}
+	write(t, repo, "z_value.go", "package app\nfunc readInt() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "large alias corpus")
+	response, err := SearchRepository(t.Context(), repo, "test", "integer", SearchOptions{Worktree: true, Profile: ProfileSyntaxOnly, MaxIndexedFiles: 1, TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.PreselectionBackend != "git-index-grep+go-content" {
+		t.Fatalf("expected large worktree path: %#v", response.Stats)
+	}
+	if len(response.Results) == 0 || response.Results[0].SymbolName != "readInt" {
+		t.Fatalf("substring noise displaced actual alias: %#v", response.Results)
 	}
 }
