@@ -2509,3 +2509,73 @@ func TestCommittedPreselectionFiltersInferredAliasSubstrings(t *testing.T) {
 		t.Fatalf("lost the alias-only match: %#v", response.Results)
 	}
 }
+
+func TestSearchReviewRoundTwoRegressions(t *testing.T) {
+	t.Run("matcher rescans the complete text", func(t *testing.T) {
+		q := buildSearchQuery("integer")
+		hits := newSearchQueryTermMatcher(q).match("integer print(); readInt()")
+		for i, term := range q.terms {
+			if term == "int" && !hits[i] {
+				t.Fatal("lost later valid alias")
+			}
+		}
+	})
+	t.Run("all aliases reach large worktree grep", func(t *testing.T) {
+		q := buildSearchQuery("authentication configuration database request response context")
+		patterns := searchGitGrepPreselectionPatterns(q)
+		for term := range q.inferredAbbreviations {
+			if !containsString(patterns, term) {
+				t.Errorf("missing %s in %v", term, patterns)
+			}
+		}
+	})
+	t.Run("aliases are alternative name concepts", func(t *testing.T) {
+		if !searchNameCoversQuery(SearchResult{SymbolName: "loadConfig"}, buildSearchQuery("configuration")) {
+			t.Fatal("config must cover configuration")
+		}
+	})
+	for _, tc := range []struct {
+		query string
+		want  bool
+	}{
+		{"logs all users in", true}, {"logs both users in", true},
+		{"log a message in the file", false}, {"log a message in compact JSON format", false},
+		{"log the user in and return JSON", true},
+		{"log the user in using JSON", true},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			if got := buildSearchQuery(tc.query).termSet["login"]; got != tc.want {
+				t.Fatalf("login = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	t.Run("deep expansion", func(t *testing.T) {
+		q := buildSparseSearchQuery("authentication logs a user in")
+		if !q.termSet["auth"] || !q.termSet["login"] {
+			t.Fatalf("missing deep query expansions: %v", q.terms)
+		}
+	})
+}
+
+func TestSearchAliasTermFrequencies(t *testing.T) {
+	for _, sparse := range []bool{false, true} {
+		q := buildSearchQuery("authentication")
+		count := searchTermCounts
+		if sparse {
+			q = buildSparseSearchQuery("authentication")
+			count = sparseSearchTermCounts
+		}
+		counts, _ := count("func runAuthenticated() {}", q)
+		if counts["auth"] == 0 {
+			t.Fatalf("sparse=%v: missing auth frequency: %v", sparse, counts)
+		}
+		q = buildSearchQuery("integer")
+		if sparse {
+			q = buildSparseSearchQuery("integer")
+		}
+		counts, _ = count("func Print() {}", q)
+		if counts["int"] != 0 {
+			t.Fatalf("sparse=%v: substring int frequency: %v", sparse, counts)
+		}
+	}
+}

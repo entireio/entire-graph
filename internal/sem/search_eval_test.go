@@ -207,32 +207,35 @@ func TestSearchRetrievalEval(t *testing.T) {
 	t.Parallel()
 	repo := searchEvalCorpus(t)
 	for _, tc := range searchEvalCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if tc.knownGap != "" {
-				t.Skipf("known gap: %s\nwhy this case exists: %s", tc.knownGap, tc.why)
-			}
-			response, err := SearchRepository(context.Background(), repo, "eval", tc.query, SearchOptions{
-				Worktree:     true,
-				Profile:      ProfileFull,
-				TopK:         10,
-				DisableCache: true,
+		for _, deep := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/deep=%v", tc.name, deep), func(t *testing.T) {
+				t.Parallel()
+				if tc.knownGap != "" {
+					t.Skipf("known gap: %s\nwhy this case exists: %s", tc.knownGap, tc.why)
+				}
+				response, err := SearchRepository(context.Background(), repo, "eval", tc.query, SearchOptions{
+					Worktree:     true,
+					Deep:         deep,
+					Profile:      ProfileFull,
+					TopK:         10,
+					DisableCache: true,
+				})
+				if err != nil {
+					t.Fatalf("search failed: %v", err)
+				}
+				goldRank, goldFound := rankOfCluster(response.Results, tc.gold)
+				if !goldFound {
+					t.Fatalf("gold cluster %v absent from top %d\nwhy this case exists: %s\ngot: %s",
+						tc.gold, len(response.Results), tc.why, formatEvalRanking(response.Results))
+				}
+				distractorRank, distractorFound := rankOfCluster(response.Results, tc.distractor)
+				if distractorFound && distractorRank < goldRank {
+					t.Fatalf("distractor %v outranks gold %v (%d vs %d)\nwhy this case exists: %s\ngot: %s",
+						tc.distractor, tc.gold, distractorRank, goldRank, tc.why,
+						formatEvalRanking(response.Results))
+				}
 			})
-			if err != nil {
-				t.Fatalf("search failed: %v", err)
-			}
-			goldRank, goldFound := rankOfCluster(response.Results, tc.gold)
-			if !goldFound {
-				t.Fatalf("gold cluster %v absent from top %d\nwhy this case exists: %s\ngot: %s",
-					tc.gold, len(response.Results), tc.why, formatEvalRanking(response.Results))
-			}
-			distractorRank, distractorFound := rankOfCluster(response.Results, tc.distractor)
-			if distractorFound && distractorRank < goldRank {
-				t.Fatalf("distractor %v outranks gold %v (%d vs %d)\nwhy this case exists: %s\ngot: %s",
-					tc.distractor, tc.gold, distractorRank, goldRank, tc.why,
-					formatEvalRanking(response.Results))
-			}
-		})
+		}
 	}
 }
 

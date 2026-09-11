@@ -2781,6 +2781,12 @@ func searchPreselectionPatterns(q searchQuery) []string {
 }
 
 func searchGitGrepPreselectionPatterns(q searchQuery) []string {
+	// Aliases are independent retrieval routes. The query's global term cap
+	// bounds fanout; dropping any alias here can hide an entire code cluster.
+	if len(q.inferredAbbreviations) > 0 {
+		return append([]string(nil), q.terms...)
+	}
+
 	patterns := searchPreselectionPatterns(q)
 	// Each additional fixed-string pattern makes Git scan and emit more of a
 	// large index. Preserve one derived morphological/fragment fallback rather
@@ -2920,14 +2926,14 @@ func sparseCandidatesForFile(
 	}
 	chunkLines := maxInt(1, options.MaxRegionLines)
 	stride := minInt(sparseSearchChunkStrideLines, chunkLines)
-	pathCounts, _ := sparseSearchTermCounts(filepath.ToSlash(filePath), sparseQuery.termSet)
+	pathCounts, _ := sparseSearchTermCounts(filepath.ToSlash(filePath), sparseQuery)
 	documentCount := 0
 	documentLength := 0
 	var out []searchCandidate
 	for start := 1; start <= len(lines); start += stride {
 		end := minInt(len(lines), start+chunkLines-1)
 		text := filepath.ToSlash(filePath) + "\n" + strings.Join(lines[start-1:end], "\n")
-		counts, length := sparseSearchTermCounts(text, sparseQuery.termSet)
+		counts, length := sparseSearchTermCounts(text, sparseQuery)
 		documentCount++
 		documentLength += maxInt(1, length)
 		if len(counts) > 0 {
@@ -2964,7 +2970,7 @@ func sparseSearchFocusLine(q searchQuery, lines []string, start, end int) int {
 	bestLine := start
 	bestMatches := -1
 	for line := start; line <= end; line++ {
-		counts, _ := sparseSearchTermCounts(lines[line-1], q.termSet)
+		counts, _ := sparseSearchTermCounts(lines[line-1], q)
 		matches := 0
 		for _, count := range counts {
 			matches += count
@@ -3213,7 +3219,7 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 		return searchCandidate{}, false
 	}
 	regionText := strings.Join(lines[start-1:end], "\n")
-	counts, length := searchTermCounts(regionText, q.termSet)
+	counts, length := searchTermCounts(regionText, q)
 	focus := searchFocusLine(q, lines, start, end)
 	if symbol.ID != "" {
 		focus = maxInt(focus, symbol.StartLine)
@@ -3634,14 +3640,19 @@ func searchNameCoversQuery(result SearchResult, q searchQuery) bool {
 	if name == "" || len(q.terms) == 0 {
 		return false
 	}
-	matched := 0
+	matched, concepts := 0, 0
+	tokens := searchTokenVariants(name)
 	lower := strings.ToLower(name)
 	for _, term := range q.terms {
-		if searchQueryTermMatches(q, name, lower, term) {
+		if q.inferredAbbreviations[term] {
+			continue
+		}
+		concepts++
+		if searchQueryTermMatches(q, name, lower, term) || searchNameMatchesAbbreviation(tokens, term) {
 			matched++
 		}
 	}
-	return float64(matched) >= 0.5*float64(len(q.terms))
+	return concepts > 0 && float64(matched) >= 0.5*float64(concepts)
 }
 
 func searchResultHasSignal(result SearchResult, signal string) bool {
@@ -3959,7 +3970,7 @@ func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []R
 			inherit := 0.28 * seedScore
 			callerBoost := 0.0
 			regionText := strings.Join(lines[start-1:end], "\n")
-			counts, _ := searchTermCounts(regionText, q.termSet)
+			counts, _ := searchTermCounts(regionText, q)
 			symbolMatch := searchSymbolNameMatchesQueryTerm(q, symbol)
 			if len(counts) > 0 || symbolMatch {
 				inherit = 0.55 * seedScore
@@ -5020,6 +5031,7 @@ var searchCompoundDeterminers = map[string]bool{
 	"a": true, "an": true, "the": true, "this": true, "that": true, "these": true, "those": true,
 	"my": true, "your": true, "his": true, "her": true, "its": true, "our": true, "their": true,
 	"each": true, "every": true, "any": true, "some": true, "no": true, "one": true,
+	"all": true, "both": true, "either": true, "neither": true, "several": true, "many": true, "few": true,
 }
 
 // searchCompoundJoins returns the single-identifier spellings implied by the token at index: the
@@ -5071,17 +5083,33 @@ func searchCompoundFormatPreposition(tokens []string, index int) bool {
 	if next >= len(tokens) {
 		return false
 	}
-	encoding := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(tokens[next]), "-", ""), "_", "")
+	// Allow a bounded number of modifiers ("compact JSON format"), but do
+	// not cross a clause boundary ("log the user in and return JSON").
+	for end := minInt(next+3, len(tokens)); next < end; next++ {
+		word := strings.ToLower(tokens[next])
+		switch word {
+		case "and", "or", "then", "to", "with", "when", "while", "before", "after", "for", "from", "using", "without", "by", "via", "so", "but":
+			return false
+		}
+		if searchCompoundComplementWord(word) {
+			return true
+		}
+	}
+	return false
+}
+
+func searchCompoundComplementWord(word string) bool {
+	encoding := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(word), "-", ""), "_", "")
 	switch encoding {
 	case "json", "yaml", "yml", "xml", "csv", "tsv", "text", "plaintext",
 		"html", "toml", "ini", "binary", "hex", "hexadecimal", "base64",
 		"protobuf", "msgpack", "messagepack", "utf8", "utf16", "utf16le", "utf16be",
-		"utf32", "utf32le", "utf32be", "ascii", "usascii", "latin1", "iso88591", "windows1252":
+		"utf32", "utf32le", "utf32be", "ascii", "usascii", "latin1", "iso88591", "windows1252",
+		"format", "encoding", "file", "files", "directory", "folder", "console",
+		"stdout", "stderr", "syslog", "journal", "buffer", "disk":
 		return true
-	case "plain":
-		return next+1 < len(tokens) && strings.EqualFold(tokens[next+1], "text")
 	}
-	return next+1 < len(tokens) && (strings.EqualFold(tokens[next+1], "format") || strings.EqualFold(tokens[next+1], "encoding"))
+	return false
 }
 
 // searchCompoundJoin reports the single-identifier spelling of a word pair, if there is one. The
@@ -5391,16 +5419,40 @@ func buildSparseSearchQuery(query string) searchQuery {
 			break
 		}
 	}
+	expanded := buildSearchQuery(query)
+	compounds := map[string]bool{}
+	rawTokens := searchWordPattern.FindAllString(query, -1)
+	for index := range rawTokens {
+		for _, joined := range searchCompoundJoins(rawTokens, index) {
+			compounds[joined] = true
+		}
+	}
+	aliases := map[string]bool{}
+	for _, term := range expanded.terms {
+		if !expanded.inferredAbbreviations[term] && !compounds[term] {
+			continue
+		}
+		if termSet[term] || len(terms) >= maxSparseSearchQueryTerms {
+			continue
+		}
+		terms = append(terms, term)
+		termSet[term] = true
+		weights[term] = expanded.weights[term]
+		if expanded.inferredAbbreviations[term] {
+			aliases[term] = true
+		}
+	}
 	rawLower := strings.ToLower(strings.TrimSpace(query))
 	wordSequence := searchQueryWordSequence(rawLower)
 	return searchQuery{
-		rawLower:       rawLower,
-		terms:          terms,
-		termSet:        termSet,
-		weights:        weights,
-		words:          searchQueryWords(rawLower),
-		wordSequence:   wordSequence,
-		matchableWords: matchableQueryWords(wordSequence, termSet, nil),
+		rawLower:              rawLower,
+		terms:                 terms,
+		termSet:               termSet,
+		weights:               weights,
+		inferredAbbreviations: aliases,
+		words:                 searchQueryWords(rawLower),
+		wordSequence:          wordSequence,
+		matchableWords:        matchableQueryWords(wordSequence, termSet, nil),
 	}
 }
 
@@ -5536,18 +5588,19 @@ func sparseSearchTokens(text string) []string {
 	return out
 }
 
-func sparseSearchTermCounts(text string, queryTerms map[string]bool) (map[string]int, int) {
+func sparseSearchTermCounts(text string, q searchQuery) (map[string]int, int) {
 	counts := map[string]int{}
 	tokens := sparseSearchTokens(text)
 	for _, token := range tokens {
-		if queryTerms[token] {
+		if q.termSet[token] {
 			counts[token]++
 		}
+		countSearchAliases(counts, q, token)
 	}
 	return counts, len(tokens)
 }
 
-func searchTermCounts(text string, queryTerms map[string]bool) (map[string]int, int) {
+func searchTermCounts(text string, q searchQuery) (map[string]int, int) {
 	counts := map[string]int{}
 	length := 0
 	for _, raw := range searchWordPattern.FindAllString(text, -1) {
@@ -5556,12 +5609,22 @@ func searchTermCounts(text string, queryTerms map[string]bool) (map[string]int, 
 				continue
 			}
 			length++
-			if queryTerms[token] {
+			if q.termSet[token] {
 				counts[token]++
 			}
+			countSearchAliases(counts, q, token)
 		}
 	}
 	return counts, length
+}
+
+// Count derived spellings without counting an exact alias token twice.
+func countSearchAliases(counts map[string]int, q searchQuery, token string) {
+	for alias := range q.inferredAbbreviations {
+		if q.termSet[alias] && alias != token && searchNameMatchesAlias([]string{token}, alias) {
+			counts[alias]++
+		}
+	}
 }
 
 func textMatchesSearchQuery(q searchQuery, text string) bool {
