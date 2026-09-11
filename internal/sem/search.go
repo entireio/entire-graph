@@ -3512,74 +3512,70 @@ const searchAbbreviationTermWeight = 0.55
 //
 // One direction only, long -> short. Query terms come from prose and identifiers carry the
 // abbreviation; known full forms also let a direct "auth" query match runAuthenticated.
+//
+// EVERY ENTRY IS FREQUENCY-DERIVED, NOT CURATED. An earlier, hand-written version of this table
+// carried 74 pairs and lost a real query to one of them: "return 4xx on invalid input for delete
+// method" (SWE-bench caddyserver__caddy-5870) dropped its gold file out of the top ten because
+// delete -> del pulled in every Del() header helper. The failure class is an entry whose long form
+// is ALREADY common in identifiers -- the query needs no help, so the alias only adds noise -- or
+// whose alias code does not actually prefer (code writes "delete" 10x more often than "del").
+//
+// The keep rule, measured over 1.4M identifier tokens from 40 repos (21 SWE-bench Multilingual
+// repos across nine languages, 18 pinned popular Go repos, entireio/cli): the LONG form occurs at
+// most 50 times per 100k identifier tokens (a query whose word code already writes needs no help,
+// and the alias only adds noise -- this is the clause that catches delete at 80/100k, context at
+// 139, error at 345), AND the alias occurs at least 25 times (it must actually reach something:
+// txn occurs ONCE in 1.4M tokens, authz seven times, sess zero). 23 of the original 74 pairs
+// failed. Deliberately NOT a code-prefers-the-short-form ratio test: database/db fails that ratio
+// (557 vs 183) yet openDB-style names are real and reachable only through the alias.
+// Do not add entries by taste; rerun the measurement.
 var searchTermAbbreviations = map[string][]string{
 	"address":        {"addr"},
 	"administration": {"admin"},
 	"administrator":  {"admin"},
 	"allocate":       {"alloc"},
 	"allocation":     {"alloc"},
-	"argument":       {"arg"},
 	"asynchronous":   {"async"},
-	"attribute":      {"attr"},
 	"authenticate":   {"auth"},
 	"authenticated":  {"auth"},
 	"authentication": {"auth"},
-	"authorization":  {"authz", "auth"},
-	"authorize":      {"authz", "auth"},
+	"authorization":  {"auth"},
+	"authorize":      {"auth"},
 	"boolean":        {"bool"},
-	"buffer":         {"buf"},
 	"calculate":      {"calc"},
 	"calculation":    {"calc"},
-	"command":        {"cmd"},
 	"configuration":  {"config", "cfg"},
 	"configure":      {"config"},
 	"connection":     {"conn"},
-	"context":        {"ctx"},
 	"database":       {"db"},
-	"declaration":    {"decl"},
 	"definition":     {"def"},
-	"delete":         {"del"},
 	"destination":    {"dest", "dst"},
-	"directory":      {"dir"},
 	"document":       {"doc"},
 	"documentation":  {"docs", "doc"},
 	"environment":    {"env"},
-	"error":          {"err"},
 	"executable":     {"exec"},
 	"execute":        {"exec"},
-	"expression":     {"expr"},
 	"identifier":     {"id"},
 	"implementation": {"impl"},
 	"information":    {"info"},
 	"initialization": {"init"},
 	"initialize":     {"init"},
 	"integer":        {"int"},
-	"iterator":       {"iter"},
-	"length":         {"len"},
 	"library":        {"lib"},
 	"maximum":        {"max"},
-	"message":        {"msg"},
 	"minimum":        {"min"},
-	"number":         {"num"},
 	"package":        {"pkg"},
 	"parameter":      {"param"},
-	"parameters":     {"params"},
 	"pointer":        {"ptr"},
 	"previous":       {"prev"},
-	"property":       {"prop"},
 	"reference":      {"ref"},
 	"repository":     {"repo"},
-	"request":        {"req"},
-	"response":       {"resp"},
-	"session":        {"sess"},
-	"source":         {"src"},
 	"specification":  {"spec"},
 	"statement":      {"stmt"},
 	"statistics":     {"stats"},
 	"synchronize":    {"sync"},
 	"synchronous":    {"sync"},
 	"temporary":      {"temp", "tmp"},
-	"transaction":    {"txn"},
 	"utility":        {"util"},
 }
 
