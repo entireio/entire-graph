@@ -2027,11 +2027,12 @@ func preselectSearchFiles(
 		}
 		termMatches := make(map[string][]bool)
 		saturated := make(map[string]bool)
+		fullyScanned := make(map[string]bool)
 		record := func(match gitutil.GrepMatch) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if !allowed[match.Path] || saturated[match.Path] {
+			if !allowed[match.Path] || saturated[match.Path] || fullyScanned[match.Path] {
 				return nil
 			}
 			seen := termMatches[match.Path]
@@ -2085,7 +2086,7 @@ func preselectSearchFiles(
 				}
 				gitIndexPasses++
 				grepErr = gitutil.GrepIndexPatternLines(ctx, source.absRepo, patterns, func(match gitutil.GrepMatch) error {
-					if !allowed[match.Path] || saturated[match.Path] {
+					if !allowed[match.Path] || saturated[match.Path] || fullyScanned[match.Path] {
 						return ctx.Err()
 					}
 					if !searchQueryTermMatches(q, match.Text, strings.ToLower(match.Text), term) {
@@ -2096,7 +2097,9 @@ func preselectSearchFiles(
 							if err := record(match); err != nil {
 								return err
 							}
-							saturated[match.Path] = true
+							// record matched the entire file against every query term,
+							// including aliases whose Git scan has not run yet.
+							fullyScanned[match.Path] = true
 							return nil
 						}
 					}
@@ -2331,7 +2334,7 @@ func preselectSearchFiles(
 		if !progressive {
 			selection.preselectionPasses += gitIndexPasses
 		}
-		selection.preselectionFilesExamined += len(source.paths)
+		selection.preselectionFilesExamined += len(source.paths) * gitIndexPasses
 		// The content pass ran over a Git-narrowed pool, so the posting lists cover only part of
 		// the corpus. Discard them rather than let a block compute a repository-wide total from a
 		// subset — Git is here, so the exact answer is one grep away.
@@ -5572,6 +5575,11 @@ func buildSearchQuery(query string) searchQuery {
 			trimmedWeights[term] = weights[term]
 		}
 		weights = trimmedWeights
+	}
+	for alias := range inferredAbbreviations {
+		if !termSet[alias] {
+			delete(inferredAbbreviations, alias)
+		}
 	}
 	rawLower := strings.ToLower(strings.TrimSpace(query))
 	wordSequence := searchQueryWordSequence(rawLower)

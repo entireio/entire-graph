@@ -2676,17 +2676,18 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 		}
 		write(t, repo, fmt.Sprintf("a_%05d.go", index), content)
 	}
-	write(t, repo, "z_value.go", "package app\nfunc αint() {}\n"+strings.Repeat("// common\n", 40)+"func readInt() {}\n")
+	write(t, repo, "z_value.go", "package app\nfunc αint() {}\n"+strings.Repeat("// common\n", 40)+"func readInt() {}\nfunc readDB() {}\n")
 	write(t, repo, "z_unicode.go", "package app\nfunc İssueNeedle() {}\n")
 	write(t, repo, "b_other.go", "package app\nfunc AuthHelp() {}\n")
+	write(t, repo, "a_other.go", "package app\nfunc readInt() {}\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "large alias corpus")
-	for _, query := range []string{"integer", "integer common", "issue authentication"} {
+	for _, query := range []string{"integer", "integer common", "issue authentication", "integer database"} {
 		response, err := SearchRepository(t.Context(), repo, "test", query, SearchOptions{Worktree: true, Profile: ProfileSyntaxOnly, MaxIndexedFiles: 1, TopK: 5})
 		if err != nil {
 			t.Fatal(err)
 		}
-		limit := 2 // one conservative Unicode first-hit fallback plus selected content
+		limit := 3 // one Unicode fallback plus two genuinely matching files
 		if query != "integer" {
 			limit = 4
 		}
@@ -2701,6 +2702,12 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 		}
 		if query == "integer common" && response.Stats.PreselectionPasses != 3 {
 			t.Fatalf("ordinary terms must share one Git scan: %#v", response.Stats)
+		}
+		if query == "integer database" {
+			if len(response.Results) == 0 || response.Results[0].FilePath != "z_value.go" {
+				t.Fatalf("full-file validation lost the other alias: %#v", response.Results)
+			}
+			continue
 		}
 		want := "readInt"
 		if query == "issue authentication" {
@@ -2905,5 +2912,24 @@ func TestSearchReviewRoundEightRegressions(t *testing.T) {
 	tokens := []string{"unrelated", "needle"}
 	if got := testing.AllocsPerRun(100, func() { countSearchAliases(counts, q, tokens) }); got != 0 {
 		t.Errorf("nonmatching tokens allocated %v", got)
+	}
+}
+
+func TestSearchTrimmedAliasesDoNotConsumeScanBudget(t *testing.T) {
+	words := []string{"authentication", "configuration", "database", "integer", "identifier", "environment"}
+	for i := 0; i < maxSearchQueryTerms+5; i++ {
+		words = append(words, fmt.Sprintf("uniquefillerword%03d", i))
+	}
+	q := buildSearchQuery(strings.Join(words, " "))
+	if len(q.terms) != maxSearchQueryTerms {
+		t.Fatalf("query did not exercise truncation: %d", len(q.terms))
+	}
+	for alias := range q.inferredAbbreviations {
+		if !q.termSet[alias] {
+			t.Errorf("unretained alias %s", alias)
+		}
+	}
+	if len(q.inferredAbbreviations) != 0 || !searchGitAliasScansFit(q) {
+		t.Fatalf("trimmed aliases affect preselection: %v", q.inferredAbbreviations)
 	}
 }
