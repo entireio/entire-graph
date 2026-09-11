@@ -2674,7 +2674,7 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 	for index := 0; index < minGitGrepPreselectionFiles-1; index++ {
 		content := "package app\n"
 		if index < 12 {
-			content += strings.Repeat("// common\n", 40) + "func Print() {}\n"
+			content += strings.Repeat("// common\n", 40) + "func Print() {}\nfunc ReadAuth() {}\n"
 		}
 		write(t, repo, fmt.Sprintf("a_%05d.go", index), content)
 	}
@@ -3000,6 +3000,19 @@ func TestSearchAliasPatternFactoringPreservesAlternatives(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+func TestSearchSigningPayloadDoesNotImplySignin(t *testing.T) {
+	for _, query := range []string{"sign a request in sequence", "sign the document in order", "sign the digest in parallel"} {
+		if buildSearchQuery(query).termSet["signin"] {
+			t.Errorf("false signin for %q", query)
+		}
+	}
+	for _, query := range []string{"sign the user in sequence", "sign requests in", "sign requests in and continue", "sign requests in. Sequence the next step"} {
+		if !buildSearchQuery(query).termSet["signin"] {
+			t.Errorf("lost signin for %q", query)
 		}
 	}
 }

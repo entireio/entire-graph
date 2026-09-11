@@ -2086,7 +2086,7 @@ func preselectSearchFiles(
 					grepErr = fmt.Errorf("query requires content preselection")
 				} else {
 					gitIndexPasses++
-					grepErr = gitutil.GrepIndexPatternLines(ctx, source.absRepo, patterns, func(match gitutil.GrepMatch) error {
+					grepErr = gitutil.GrepIndexPatternSample(ctx, source.absRepo, patterns, func(match gitutil.GrepMatch) error {
 						if allowed[match.Path] {
 							coalescedPaths[match.Path] = true
 						}
@@ -2200,8 +2200,9 @@ func preselectSearchFiles(
 				return canonicalSearchPathLess(provisional[i].path, provisional[j].path)
 			})
 			poolLimit := len(provisional)
-			// Coalesced hits need full-content scoring before applying the pool limit.
-			if threshold := (len(provisional)-1)/4 + 1; !coalescedAliases && options.MaxIndexedFiles < threshold {
+			// Bounded samples rank a validation shortlist; the final
+			// ranking uses full content only from this shortlist.
+			if threshold := (len(provisional)-1)/4 + 1; options.MaxIndexedFiles < threshold {
 				poolLimit = options.MaxIndexedFiles * 4
 			}
 			scanPaths = make([]string, 0, poolLimit+len(untracked))
@@ -5367,13 +5368,13 @@ func searchCompoundNounPhraseBefore(tokens []string, index int) bool {
 	return false
 }
 
-// These are logging payloads rather than actors that can log in. Reject the
-// separated login join regardless of the following prepositional modifier.
-func searchCompoundLoggingObject(tokens []string) bool {
+// Payloads are objects of logging or cryptographic signing, rather than
+// actors that can log in or sign in.
+func searchCompoundPayloadObject(tokens []string) bool {
 	for _, raw := range tokens {
 		for _, word := range searchNameWordVariants(searchCompoundToken(raw)) {
 			switch word {
-			case "message", "msg", "event", "record", "line", "entry", "output", "error", "warning", "exception", "payload", "data", "detail", "text", "file", "request":
+			case "message", "msg", "event", "record", "line", "entry", "output", "error", "warning", "exception", "payload", "data", "detail", "text", "file", "request", "document", "digest", "hash", "certificate", "transaction":
 				return true
 			}
 		}
@@ -5411,7 +5412,8 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		// format describes that object for any verb ("sign the request in JSON").
 		// Adjacent "check in a JSON file" instead places the object after "in".
 		if joined, ok := searchCompoundJoin(tokens[index], particle); ok &&
-			!(joined == "login" && (searchCompoundNounPhraseBefore(tokens, index) || searchCompoundLoggingObject(tokens[index+1:index+gap]))) &&
+			!(joined == "login" && searchCompoundNounPhraseBefore(tokens, index)) &&
+			!((joined == "login" || joined == "signin" && searchCompoundTrailingNounPhrase(tokens, index+gap)) && searchCompoundPayloadObject(tokens[index+1:index+gap])) &&
 			!searchCompoundFormatPreposition(tokens, index+gap) {
 			out = append(out, joined)
 		}
@@ -5419,11 +5421,28 @@ func searchCompoundJoins(tokens []string, index int) []string {
 	return out
 }
 
+// A payload followed by "in <noun phrase>" is ordinarily being signed in a
+// format/place/order. A bare "sign requests in" remains a phrasal-verb cue.
+func searchCompoundTrailingNounPhrase(tokens []string, index int) bool {
+	if index+1 >= len(tokens) || strings.ContainsAny(tokens[index], ".;!?,:") {
+		return false
+	}
+	word := searchCompoundToken(tokens[index+1])
+	if word == "" || strings.HasSuffix(word, "ly") {
+		return false
+	}
+	switch word {
+	case "and", "or", "then", "to", "with", "when", "while", "before", "after", "for", "from", "using", "without", "by", "via", "so", "but", "now", "today", "tomorrow", "yesterday", "again", "here", "there", "online", "offline":
+		return false
+	}
+	return true
+}
+
 // In "log a message in JSON", "in" introduces the output format rather than
 // completing "log in". Inspect only the immediately following noun phrase so
 // "log the user in and return JSON" still recovers login.
 func searchCompoundFormatPreposition(tokens []string, index int) bool {
-	if searchCompoundToken(tokens[index]) != "in" {
+	if searchCompoundToken(tokens[index]) != "in" || strings.ContainsAny(tokens[index], ".;!?,:") {
 		return false
 	}
 	next := index + 1
