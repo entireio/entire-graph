@@ -1765,6 +1765,21 @@ func truncateSearchText(value string, maxBytes int, q searchQuery) string {
 	center := len(value) / 2
 	lower := strings.ToLower(value)
 	for _, term := range q.terms {
+		if q.inferredAbbreviations[term] {
+			found := false
+			for _, span := range searchSourceWordPattern.FindAllStringIndex(value, -1) {
+				raw := value[span[0]:span[1]]
+				if searchQueryTermMatches(q, raw, strings.ToLower(raw), term) {
+					center = (span[0] + span[1]) / 2
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+			continue
+		}
 		if index := strings.Index(lower, term); index >= 0 {
 			center = index + len(term)/2
 			break
@@ -5583,6 +5598,15 @@ func searchCompoundComplementWord(word string) bool {
 func searchCompoundJoin(first, second string) (string, bool) {
 	head := searchCompoundToken(first)
 	tail := searchCompoundToken(second)
+	// Noun compounds pluralize their second word. Do not singularize a
+	// phrasal particle (e.g. "ins") into a verb join.
+	for _, singular := range searchNameWordVariants(tail)[1:] {
+		if !searchPhrasalVerbParticles[singular] {
+			if joined, ok := searchCompoundPhrases[head+" "+singular]; ok {
+				return joined, true
+			}
+		}
+	}
 	if joined, ok := searchCompoundPhrases[head+" "+tail]; ok {
 		return joined, true
 	}
@@ -6086,8 +6110,18 @@ func searchTermCounts(text string, q searchQuery) (map[string]int, int) {
 	counts := map[string]int{}
 	length := 0
 	for _, raw := range searchSourceWordPattern.FindAllString(text, -1) {
-		tokens := searchTokenVariants(raw)
-		for _, token := range tokens {
+		wholeTokens := searchTokenVariants(raw)
+		ordinaryTokens := wholeTokens
+		if strings.IndexFunc(raw, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
+			// Retain the ordinary ASCII-fragment evidence used before alias
+			// boundaries became Unicode-aware, plus full Unicode/folded terms.
+			ordinaryTokens = nil
+			for _, fragment := range searchWordPattern.FindAllString(raw, -1) {
+				ordinaryTokens = append(ordinaryTokens, searchTokenVariants(fragment)...)
+			}
+			ordinaryTokens = appendUnique(ordinaryTokens, wholeTokens...)
+		}
+		for _, token := range ordinaryTokens {
 			if len(token) < 2 {
 				continue
 			}
@@ -6096,7 +6130,7 @@ func searchTermCounts(text string, q searchQuery) (map[string]int, int) {
 				counts[token]++
 			}
 		}
-		countSearchAliases(counts, q, tokens)
+		countSearchAliases(counts, q, wholeTokens)
 	}
 	return counts, length
 }

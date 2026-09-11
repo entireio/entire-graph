@@ -3084,3 +3084,26 @@ func TestSearchReviewRoundSixteenRegressions(t *testing.T) {
 		t.Fatalf("lost Unicode prefix: %v", matches)
 	}
 }
+
+func TestSearchReviewRoundSeventeenRegressions(t *testing.T) {
+	for query, term := range map[string]string{"time stamps": "timestamp", "web hooks": "webhook", "end points": "endpoint"} {
+		if !buildSearchQuery(query).termSet[term] {
+			t.Errorf("lost %s in %q", term, query)
+		}
+	}
+	q := buildSearchQuery("integer")
+	counts, _ := searchTermCounts("πinteger", q)
+	if counts["integer"] != 1 || counts["int"] != 0 {
+		t.Errorf("ordinary Unicode suffix counts: %v", counts)
+	}
+	value := "interface " + strings.Repeat("padding ", 30) + "readInt(value)" + strings.Repeat(" trailing", 30)
+	if got := truncateSearchText(value, 40, q); !strings.Contains(got, "readInt") {
+		t.Errorf("wrong alias center: %q", got)
+	}
+	if buildSearchQuery("log a message in. Next").termSet["login"] {
+		t.Fatal("payload inferred login")
+	}
+	if !buildSearchQuery("log the user in. Next").termSet["login"] {
+		t.Fatal("valid terminal particle lost")
+	}
+}
