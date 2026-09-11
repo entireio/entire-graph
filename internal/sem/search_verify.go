@@ -675,7 +675,11 @@ func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *
 	if !inside {
 		return nil
 	}
-	if settingsPath, _, own := searchVerifyGradleSettings(dir, evidence); own {
+	settingsDir, settingsPath, settings, found := searchVerifyGradleAncestorSettings(dir, wrapperDir, evidence)
+	if !found {
+		return nil
+	}
+	if settingsDir == dir {
 		// The directory carries its own settings script, so it IS a build root and that is the
 		// settings file Gradle finds first when started there. `-p` is the spelling for that.
 		return searchVerifySuiteCommand(
@@ -684,9 +688,12 @@ func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *
 			manifest+" + "+wrapperPath+" + "+settingsPath,
 		)
 	}
-	settingsPath, settings, found := searchVerifyGradleSettings(wrapperDir, evidence)
-	project := ":" + strings.ReplaceAll(relative, "/", ":")
-	if !found || !searchVerifyGradleSettingsIncludes(settings, project) {
+	projectDir, inside := searchVerifyRelative(settingsDir, dir)
+	if !inside {
+		return nil
+	}
+	project := ":" + strings.ReplaceAll(projectDir, "/", ":")
+	if !searchVerifyGradleSettingsIncludes(settings, project) {
 		// Nothing in the tree says this directory is a build Gradle can be pointed at, so there is
 		// no command to emit. Silence costs a lookup; a `-p` that quietly ran a different build
 		// would report a pass the edit never earned.
@@ -700,9 +707,18 @@ func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *
 	}
 	// An included subproject is addressed by its project path from the root of the build that
 	// declares it — the documented spelling, `gradle :subproject:taskName`.
+	command := "./gradlew "
+	if settingsDir != wrapperDir {
+		buildRoot, inside := searchVerifyRelative(wrapperDir, settingsDir)
+		if !inside {
+			return nil
+		}
+		command += "-p " + shellQuotePath(buildRoot) + " "
+	}
+	command += shellQuote(project + ":test")
 	return searchVerifySuiteCommand(
 		wrapperDir,
-		"./gradlew "+shellQuote(project+":test"),
+		command,
 		manifest+" + "+wrapperPath+" + "+settingsPath,
 	)
 }
@@ -717,6 +733,27 @@ func searchVerifyGradleSettings(dir string, evidence *searchVerifyEvidence) (str
 		}
 	}
 	return "", "", false
+}
+
+func searchVerifyGradleAncestorSettings(
+	dir, stop string,
+	evidence *searchVerifyEvidence,
+) (string, string, string, bool) {
+	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
+		if settingsPath, settings, found := searchVerifyGradleSettings(dir, evidence); found {
+			return dir, settingsPath, settings, true
+		}
+		if dir == stop || dir == "" {
+			break
+		}
+		parent := path.Dir(dir)
+		if parent == "." || parent == "/" || parent == dir {
+			dir = ""
+			continue
+		}
+		dir = parent
+	}
+	return "", "", "", false
 }
 
 // searchVerifyGradleSettingsIncludes reports whether a settings script declares the project path.
