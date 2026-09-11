@@ -2480,3 +2480,32 @@ func TestSearchQueryMatcherAliasBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestCommittedPreselectionFiltersInferredAliasSubstrings(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "value.go", "package app\nfunc readInt() {}\n")
+	write(t, repo, "output.go", "package app\nfunc Print() {}\n")
+	write(t, repo, "contract.go", "package app\nfunc Interface() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	cacheDir := t.TempDir()
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test", ProviderSnapshotOptions{Profile: ProfileSyntaxOnly}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	response, err := SearchRepository(t.Context(), repo, "test", "integer", SearchOptions{Profile: ProfileSyntaxOnly, CacheDir: cacheDir, TopK: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.PreselectionBackend != "git-tree-grep" {
+		t.Fatalf("expected committed Git path: %#v", response.Stats)
+	}
+	if response.Stats.FilesIndexed != 1 {
+		t.Fatalf("substring-only files entered the selection: %#v", response.Stats)
+	}
+	if len(response.Results) == 0 || response.Results[0].SymbolName != "readInt" {
+		t.Fatalf("lost the alias-only match: %#v", response.Results)
+	}
+}

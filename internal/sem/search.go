@@ -1959,7 +1959,31 @@ func preselectSearchFiles(
 			// This branch deliberately keeps every matched file rather than
 			// honouring MaxIndexedFiles (see above), so the bridge gets its own
 			// budget rather than a remainder of a cap this path does not apply.
-			selection.files = bridgeRegistrationHandlerFiles(ctx, source, committedSearchFiles(source.paths, matches, q), searchRegistrationBridgeMaxHandlers)
+			files := committedSearchFiles(source.paths, matches, q)
+			if len(q.inferredAbbreviations) > 0 {
+				// Git returns a substring superset. Confirm alias boundaries against
+				// committed content before admitting these files to the graph.
+				filtered := make([]string, 0, len(files))
+				for _, filePath := range files {
+					if err := ctx.Err(); err != nil {
+						return selection, err
+					}
+					if pathSearchScore(q, filePath) > 0 {
+						filtered = append(filtered, filePath)
+						continue
+					}
+					content, ok := source.read(filePath)
+					if ok {
+						selection.filesContentRead++
+					}
+					// Preserve unreadable files so normal indexing reports their failure.
+					if !ok || textMatchesSearchQuery(q, content) {
+						filtered = append(filtered, filePath)
+					}
+				}
+				files = filtered
+			}
+			selection.files = bridgeRegistrationHandlerFiles(ctx, source, files, searchRegistrationBridgeMaxHandlers)
 			selection.sparseFiles = append([]string(nil), selection.files...)
 			selection.preselectionBackend = "git-tree-grep"
 			selection.preselectionPasses = 1
