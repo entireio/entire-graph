@@ -3,6 +3,8 @@ package sem
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -58,12 +60,6 @@ func searchEvalCorpus(t *testing.T) string {
 
 	writeFile(t, repo, "auth.go", `package app
 
-// Deliberately abbreviation-only. No comment or identifier here spells
-// "authentication", "authenticate" or "credential" in full, so the only bridge from
-// the prose query to this file is the alias table mapping the long form onto "auth".
-// If a body word could carry the query, the case would pass with the table removed
-// and would be testing nothing — which is exactly what the first draft did.
-
 func runLogin(server string, user string) error {
 	token, err := requestAuthToken(server, user)
 	if err != nil {
@@ -71,6 +67,7 @@ func runLogin(server string, user string) error {
 	}
 	return persistLogin(server, token)
 }
+
 
 func persistLogin(server string, token string) error {
 	return storeAuthToken(server, token)
@@ -114,7 +111,6 @@ func writeLogEntry(dir string, entry string) error { return nil }
 
 	writeFile(t, repo, "config.go", `package app
 
-// Abbreviation-only for the same reason as auth.go: nothing here spells "configuration".
 
 func loadConfig(path string) (string, error) { return path, nil }
 
@@ -252,4 +248,22 @@ func formatEvalRanking(results []SearchResult) string {
 		fmt.Fprintf(&b, "\n  %2d  %6.2f  %s", index+1, result.Score, strings.TrimSpace(name))
 	}
 	return b.String()
+}
+
+func TestSearchEvalCorpusRequiresAbbreviationExpansion(t *testing.T) {
+	repo := searchEvalCorpus(t)
+	for file, forbidden := range map[string][]string{
+		"auth.go":   {"authentication", "authenticate", "credential"},
+		"config.go": {"configuration"},
+	} {
+		content, err := os.ReadFile(filepath.Join(repo, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, word := range forbidden {
+			if strings.Contains(strings.ToLower(string(content)), word) {
+				t.Errorf("%s leaks long-form query term %q", file, word)
+			}
+		}
+	}
 }

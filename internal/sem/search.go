@@ -521,6 +521,8 @@ type searchQuery struct {
 	terms       []string
 	termSet     map[string]bool
 	weights     map[string]float64
+	// inferredAbbreviations require identifier boundaries even in substring scoring paths.
+	inferredAbbreviations map[string]bool
 	// dottedCallMentions holds lowercased "container.member" pairs the query
 	// wrote as explicit calls ("Type.method(...)") — a direct naming of the
 	// symbol the query is about.
@@ -967,6 +969,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// of the query. The content reader is memoized, so the second pass normally re-reads
 	// nothing; a selection larger than the content cache can fall back to disk for the
 	// overflow, which rereadFiles/rereadBytes below keep out of the read telemetry.
+	corpusMatcher := newSearchQueryTermMatcher(q)
 	indexableFiles := make([]string, 0, len(selectedFiles))
 	for _, filePath := range selectedFiles {
 		if err := ctx.Err(); err != nil {
@@ -977,10 +980,10 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			continue
 		}
 		indexableFiles = append(indexableFiles, filePath)
-		lowerContent := strings.ToLower(content)
-		lowerPath := strings.ToLower(filepath.ToSlash(filePath))
-		for _, term := range q.terms {
-			if strings.Contains(lowerContent, term) || strings.Contains(lowerPath, term) {
+		contentMatches := corpusMatcher.match(content)
+		pathMatches := corpusMatcher.match(filepath.ToSlash(filePath))
+		for index, term := range q.terms {
+			if contentMatches[index] || pathMatches[index] {
 				fileDF[term]++
 			}
 		}
@@ -1976,7 +1979,7 @@ func preselectSearchFiles(
 	// share of every file score is added afterwards, over the matched terms only
 	// (applySearchFileCoverage). Until then a file carries its matched weight unnormalized.
 	matchedAnywhere := make([]bool, len(q.terms))
-	matcher := newSearchTermMatcher(q.terms)
+	matcher := newSearchQueryTermMatcher(q)
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
 	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
@@ -3391,13 +3394,13 @@ func searchNameTermCoverage(result SearchResult, q searchQuery, _ map[string]flo
 // "log" a match for the token "logs" and a non-match for the token "login", which is the
 // distinction the substring form structurally could not express.
 //
-// The cost is derivational prefixes: "config" no longer matches the token "configure", where the
-// substring form did. That is deliberate. The abbreviation path is where prefix reach belongs,
-// because it knows WHICH short forms are real (searchNameMatchesAbbreviation), and applying prefix
-// reach to every query term is precisely what produced the login/logging collision.
+// Known code abbreviations retain prefix/suffix reach; arbitrary prose terms do not.
 func searchNameTokenMatchesTerm(tokens []string, term string) bool {
-	if len(term) < 3 {
+	if len(term) < 2 || searchStopWords[term] {
 		return false
+	}
+	if searchKnownAbbreviations[term] && searchNameMatchesAlias(tokens, term) {
+		return true
 	}
 	termVariants := searchNameWordVariants(term)
 	for _, token := range tokens {
@@ -3522,6 +3525,25 @@ var searchTermAbbreviations = map[string][]string{
 	"utility":        {"util"},
 }
 
+var searchKnownAbbreviations = func() map[string]bool {
+	aliases := map[string]bool{}
+	for _, values := range searchTermAbbreviations {
+		for _, alias := range values {
+			aliases[alias] = true
+		}
+	}
+	return aliases
+}()
+
+func searchNameMatchesAlias(tokens []string, alias string) bool {
+	for _, token := range tokens {
+		if token == alias || (len(alias) >= 4 && (strings.HasPrefix(token, alias) || strings.HasSuffix(token, alias))) {
+			return true
+		}
+	}
+	return false
+}
+
 // searchNameMatchesAbbreviation reports whether any abbreviation of term appears as a TOKEN of the
 // identifier. Token-scoped on purpose: searchNameContainsTerm can afford a raw substring because a
 // query term is a whole word, but an abbreviation is short enough that substring matching
@@ -3540,21 +3562,29 @@ var searchTermAbbreviations = map[string][]string{
 // score, so a single spurious term costs a third of one signal — cheap next to scoring every
 // correct answer at zero.
 func searchNameMatchesAbbreviation(tokens []string, term string) bool {
-	aliases := searchAbbreviations(term)
-	for _, alias := range aliases {
-		for _, token := range tokens {
-			if len(alias) >= 4 {
-				if strings.HasPrefix(token, alias) || strings.HasSuffix(token, alias) {
-					return true
-				}
-				continue
-			}
-			if token == alias {
-				return true
-			}
+	for _, alias := range searchAbbreviations(term) {
+		if searchNameMatchesAlias(tokens, alias) {
+			return true
 		}
 	}
 	return false
+}
+
+// Preserve the original case until identifier splitting has found camel-case boundaries.
+func searchTextMatchesAlias(text, alias string) bool {
+	for _, word := range searchWordPattern.FindAllString(text, -1) {
+		if searchNameMatchesAlias(searchTokenVariants(word), alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func searchQueryTermMatches(q searchQuery, text, lower, term string) bool {
+	if !strings.Contains(lower, term) {
+		return false
+	}
+	return !q.inferredAbbreviations[term] || searchTextMatchesAlias(text, term)
 }
 
 // Use the same plural variants for retrieval and name coverage, including -ies
@@ -3573,16 +3603,17 @@ func searchAbbreviations(term string) []string {
 const searchNameCoverageWeight = 10.0
 
 func searchNameCoversQuery(result SearchResult, q searchQuery) bool {
-	name := strings.ToLower(result.QualifiedName)
+	name := result.QualifiedName
 	if name == "" {
-		name = strings.ToLower(result.SymbolName)
+		name = result.SymbolName
 	}
 	if name == "" || len(q.terms) == 0 {
 		return false
 	}
 	matched := 0
+	lower := strings.ToLower(name)
 	for _, term := range q.terms {
-		if strings.Contains(name, term) {
+		if searchQueryTermMatches(q, name, lower, term) {
 			matched++
 		}
 	}
@@ -3955,7 +3986,7 @@ func searchSymbolNameMatchesQueryTerm(q searchQuery, symbol SymbolRecord) bool {
 		if len(term) < 3 {
 			continue
 		}
-		if strings.Contains(name, term) || strings.Contains(qualified, term) {
+		if searchQueryTermMatches(q, symbol.Name, name, term) || searchQueryTermMatches(q, symbol.QualifiedName, qualified, term) {
 			return true
 		}
 	}
@@ -4988,7 +5019,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		}
 		// The object has to look like an object. Without this, any "log" and any later "in"
 		// in the same sentence would manufacture a login term.
-		if !searchCompoundObjectHeads[strings.ToLower(tokens[index+1])] {
+		if head := strings.ToLower(tokens[index+1]); !searchCompoundObjectHeads[head] && !searchCompoundDeterminers[head] {
 			continue
 		}
 		// Here the verb already has its object before "in", so a following
@@ -5016,10 +5047,12 @@ func searchCompoundFormatPreposition(tokens []string, index int) bool {
 	if next >= len(tokens) {
 		return false
 	}
-	switch strings.ToLower(tokens[next]) {
+	encoding := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(tokens[next]), "-", ""), "_", "")
+	switch encoding {
 	case "json", "yaml", "yml", "xml", "csv", "tsv", "text", "plaintext",
 		"html", "toml", "ini", "binary", "hex", "hexadecimal", "base64",
-		"protobuf", "msgpack", "messagepack":
+		"protobuf", "msgpack", "messagepack", "utf8", "utf16", "utf16le", "utf16be",
+		"utf32", "utf32le", "utf32be", "ascii", "usascii", "latin1", "iso88591", "windows1252":
 		return true
 	case "plain":
 		return next+1 < len(tokens) && strings.EqualFold(tokens[next+1], "text")
@@ -5167,8 +5200,12 @@ func buildSearchQuery(query string) searchQuery {
 	for term := range weights {
 		abbreviationTerms = append(abbreviationTerms, term)
 	}
+	inferredAbbreviations := map[string]bool{}
 	for _, term := range abbreviationTerms {
 		for _, alias := range searchAbbreviations(term) {
+			if weights[alias] == 0 {
+				inferredAbbreviations[alias] = true
+			}
 			add(alias, searchAbbreviationTermWeight)
 		}
 	}
@@ -5200,17 +5237,18 @@ func buildSearchQuery(query string) searchQuery {
 	rawLower := strings.ToLower(strings.TrimSpace(query))
 	wordSequence := searchQueryWordSequence(rawLower)
 	return searchQuery{
-		raw:                query,
-		rawLower:           rawLower,
-		constraints:        constraints,
-		terms:              terms,
-		termSet:            termSet,
-		weights:            weights,
-		words:              searchQueryWords(rawLower),
-		wordSequence:       wordSequence,
-		matchableWords:     matchableQueryWords(wordSequence, termSet, nil),
-		identifierTokens:   identifierTokens,
-		dottedCallMentions: dottedCallMentionsIn(query),
+		raw:                   query,
+		rawLower:              rawLower,
+		constraints:           constraints,
+		terms:                 terms,
+		termSet:               termSet,
+		weights:               weights,
+		inferredAbbreviations: inferredAbbreviations,
+		words:                 searchQueryWords(rawLower),
+		wordSequence:          wordSequence,
+		matchableWords:        matchableQueryWords(wordSequence, termSet, nil),
+		identifierTokens:      identifierTokens,
+		dottedCallMentions:    dottedCallMentionsIn(query),
 	}
 }
 
@@ -5505,7 +5543,7 @@ func searchTermCounts(text string, queryTerms map[string]bool) (map[string]int, 
 func textMatchesSearchQuery(q searchQuery, text string) bool {
 	lower := strings.ToLower(text)
 	for _, term := range q.terms {
-		if strings.Contains(lower, term) {
+		if searchQueryTermMatches(q, text, lower, term) {
 			return true
 		}
 	}
@@ -5519,7 +5557,7 @@ func searchFocusLine(q searchQuery, lines []string, start, end int) int {
 		lower := strings.ToLower(lines[line-1])
 		matches := 0.0
 		for _, term := range q.terms {
-			if strings.Contains(lower, term) {
+			if searchQueryTermMatches(q, lines[line-1], lower, term) {
 				matches += q.weights[term]
 			}
 		}
@@ -5782,10 +5820,10 @@ func symbolSearchScore(q searchQuery, symbol SymbolRecord) (float64, []string) {
 		case name == term:
 			score += 6 * weight
 			signals = append(signals, "symbol-name")
-		case strings.Contains(name, term) || strings.Contains(qualified, term):
+		case searchQueryTermMatches(q, symbol.Name, name, term) || searchQueryTermMatches(q, symbol.QualifiedName, qualified, term):
 			score += 3 * weight
 			signals = append(signals, "symbol-name")
-		case strings.Contains(signature, term):
+		case searchQueryTermMatches(q, symbol.Signature, signature, term):
 			score += 1.5 * weight
 			signals = append(signals, "signature")
 		}

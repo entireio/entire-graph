@@ -6,9 +6,10 @@ import "strings"
 // Issue and source identifiers are overwhelmingly ASCII; uncommon non-ASCII
 // terms use a separate Unicode-aware fallback.
 type searchTermMatcher struct {
-	nodes     []searchMatcherNode
-	fallback  []searchFallbackTerm
-	termCount int
+	nodes      []searchMatcherNode
+	fallback   []searchFallbackTerm
+	termCount  int
+	aliasTerms map[int]string
 }
 
 type searchMatcherNode struct {
@@ -20,6 +21,18 @@ type searchMatcherNode struct {
 type searchFallbackTerm struct {
 	index int
 	term  string
+}
+
+// Query aliases carry stricter boundaries than the caller's explicit substrings.
+func newSearchQueryTermMatcher(q searchQuery) searchTermMatcher {
+	matcher := newSearchTermMatcher(q.terms)
+	matcher.aliasTerms = map[int]string{}
+	for index, term := range q.terms {
+		if q.inferredAbbreviations[term] {
+			matcher.aliasTerms[index] = term
+		}
+	}
+	return matcher
 }
 
 func newSearchTermMatcher(terms []string) searchTermMatcher {
@@ -113,6 +126,11 @@ func (matcher searchTermMatcher) match(text string) []bool {
 			if !found[fallback.index] && strings.Contains(lower, fallback.term) {
 				found[fallback.index] = true
 			}
+		}
+	}
+	for index, alias := range matcher.aliasTerms {
+		if found[index] {
+			found[index] = searchTextMatchesAlias(text, alias)
 		}
 	}
 	return found

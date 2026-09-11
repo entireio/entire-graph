@@ -2366,6 +2366,12 @@ func TestSearchCompoundJoins(t *testing.T) {
 		{"signing a request format", "sign the request in json format", "signin", false},
 		{"checking YAML content", "check the response in YAML", "checkin", false},
 		{"signing a custom encoding", "sign the request in custom encoding", "signin", false},
+		{"quantified login", "logs every user in", "login", true},
+		{"quantified signin", "sign some requests in", "signin", true},
+		{"quantified logging", "log every message in JSON", "login", false},
+		{"UTF-8 logging", "log a message in UTF-8", "login", false},
+		{"UTF-16 logging", "log a message in utf_16le", "login", false},
+		{"ASCII logging", "log a message in ASCII", "login", false},
 		{"separated check in", "check the file in and return JSON", "checkin", true},
 		{"separated sign in", "sign the user in and return JSON", "signin", true},
 		// Noun compounds are not separable; only the adjacent form counts.
@@ -2380,6 +2386,51 @@ func TestSearchCompoundJoins(t *testing.T) {
 				t.Fatalf("buildSearchQuery(%q).termSet[%q] = %v, want %v", tc.query, tc.want, got, tc.found)
 			}
 		})
+	}
+}
+
+func TestSearchNameMatchesCodeAbbreviations(t *testing.T) {
+	for _, tc := range []struct {
+		name, term string
+		want       bool
+	}{
+		{"runAuthenticated", "auth", true},
+		{"Authz", "auth", true},
+		{"Configure", "config", true},
+		{"gitrepo.Open", "repo", true},
+		{"Inspect", "spec", false},
+		{"Interface", "int", false},
+		{"runLogin", "log", false},
+		{"openDB", "db", true},
+		{"userId", "id", true},
+		{"debug", "db", false},
+		{"signIn", "in", false},
+	} {
+		t.Run(tc.name+"/"+tc.term, func(t *testing.T) {
+			if got := searchNameTokenMatchesTerm(searchTokenVariants(tc.name), tc.term); got != tc.want {
+				t.Fatalf("name match %q / %q = %v, want %v", tc.name, tc.term, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSearchInferredAliasesDoNotScoreSubstrings(t *testing.T) {
+	q := buildSearchQuery("integer")
+	for _, name := range []string{"Interface", "Internal", "Print"} {
+		t.Run(name, func(t *testing.T) {
+			symbol := SymbolRecord{Name: name, QualifiedName: name, Kind: "function", Signature: "func " + name + "(value interface{})"}
+			if score, signals := symbolSearchScore(q, symbol); score != 2 || len(signals) != 0 {
+				t.Fatalf("inferred int must not add a name/signature bonus: %v %v", score, signals)
+			}
+			if searchSymbolNameMatchesQueryTerm(q, symbol) || searchNameCoversQuery(SearchResult{SymbolName: name}, q) {
+				t.Fatal("inferred int must not grant graph expansion or name coverage")
+			}
+		})
+	}
+	for _, name := range []string{"Int", "readInt"} {
+		if score, _ := symbolSearchScore(q, SymbolRecord{Name: name, Kind: "function"}); score <= 2 {
+			t.Fatalf("exact int token must score: %s = %v", name, score)
+		}
 	}
 }
 
@@ -2398,6 +2449,33 @@ func TestSearchQueryAbbreviationsIncludeWordVariants(t *testing.T) {
 			}
 			if q.weights[alias] != searchAbbreviationTermWeight {
 				t.Fatalf("inferred alias weight = %v, want %v", q.weights[alias], searchAbbreviationTermWeight)
+			}
+		})
+	}
+}
+
+func TestSearchQueryMatcherAliasBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		query, text, term string
+		want              bool
+	}{
+		{"integer", "func Print(value interface{})", "int", false},
+		{"integer", "func readInt()", "int", true},
+		{"authentication", "func runAuthenticated()", "auth", true},
+		{"database", "func debug()", "db", false},
+		{"database", "func openDB()", "db", true},
+		{"integer int", "func Print()", "int", true},
+	} {
+		t.Run(tc.query+"/"+tc.text, func(t *testing.T) {
+			q := buildSearchQuery(tc.query)
+			matches := newSearchQueryTermMatcher(q).match(tc.text)
+			for index, term := range q.terms {
+				if term == tc.term && matches[index] != tc.want {
+					t.Fatalf("match %q in %q = %v, want %v", term, tc.text, matches[index], tc.want)
+				}
+			}
+			if got := searchQueryTermMatches(q, tc.text, strings.ToLower(tc.text), tc.term); got != tc.want {
+				t.Fatalf("scoring match = %v, want %v", got, tc.want)
 			}
 		})
 	}
