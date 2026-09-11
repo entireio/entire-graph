@@ -5327,6 +5327,14 @@ func searchCompoundRelativeSubject(tokens []string, index int) bool {
 		return false
 	}
 	word := searchCompoundToken(tokens[index])
+	// "that logs/logged" is a relative verb clause: singular "that" cannot
+	// determine the plural noun "logs". This also covers unseen subject nouns.
+	if index+2 < len(tokens) && !searchCompoundGoverningVerb(word) {
+		verb := searchCompoundToken(tokens[index+2])
+		if strings.HasSuffix(verb, "s") || strings.HasSuffix(verb, "ed") {
+			return true
+		}
+	}
 	if searchCompoundBareObjects[word] || (strings.HasSuffix(word, "s") && len(word) > 3) {
 		return true
 	}
@@ -5338,6 +5346,20 @@ func searchCompoundRelativeSubject(tokens []string, index int) bool {
 		return true
 	}
 	return false
+}
+
+func searchCompoundProperObject(tokens []string) bool {
+	if len(tokens) != 1 {
+		return false
+	}
+	lower := false
+	for index, r := range tokens[0] {
+		if !unicode.IsLetter(r) || index == 0 && !unicode.IsUpper(r) {
+			return false
+		}
+		lower = lower || unicode.IsLower(r)
+	}
+	return lower // Avoid treating uppercase format names such as JSON as actors.
 }
 
 func searchCompoundModifiedObject(tokens []string) bool {
@@ -5468,7 +5490,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		// The object has to look like an object. Without this, any "log" and any later "in"
 		// in the same sentence would manufacture a login term.
 		if head := searchCompoundToken(tokens[index+1]); !searchCompoundObjectHeads[head] && !searchCompoundDeterminers[head] &&
-			!searchCompoundModifiedObject(tokens[index+1:index+gap]) {
+			!searchCompoundModifiedObject(tokens[index+1:index+gap]) && !searchCompoundProperObject(tokens[index+1:index+gap]) {
 			continue
 		}
 		// Here the verb already has its object before "in", so a following
@@ -5518,6 +5540,9 @@ func searchCompoundFormatPreposition(tokens []string, index int) bool {
 	// Allow a bounded number of modifiers ("compact JSON format"), but do
 	// not cross a clause boundary ("log the user in and return JSON").
 	for end := minInt(next+3, len(tokens)); next < end; next++ {
+		if searchCompoundToken(tokens[next]) == "" && strings.ContainsAny(tokens[next], ".;!?,:") {
+			return false
+		}
 		word := searchCompoundToken(tokens[next])
 		switch word {
 		case "and", "or", "then", "to", "with", "when", "while", "before", "after", "for", "from", "using", "without", "by", "via", "so", "but":
@@ -5528,6 +5553,9 @@ func searchCompoundFormatPreposition(tokens []string, index int) bool {
 		}
 		if searchCompoundComplementWord(word) {
 			return true
+		}
+		if strings.ContainsAny(tokens[next], ".;!?,:") {
+			return false
 		}
 	}
 	return false

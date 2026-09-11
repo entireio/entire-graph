@@ -3064,3 +3064,23 @@ func TestSearchReviewRoundFifteenRegressions(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchReviewRoundSixteenRegressions(t *testing.T) {
+	for _, query := range []string{"logs Alice in", "code that logs in", "logs users in, JSON output"} {
+		if !buildSearchQuery(query).termSet["login"] {
+			t.Errorf("lost login for %q", query)
+		}
+	}
+	repo := t.TempDir()
+	t.Setenv("LC_ALL", "C")
+	git(t, repo, "init")
+	write(t, repo, "value.go", "package app\nfunc αInt() {}\n")
+	git(t, repo, "add", ".")
+	var matches []gitutil.GrepMatch
+	if err := gitutil.GrepIndexPatternLines(t.Context(), repo, searchGitAliasPatterns(buildSearchQuery("integer")), func(m gitutil.GrepMatch) error { matches = append(matches, m); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Path != "value.go" {
+		t.Fatalf("lost Unicode prefix: %v", matches)
+	}
+}
