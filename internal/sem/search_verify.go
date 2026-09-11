@@ -566,6 +566,10 @@ func deriveSearchVerifySuiteCommand(subject searchVerifySubject, evidence *searc
 				return command
 			}
 		}
+		// An ancestor suite is not evidence of coverage for a Gradle project that declined here.
+		if evidence.exists(searchVerifyJoin(dir, "build.gradle")) || evidence.exists(searchVerifyJoin(dir, "build.gradle.kts")) {
+			return nil
+		}
 		if dir == "" {
 			break
 		}
@@ -1976,7 +1980,21 @@ func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence 
 	}
 	project := ":"
 	if dir != "" {
-		project = ":" + strings.ReplaceAll(dir, "/", ":") + ":"
+		project = ":" + strings.ReplaceAll(dir, "/", ":")
+		_, settings, found := searchVerifyGradleSettings("", evidence)
+		if !found ||
+			!searchVerifyGradleSettingsIncludes(settings, project) ||
+			searchVerifyGradleSettingsRemapsProject(settings, project) {
+			return nil
+		}
+		project += ":"
+	} else {
+		for _, name := range []string{"build.gradle", "build.gradle.kts"} {
+			owner, _, found := searchVerifyAncestorFile(path.Dir(subject.sourcePath), name, evidence)
+			if found && owner != "" {
+				return nil
+			}
+		}
 	}
 	class := searchVerifyStem(subject.testPath)
 	classArg := shellQuote(class)
