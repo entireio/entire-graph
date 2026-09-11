@@ -2579,3 +2579,35 @@ func TestSearchAliasTermFrequencies(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchInferredAliasPathScoring(t *testing.T) {
+	if pathSearchScore(buildSearchQuery("configuration"), "config.yaml") <= 0 {
+		t.Fatal("path-only config alias must score")
+	}
+	if pathSearchScore(buildSearchQuery("integer"), "internal.go") != 0 {
+		t.Fatal("int substring must not score")
+	}
+}
+
+func TestSearchPathOnlyAliasInCommittedAndWorkingTrees(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "config.yaml", "enabled: true\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	cacheDir := t.TempDir()
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test", ProviderSnapshotOptions{Profile: ProfileSyntaxOnly}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	for _, worktree := range []bool{false, true} {
+		response, err := SearchRepository(t.Context(), repo, "test", "configuration", SearchOptions{Worktree: worktree, Profile: ProfileSyntaxOnly, CacheDir: cacheDir, TopK: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(response.Results) == 0 || response.Results[0].FilePath != "config.yaml" {
+			t.Fatalf("worktree=%v: lost path-only config alias: %#v", worktree, response.Results)
+		}
+	}
+}

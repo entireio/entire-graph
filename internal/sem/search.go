@@ -5675,12 +5675,12 @@ func pathSearchScore(q searchQuery, filePath string) float64 {
 	score := 0.0
 	for _, term := range q.terms {
 		weight := q.weights[term]
-		if weight != 1 && weight < 1.25 {
+		if !q.inferredAbbreviations[term] && weight != 1 && weight < 1.25 {
 			continue
 		}
-		if strings.Contains(base, term) {
+		if searchQueryTermMatches(q, filepath.Base(filePath), base, term) {
 			score += 2.5 * weight
-		} else if strings.Contains(lower, term) {
+		} else if searchQueryTermMatches(q, filepath.ToSlash(filePath), lower, term) {
 			score += 1.25 * weight
 		}
 	}
