@@ -3051,3 +3051,16 @@ func TestSearchReviewRoundFourteenRegressions(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchReviewRoundFifteenRegressions(t *testing.T) {
+	for _, query := range []string{"write the event log in sequence", "write the application log in sequence", "read the custom log in sequence"} {
+		if buildSearchQuery(query).termSet["login"] {
+			t.Errorf("false login for %q", query)
+		}
+	}
+	for _, query := range []string{"the system logs a user in", "the application logs a user in", "the system logs in", "write a function that logs a user in"} {
+		if !buildSearchQuery(query).termSet["login"] {
+			t.Errorf("lost login for %q", query)
+		}
+	}
+}

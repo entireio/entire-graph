@@ -5359,10 +5359,28 @@ func searchCompoundModifiedObject(tokens []string) bool {
 // Skip bounded adjective modifiers, but stop at a subject noun or verb so
 // "the worker logs in" remains a verb phrase.
 func searchCompoundNounPhraseBefore(tokens []string, index int) bool {
+	// A governing verb plus determiner admits ordinary noun modifiers without
+	// an adjective dictionary: "write the event log", "read the custom log".
+	for at := index - 1; at >= 0 && index-at <= 3; at-- {
+		word := searchCompoundToken(tokens[at])
+		if strings.ContainsAny(tokens[at], ".;!?,:") || word == "and" || word == "or" || word == "but" || word == "then" {
+			break
+		}
+		if word == "that" && searchCompoundRelativeSubject(tokens, at-1) {
+			return false
+		}
+		if searchCompoundDeterminers[word] && at > 0 && searchCompoundGoverningVerb(searchCompoundToken(tokens[at-1])) {
+			return true
+		}
+	}
 	modifiers := 0
 	for at := index - 1; at >= 0 && index-at <= 4; at-- {
 		word := searchCompoundToken(tokens[at])
 		switch word {
+		case "system", "application":
+			// Singular subjects take "logs"; the base spelling in "the system log"
+			// instead makes log the noun modified by system.
+			return searchCompoundToken(tokens[index]) == "log" && at > 0 && searchCompoundDeterminers[searchCompoundToken(tokens[at-1])]
 		case "process":
 			return at == 0 || !searchCompoundDeterminers[searchCompoundToken(tokens[at-1])]
 		case "write", "read", "archive", "store", "output", "print", "emit", "send", "delete", "inspect", "list", "view":
@@ -5373,7 +5391,7 @@ func searchCompoundNounPhraseBefore(tokens []string, index int) bool {
 		}
 		adjective := false
 		switch word {
-		case "new", "old", "current", "full", "raw", "plain", "verbose", "debug", "audit", "access", "error", "system", "application", "long", "short", "red":
+		case "new", "old", "current", "full", "raw", "plain", "verbose", "debug", "audit", "access", "error", "long", "short", "red":
 			adjective = true
 		}
 		for _, suffix := range []string{"ed", "ive", "al", "ous", "ic", "ful", "less", "ary"} {
@@ -5406,10 +5424,17 @@ func searchCompoundPayloadObject(tokens []string) bool {
 // A preceding governing verb distinguishes "write the sign in red" from
 // the noun compound in "the sign in page". The noun-phrase check separately
 // ensures this bounded lookback does not cross a subject or clause.
+func searchCompoundGoverningVerb(word string) bool {
+	switch word {
+	case "write", "read", "archive", "store", "output", "print", "emit", "send", "delete", "inspect", "list", "view", "process":
+		return true
+	}
+	return false
+}
+
 func searchCompoundGovernedObject(tokens []string, index int) bool {
 	for at := index - 1; at >= 0 && index-at <= 4; at-- {
-		switch searchCompoundToken(tokens[at]) {
-		case "write", "read", "archive", "store", "output", "print", "emit", "send", "delete", "inspect", "list", "view", "process":
+		if searchCompoundGoverningVerb(searchCompoundToken(tokens[at])) {
 			return true
 		}
 	}
