@@ -2503,6 +2503,9 @@ func TestCommittedPreselectionFiltersInferredAliasSubstrings(t *testing.T) {
 	if response.Stats.PreselectionBackend != "git-tree-grep" {
 		t.Fatalf("expected committed Git path: %#v", response.Stats)
 	}
+	if response.Stats.FilesContentRead != 0 {
+		t.Fatalf("hydrated substring noise in cached selection: %#v", response.Stats)
+	}
 	if response.Stats.FilesIndexed != 1 {
 		t.Fatalf("substring-only files entered the selection: %#v", response.Stats)
 	}
@@ -2662,6 +2665,7 @@ func TestSearchReviewRoundThreeRegressions(t *testing.T) {
 
 func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 	repo := t.TempDir()
+	t.Setenv("LC_ALL", "C")
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
@@ -2673,15 +2677,17 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 		write(t, repo, fmt.Sprintf("a_%05d.go", index), content)
 	}
 	write(t, repo, "z_value.go", "package app\n"+strings.Repeat("// common\n", 40)+"func readInt() {}\n")
+	write(t, repo, "z_unicode.go", "package app\nfunc İssueNeedle() {}\n")
+	write(t, repo, "b_other.go", "package app\nfunc AuthHelp() {}\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "large alias corpus")
-	for _, query := range []string{"integer", "integer common"} {
+	for _, query := range []string{"integer", "integer common", "issue authentication"} {
 		response, err := SearchRepository(t.Context(), repo, "test", query, SearchOptions{Worktree: true, Profile: ProfileSyntaxOnly, MaxIndexedFiles: 1, TopK: 5})
 		if err != nil {
 			t.Fatal(err)
 		}
 		limit := 1
-		if query == "integer common" {
+		if query != "integer" {
 			limit = 4
 		}
 		if response.Stats.FilesContentRead > limit {
@@ -2690,7 +2696,11 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 		if response.Stats.PreselectionBackend != "git-index-grep+go-content" {
 			t.Fatalf("expected large worktree path: %#v", response.Stats)
 		}
-		if len(response.Results) == 0 || response.Results[0].SymbolName != "readInt" {
+		want := "readInt"
+		if query == "issue authentication" {
+			want = "İssueNeedle"
+		}
+		if len(response.Results) == 0 || response.Results[0].SymbolName != want {
 			t.Fatalf("substring noise displaced actual alias: %#v", response.Results)
 		}
 	}
@@ -2739,5 +2749,66 @@ func TestSearchReviewRoundFourRegressions(t *testing.T) {
 				t.Fatalf("Git alias %s in %s=%v, want %v", tc.alias, tc.text, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSearchReviewRoundFiveRegressions(t *testing.T) {
+	q := buildSearchQuery("authentication")
+	counts, _ := searchTermCounts("authentication", q)
+	if counts["authentication"] != 1 || counts["auth"] != 0 {
+		t.Errorf("long form counted twice: %v", counts)
+	}
+	hits := newSearchQueryTermMatcher(q).match("authentication")
+	for index, term := range q.terms {
+		if term == "auth" && hits[index] {
+			t.Error("long form counted as alias document presence")
+		}
+	}
+	q = buildSearchQuery("authorization")
+	counts, _ = searchTermCounts("Authz", q)
+	if counts["authz"]+counts["auth"] != 1 {
+		t.Errorf("overlapping aliases counted twice: %v", counts)
+	}
+	q = buildSearchQuery("issue authentication")
+	found := false
+	for _, pattern := range searchGitAliasPatterns(q) {
+		if regexp.MustCompile(pattern).MatchString("İssue") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Git alias route dropped Go Unicode lowercase equivalent")
+	}
+}
+
+func TestSearchOrdinaryQueryDoesNotAllocateAliasEvidence(t *testing.T) {
+	q := buildSearchQuery("needle")
+	counts := map[string]int{}
+	tokens := []string{"needle", "another"}
+	if allocs := testing.AllocsPerRun(100, func() { countSearchAliases(counts, q, tokens) }); allocs != 0 {
+		t.Fatalf("ordinary alias accounting allocated: %v", allocs)
+	}
+}
+
+func TestSearchUnicodeSourceTermEvidence(t *testing.T) {
+	for _, tc := range []struct{ query, text, term string }{
+		{"issue authentication", "İssueNeedle", "issue"},
+		{"integer", "getİnt", "int"},
+	} {
+		q := buildSearchQuery(tc.query)
+		found := newSearchQueryTermMatcher(q).match(tc.text)
+		for index, term := range q.terms {
+			if term == tc.term && !found[index] {
+				t.Errorf("matcher dropped %s in %s", term, tc.text)
+			}
+		}
+		counts, _ := searchTermCounts(tc.text, q)
+		if counts[tc.term] == 0 {
+			t.Errorf("frequency dropped %s in %s: %v", tc.term, tc.text, counts)
+		}
+	}
+	q := buildSearchQuery("integer")
+	if textMatchesSearchQuery(q, "πint") {
+		t.Fatal("ASCII suffix inside a Unicode identifier is not a token")
 	}
 }

@@ -601,6 +601,9 @@ func cachedContentReader(read contentReader) contentReader {
 }
 
 var searchWordPattern = regexp.MustCompile(`[[:alnum:]_./:+#-]+`)
+
+// Preserve complete Unicode source identifiers before splitting camel case.
+var searchSourceWordPattern = regexp.MustCompile(`[\p{L}\p{N}_./:+#-]+`)
 var sparseSearchWordPattern = regexp.MustCompile(`[[:alpha:]][[:alnum:]_]*|[[:digit:]]+`)
 
 // searchQueryURLPattern matches an absolute URL written inside a query. The run stops at
@@ -1955,35 +1958,34 @@ func preselectSearchFiles(
 		preindexedSnapshot.Header.RepoKey == source.key
 	grepPatterns, grepSafe := searchGitGrepPatterns(q.terms)
 	if exactFullPreindex && !options.Worktree && !options.Deep && grepSafe {
-		matches, grepErr := gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
+		var matches []string
+		var grepErr error
+		if len(q.inferredAbbreviations) > 0 {
+			allowed := map[string]bool{}
+			for _, path := range source.paths {
+				allowed[path] = true
+			}
+			seen := map[string]bool{}
+			patterns := searchGitAliasPatternsForTerms(q, q.terms)
+			if patterns == nil {
+				grepErr = fmt.Errorf("query requires Unicode content preselection")
+			} else {
+				grepErr = gitutil.GrepTreePatternLines(ctx, source.absRepo, source.commit, patterns, func(match gitutil.GrepMatch) error {
+					if allowed[match.Path] && !seen[match.Path] && textMatchesSearchQuery(q, match.Text) {
+						matches = append(matches, match.Path)
+						seen[match.Path] = true
+					}
+					return ctx.Err()
+				})
+			}
+		} else {
+			matches, grepErr = gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
+		}
 		if grepErr == nil {
 			// This branch deliberately keeps every matched file rather than
 			// honouring MaxIndexedFiles (see above), so the bridge gets its own
 			// budget rather than a remainder of a cap this path does not apply.
 			files := committedSearchFiles(source.paths, matches, q)
-			if len(q.inferredAbbreviations) > 0 {
-				// Git returns a substring superset. Confirm alias boundaries against
-				// committed content before admitting these files to the graph.
-				filtered := make([]string, 0, len(files))
-				for _, filePath := range files {
-					if err := ctx.Err(); err != nil {
-						return selection, err
-					}
-					if pathSearchScore(q, filePath) > 0 {
-						filtered = append(filtered, filePath)
-						continue
-					}
-					content, ok := source.read(filePath)
-					if ok {
-						selection.filesContentRead++
-					}
-					// Preserve unreadable files so normal indexing reports their failure.
-					if !ok || textMatchesSearchQuery(q, content) {
-						filtered = append(filtered, filePath)
-					}
-				}
-				files = filtered
-			}
 			selection.files = bridgeRegistrationHandlerFiles(ctx, source, files, searchRegistrationBridgeMaxHandlers)
 			selection.sparseFiles = append([]string(nil), selection.files...)
 			selection.preselectionBackend = "git-tree-grep"
@@ -2032,7 +2034,11 @@ func preselectSearchFiles(
 		}
 		var grepErr error
 		if len(q.inferredAbbreviations) > 0 {
-			grepErr = gitutil.GrepIndexPatternLines(ctx, source.absRepo, searchGitAliasPatterns(q), record)
+			if patterns := searchGitAliasPatterns(q); patterns != nil {
+				grepErr = gitutil.GrepIndexPatternLines(ctx, source.absRepo, patterns, record)
+			} else {
+				grepErr = fmt.Errorf("query requires Unicode content preselection")
+			}
 		} else {
 			var matches []gitutil.GrepMatch
 			matches, grepErr = gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
@@ -2594,6 +2600,17 @@ var (
 	searchASCIILowerAlternatives     [128][]rune
 )
 
+func initSearchASCIILowerAlternatives() {
+	searchASCIILowerAlternativesOnce.Do(func() {
+		for value := rune(128); value <= unicode.MaxRune; value++ {
+			lower := unicode.ToLower(value)
+			if lower >= 0 && lower < 128 {
+				searchASCIILowerAlternatives[lower] = append(searchASCIILowerAlternatives[lower], value)
+			}
+		}
+	})
+}
+
 // searchGitGrepPatterns makes Git's byte-oriented fixed-string preselection a
 // conservative superset of Go's strings.ToLower matching. Some non-ASCII
 // uppercase runes lower to ASCII (for example Turkish dotted İ -> i), while
@@ -2605,14 +2622,7 @@ func searchGitGrepPatterns(terms []string) ([]string, bool) {
 	if !searchTermsSafeForGitGrep(terms) {
 		return nil, false
 	}
-	searchASCIILowerAlternativesOnce.Do(func() {
-		for value := rune(128); value <= unicode.MaxRune; value++ {
-			lower := unicode.ToLower(value)
-			if lower >= 0 && lower < 128 {
-				searchASCIILowerAlternatives[lower] = append(searchASCIILowerAlternatives[lower], value)
-			}
-		}
-	})
+	initSearchASCIILowerAlternatives()
 	patterns := make([]string, 0, len(terms))
 	seen := make(map[string]bool, len(terms))
 	for _, term := range terms {
@@ -3667,12 +3677,23 @@ func searchNameMatchesAlias(tokens []string, alias string) bool {
 // The reverse index lets one tokenization serve every inferred query alias.
 func searchAliasTokenIndex(terms []string, aliases map[string]bool) map[string][]string {
 	out := map[string][]string{}
+	explicit := map[string]bool{}
+	for _, term := range terms {
+		if !aliases[term] {
+			explicit[term] = true
+		}
+	}
 	for _, alias := range terms {
 		if !aliases[alias] {
 			continue
 		}
 		for token := range searchAliasForms[alias] {
-			out[token] = append(out[token], alias)
+			if explicit[token] {
+				continue
+			}
+			if len(out[token]) == 0 || token == alias {
+				out[token] = []string{alias}
+			}
 		}
 	}
 	return out
@@ -3692,7 +3713,7 @@ func searchNameMatchesAbbreviation(tokens []string, term string) bool {
 
 // Preserve the original case until identifier splitting has found camel-case boundaries.
 func searchTextMatchesAlias(text, alias string) bool {
-	for _, word := range searchWordPattern.FindAllString(text, -1) {
+	for _, word := range searchSourceWordPattern.FindAllString(text, -1) {
 		if searchNameMatchesAlias(searchTokenVariants(word), alias) {
 			return true
 		}
@@ -3702,7 +3723,14 @@ func searchTextMatchesAlias(text, alias string) bool {
 
 func searchQueryTermMatches(q searchQuery, text, lower, term string) bool {
 	if q.inferredAbbreviations[term] {
-		return searchTextMatchesAlias(text, term)
+		for _, raw := range searchSourceWordPattern.FindAllString(text, -1) {
+			for _, token := range searchTokenVariants(raw) {
+				if containsString(q.aliasTokens[token], term) {
+					return true
+				}
+			}
+		}
+		return false
 	}
 	return strings.Contains(lower, term)
 }
@@ -5716,7 +5744,7 @@ func sparseSearchTermCounts(text string, q searchQuery) (map[string]int, int) {
 		}
 	}
 	if len(q.inferredAbbreviations) > 0 {
-		for _, raw := range searchWordPattern.FindAllString(text, -1) {
+		for _, raw := range searchSourceWordPattern.FindAllString(text, -1) {
 			countSearchAliases(counts, q, searchTokenVariants(raw))
 		}
 	}
@@ -5726,7 +5754,7 @@ func sparseSearchTermCounts(text string, q searchQuery) (map[string]int, int) {
 func searchTermCounts(text string, q searchQuery) (map[string]int, int) {
 	counts := map[string]int{}
 	length := 0
-	for _, raw := range searchWordPattern.FindAllString(text, -1) {
+	for _, raw := range searchSourceWordPattern.FindAllString(text, -1) {
 		tokens := searchTokenVariants(raw)
 		for _, token := range tokens {
 			if len(token) < 2 {
@@ -5744,12 +5772,17 @@ func searchTermCounts(text string, q searchQuery) (map[string]int, int) {
 
 // Overlapping full-identifier and camel-case variants describe one occurrence.
 func countSearchAliases(counts map[string]int, q searchQuery, tokens []string) {
-	var matched []string
-	for _, token := range tokens {
-		matched = appendUnique(matched, q.aliasTokens[token]...)
+	if len(q.aliasTokens) == 0 {
+		return
 	}
-	for _, alias := range matched {
-		counts[alias]++
+	seen := map[string]bool{}
+	for _, token := range tokens {
+		for _, alias := range q.aliasTokens[token] {
+			if !seen[alias] {
+				counts[alias]++
+				seen[alias] = true
+			}
+		}
 	}
 }
 
@@ -5761,7 +5794,7 @@ func textMatchesSearchQuery(q searchQuery, text string) bool {
 		}
 	}
 	if len(q.aliasTokens) > 0 {
-		for _, raw := range searchWordPattern.FindAllString(text, -1) {
+		for _, raw := range searchSourceWordPattern.FindAllString(text, -1) {
 			for _, token := range searchTokenVariants(raw) {
 				if len(q.aliasTokens[token]) > 0 {
 					return true

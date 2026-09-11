@@ -10,8 +10,15 @@ import (
 // One Git scan evaluates all alias routes. Its expressions reject substring-only
 // hits while streaming, so the provider need not hydrate noise.
 func searchGitAliasPatterns(q searchQuery) []string {
+	return searchGitAliasPatternsForTerms(q, searchGitGrepPreselectionPatterns(q))
+}
+
+func searchGitAliasPatternsForTerms(q searchQuery, terms []string) []string {
+	if !searchTermsSafeForGitGrep(terms) {
+		return nil
+	}
 	var patterns []string
-	for _, term := range searchGitGrepPreselectionPatterns(q) {
+	for _, term := range terms {
 		if !q.inferredAbbreviations[term] {
 			patterns = append(patterns, searchFoldedLiteral(term))
 		}
@@ -35,19 +42,41 @@ func searchGitAliasPatterns(q searchQuery) []string {
 }
 
 func searchFoldedLiteral(text string) string {
+	initSearchASCIILowerAlternatives()
 	var out strings.Builder
 	for _, r := range text {
 		lower, upper := unicode.ToLower(r), unicode.ToUpper(r)
+		literal := regexp.QuoteMeta(string(r))
 		if lower != upper {
-			out.WriteRune('[')
-			out.WriteRune(lower)
-			out.WriteRune(upper)
-			out.WriteRune(']')
-		} else {
-			out.WriteString(regexp.QuoteMeta(string(r)))
+			literal = "[" + string(lower) + string(upper) + "]"
 		}
+		if lower < 128 && len(searchASCIILowerAlternatives[lower]) > 0 {
+			alternatives := []string{literal}
+			for _, alt := range searchASCIILowerAlternatives[lower] {
+				alternatives = append(alternatives, regexp.QuoteMeta(string(alt)))
+			}
+			literal = "(" + strings.Join(alternatives, "|") + ")"
+		}
+		out.WriteString(literal)
 	}
 	return out.String()
+}
+
+func searchForcedCaseLiteral(r rune) string {
+	initSearchASCIILowerAlternatives()
+	alternatives := []string{regexp.QuoteMeta(string(r))}
+	lower := unicode.ToLower(r)
+	if lower < 128 {
+		for _, alt := range searchASCIILowerAlternatives[lower] {
+			if unicode.IsUpper(r) == unicode.IsUpper(alt) {
+				alternatives = append(alternatives, regexp.QuoteMeta(string(alt)))
+			}
+		}
+	}
+	if len(alternatives) == 1 {
+		return alternatives[0]
+	}
+	return "(" + strings.Join(alternatives, "|") + ")"
 }
 
 // Express the same word/camel-case boundaries as searchTokenVariants in POSIX
@@ -96,7 +125,7 @@ func searchAliasBoundaryPatterns(form string) []string {
 			var word strings.Builder
 			for index, r := range chars {
 				if forced[index] != 0 {
-					word.WriteString(regexp.QuoteMeta(string(forced[index])))
+					word.WriteString(searchForcedCaseLiteral(forced[index]))
 				} else {
 					word.WriteString(searchFoldedLiteral(string(r)))
 				}

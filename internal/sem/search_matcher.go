@@ -29,12 +29,16 @@ func newSearchQueryTermMatcher(q searchQuery) searchTermMatcher {
 	matcher := newSearchTermMatcher(q.terms)
 	matcher.aliasTerms = map[int]string{}
 	matcher.aliasTokens = map[string][]int{}
+	termIndexes := map[string]int{}
 	for index, term := range q.terms {
+		termIndexes[term] = index
 		if q.inferredAbbreviations[term] {
 			matcher.aliasTerms[index] = term
-			for token := range searchAliasForms[term] {
-				matcher.aliasTokens[token] = append(matcher.aliasTokens[token], index)
-			}
+		}
+	}
+	for token, aliases := range q.aliasTokens {
+		for _, alias := range aliases {
+			matcher.aliasTokens[token] = append(matcher.aliasTokens[token], termIndexes[alias])
 		}
 	}
 	return matcher
@@ -100,10 +104,14 @@ func (matcher *searchTermMatcher) buildFailures() {
 
 func (matcher searchTermMatcher) match(text string) []bool {
 	found := make([]bool, matcher.termCount)
+	scanText := text
+	if !asciiString(text) {
+		scanText = strings.ToLower(text)
+	}
 	remaining := matcher.termCount
 	state := 0
-	for offset := 0; offset < len(text) && remaining > 0; offset++ {
-		character := text[offset]
+	for offset := 0; offset < len(scanText) && remaining > 0; offset++ {
+		character := scanText[offset]
 		if character >= 128 {
 			state = 0
 			continue
@@ -137,7 +145,7 @@ func (matcher searchTermMatcher) match(text string) []bool {
 		for index := range matcher.aliasTerms {
 			found[index] = false
 		}
-		for _, raw := range searchWordPattern.FindAllString(text, -1) {
+		for _, raw := range searchSourceWordPattern.FindAllString(text, -1) {
 			for _, token := range searchTokenVariants(raw) {
 				for _, index := range matcher.aliasTokens[token] {
 					found[index] = true
