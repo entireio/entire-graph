@@ -3475,7 +3475,8 @@ func searchNameTermCoverage(result SearchResult, q searchQuery, _ map[string]flo
 		if q.inferredAbbreviations[term] {
 			continue
 		}
-		if searchNameTokenMatchesTerm(tokens, term) || searchNameMatchesAbbreviation(tokens, term) {
+		if (result.Kind == "section" || result.Kind == "document") && searchProseNameContainsTerm(name, term) ||
+			result.Kind != "section" && result.Kind != "document" && (searchNameTokenMatchesTerm(tokens, term) || searchNameMatchesAbbreviation(tokens, term)) {
 			matched++
 		}
 	}
@@ -3483,6 +3484,19 @@ func searchNameTermCoverage(result SearchResult, q searchQuery, _ map[string]flo
 		return 0
 	}
 	return minFloat64(float64(matched), 3) / 3
+}
+
+func searchProseNameContainsTerm(name, term string) bool {
+	if len(term) < 3 {
+		return false
+	}
+	if strings.Contains(name, term) {
+		return true
+	}
+	if strings.HasSuffix(term, "es") && len(term) > 4 && strings.Contains(name, term[:len(term)-2]) {
+		return true
+	}
+	return strings.HasSuffix(term, "s") && len(term) > 3 && strings.Contains(name, term[:len(term)-1])
 }
 
 // searchNameTokenMatchesTerm matches a query term against the TOKENS of an identifier, tolerating
@@ -3822,12 +3836,14 @@ func searchNameCoversQuery(result SearchResult, q searchQuery) bool {
 	}
 	matched, concepts := 0, 0
 	tokens := searchTokenVariants(name)
+	lowerName := strings.ToLower(name)
 	for _, term := range q.terms {
 		if q.inferredAbbreviations[term] {
 			continue
 		}
 		concepts++
-		if searchNameTokenMatchesTerm(tokens, term) || searchNameMatchesAbbreviation(tokens, term) {
+		if (result.Kind == "section" || result.Kind == "document") && strings.Contains(lowerName, term) ||
+			result.Kind != "section" && result.Kind != "document" && (searchNameTokenMatchesTerm(tokens, term) || searchNameMatchesAbbreviation(tokens, term)) {
 			matched++
 		}
 	}

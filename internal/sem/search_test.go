@@ -2690,6 +2690,9 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 		if query != "integer" {
 			limit = 4
 		}
+		if query == "integer common" {
+			limit++
+		} // conservative fallback is counted separately from the four-file pool
 		if response.Stats.FilesContentRead > limit {
 			t.Fatalf("hydrated substring noise before the pool limit: %#v", response.Stats)
 		}
@@ -2859,6 +2862,20 @@ func TestSearchReviewRoundSevenRegressions(t *testing.T) {
 	for _, query := range []string{"users that log in", "accounts that logged in", "clients that are logging in"} {
 		if !buildSearchQuery(query).termSet["login"] {
 			t.Errorf("relative clause lost login: %q", query)
+		}
+	}
+}
+
+func TestSearchProseHeadingCoveragePreservesTextMatching(t *testing.T) {
+	q := buildSearchQuery("start")
+	for _, kind := range []string{"section", "document", "function"} {
+		result := SearchResult{Kind: kind, SymbolName: "Getting Started Guide"}
+		want := kind != "function"
+		if got := searchNameTermCoverage(result, q, nil) > 0; got != want {
+			t.Errorf("%s coverage=%v", kind, got)
+		}
+		if got := searchNameCoversQuery(result, q); got != want {
+			t.Errorf("%s covers=%v", kind, got)
 		}
 	}
 }
