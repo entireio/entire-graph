@@ -254,7 +254,7 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 			},
 			wantCommand: "./gradlew :lib:test --tests 'ATest'",
 			wantTargets: "lib/src/test/kotlin/ATest.kt",
-			wantDerived: "lib/build.gradle.kts + gradlew + mirror test file class",
+			wantDerived: "lib/build.gradle.kts + gradlew + settings.gradle + mirror test file class",
 		},
 		{
 			name: "gradle without the wrapper emits nothing",

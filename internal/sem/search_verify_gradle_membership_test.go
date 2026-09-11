@@ -136,3 +136,56 @@ func TestSearchVerifyGradleNarrowProjectMembership(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchVerifyGradleNarrowNestedBuilds(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		sourcePath string
+		testPath   string
+		files      map[string]string
+		want       string
+	}{
+		{
+			name:       "independent_build_under_ancestor_wrapper",
+			sourcePath: "modules/src/main/java/A.java",
+			testPath:   "modules/src/test/java/ATest.java",
+			files: map[string]string{
+				"gradlew":                          "",
+				"modules/settings.gradle":          "",
+				"modules/build.gradle":             "",
+				"modules/src/main/java/A.java":     "",
+				"modules/src/test/java/ATest.java": "",
+			},
+			want: "./gradlew -p modules test --tests 'ATest'",
+		},
+		{
+			name:       "project_under_intermediate_build",
+			sourcePath: "modules/core/src/main/java/A.java",
+			testPath:   "modules/core/src/test/java/ATest.java",
+			files: map[string]string{
+				"gradlew":                               "",
+				"modules/settings.gradle":               "include ':core'\n",
+				"modules/core/build.gradle":             "",
+				"modules/core/src/main/java/A.java":     "",
+				"modules/core/src/test/java/ATest.java": "",
+			},
+			want: "./gradlew -p modules :core:test --tests 'ATest'",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			evidence := searchVerifyTestEvidence(tc.files)
+			got := deriveSearchVerifyCommand(searchVerifySubject{
+				sourcePath:   tc.sourcePath,
+				testPath:     tc.testPath,
+				testEvidence: "covering test",
+			}, &evidence)
+			if got == nil {
+				t.Fatal("expected a filtered Gradle command")
+			}
+			t.Logf("generated command = %q", got.Command)
+			if got.Command != tc.want {
+				t.Fatalf("command = %q, want %q", got.Command, tc.want)
+			}
+		})
+	}
+}

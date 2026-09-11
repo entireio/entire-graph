@@ -657,80 +657,83 @@ func searchVerifyGradleManifest(dir string, evidence *searchVerifyEvidence) stri
 	return ""
 }
 
-func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+type searchVerifyGradleTarget struct {
+	wrapperDir    string
+	commandPrefix string
+	project       string
+	derivedFrom   string
+	selectsBuild  bool
+}
+
+func (target searchVerifyGradleTarget) testCommand(qualifyRoot bool) string {
+	task := "test"
+	if target.project != "" {
+		task = target.project + ":test"
+	} else if qualifyRoot && !target.selectsBuild {
+		task = ":test"
+	}
+	return target.commandPrefix + " " + shellQuote(task)
+}
+
+func searchVerifyGradleTargetForDir(dir string, evidence *searchVerifyEvidence) (searchVerifyGradleTarget, bool) {
 	manifest := searchVerifyGradleManifest(dir, evidence)
 	if manifest == "" {
-		return nil
+		return searchVerifyGradleTarget{}, false
 	}
 	wrapperDir, wrapperPath, ok := searchVerifyAncestorFile(dir, "gradlew", evidence)
 	if !ok {
-		return nil
+		return searchVerifyGradleTarget{}, false
+	}
+	target := searchVerifyGradleTarget{
+		wrapperDir:    wrapperDir,
+		commandPrefix: "./gradlew",
+		derivedFrom:   manifest + " + " + wrapperPath,
 	}
 	if wrapperDir == dir {
-		return searchVerifySuiteCommand(wrapperDir, "./gradlew test", manifest+" + "+wrapperPath)
-	}
-	// The wrapper lives above the build this derivation is about. Running `./gradlew test` from the
-	// wrapper's own directory would test whatever build sits THERE, because Gradle does not discover
-	// a descendant build by walking down — but WHICH command names this one is decided by the
-	// settings script, not by the directory layout.
-	//
-	// Gradle locates the settings file by walking UP from its start directory and then keeps what it
-	// found only if that file declares a project AT the start directory; otherwise it discards the
-	// settings and runs the start directory as its own empty-settings build. So `-p <dir> test` is
-	// NOT "the root build with a different default project": in an ordinary multi-project layout it
-	// is the root build when the root settings declares <dir>, and a different, sibling-less build
-	// when it does not — where `project(":core")` dependencies no longer resolve. A `build.gradle`
-	// sitting in a subdirectory says nothing about which of the two it is.
-	relative, inside := searchVerifyRelative(wrapperDir, dir)
-	if !inside {
-		return nil
+		return target, true
 	}
 	settingsDir, settingsPath, settings, found := searchVerifyGradleAncestorSettings(dir, wrapperDir, evidence)
 	if !found {
-		return nil
+		return searchVerifyGradleTarget{}, false
 	}
+	target.derivedFrom += " + " + settingsPath
 	if settingsDir == dir {
-		// The directory carries its own settings script, so it IS a build root and that is the
-		// settings file Gradle finds first when started there. `-p` is the spelling for that.
-		return searchVerifySuiteCommand(
-			wrapperDir,
-			"./gradlew -p "+shellQuotePath(relative)+" test",
-			manifest+" + "+wrapperPath+" + "+settingsPath,
-		)
+		relative, inside := searchVerifyRelative(wrapperDir, dir)
+		if !inside {
+			return searchVerifyGradleTarget{}, false
+		}
+		target.commandPrefix += " -p " + shellQuotePath(relative)
+		target.selectsBuild = true
+		return target, true
 	}
 	projectDir, inside := searchVerifyRelative(settingsDir, dir)
 	if !inside {
-		return nil
+		return searchVerifyGradleTarget{}, false
 	}
 	project := ":" + strings.ReplaceAll(projectDir, "/", ":")
 	if !searchVerifyGradleSettingsIncludes(settings, project) {
-		// Nothing in the tree says this directory is a build Gradle can be pointed at, so there is
-		// no command to emit. Silence costs a lookup; a `-p` that quietly ran a different build
-		// would report a pass the edit never earned.
-		return nil
+		return searchVerifyGradleTarget{}, false
 	}
 	if searchVerifyGradleSettingsRemapsProject(settings, project) {
-		// The project path is declared, but the settings script moves it somewhere else on disk, so
-		// the path derived from THIS directory names a different tree. `./gradlew :lib:test` would
-		// run, and pass, about code the edit never touched — which is worse than emitting nothing.
-		return nil
+		return searchVerifyGradleTarget{}, false
 	}
-	// An included subproject is addressed by its project path from the root of the build that
-	// declares it — the documented spelling, `gradle :subproject:taskName`.
-	command := "./gradlew "
 	if settingsDir != wrapperDir {
 		buildRoot, inside := searchVerifyRelative(wrapperDir, settingsDir)
 		if !inside {
-			return nil
+			return searchVerifyGradleTarget{}, false
 		}
-		command += "-p " + shellQuotePath(buildRoot) + " "
+		target.commandPrefix += " -p " + shellQuotePath(buildRoot)
 	}
-	command += shellQuote(project + ":test")
-	return searchVerifySuiteCommand(
-		wrapperDir,
-		command,
-		manifest+" + "+wrapperPath+" + "+settingsPath,
-	)
+	target.project = project
+	return target, true
+}
+
+func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	target, ok := searchVerifyGradleTargetForDir(dir, evidence)
+	if !ok {
+		return nil
+	}
+	return searchVerifySuiteCommand(target.wrapperDir, target.testCommand(false), target.derivedFrom)
 }
 
 // searchVerifyGradleSettings returns the settings script that makes a directory a Gradle build root,
@@ -2009,26 +2012,15 @@ func searchVerifyModuleLabel(dir string) string {
 // because `:module:test` without `--tests` is the whole module and Gradle's project path is only
 // worth deriving when it buys a filter.
 func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
-	manifest := searchVerifyGradleManifest(dir, evidence)
-	if manifest == "" || !evidence.exists("gradlew") {
-		return nil
-	}
 	if subject.testPath == "" {
 		return nil
 	}
 	if _, inside := searchVerifyRelative(dir, subject.testPath); !inside {
 		return nil
 	}
-	project := ":"
-	if dir != "" {
-		project = ":" + strings.ReplaceAll(dir, "/", ":")
-		_, settings, found := searchVerifyGradleSettings("", evidence)
-		if !found ||
-			!searchVerifyGradleSettingsIncludes(settings, project) ||
-			searchVerifyGradleSettingsRemapsProject(settings, project) {
-			return nil
-		}
-		project += ":"
+	target, ok := searchVerifyGradleTargetForDir(dir, evidence)
+	if !ok {
+		return nil
 	}
 	class := searchVerifyStem(subject.testPath)
 	classArg := shellQuote(class)
@@ -2038,9 +2030,9 @@ func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence 
 		classArg = "'" + class + "'"
 	}
 	return &SearchVerifyCommand{
-		Command:     "./gradlew " + shellQuote(project+"test") + " --tests " + classArg,
+		Command:     searchVerifyRunIn(target.wrapperDir, target.testCommand(true)+" --tests "+classArg),
 		Targets:     subject.testPath,
-		DerivedFrom: manifest + " + gradlew + " + subject.testEvidence + " class",
+		DerivedFrom: target.derivedFrom + " + " + subject.testEvidence + " class",
 	}
 }
 
