@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.10.7-nightly.202609080625.78a655db4.0.20260908145503-8bbfeb6d3901+dirty",
+  "checkpoint_id": "136f122c09f8",
+  "strategy": "manual-commit",
+  "branch": "fix/search-prose-query-ranking",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/sem/search.go",
+    "internal/sem/search_eval_test.go",
+    "internal/sem/search_matcher.go",
+    "internal/sem/search_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/13/6f122c09f8/0/metadata.json",
+      "transcript": "/13/6f122c09f8/0/full.jsonl",
+      "compact_transcript": "/13/6f122c09f8/0/transcript.jsonl",
+      "content_hash": "/13/6f122c09f8/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 277311,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 6418048,
+    "output_tokens": 13105,
+    "api_call_count": 44
+  }
+}
