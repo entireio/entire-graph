@@ -12,6 +12,7 @@ import (
 const maxSearchGitAliasPatternBytes = 128 * 1024
 
 // At most one ordinary-term scan and four alias scans on a large worktree.
+// Larger alias sets coalesce into one scan and validate only the matching files.
 const maxSearchGitAliasScans = 4
 
 func searchGitAliasScansFit(q searchQuery) bool {
@@ -65,10 +66,7 @@ func searchGitAliasPatternsForTerms(q searchQuery, terms []string) []string {
 			continue
 		}
 		sort.Strings(forms)
-		var alternatives []string
-		for _, form := range forms {
-			alternatives = append(alternatives, searchAliasBoundaryPatterns(form)...)
-		}
+		alternatives := searchAliasBoundaryPatterns(forms)
 		patterns = append(patterns, "("+strings.Join(alternatives, "|")+")")
 	}
 	bytes := 0
@@ -125,55 +123,106 @@ func searchForcedCaseLiteral(r rune) string {
 // Express the same word/camel-case boundaries as searchTokenVariants in POSIX
 // ERE. Boundary characters are consumed; callers request whole lines, so this
 // does not hide adjacent aliases on a matching line.
-func searchAliasBoundaryPatterns(form string) []string {
-	chars := []rune(form)
+// Trie edges are complete regex atoms, so sharing prefixes cannot split a
+// character class or a Unicode alternative. Optional tails retain shorter forms.
+type searchAliasRegexTrie struct {
+	terminal bool
+	children map[string]*searchAliasRegexTrie
+}
+
+func (t *searchAliasRegexTrie) add(atoms []string) {
+	node := t
+	for _, atom := range atoms {
+		if node.children == nil {
+			node.children = make(map[string]*searchAliasRegexTrie)
+		}
+		next := node.children[atom]
+		if next == nil {
+			next = &searchAliasRegexTrie{}
+			node.children[atom] = next
+		}
+		node = next
+	}
+	node.terminal = true
+}
+
+func (t *searchAliasRegexTrie) pattern() string {
+	if len(t.children) == 0 {
+		return ""
+	}
+	atoms := make([]string, 0, len(t.children))
+	for atom := range t.children {
+		atoms = append(atoms, atom)
+	}
+	sort.Strings(atoms)
+	alternatives := make([]string, 0, len(atoms))
+	for _, atom := range atoms {
+		alternatives = append(alternatives, atom+t.children[atom].pattern())
+	}
+	pattern := strings.Join(alternatives, "|")
+	if len(alternatives) > 1 {
+		pattern = "(" + pattern + ")"
+	}
+	if t.terminal {
+		pattern = "(" + pattern + ")?"
+	}
+	return pattern
+}
+
+func searchAliasBoundaryPatterns(forms []string) []string {
 	var out []string
+	prefixes := []string{"(^|[^[:alnum:]])", "[[:lower:][:digit:]]", "[[:upper:]]"}
+	suffixes := []string{"($|[^[:alnum:]])", "[[:upper:]]", "[[:upper:]][[:lower:]]"}
 	for left := 0; left < 3; left++ {
 		for right := 0; right < 3; right++ {
-			forced := make([]rune, len(chars))
-			force := func(index int, r rune) bool {
-				if forced[index] != 0 && forced[index] != r {
-					return false
-				}
-				forced[index] = r
-				return true
-			}
-			prefix := "(^|[^[:alnum:]])"
-			switch left {
-			case 1:
-				if !unicode.IsLetter(chars[0]) || !force(0, unicode.ToUpper(chars[0])) {
+			trie := searchAliasRegexTrie{}
+			for _, form := range forms {
+				chars := []rune(form)
+				if len(chars) == 0 {
 					continue
 				}
-				prefix = "[[:lower:][:digit:]]"
-			case 2:
-				if len(chars) < 2 || !unicode.IsLetter(chars[0]) || !unicode.IsLetter(chars[1]) || !force(0, unicode.ToUpper(chars[0])) || !force(1, unicode.ToLower(chars[1])) {
-					continue
+				forced := make([]rune, len(chars))
+				force := func(index int, r rune) bool {
+					if forced[index] != 0 && forced[index] != r {
+						return false
+					}
+					forced[index] = r
+					return true
 				}
-				prefix = "[[:upper:]]"
+				switch left {
+				case 1:
+					if !unicode.IsLetter(chars[0]) || !force(0, unicode.ToUpper(chars[0])) {
+						continue
+					}
+				case 2:
+					if len(chars) < 2 || !unicode.IsLetter(chars[0]) || !unicode.IsLetter(chars[1]) || !force(0, unicode.ToUpper(chars[0])) || !force(1, unicode.ToLower(chars[1])) {
+						continue
+					}
+				}
+				last := len(chars) - 1
+				switch right {
+				case 1:
+					if unicode.IsLetter(chars[last]) && !force(last, unicode.ToLower(chars[last])) {
+						continue
+					}
+				case 2:
+					if !unicode.IsLetter(chars[last]) || !force(last, unicode.ToUpper(chars[last])) {
+						continue
+					}
+				}
+				atoms := make([]string, len(chars))
+				for index, r := range chars {
+					if forced[index] != 0 {
+						atoms[index] = searchForcedCaseLiteral(forced[index])
+					} else {
+						atoms[index] = searchFoldedLiteral(string(r))
+					}
+				}
+				trie.add(atoms)
 			}
-			last := len(chars) - 1
-			suffix := "($|[^[:alnum:]])"
-			switch right {
-			case 1:
-				if unicode.IsLetter(chars[last]) && !force(last, unicode.ToLower(chars[last])) {
-					continue
-				}
-				suffix = "[[:upper:]]"
-			case 2:
-				if !unicode.IsLetter(chars[last]) || !force(last, unicode.ToUpper(chars[last])) {
-					continue
-				}
-				suffix = "[[:upper:]][[:lower:]]"
+			if len(trie.children) > 0 {
+				out = append(out, prefixes[left]+trie.pattern()+suffixes[right])
 			}
-			var word strings.Builder
-			for index, r := range chars {
-				if forced[index] != 0 {
-					word.WriteString(searchForcedCaseLiteral(forced[index]))
-				} else {
-					word.WriteString(searchFoldedLiteral(string(r)))
-				}
-			}
-			out = append(out, prefix+word.String()+suffix)
 		}
 	}
 	return out

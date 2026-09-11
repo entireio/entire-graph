@@ -2026,6 +2026,8 @@ func preselectSearchFiles(
 			allowed[filePath] = true
 		}
 		termMatches := make(map[string][]bool)
+		coalescedAliases := len(q.inferredAbbreviations) > 0 && !searchGitAliasScansFit(q)
+		coalescedPaths := make(map[string]bool)
 		saturated := make(map[string]bool)
 		fullyScanned := make(map[string]bool)
 		record := func(match gitutil.GrepMatch) error {
@@ -2053,13 +2055,14 @@ func preselectSearchFiles(
 		var grepErr error
 		if len(q.inferredAbbreviations) > 0 {
 			gitIndexPasses = 0
-			if !searchGitAliasScansFit(q) {
-				grepErr = fmt.Errorf("query exceeds alias scan budget")
-			}
 			// Preserve the ordinary-term sample in one scan. Alias evidence
 			// gets independent first-hit scans, so common terms cannot hide it.
 			var primary []string
-			for _, term := range searchGitGrepPreselectionPatterns(q) {
+			primaryTerms := searchGitGrepPreselectionPatterns(q)
+			if coalescedAliases {
+				primaryTerms = q.terms
+			}
+			for _, term := range primaryTerms {
 				if !q.inferredAbbreviations[term] {
 					primary = append(primary, term)
 				}
@@ -2072,7 +2075,29 @@ func preselectSearchFiles(
 					grepErr = gitutil.GrepIndexPatternSample(ctx, source.absRepo, patterns, record)
 				}
 			}
+			if coalescedAliases && grepErr == nil {
+				var aliases []string
+				for _, term := range q.terms {
+					if q.inferredAbbreviations[term] {
+						aliases = append(aliases, term)
+					}
+				}
+				if patterns := searchGitAliasPatternsForTerms(q, aliases); patterns == nil {
+					grepErr = fmt.Errorf("query requires content preselection")
+				} else {
+					gitIndexPasses++
+					grepErr = gitutil.GrepIndexPatternLines(ctx, source.absRepo, patterns, func(match gitutil.GrepMatch) error {
+						if allowed[match.Path] {
+							coalescedPaths[match.Path] = true
+						}
+						return record(match)
+					})
+				}
+			}
 			for _, term := range q.terms {
+				if coalescedAliases {
+					break
+				}
 				if grepErr != nil {
 					break
 				}
@@ -2138,7 +2163,7 @@ func preselectSearchFiles(
 					}
 				}
 				pathScore := pathSearchScore(q, filePath)
-				if pathScore == 0 && matchedWeight == 0 {
+				if pathScore == 0 && matchedWeight == 0 && !coalescedPaths[filePath] {
 					continue
 				}
 				contentScore := matchedWeight
@@ -2175,7 +2200,8 @@ func preselectSearchFiles(
 				return canonicalSearchPathLess(provisional[i].path, provisional[j].path)
 			})
 			poolLimit := len(provisional)
-			if threshold := (len(provisional)-1)/4 + 1; options.MaxIndexedFiles < threshold {
+			// Coalesced hits need full-content scoring before applying the pool limit.
+			if threshold := (len(provisional)-1)/4 + 1; !coalescedAliases && options.MaxIndexedFiles < threshold {
 				poolLimit = options.MaxIndexedFiles * 4
 			}
 			scanPaths = make([]string, 0, poolLimit+len(untracked))
@@ -2188,7 +2214,7 @@ func preselectSearchFiles(
 				scanPaths = append(scanPaths, candidate.path)
 			}
 			scanPaths = append(scanPaths, untracked...)
-			if len(scanPaths) == 0 {
+			if len(scanPaths) == 0 && !coalescedAliases {
 				scanPaths = source.paths
 			}
 		}
@@ -5316,6 +5342,10 @@ func searchCompoundNounPhraseBefore(tokens []string, index int) bool {
 	modifiers := 0
 	for at := index - 1; at >= 0 && index-at <= 4; at-- {
 		word := searchCompoundToken(tokens[at])
+		switch word {
+		case "write", "read", "archive", "store", "output", "print", "emit", "send", "delete", "inspect", "list", "view":
+			return true
+		}
 		if searchCompoundDeterminers[word] {
 			return !(word == "that" && searchCompoundRelativeSubject(tokens, at-1))
 		}
@@ -5343,7 +5373,7 @@ func searchCompoundLoggingObject(tokens []string) bool {
 	for _, raw := range tokens {
 		for _, word := range searchNameWordVariants(searchCompoundToken(raw)) {
 			switch word {
-			case "message", "msg", "event", "record", "line", "entry", "output", "error", "warning", "exception", "payload", "data", "detail", "text":
+			case "message", "msg", "event", "record", "line", "entry", "output", "error", "warning", "exception", "payload", "data", "detail", "text", "file", "request":
 				return true
 			}
 		}
@@ -5381,7 +5411,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		// format describes that object for any verb ("sign the request in JSON").
 		// Adjacent "check in a JSON file" instead places the object after "in".
 		if joined, ok := searchCompoundJoin(tokens[index], particle); ok &&
-			!(joined == "login" && searchCompoundLoggingObject(tokens[index+1:index+gap])) &&
+			!(joined == "login" && (searchCompoundNounPhraseBefore(tokens, index) || searchCompoundLoggingObject(tokens[index+1:index+gap]))) &&
 			!searchCompoundFormatPreposition(tokens, index+gap) {
 			out = append(out, joined)
 		}

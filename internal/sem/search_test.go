@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 func TestSearchRepositoryRanksExactSymbol(t *testing.T) {
@@ -2682,7 +2684,7 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 	write(t, repo, "a_other.go", "package app\nfunc readInt() {}\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "large alias corpus")
-	for _, query := range []string{"integer", "integer common", "issue authentication", "integer database"} {
+	for _, query := range []string{"integer", "integer common", "issue authentication", "integer database", "authentication configuration database integer identifier environment"} {
 		response, err := SearchRepository(t.Context(), repo, "test", query, SearchOptions{Worktree: true, Profile: ProfileSyntaxOnly, MaxIndexedFiles: 1, TopK: 5})
 		if err != nil {
 			t.Fatal(err)
@@ -2703,7 +2705,7 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 		if query == "integer common" && response.Stats.PreselectionPasses != 3 {
 			t.Fatalf("ordinary terms must share one Git scan: %#v", response.Stats)
 		}
-		if query == "integer database" {
+		if query == "integer database" || query == "authentication configuration database integer identifier environment" {
 			if len(response.Results) == 0 || response.Results[0].FilePath != "z_value.go" {
 				t.Fatalf("full-file validation lost the other alias: %#v", response.Results)
 			}
@@ -2902,7 +2904,7 @@ func TestSearchReviewRoundEightRegressions(t *testing.T) {
 		}
 	}
 	if searchGitAliasScansFit(buildSearchQuery("authentication configuration database integer identifier environment")) {
-		t.Error("excess aliases must fall back")
+		t.Error("excess aliases must coalesce")
 	}
 	if !searchGitAliasScansFit(buildSearchQuery("authentication")) {
 		t.Error("ordinary alias should use bounded scans")
@@ -2950,6 +2952,54 @@ func TestSearchReviewRoundTenRegressions(t *testing.T) {
 		counts, _ := searchTermCounts(name, q)
 		if counts["auth"] != 1 || !searchQueryNameTermMatches(q, name, "auth") {
 			t.Errorf("lost OAuth2 evidence in %s: %v", name, counts)
+		}
+	}
+}
+
+func TestSearchReviewRoundElevenRegressions(t *testing.T) {
+	for _, query := range []string{"archive the log files in sequence", "log the requests in sequence", "write logs in sequence"} {
+		if buildSearchQuery(query).termSet["login"] {
+			t.Errorf("false login for %q", query)
+		}
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	write(t, repo, "database.go", "package app\nfunc DBThing() {}\n")
+	write(t, repo, "identifier.go", "package app\nfunc IDThing() {}\n")
+	git(t, repo, "add", ".")
+	for query, path := range map[string]string{"database": "database.go", "identifier": "identifier.go"} {
+		var matches []gitutil.GrepMatch
+		if err := gitutil.GrepIndexPatternLines(t.Context(), repo, searchGitAliasPatterns(buildSearchQuery(query)), func(m gitutil.GrepMatch) error { matches = append(matches, m); return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) != 1 || matches[0].Path != path {
+			t.Errorf("lost acronym for %s: %v", query, matches)
+		}
+	}
+}
+
+func TestSearchAliasPatternFactoringPreservesAlternatives(t *testing.T) {
+	forms := []string{"auth", "authn", "auth2", "authenticated", "authentication", "authorization", "db", "database", "id", "ids"}
+	factored := strings.Join(searchAliasBoundaryPatterns(forms), "|")
+	var expanded []string
+	for _, form := range forms {
+		expanded = append(expanded, searchAliasBoundaryPatterns([]string{form})...)
+	}
+	flat := strings.Join(expanded, "|")
+	if len(factored) >= len(flat) {
+		t.Fatalf("factoring did not reduce payload: %d >= %d", len(factored), len(flat))
+	}
+	got, want := regexp.MustCompile(factored), regexp.MustCompile(flat)
+	for _, form := range forms {
+		for _, spelling := range []string{form, strings.ToUpper(form), strings.ToUpper(form[:1]) + form[1:]} {
+			for _, prefix := range []string{"", "New", "X", "x", "α", "_"} {
+				for _, suffix := range []string{"", "Thing", "VALUE", "x", "_"} {
+					text := prefix + spelling + suffix
+					if got.MatchString(text) != want.MatchString(text) {
+						t.Errorf("factoring changed %q", text)
+					}
+				}
+			}
 		}
 	}
 }
