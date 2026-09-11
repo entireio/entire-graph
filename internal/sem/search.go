@@ -3723,6 +3723,14 @@ func searchTextMatchesAlias(text, alias string) bool {
 	return false
 }
 
+// Prose headings retain text matching; code names use identifier boundaries.
+func searchSymbolNameScoreMatches(q searchQuery, symbol SymbolRecord, term string) bool {
+	if symbol.Kind == "section" || symbol.Kind == "document" {
+		return searchQueryTermMatches(q, symbol.Name, strings.ToLower(symbol.Name), term) || searchQueryTermMatches(q, symbol.QualifiedName, strings.ToLower(symbol.QualifiedName), term)
+	}
+	return searchQueryNameTermMatches(q, symbol.Name, term) || searchQueryNameTermMatches(q, symbol.QualifiedName, term)
+}
+
 func searchQueryNameTermMatches(q searchQuery, name, term string) bool {
 	if q.inferredAbbreviations[term] {
 		return searchQueryTermMatches(q, name, strings.ToLower(name), term)
@@ -6095,7 +6103,7 @@ func symbolSearchScore(q searchQuery, symbol SymbolRecord) (float64, []string) {
 		case name == term:
 			score += 6 * weight
 			signals = append(signals, "symbol-name")
-		case searchQueryNameTermMatches(q, symbol.Name, term) || searchQueryNameTermMatches(q, symbol.QualifiedName, term):
+		case searchSymbolNameScoreMatches(q, symbol, term):
 			score += 3 * weight
 			signals = append(signals, "symbol-name")
 		case searchQueryTermMatches(q, symbol.Signature, signature, term):
