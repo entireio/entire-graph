@@ -3721,8 +3721,10 @@ func searchQueryTermMatches(q searchQuery, text, lower, term string) bool {
 	if q.inferredAbbreviations[term] {
 		for _, raw := range searchSourceWordPattern.FindAllString(text, -1) {
 			for _, token := range searchTokenVariants(raw) {
-				if containsString(q.aliasTokens[token], term) {
-					return true
+				for _, alias := range q.aliasTokens[token] {
+					if alias == term {
+						return true
+					}
 				}
 			}
 		}
