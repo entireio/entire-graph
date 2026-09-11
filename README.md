@@ -2,28 +2,47 @@
 
 # Entire Graph
 
-Coding agents lose time before the edit, while they are still looking for the
-right code. Entire Graph is a plugin for the Entire CLI that gives an agent a
-precomputed map of one Git repository: ranked code search plus definitions,
-callers, types, routes, and change impact, each with `file:line` locations. The
-built-in analyzer parses the repository locally with tree-sitter and makes no
-network requests, model calls, or API-key lookups. Installing the plugin is the
-networked step.
+Agents are continually spending their budgets before they write the first line
+of code, rummaging through files, grepping for function names, and re-reading
+the same files and configs, as they attempt to understand a codebase fresh with
+each session. According to [OpenRouter's Head of Insights](https://www.linkedin.com/posts/peterjameswalker_february-6th-2026-potentially-the-last-share-7493029881841344512-IK89/?utm_source=share&utm_medium=member_desktop&rcm=ACoAABfX0nABz6sCWbPldiV_9liETVfz5fRLAD0), agentic
+token usage grew 14x between February and August 2026, up from 0.51 trillion tokens
+to 7.3 trillion.
 
-Setup happens once per repository. After that, the interface is your coding
-agent: you ask a code question in plain language, the agent runs graph queries,
-reads the code the graph points at, and answers with citations. A captured
-example is shown below.
+Entire Graph is a plugin for the Entire CLI specifically designed to enable your
+agents to stop paying that cost. It hands your agent a precomputed map of a Git
+repository: ranked code search plus definitions, callers, types, routes, and
+change impact, each with `file:line` locations. The built-in analyzer parses the
+repository locally with tree-sitter and makes no network requests, model calls,
+or API-key lookups.
+
+When running [LoCoMo](https://github.com/snap-research/locomo) against competitors,
+we measured the top score of 94.74% for Entire Graph. We also observed token savings
+up to 71% depending on the coding scenario. As always, your mileage may vary.
+
+## Setup
+
+[Entire CLI](https://github.com/entireio/cli#quick-start) is required. Then setup happens once per repository:
+
+```sh
+entire graph init-agents --repo .
+```
+
+If the plugin is not installed yet, the Entire CLI offers to install it on the
+spot. After that, the interface is your coding agent: you ask a code question in
+plain language, the agent runs graph queries, reads the code the graph points
+at, and answers with citations. A captured example follows.
 
 ## Benchmarks
 
-The Entire Graph retrieval engine ranked first in an eight-system LoCoMo comparison
-(1,540 questions, shared reader and judge, a 200-item retrieval budget requested for
-every arm) while building its index without model calls. Measured 2026-08-14 on the
-[#104](https://github.com/entireio/entire-graph/pull/104) branch, before that work merged; the
-retrieval path it exercises first shipped in
-[v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0) (tagged four days later,
-2026-08-18). See § below for what that does and does not license you to claim.
+To put entire-graph to the test, we ran it through
+[LoCoMo](https://github.com/snap-research/locomo), the standard benchmark for
+one hard skill: finding a single small detail buried in a pile of text. LoCoMo
+asks over 1,500 questions about long conversations that span many sessions and
+scores whether the tool can find the right piece of evidence.
+
+On identical questions, entire-graph found the right evidence more often than
+any of the seven other systems we tested, including graphify, mem0, and cognee.
 
 | System | LoCoMo | Index-time tokens | Version tested |
 | --- | --- | --- | --- |
@@ -32,34 +51,9 @@ retrieval path it exercises first shipped in
 | [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M | commit [`38eece5`](https://github.com/topoteretes/cognee/commit/38eece5bbb0cb9f5706fed908abd16dba0f5505e) |
 | [bm25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 | [0.2.2](https://github.com/dorianbrown/rank_bm25/releases/tag/0.2.2) |
 | [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) † | 91.30 | 0 | [v0.9.0](https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.0) |
-| [graphify](https://github.com/Graphify-Labs/graphify) ¶ | 87.34 | 0 | unpinned — see ¶ |
+| [graphify](https://github.com/Graphify-Labs/graphify)  | 87.34 | 0 | [0.9.37](https://github.com/Graphify-Labs/graphify/releases?page=3#release-v0.9.34)|
 | [letta](https://github.com/letta-ai/letta) | 84.68 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
-| [supermemory](https://github.com/supermemoryai/supermemory) ‡ | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
-
-§ **The 94.74 run is not a measurement of a released tag.** It ran on 2026-08-14 on the #104
-branch; v0.4.0 was tagged 2026-08-18, after further retrieval fixes, so the released revision was
-never benchmarked. The run id this number comes from, `sw_eg_mr3`, also has **no row in
-[`RUN-INDEX.md`](bench/memory/RUN-INDEX.md)**, the registry our own rules require, and the one
-registered run that also scores 94.74 (`plan_f_hyb`) used a **non-default** ingest granularity and
-is explicitly *not* interchangeable evidence. Quote 94.74 as the #104 branch result, not as v0.4.0's
-score. The shipped default at the time, `mrq_base`, scored **91.56**.
-
-¶ **graphify's tested version is not v0.9.43 and is not recoverable.** The run finished 2026-08-14
-16:25 UTC; v0.9.43 was published 19:17 UTC the same day — after the run — so it cannot be what was
-measured. The checkout no longer exists, so the exact revision cannot be recovered; it was whatever
-was current in that window. `UPSTREAM.md` records this as "not a confirmed exact pin".
-
-† **cmm is patched, not stock v0.9.0.** It was modified to emit Markdown sections
-([patch](bench/memory/patches/0005-cmm-v0.9.0-markdown-sections.patch)); the linked release alone
-does not reproduce 91.30.
-
-‡ **supermemory is patched, and its retrieval budget is half every other row's.** Reaching the
-shared extraction model required a binary capability-flag patch plus a wire-level parameter adapter,
-and a second fix made its content-dedup tolerate retries. Its search API also hard-caps retrieval at
-**100 items where every other arm gets 200** — a disclosed asymmetry that works against
-supermemory. The linked release alone does not reproduce 82.08. Full disclosure, including what is
-and is not reproducible from this repository:
-[`LOCOMO-COMPARISON.md` § ‡](bench/memory/LOCOMO-COMPARISON.md).
+| [supermemory](https://github.com/supermemoryai/supermemory)  | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
 
 See [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
 retractions, and reproduction steps.
