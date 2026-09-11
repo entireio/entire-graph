@@ -4591,6 +4591,13 @@ func expandSameFileBridgeCandidates(
 				if !ok {
 					continue
 				}
+				// An inferred path alias locates the file, but does not justify a
+				// symbol-free bridge displacing the actual downstream graph symbol.
+				directPathQuery := q
+				directPathQuery.inferredAbbreviations = nil
+				if len(candidate.termCounts) == 0 && candidate.result.SymbolID == "" && pathSearchScore(directPathQuery, filePath) == 0 {
+					continue
+				}
 				candidate.result.Signals = appendUnique(candidate.result.Signals, "same-file-bridge")
 				candidate.score = derivedSearchScore(maxFloat64(left.score, right.score), 0.45*(left.score+right.score))
 				candidate.baseScore = candidate.score
