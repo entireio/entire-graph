@@ -926,7 +926,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// The repository-wide literal lookup two blocks share. It reuses the per-term posting lists
 	// preselection already built, so it adds no corpus pass; see search_needle.go for the three
 	// sources and why it answers nothing when none of them is exact.
-	needleIndex := &searchNeedleIndex{read: read, corpus: selection.allFiles}
+	needleIndex := &searchNeedleIndex{read: read, corpus: selection.allFiles, inferredAbbreviations: q.inferredAbbreviations}
 	needleIndex.termFiles, needleIndex.termFileTotals = selection.termPostings.snapshot()
 	if selection.gitGrepUsable {
 		needleIndex.grep = newSearchNeedleGrep(ctx, selection.repoRoot, selection.gitGrepTreeish, selection.ignores)
