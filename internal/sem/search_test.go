@@ -3032,3 +3032,22 @@ func TestSearchReviewRoundThirteenRegressions(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchReviewRoundFourteenRegressions(t *testing.T) {
+	for _, tc := range []struct{ query, term string }{
+		{"process logs in sequence", "login"}, {"write the sign in red", "signin"},
+		{"write the check in red", "checkin"}, {"log a message out", "logout"},
+	} {
+		if buildSearchQuery(tc.query).termSet[tc.term] {
+			t.Errorf("false %s for %q", tc.term, tc.query)
+		}
+	}
+	if !buildSearchQuery("the process logs in").termSet["login"] {
+		t.Fatal("lost process subject")
+	}
+	for _, query := range []string{"authentication", "the function logs a user in", "configuration database", "no aliases here"} {
+		if !reflect.DeepEqual(buildSparseSearchQuery(query), buildSparseSearchQueryExpanded(query, buildSearchQuery(query))) {
+			t.Errorf("shared expansion changed %q", query)
+		}
+	}
+}

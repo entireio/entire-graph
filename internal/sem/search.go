@@ -735,7 +735,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// half of hybrid search (graph_candidates is always 0).
 		options.Profile = ProfileFast
 	}
-	sparseQuery := buildSparseSearchQuery(query)
+	sparseQuery := buildSparseSearchQueryExpanded(query, q)
 	searchStarted := time.Now()
 	baseSnapshotOptions := ProviderSnapshotOptions{
 		NoNetwork:     true,
@@ -5363,6 +5363,8 @@ func searchCompoundNounPhraseBefore(tokens []string, index int) bool {
 	for at := index - 1; at >= 0 && index-at <= 4; at-- {
 		word := searchCompoundToken(tokens[at])
 		switch word {
+		case "process":
+			return at == 0 || !searchCompoundDeterminers[searchCompoundToken(tokens[at-1])]
 		case "write", "read", "archive", "store", "output", "print", "emit", "send", "delete", "inspect", "list", "view":
 			return true
 		}
@@ -5401,6 +5403,19 @@ func searchCompoundPayloadObject(tokens []string) bool {
 	return false
 }
 
+// A preceding governing verb distinguishes "write the sign in red" from
+// the noun compound in "the sign in page". The noun-phrase check separately
+// ensures this bounded lookback does not cross a subject or clause.
+func searchCompoundGovernedObject(tokens []string, index int) bool {
+	for at := index - 1; at >= 0 && index-at <= 4; at-- {
+		switch searchCompoundToken(tokens[at]) {
+		case "write", "read", "archive", "store", "output", "print", "emit", "send", "delete", "inspect", "list", "view", "process":
+			return true
+		}
+	}
+	return false
+}
+
 func searchCompoundJoins(tokens []string, index int) []string {
 	var out []string
 	if strings.ContainsAny(tokens[index], ";!?,:") || strings.HasSuffix(tokens[index], ".") {
@@ -5409,7 +5424,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 	if index+1 < len(tokens) {
 		joined, ok := searchCompoundJoin(tokens[index], tokens[index+1])
 		nounPhrase := searchCompoundNounPhraseBefore(tokens, index)
-		if ok && !((joined == "login" || joined == "logout") && nounPhrase) && !((joined == "login" || nounPhrase) && searchCompoundFormatPreposition(tokens, index+1)) {
+		if ok && !((joined == "login" || joined == "logout" || searchPhrasalVerbParticles[searchCompoundToken(tokens[index+1])] && searchCompoundGovernedObject(tokens, index)) && nounPhrase) && !((joined == "login" || nounPhrase) && searchCompoundFormatPreposition(tokens, index+1)) {
 			out = append(out, joined)
 		}
 	}
@@ -5436,7 +5451,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		// Adjacent "check in a JSON file" instead places the object after "in".
 		if joined, ok := searchCompoundJoin(tokens[index], particle); ok &&
 			!((joined == "login" || joined == "logout") && searchCompoundNounPhraseBefore(tokens, index)) &&
-			!((joined == "login" || joined == "signin" && searchCompoundTrailingNounPhrase(tokens, index+gap)) && searchCompoundPayloadObject(tokens[index+1:index+gap])) &&
+			!((joined == "login" || joined == "logout" || joined == "signin" && searchCompoundTrailingNounPhrase(tokens, index+gap)) && searchCompoundPayloadObject(tokens[index+1:index+gap])) &&
 			!searchCompoundFormatPreposition(tokens, index+gap) {
 			out = append(out, joined)
 		}
@@ -5804,6 +5819,10 @@ func (q searchQuery) withCorpusPresence(documentFrequency map[string]int) search
 }
 
 func buildSparseSearchQuery(query string) searchQuery {
+	return buildSparseSearchQueryExpanded(query, buildSearchQuery(query))
+}
+
+func buildSparseSearchQueryExpanded(query string, expanded searchQuery) searchQuery {
 	// Same strip as buildSearchQuery: the sparse half of hybrid search must not be scored
 	// against a term set the dense half never sees, and its own cap
 	// (maxSparseSearchQueryTerms) is filled first-come, so URL debris starves it too.
@@ -5822,7 +5841,6 @@ func buildSparseSearchQuery(query string) searchQuery {
 			break
 		}
 	}
-	expanded := buildSearchQuery(query)
 	compounds := map[string]bool{}
 	compoundTokens := searchCompoundWordPattern.FindAllString(query, -1)
 	for index := range compoundTokens {
