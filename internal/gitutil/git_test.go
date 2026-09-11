@@ -3050,7 +3050,12 @@ func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
 	}
 	git(t, repo, "add", ".")
 	var matches []GrepMatch
-	err := GrepIndexPatternLines(t.Context(), repo, []string{"[[:lower:]]Int[^[:alnum:]]"}, func(match GrepMatch) error { matches = append(matches, match); return nil })
+	// Exceed the Windows command-line limit without changing matching semantics.
+	patterns := make([]string, 1500)
+	for i := range patterns {
+		patterns[i] = "[[:lower:]]Int[^[:alnum:]]"
+	}
+	err := GrepIndexPatternLines(t.Context(), repo, patterns, func(match GrepMatch) error { matches = append(matches, match); return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3079,5 +3084,13 @@ func TestGrepTreePatternLinesPinsCommittedContent(t *testing.T) {
 	}
 	if len(matches) != 1 || matches[0].Path != "source.go" || matches[0].Text != "func readInt() {}" {
 		t.Fatalf("committed stream lost content or path: %#v", matches)
+	}
+}
+
+func TestGrepTreePatternLinesRejectsInvalidTreeish(t *testing.T) {
+	for _, treeish := range []string{"", "--help", "HEAD\x00other"} {
+		if err := GrepTreePatternLines(t.Context(), t.TempDir(), treeish, []string{"needle"}, func(GrepMatch) error { return nil }); err == nil {
+			t.Errorf("accepted invalid treeish %q", treeish)
+		}
 	}
 }

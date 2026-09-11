@@ -634,8 +634,8 @@ func GrepIndexPatternLines(ctx context.Context, repo string, patterns []string, 
 // GrepTreePatternLines streams matches from the specified immutable tree and
 // strips Git's treeish prefix from each returned path.
 func GrepTreePatternLines(ctx context.Context, repo, treeish string, patterns []string, visit func(GrepMatch) error) error {
-	if treeish == "" {
-		return fmt.Errorf("treeish is required")
+	if treeish == "" || strings.HasPrefix(treeish, "-") || strings.ContainsRune(treeish, '\x00') {
+		return fmt.Errorf("invalid git grep treeish %q", treeish)
 	}
 	return grepPatternLines(ctx, repo, treeish, patterns, visit)
 }
@@ -645,15 +645,14 @@ func grepPatternLines(ctx context.Context, repo, treeish string, patterns []stri
 	if len(patterns) == 0 {
 		return nil
 	}
-	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E"}
-	for _, pattern := range patterns {
-		args = append(args, "-e", pattern)
-	}
+	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E", "-f", "-"}
 	if treeish != "" {
 		args = append(args, treeish)
 	}
 	args = append(args, "--")
 	cmd := newGitCmdWithCallerLocale(ctx, repo, args...)
+	// Pattern data can exceed Windows command-line limits; send it on stdin.
+	cmd.Stdin = strings.NewReader(strings.Join(patterns, "\n") + "\n")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()

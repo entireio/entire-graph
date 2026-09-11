@@ -7,7 +7,7 @@ import (
 	"unicode"
 )
 
-// Keep generated arguments comfortably below platform command-line limits.
+// Bound the generated expression payload and Git regex compilation work.
 // Oversized expansions use the existing content-scanning fallback.
 const maxSearchGitAliasPatternBytes = 128 * 1024
 

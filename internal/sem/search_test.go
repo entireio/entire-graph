@@ -2823,3 +2823,29 @@ func TestSearchGitAliasPatternsBoundArgumentBytes(t *testing.T) {
 		t.Fatal("oversized generated arguments must fall back without truncating routes")
 	}
 }
+
+func TestSearchReviewRoundSixRegressions(t *testing.T) {
+	for _, query := range []string{"log a message in UTF 8", "log a message! In the next step", "log a message? In the next step", "log a message, in another function", "log a message in another function", "log the request in the handler"} {
+		if buildSearchQuery(query).termSet["login"] {
+			t.Errorf("false login for %q", query)
+		}
+		if buildSparseSearchQuery(query).termSet["login"] {
+			t.Errorf("deep false login for %q", query)
+		}
+	}
+	for query, term := range map[string]string{"the sign in page": "signin", "the roll out command": "rollout", "log the user in and return JSON": "login"} {
+		if !buildSearchQuery(query).termSet[term] {
+			t.Errorf("lost %s for %q", term, query)
+		}
+	}
+	q := buildSearchQuery("log")
+	if searchSymbolNameMatchesQueryTerm(q, SymbolRecord{Name: "runLogin"}) {
+		t.Error("substring should not expand the graph")
+	}
+	if searchQueryNameTermMatches(q, "runLogin", "log") {
+		t.Error("substring should not score as symbol name")
+	}
+	if !searchQueryNameTermMatches(q, "writeLogs", "log") {
+		t.Error("lost plural name match")
+	}
+}

@@ -2015,11 +2015,12 @@ func preselectSearchFiles(
 			allowed[filePath] = true
 		}
 		termMatches := make(map[string][]bool)
+		saturated := make(map[string]bool)
 		record := func(match gitutil.GrepMatch) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if !allowed[match.Path] {
+			if !allowed[match.Path] || saturated[match.Path] {
 				return nil
 			}
 			seen := termMatches[match.Path]
@@ -2029,6 +2030,11 @@ func preselectSearchFiles(
 			for index, matched := range matcher.match(match.Text) {
 				seen[index] = seen[index] || matched
 			}
+			all := true
+			for _, matched := range seen {
+				all = all && matched
+			}
+			saturated[match.Path] = all
 			termMatches[match.Path] = seen
 			return nil
 		}
@@ -3498,8 +3504,8 @@ func searchNameWordVariants(word string) []string {
 const searchAbbreviationTermWeight = 0.55
 
 // searchTermAbbreviations maps the long, prose spelling of a concept to the short spellings an
-// identifier actually uses. Prose and code disagree systematically here, and searchNameContainsTerm
-// tolerates only the plural: it is a substring test, so "authentication" scores a MISS against
+// identifier actually uses. Prose and code disagree systematically here, and literal substring matching
+// cannot bridge unrelated spellings, so "authentication" scores a MISS against
 // runLogin, persistLogin and the whole `auth` package.
 //
 // Measured on entireio/cli. The query "authentication" topped out at 16.6 (rank 1
@@ -3711,6 +3717,18 @@ func searchNameMatchesAbbreviation(tokens []string, term string) bool {
 func searchTextMatchesAlias(text, alias string) bool {
 	for _, word := range searchSourceWordPattern.FindAllString(text, -1) {
 		if searchNameMatchesAlias(searchTokenVariants(word), alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func searchQueryNameTermMatches(q searchQuery, name, term string) bool {
+	if q.inferredAbbreviations[term] {
+		return searchQueryTermMatches(q, name, strings.ToLower(name), term)
+	}
+	for _, raw := range searchSourceWordPattern.FindAllString(name, -1) {
+		if searchNameTokenMatchesTerm(searchTokenVariants(raw), term) {
 			return true
 		}
 	}
@@ -4130,13 +4148,11 @@ func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []R
 // searchSymbolNameMatchesQueryTerm reports whether a symbol's name/qualified-name shares a
 // (non-trivial) query term — used to gate the graph-expansion boost to textually-plausible callees.
 func searchSymbolNameMatchesQueryTerm(q searchQuery, symbol SymbolRecord) bool {
-	name := strings.ToLower(symbol.Name)
-	qualified := strings.ToLower(symbol.QualifiedName)
 	for _, term := range q.terms {
 		if len(term) < 3 && !q.inferredAbbreviations[term] {
 			continue
 		}
-		if searchQueryTermMatches(q, symbol.Name, name, term) || searchQueryTermMatches(q, symbol.QualifiedName, qualified, term) {
+		if searchQueryNameTermMatches(q, symbol.Name, term) || searchQueryNameTermMatches(q, symbol.QualifiedName, term) {
 			return true
 		}
 	}
@@ -5158,8 +5174,10 @@ var searchCompoundDeterminers = map[string]bool{
 
 // searchCompoundJoins returns the single-identifier spellings implied by the token at index: the
 // adjacent pair, plus — for a separable phrasal verb — the particle found a few tokens later.
+var searchCompoundWordPattern = regexp.MustCompile(searchWordPattern.String() + `|[;!?,]`)
+
 func searchCompoundToken(raw string) string {
-	return strings.ToLower(strings.Trim(raw, ".:;-"))
+	return strings.ToLower(strings.Trim(raw, ".:;-!?,"))
 }
 
 var searchCompoundBareObjects = map[string]bool{
@@ -5171,13 +5189,13 @@ var searchCompoundBareObjects = map[string]bool{
 
 func searchCompoundJoins(tokens []string, index int) []string {
 	var out []string
-	if strings.HasSuffix(tokens[index], ".") || strings.HasSuffix(tokens[index], ";") {
+	if strings.ContainsAny(tokens[index], ";!?,") || strings.HasSuffix(tokens[index], ".") {
 		return out
 	}
 	if index+1 < len(tokens) {
 		particle := searchPhrasalVerbParticles[searchCompoundToken(tokens[index+1])]
 		nounPhrase := index > 0 && searchCompoundDeterminers[searchCompoundToken(tokens[index-1])]
-		if !(particle && nounPhrase) {
+		if !(particle && nounPhrase && searchCompoundToken(tokens[index]) == "log") {
 			if joined, ok := searchCompoundJoin(tokens[index], tokens[index+1]); ok &&
 				(joined != "login" || !searchCompoundFormatPreposition(tokens, index+1)) {
 				out = append(out, joined)
@@ -5185,7 +5203,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		}
 	}
 	for gap := 2; gap <= searchMaxCompoundGap+1 && index+gap < len(tokens); gap++ {
-		if previous := tokens[index+gap-1]; strings.HasSuffix(previous, ".") || strings.HasSuffix(previous, ";") {
+		if previous := tokens[index+gap-1]; strings.ContainsAny(previous, ";!?,") || strings.HasSuffix(previous, ".") {
 			break
 		}
 		particle := searchCompoundToken(tokens[index+gap])
@@ -5231,6 +5249,9 @@ func searchCompoundFormatPreposition(tokens []string, index int) bool {
 		case "and", "or", "then", "to", "with", "when", "while", "before", "after", "for", "from", "using", "without", "by", "via", "so", "but":
 			return false
 		}
+		if word == "utf" && next+1 < len(tokens) && searchCompoundComplementWord("utf"+searchCompoundToken(tokens[next+1])) {
+			return true
+		}
 		if searchCompoundComplementWord(word) {
 			return true
 		}
@@ -5246,7 +5267,8 @@ func searchCompoundComplementWord(word string) bool {
 		"protobuf", "msgpack", "messagepack", "utf8", "utf16", "utf16le", "utf16be",
 		"utf32", "utf32le", "utf32be", "ascii", "usascii", "latin1", "iso88591", "windows1252",
 		"format", "encoding", "file", "files", "directory", "folder", "console",
-		"stdout", "stderr", "syslog", "journal", "buffer", "disk":
+		"stdout", "stderr", "syslog", "journal", "buffer", "disk",
+		"function", "method", "handler", "routine", "module", "class":
 		return true
 	}
 	return false
@@ -5347,8 +5369,9 @@ func buildSearchQuery(query string) searchQuery {
 	// ADDED, never substituted. "logs" and "log" stay in the query: a repo is free to spell the
 	// concept as two words in prose, a doc comment or a test name, and dropping the split form to
 	// chase the joined one would trade this blind spot for its mirror image.
-	for index := range rawTokens {
-		for _, joined := range searchCompoundJoins(rawTokens, index) {
+	compoundTokens := searchCompoundWordPattern.FindAllString(query, -1)
+	for index := range compoundTokens {
+		for _, joined := range searchCompoundJoins(compoundTokens, index) {
 			add(joined, 1.0)
 		}
 	}
@@ -5562,9 +5585,9 @@ func buildSparseSearchQuery(query string) searchQuery {
 	}
 	expanded := buildSearchQuery(query)
 	compounds := map[string]bool{}
-	rawTokens := searchWordPattern.FindAllString(query, -1)
-	for index := range rawTokens {
-		for _, joined := range searchCompoundJoins(rawTokens, index) {
+	compoundTokens := searchCompoundWordPattern.FindAllString(query, -1)
+	for index := range compoundTokens {
+		for _, joined := range searchCompoundJoins(compoundTokens, index) {
 			compounds[joined] = true
 		}
 	}
@@ -6048,7 +6071,6 @@ func searchQueryWordSequence(rawLower string) []string {
 
 func symbolSearchScore(q searchQuery, symbol SymbolRecord) (float64, []string) {
 	name := strings.ToLower(symbol.Name)
-	qualified := strings.ToLower(symbol.QualifiedName)
 	signature := strings.ToLower(symbol.Signature)
 	compactName := compactSearchIdentifier(name)
 	score := 0.0
@@ -6073,7 +6095,7 @@ func symbolSearchScore(q searchQuery, symbol SymbolRecord) (float64, []string) {
 		case name == term:
 			score += 6 * weight
 			signals = append(signals, "symbol-name")
-		case searchQueryTermMatches(q, symbol.Name, name, term) || searchQueryTermMatches(q, symbol.QualifiedName, qualified, term):
+		case searchQueryNameTermMatches(q, symbol.Name, term) || searchQueryNameTermMatches(q, symbol.QualifiedName, term):
 			score += 3 * weight
 			signals = append(signals, "symbol-name")
 		case searchQueryTermMatches(q, symbol.Signature, signature, term):
