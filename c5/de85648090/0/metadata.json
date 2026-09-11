@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.10.7-nightly.202609080625.78a655db4.0.20260908145503-8bbfeb6d3901+dirty",
+  "checkpoint_id": "c5de85648090",
+  "session_id": "01a08cf2-0f8e-79a0-a409-85fbe6bbbd40",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-11T17:30:11.36382Z",
+  "branch": "fix/search-prose-query-ranking",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/gitutil/git.go",
+    "internal/gitutil/git_test.go",
+    "internal/sem/search.go",
+    "internal/sem/search_alias_grep.go",
+    "internal/sem/search_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "fd07aea9c495",
+  "checkpoint_transcript_start": 3032,
+  "transcript_lines_at_start": 3032,
+  "compact_transcript_start": 361,
+  "token_usage": {
+    "input_tokens": 42715,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2608000,
+    "output_tokens": 7527,
+    "api_call_count": 38
+  },
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-11T17:30:10.663593Z",
+    "agent_lines": 86,
+    "agent_removed": 26,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 86,
+    "total_lines_changed": 112,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
