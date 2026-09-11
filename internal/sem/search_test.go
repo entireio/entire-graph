@@ -2933,3 +2933,23 @@ func TestSearchTrimmedAliasesDoNotConsumeScanBudget(t *testing.T) {
 		t.Fatalf("trimmed aliases affect preselection: %v", q.inferredAbbreviations)
 	}
 }
+
+func TestSearchReviewRoundTenRegressions(t *testing.T) {
+	for _, query := range []string{"write the detailed log in sequence", "write the extremely detailed log in sequence", "log the message in sequence", "log the event in parallel"} {
+		if buildSearchQuery(query).termSet["login"] {
+			t.Errorf("false login for %q", query)
+		}
+	}
+	for query, term := range map[string]string{"the end point in JSON format": "endpoint", "the meta data in JSON format": "metadata", "the worker logs in": "login", "the authenticated user logs in": "login", "the function that logs in": "login"} {
+		if !buildSearchQuery(query).termSet[term] {
+			t.Errorf("lost %s for %q", term, query)
+		}
+	}
+	q := buildSearchQuery("authentication")
+	for _, name := range []string{"NewOAuth2Client", "oauth2"} {
+		counts, _ := searchTermCounts(name, q)
+		if counts["auth"] != 1 || !searchQueryNameTermMatches(q, name, "auth") {
+			t.Errorf("lost OAuth2 evidence in %s: %v", name, counts)
+		}
+	}
+}

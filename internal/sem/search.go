@@ -3676,7 +3676,7 @@ var searchKnownAbbreviations = func() map[string]bool {
 // Longer aliases may expand to known concept spellings, not arbitrary prefixes.
 var searchAbbreviationForms = func() map[string]map[string]bool {
 	forms := map[string]map[string]bool{
-		"auth":   {"authn": true, "authz": true, "oauth": true, "oauth2": true},
+		"auth":   {"authn": true, "authz": true, "oauth": true, "oauth2": true, "auth2": true},
 		"config": {"configurable": true},
 		"repo":   {"gitrepo": true, "monorepo": true},
 	}
@@ -5310,6 +5310,47 @@ func searchCompoundModifiedObject(tokens []string) bool {
 	return true
 }
 
+// Skip bounded adjective modifiers, but stop at a subject noun or verb so
+// "the worker logs in" remains a verb phrase.
+func searchCompoundNounPhraseBefore(tokens []string, index int) bool {
+	modifiers := 0
+	for at := index - 1; at >= 0 && index-at <= 4; at-- {
+		word := searchCompoundToken(tokens[at])
+		if searchCompoundDeterminers[word] {
+			return !(word == "that" && searchCompoundRelativeSubject(tokens, at-1))
+		}
+		adjective := false
+		switch word {
+		case "new", "old", "current", "full", "raw", "plain", "verbose", "debug", "audit", "access", "error", "system", "application", "long", "short", "red":
+			adjective = true
+		}
+		for _, suffix := range []string{"ed", "ive", "al", "ous", "ic", "ful", "less", "ary"} {
+			if strings.HasSuffix(word, suffix) {
+				adjective = true
+			}
+		}
+		if !adjective && !(modifiers > 0 && strings.HasSuffix(word, "ly")) {
+			return false
+		}
+		modifiers++
+	}
+	return false
+}
+
+// These are logging payloads rather than actors that can log in. Reject the
+// separated login join regardless of the following prepositional modifier.
+func searchCompoundLoggingObject(tokens []string) bool {
+	for _, raw := range tokens {
+		for _, word := range searchNameWordVariants(searchCompoundToken(raw)) {
+			switch word {
+			case "message", "msg", "event", "record", "line", "entry", "output", "error", "warning", "exception", "payload", "data", "detail", "text":
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func searchCompoundJoins(tokens []string, index int) []string {
 	var out []string
 	if strings.ContainsAny(tokens[index], ";!?,") || strings.HasSuffix(tokens[index], ".") {
@@ -5317,14 +5358,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 	}
 	if index+1 < len(tokens) {
 		joined, ok := searchCompoundJoin(tokens[index], tokens[index+1])
-		previous := ""
-		if index > 0 {
-			previous = searchCompoundToken(tokens[index-1])
-		}
-		nounPhrase := searchCompoundDeterminers[previous]
-		if previous == "that" && searchCompoundRelativeSubject(tokens, index-2) {
-			nounPhrase = false
-		}
+		nounPhrase := searchCompoundNounPhraseBefore(tokens, index)
 		if ok && !(joined == "login" && nounPhrase) && !((joined == "login" || nounPhrase) && searchCompoundFormatPreposition(tokens, index+1)) {
 			out = append(out, joined)
 		}
@@ -5347,6 +5381,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		// format describes that object for any verb ("sign the request in JSON").
 		// Adjacent "check in a JSON file" instead places the object after "in".
 		if joined, ok := searchCompoundJoin(tokens[index], particle); ok &&
+			!(joined == "login" && searchCompoundLoggingObject(tokens[index+1:index+gap])) &&
 			!searchCompoundFormatPreposition(tokens, index+gap) {
 			out = append(out, joined)
 		}
