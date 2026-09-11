@@ -3530,7 +3530,7 @@ const searchAbbreviationTermWeight = 0.55
 // head scored zero on every correct answer.
 //
 // One direction only, long -> short. Query terms come from prose and identifiers carry the
-// abbreviation; the reverse is already handled, since "auth" is a substring of runAuthenticated.
+// abbreviation; known full forms also let a direct "auth" query match runAuthenticated.
 var searchTermAbbreviations = map[string][]string{
 	"address":        {"addr"},
 	"administration": {"admin"},
@@ -3612,32 +3612,53 @@ var searchKnownAbbreviations = func() map[string]bool {
 	return aliases
 }()
 
+// Longer aliases may expand to known concept spellings, not arbitrary prefixes.
+var searchAbbreviationForms = func() map[string]map[string]bool {
+	forms := map[string]map[string]bool{
+		"auth":   {"authn": true, "authz": true, "oauth": true, "oauth2": true},
+		"config": {"configurable": true},
+		"repo":   {"gitrepo": true, "monorepo": true},
+	}
+	for word, aliases := range searchTermAbbreviations {
+		for _, alias := range aliases {
+			if len(alias) < 4 {
+				continue
+			}
+			if forms[alias] == nil {
+				forms[alias] = map[string]bool{}
+			}
+			forms[alias][word] = true
+		}
+	}
+	return forms
+}()
+
 func searchNameMatchesAlias(tokens []string, alias string) bool {
 	for _, token := range tokens {
-		if token == alias || token == alias+"s" || (len(alias) >= 4 && (strings.HasPrefix(token, alias) || strings.HasSuffix(token, alias))) {
+		if token == alias || token == alias+"s" {
 			return true
+		}
+		forms := searchAbbreviationForms[alias]
+		if len(forms) == 0 {
+			continue
+		}
+		for _, variant := range searchNameWordVariants(token) {
+			if forms[variant] {
+				return true
+			}
+		}
+		for _, variant := range morphologicalSearchTerms(token) {
+			if forms[variant] {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// searchNameMatchesAbbreviation reports whether any abbreviation of term appears as a TOKEN of the
-// identifier. Token-scoped on purpose: searchNameContainsTerm can afford a raw substring because a
-// query term is a whole word, but an abbreviation is short enough that substring matching
-// manufactures hits — "int" for "integer" would match interface, internal and print.
-//
-// Two thresholds, because the risk is length-dependent. Four characters and up may match a token
-// PREFIX OR SUFFIX, which is what carries auth -> Authenticated, config -> Configured and, at the
-// suffix end, repo -> gitrepo and auth -> oauth: package-qualified names routinely glue the
-// abbreviation onto the tail of a token. Anchoring at both ends rather than allowing a free
-// substring is what keeps spec -> inspect out, since "inspect" ends in "spect". Two and three
-// characters must match a whole token, which stops req -> frequency and db -> debug while still
-// catching the standalone ctx, req, err and db that code writes as their own token.
-//
-// Known and accepted: auth also prefixes "author", so an authentication query picks up commitAuthor
-// in a VCS codebase. Name coverage saturates at three distinct terms and is one component of the
-// score, so a single spurious term costs a third of one signal — cheap next to scoring every
-// correct answer at zero.
+// Match whole alias tokens and their plurals. Longer aliases also recognize
+// their known full spellings and explicit code forms such as oauth and gitrepo.
+// This preserves Authenticated without allowing author, or repo without report.
 func searchNameMatchesAbbreviation(tokens []string, term string) bool {
 	for _, alias := range searchAbbreviations(term) {
 		if searchNameMatchesAlias(tokens, alias) {
@@ -5089,6 +5110,9 @@ func searchCompoundToken(raw string) string {
 
 func searchCompoundJoins(tokens []string, index int) []string {
 	var out []string
+	if strings.HasSuffix(tokens[index], ".") || strings.HasSuffix(tokens[index], ";") {
+		return out
+	}
 	if index+1 < len(tokens) {
 		particle := searchPhrasalVerbParticles[searchCompoundToken(tokens[index+1])]
 		nounPhrase := index > 0 && searchCompoundDeterminers[searchCompoundToken(tokens[index-1])]
@@ -5100,6 +5124,9 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		}
 	}
 	for gap := 2; gap <= searchMaxCompoundGap+1 && index+gap < len(tokens); gap++ {
+		if previous := tokens[index+gap-1]; strings.HasSuffix(previous, ".") || strings.HasSuffix(previous, ";") {
+			break
+		}
 		particle := searchCompoundToken(tokens[index+gap])
 		if !searchPhrasalVerbParticles[particle] {
 			continue

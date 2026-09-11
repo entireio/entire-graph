@@ -2636,7 +2636,9 @@ func TestSearchReviewRoundThreeRegressions(t *testing.T) {
 		query, term string
 		want        bool
 	}{
-		{"logs users in", "login", true}, {"sign requests in", "signin", true},
+		{"logs users in", "login", true},
+		{"log users. In another file", "login", false},
+		{"log. Users in a session", "login", false}, {"sign requests in", "signin", true},
 		{"logs a user in.", "login", true}, {"log a message in JSON.", "login", false},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
@@ -2678,5 +2680,18 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 	}
 	if len(response.Results) == 0 || response.Results[0].SymbolName != "readInt" {
 		t.Fatalf("substring noise displaced actual alias: %#v", response.Results)
+	}
+}
+
+func TestSearchAliasExtensionsExcludeUnrelatedWords(t *testing.T) {
+	for _, tc := range []struct{ alias, token string }{{"doc", "docker"}, {"repo", "report"}, {"spec", "special"}, {"temp", "template"}, {"auth", "author"}} {
+		if searchNameMatchesAlias(searchTokenVariants(tc.token), tc.alias) {
+			t.Errorf("%s must not match %s", tc.alias, tc.token)
+		}
+	}
+	for _, tc := range []struct{ alias, token string }{{"auth", "Authenticated"}, {"auth", "Authenticating"}, {"auth", "Authz"}, {"config", "Configure"}, {"config", "Configured"}, {"repo", "gitrepo"}, {"repo", "repositories"}} {
+		if !searchNameMatchesAlias(searchTokenVariants(tc.token), tc.alias) {
+			t.Errorf("lost %s in %s", tc.alias, tc.token)
+		}
 	}
 }
