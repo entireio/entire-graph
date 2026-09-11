@@ -523,6 +523,7 @@ type searchQuery struct {
 	weights     map[string]float64
 	// inferredAbbreviations require identifier boundaries even in substring scoring paths.
 	inferredAbbreviations map[string]bool
+	aliasTokens           map[string][]string
 	// dottedCallMentions holds lowercased "container.member" pairs the query
 	// wrote as explicit calls ("Type.method(...)") — a direct naming of the
 	// symbol the query is about.
@@ -2009,13 +2010,10 @@ func preselectSearchFiles(
 	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
 		var matches []gitutil.GrepMatch
 		var grepErr error
-		for _, batch := range searchGitGrepPreselectionBatches(q) {
-			var found []gitutil.GrepMatch
-			found, grepErr = gitutil.GrepIndexMatches(ctx, source.absRepo, batch, 32)
-			if grepErr != nil {
-				break
-			}
-			matches = append(matches, found...)
+		if len(q.inferredAbbreviations) > 0 {
+			matches, grepErr = gitutil.GrepIndexPatternLines(ctx, source.absRepo, searchGitAliasPatterns(q), 32)
+		} else {
+			matches, grepErr = gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
 		}
 		tracked, trackedErr := gitutil.ListIndexFiles(ctx, source.absRepo)
 		if grepErr == nil && trackedErr == nil {
@@ -2034,18 +2032,6 @@ func preselectSearchFiles(
 					continue
 				}
 				seen := termMatches[match.Path]
-				if len(q.inferredAbbreviations) > 0 {
-					// Git -o emits only the substring, without identifier boundaries.
-					// Read each matched file once before the provisional pool is capped.
-					if seen != nil {
-						continue
-					}
-					if content, ok := source.read(match.Path); ok {
-						selection.filesContentRead++
-						termMatches[match.Path] = matcher.match(content)
-						continue
-					}
-				}
 				if seen == nil {
 					seen = make([]bool, len(q.terms))
 				}
@@ -2802,32 +2788,6 @@ func searchPreselectionPatterns(q searchQuery) []string {
 		return weight >= 1.25 || weight == 1
 	})
 	return patterns
-}
-
-// Each Git invocation retains its six-pattern budget. Additional alias routes
-// use bounded batches, with total terms bounded by maxSearchQueryTerms.
-func searchGitGrepPreselectionBatches(q searchQuery) [][]string {
-	primary := searchGitGrepPreselectionPatterns(q)
-	batches := [][]string{primary}
-	seen := map[string]bool{}
-	for _, term := range primary {
-		seen[term] = true
-	}
-	var extra []string
-	for _, term := range q.terms {
-		if !q.inferredAbbreviations[term] || seen[term] {
-			continue
-		}
-		extra = append(extra, term)
-		if len(extra) == 6 {
-			batches = append(batches, extra)
-			extra = nil
-		}
-	}
-	if len(extra) > 0 {
-		batches = append(batches, extra)
-	}
-	return batches
 }
 
 func searchGitGrepPreselectionPatterns(q searchQuery) []string {
@@ -3633,27 +3593,78 @@ var searchAbbreviationForms = func() map[string]map[string]bool {
 	return forms
 }()
 
-func searchNameMatchesAlias(tokens []string, alias string) bool {
-	for _, token := range tokens {
-		if token == alias || token == alias+"s" {
+func searchAliasFormAccepted(token, alias string) bool {
+	if token == alias || token == alias+"s" {
+		return true
+	}
+	forms := searchAbbreviationForms[alias]
+	if len(forms) == 0 {
+		return false
+	}
+	for _, variant := range searchNameWordVariants(token) {
+		if forms[variant] {
 			return true
 		}
-		forms := searchAbbreviationForms[alias]
-		if len(forms) == 0 {
-			continue
-		}
-		for _, variant := range searchNameWordVariants(token) {
-			if forms[variant] {
-				return true
-			}
-		}
-		for _, variant := range morphologicalSearchTerms(token) {
-			if forms[variant] {
-				return true
-			}
+	}
+	for _, variant := range morphologicalSearchTerms(token) {
+		if forms[variant] {
+			return true
 		}
 	}
 	return false
+}
+
+var searchAliasForms = func() map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for alias := range searchKnownAbbreviations {
+		forms := map[string]bool{alias: true, alias + "s": true}
+		for root := range searchAbbreviationForms[alias] {
+			candidates := []string{root, root + "s", root + "es", root + "ing", root + "ed"}
+			if strings.HasSuffix(root, "y") {
+				candidates = append(candidates, strings.TrimSuffix(root, "y")+"ies")
+			}
+			if strings.HasSuffix(root, "e") {
+				base := strings.TrimSuffix(root, "e")
+				candidates = append(candidates, base+"ing", base+"ed")
+			}
+			if strings.HasSuffix(root, "ize") {
+				candidates = append(candidates, strings.TrimSuffix(root, "ize")+"ization")
+			}
+			if strings.HasSuffix(root, "ify") {
+				candidates = append(candidates, strings.TrimSuffix(root, "ify")+"ification")
+			}
+			for _, form := range candidates {
+				if searchAliasFormAccepted(form, alias) {
+					forms[form] = true
+				}
+			}
+		}
+		out[alias] = forms
+	}
+	return out
+}()
+
+func searchNameMatchesAlias(tokens []string, alias string) bool {
+	for _, token := range tokens {
+		if searchAliasForms[alias][token] {
+			return true
+		}
+	}
+	return false
+}
+
+// The reverse index lets one tokenization serve every inferred query alias.
+func searchAliasTokenIndex(terms []string, aliases map[string]bool) map[string][]string {
+	out := map[string][]string{}
+	for _, alias := range terms {
+		if !aliases[alias] {
+			continue
+		}
+		for token := range searchAliasForms[alias] {
+			out[token] = append(out[token], alias)
+		}
+	}
+	return out
 }
 
 // Match whole alias tokens and their plurals. Longer aliases also recognize
@@ -3679,10 +3690,10 @@ func searchTextMatchesAlias(text, alias string) bool {
 }
 
 func searchQueryTermMatches(q searchQuery, text, lower, term string) bool {
-	if !strings.Contains(lower, term) {
-		return false
+	if q.inferredAbbreviations[term] {
+		return searchTextMatchesAlias(text, term)
 	}
-	return !q.inferredAbbreviations[term] || searchTextMatchesAlias(text, term)
+	return strings.Contains(lower, term)
 }
 
 // Use the same plural variants for retrieval and name coverage, including -ies
@@ -3710,13 +3721,12 @@ func searchNameCoversQuery(result SearchResult, q searchQuery) bool {
 	}
 	matched, concepts := 0, 0
 	tokens := searchTokenVariants(name)
-	lower := strings.ToLower(name)
 	for _, term := range q.terms {
 		if q.inferredAbbreviations[term] {
 			continue
 		}
 		concepts++
-		if searchQueryTermMatches(q, name, lower, term) || searchNameMatchesAbbreviation(tokens, term) {
+		if searchNameTokenMatchesTerm(tokens, term) || searchNameMatchesAbbreviation(tokens, term) {
 			matched++
 		}
 	}
@@ -4086,7 +4096,7 @@ func searchSymbolNameMatchesQueryTerm(q searchQuery, symbol SymbolRecord) bool {
 	name := strings.ToLower(symbol.Name)
 	qualified := strings.ToLower(symbol.QualifiedName)
 	for _, term := range q.terms {
-		if len(term) < 3 {
+		if len(term) < 3 && !q.inferredAbbreviations[term] {
 			continue
 		}
 		if searchQueryTermMatches(q, symbol.Name, name, term) || searchQueryTermMatches(q, symbol.QualifiedName, qualified, term) {
@@ -5115,6 +5125,13 @@ func searchCompoundToken(raw string) string {
 	return strings.ToLower(strings.Trim(raw, ".:;-"))
 }
 
+var searchCompoundBareObjects = map[string]bool{
+	"user": true, "users": true, "account": true, "accounts": true, "client": true, "clients": true,
+	"customer": true, "customers": true, "people": true, "request": true, "requests": true,
+	"session": true, "sessions": true, "file": true, "files": true, "change": true, "changes": true,
+	"connection": true, "connections": true, "process": true, "processes": true,
+}
+
 func searchCompoundJoins(tokens []string, index int) []string {
 	var out []string
 	if strings.HasSuffix(tokens[index], ".") || strings.HasSuffix(tokens[index], ";") {
@@ -5141,7 +5158,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		// The object has to look like an object. Without this, any "log" and any later "in"
 		// in the same sentence would manufacture a login term.
 		if head := searchCompoundToken(tokens[index+1]); !searchCompoundObjectHeads[head] && !searchCompoundDeterminers[head] &&
-			!(gap == 2 && len(head) > 1 && !searchStopWords[head] && !searchPhrasalVerbParticles[head]) {
+			!(gap == 2 && searchCompoundBareObjects[head]) {
 			continue
 		}
 		// Here the verb already has its object before "in", so a following
@@ -5382,6 +5399,7 @@ func buildSearchQuery(query string) searchQuery {
 		termSet:               termSet,
 		weights:               weights,
 		inferredAbbreviations: inferredAbbreviations,
+		aliasTokens:           searchAliasTokenIndex(terms, inferredAbbreviations),
 		words:                 searchQueryWords(rawLower),
 		wordSequence:          wordSequence,
 		matchableWords:        matchableQueryWords(wordSequence, termSet, nil),
@@ -5536,6 +5554,7 @@ func buildSparseSearchQuery(query string) searchQuery {
 		termSet:               termSet,
 		weights:               weights,
 		inferredAbbreviations: aliases,
+		aliasTokens:           searchAliasTokenIndex(terms, aliases),
 		words:                 searchQueryWords(rawLower),
 		wordSequence:          wordSequence,
 		matchableWords:        matchableQueryWords(wordSequence, termSet, nil),
@@ -5714,18 +5733,29 @@ func searchTermCounts(text string, q searchQuery) (map[string]int, int) {
 
 // Overlapping full-identifier and camel-case variants describe one occurrence.
 func countSearchAliases(counts map[string]int, q searchQuery, tokens []string) {
-	for alias := range q.inferredAbbreviations {
-		if q.termSet[alias] && searchNameMatchesAlias(tokens, alias) {
-			counts[alias]++
-		}
+	var matched []string
+	for _, token := range tokens {
+		matched = appendUnique(matched, q.aliasTokens[token]...)
+	}
+	for _, alias := range matched {
+		counts[alias]++
 	}
 }
 
 func textMatchesSearchQuery(q searchQuery, text string) bool {
 	lower := strings.ToLower(text)
 	for _, term := range q.terms {
-		if searchQueryTermMatches(q, text, lower, term) {
+		if !q.inferredAbbreviations[term] && strings.Contains(lower, term) {
 			return true
+		}
+	}
+	if len(q.aliasTokens) > 0 {
+		for _, raw := range searchWordPattern.FindAllString(text, -1) {
+			for _, token := range searchTokenVariants(raw) {
+				if len(q.aliasTokens[token]) > 0 {
+					return true
+				}
+			}
 		}
 	}
 	return false

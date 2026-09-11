@@ -6,10 +6,11 @@ import "strings"
 // Issue and source identifiers are overwhelmingly ASCII; uncommon non-ASCII
 // terms use a separate Unicode-aware fallback.
 type searchTermMatcher struct {
-	nodes      []searchMatcherNode
-	fallback   []searchFallbackTerm
-	termCount  int
-	aliasTerms map[int]string
+	nodes       []searchMatcherNode
+	fallback    []searchFallbackTerm
+	termCount   int
+	aliasTerms  map[int]string
+	aliasTokens map[string][]int
 }
 
 type searchMatcherNode struct {
@@ -27,9 +28,13 @@ type searchFallbackTerm struct {
 func newSearchQueryTermMatcher(q searchQuery) searchTermMatcher {
 	matcher := newSearchTermMatcher(q.terms)
 	matcher.aliasTerms = map[int]string{}
+	matcher.aliasTokens = map[string][]int{}
 	for index, term := range q.terms {
 		if q.inferredAbbreviations[term] {
 			matcher.aliasTerms[index] = term
+			for token := range searchAliasForms[term] {
+				matcher.aliasTokens[token] = append(matcher.aliasTokens[token], index)
+			}
 		}
 	}
 	return matcher
@@ -128,9 +133,16 @@ func (matcher searchTermMatcher) match(text string) []bool {
 			}
 		}
 	}
-	for index, alias := range matcher.aliasTerms {
-		if found[index] {
-			found[index] = searchTextMatchesAlias(text, alias)
+	if len(matcher.aliasTerms) > 0 {
+		for index := range matcher.aliasTerms {
+			found[index] = false
+		}
+		for _, raw := range searchWordPattern.FindAllString(text, -1) {
+			for _, token := range searchTokenVariants(raw) {
+				for _, index := range matcher.aliasTokens[token] {
+					found[index] = true
+				}
+			}
 		}
 	}
 	return found

@@ -624,6 +624,12 @@ func GrepIndexMatches(ctx context.Context, repo string, patterns []string, maxPe
 	return grepFixedStringMatches(ctx, repo, "", patterns, maxPerFile)
 }
 
+// GrepIndexPatternLines returns matching lines for caller-built, case-sensitive
+// POSIX extended expressions. Unlike GrepIndexMatches, it preserves boundaries.
+func GrepIndexPatternLines(ctx context.Context, repo string, patterns []string, maxPerFile int) ([]GrepMatch, error) {
+	return grepPatternMatches(ctx, repo, "", patterns, maxPerFile, true)
+}
+
 // GrepTreeMatches returns a bounded sample of matched fixed strings per file
 // from an immutable Git tree. The returned paths are relative to repo and do
 // not include Git's "<treeish>:" display prefix. Query strings are always
@@ -787,6 +793,10 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 }
 
 func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int) ([]GrepMatch, error) {
+	return grepPatternMatches(ctx, repo, treeish, patterns, maxPerFile, false)
+}
+
+func grepPatternMatches(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, boundaryLines bool) ([]GrepMatch, error) {
 	if len(patterns) == 0 {
 		return []GrepMatch{}, nil
 	}
@@ -800,7 +810,12 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 		"--no-column",
 		"--no-color",
 		"--no-full-name",
-		"-z", "-I", "-i", "-F", "-o", "-m", strconv.Itoa(maxPerFile),
+		"-z", "-I", "-m", strconv.Itoa(maxPerFile),
+	}
+	if boundaryLines {
+		args = append(args, "-E")
+	} else {
+		args = append(args, "-i", "-F", "-o")
 	}
 	patternCount := 0
 	for _, pattern := range patterns {

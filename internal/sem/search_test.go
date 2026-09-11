@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -2520,18 +2521,21 @@ func TestSearchReviewRoundTwoRegressions(t *testing.T) {
 			}
 		}
 	})
-	t.Run("all aliases reach large worktree grep", func(t *testing.T) {
+	t.Run("all aliases reach one bounded Git scan", func(t *testing.T) {
 		q := buildSearchQuery("authentication configuration database request response context")
-		var patterns []string
-		for _, batch := range searchGitGrepPreselectionBatches(q) {
-			if len(batch) > 6 {
-				t.Fatalf("unbounded batch: %v", batch)
-			}
-			patterns = append(patterns, batch...)
+		patterns := searchGitAliasPatterns(q)
+		if len(patterns) > maxSearchQueryTerms {
+			t.Fatalf("unbounded patterns: %d", len(patterns))
 		}
-		for term := range q.inferredAbbreviations {
-			if !containsString(patterns, term) {
-				t.Errorf("missing %s in %v", term, patterns)
+		for alias := range q.inferredAbbreviations {
+			matched := false
+			for _, pattern := range patterns {
+				if regexp.MustCompile(pattern).MatchString(alias) {
+					matched = true
+				}
+			}
+			if !matched {
+				t.Errorf("missing alias route %s", alias)
 			}
 		}
 	})
@@ -2675,6 +2679,9 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if response.Stats.FilesContentRead > 1 {
+		t.Fatalf("hydrated substring noise before the pool limit: %#v", response.Stats)
+	}
 	if response.Stats.PreselectionBackend != "git-index-grep+go-content" {
 		t.Fatalf("expected large worktree path: %#v", response.Stats)
 	}
@@ -2693,5 +2700,38 @@ func TestSearchAliasExtensionsExcludeUnrelatedWords(t *testing.T) {
 		if !searchNameMatchesAlias(searchTokenVariants(tc.token), tc.alias) {
 			t.Errorf("lost %s in %s", tc.alias, tc.token)
 		}
+	}
+}
+
+func TestSearchReviewRoundFourRegressions(t *testing.T) {
+	if !searchSymbolNameMatchesQueryTerm(buildSearchQuery("database"), SymbolRecord{Name: "openDB"}) {
+		t.Fatal("lost short alias graph evidence")
+	}
+	if searchNameCoversQuery(SearchResult{SymbolName: "runLogin"}, buildSearchQuery("log")) {
+		t.Fatal("log must not cover login")
+	}
+	if buildSearchQuery("the worker logs quickly in production").termSet["login"] {
+		t.Fatal("adverb is not a bare object")
+	}
+	for _, tc := range []struct {
+		alias, text string
+		want        bool
+	}{
+		{"int", "Print", false}, {"int", "Interface", false}, {"int", "INTERFACE", false}, {"int", "readInt", true}, {"int", "INTValue", true},
+		{"id", "getIDs", true}, {"id", "userID", true}, {"id", "ID", true}, {"id", "XID", false}, {"id", "XId", true},
+		{"auth", "runAuthenticated", true}, {"auth", "Authz", true}, {"auth", "author", false}, {"repo", "gitrepo", true},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			q := buildSearchQuery(map[string]string{"int": "integer", "id": "identifier", "auth": "authentication", "repo": "repository"}[tc.alias])
+			got := false
+			for _, pattern := range searchGitAliasPatterns(q) {
+				if regexp.MustCompile(pattern).MatchString(tc.text) {
+					got = true
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("Git alias %s in %s=%v, want %v", tc.alias, tc.text, got, tc.want)
+			}
+		})
 	}
 }

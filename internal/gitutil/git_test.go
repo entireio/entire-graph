@@ -3040,3 +3040,20 @@ func TestChangedFilesReportsTreeEntryModes(t *testing.T) {
 		t.Fatalf("edited file = %#v", got)
 	}
 }
+
+func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	content := "func readInt() {}\nfunc readint() {}\nfunc Print() {}\n"
+	if err := os.WriteFile(filepath.Join(repo, "source.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	matches, err := GrepIndexPatternLines(t.Context(), repo, []string{"[[:lower:]]Int[^[:alnum:]]"}, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Path != "source.go" || matches[0].Text != "func readInt() {}" {
+		t.Fatalf("lost boundary context or case: %#v", matches)
+	}
+}
