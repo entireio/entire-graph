@@ -3053,7 +3053,7 @@ func TestSearchReviewRoundFourteenRegressions(t *testing.T) {
 }
 
 func TestSearchReviewRoundFifteenRegressions(t *testing.T) {
-	for _, query := range []string{"write the event log in sequence", "write the application log in sequence", "read the custom log in sequence"} {
+	for _, query := range []string{"write the event log in sequence", "write the application log in sequence", "read the custom log in sequence", "application log in sequence", "system log in sequence", "event log in sequence", "request log in sequence"} {
 		if buildSearchQuery(query).termSet["login"] {
 			t.Errorf("false login for %q", query)
 		}

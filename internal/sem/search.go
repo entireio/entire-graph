@@ -5413,11 +5413,14 @@ func searchCompoundNounPhraseBefore(tokens []string, index int) bool {
 	modifiers := 0
 	for at := index - 1; at >= 0 && index-at <= 4; at-- {
 		word := searchCompoundToken(tokens[at])
+		if searchCompoundToken(tokens[index]) == "log" && searchCompoundPayloadObject(tokens[at:at+1]) {
+			return true
+		}
 		switch word {
 		case "system", "application":
 			// Singular subjects take "logs"; the base spelling in "the system log"
 			// instead makes log the noun modified by system.
-			return searchCompoundToken(tokens[index]) == "log" && at > 0 && searchCompoundDeterminers[searchCompoundToken(tokens[at-1])]
+			return searchCompoundToken(tokens[index]) == "log"
 		case "process":
 			return at == 0 || !searchCompoundDeterminers[searchCompoundToken(tokens[at-1])]
 		case "write", "read", "archive", "store", "output", "print", "emit", "send", "delete", "inspect", "list", "view":
