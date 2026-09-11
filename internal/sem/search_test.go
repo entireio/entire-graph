@@ -2678,7 +2678,7 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 		}
 		write(t, repo, fmt.Sprintf("a_%05d.go", index), content)
 	}
-	write(t, repo, "z_value.go", "package app\nfunc αint() {}\n"+strings.Repeat("// common\n", 40)+"func readInt() {}\nfunc readDB() {}\n")
+	write(t, repo, "z_value.go", "package app\n"+strings.Repeat("func αint() {}\n", 40)+strings.Repeat("// common\n", 40)+"func readInt() {}\nfunc readDB() {}\n")
 	write(t, repo, "z_unicode.go", "package app\nfunc İssueNeedle() {}\n")
 	write(t, repo, "b_other.go", "package app\nfunc AuthHelp() {}\n")
 	write(t, repo, "a_other.go", "package app\nfunc readInt() {}\n")
@@ -2693,7 +2693,7 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 		if query != "integer" {
 			limit = 4
 		}
-		if query == "integer common" {
+		if query == "integer common" || query == "authentication configuration database integer identifier environment" {
 			limit++
 		} // conservative fallback is counted separately from the four-file pool
 		if response.Stats.FilesContentRead > limit {
@@ -3013,6 +3013,22 @@ func TestSearchSigningPayloadDoesNotImplySignin(t *testing.T) {
 	for _, query := range []string{"sign the user in sequence", "sign requests in", "sign requests in and continue", "sign requests in. Sequence the next step"} {
 		if !buildSearchQuery(query).termSet["signin"] {
 			t.Errorf("lost signin for %q", query)
+		}
+	}
+}
+
+func TestSearchReviewRoundThirteenRegressions(t *testing.T) {
+	for _, tc := range []struct{ query, term string }{
+		{"log: a user in", "login"}, {"log a: user in", "login"},
+		{"write the log out", "logout"}, {"the service logs users and signs in", "login"},
+	} {
+		if buildSearchQuery(tc.query).termSet[tc.term] {
+			t.Errorf("false %s for %q", tc.term, tc.query)
+		}
+	}
+	for _, query := range []string{"authenticating", "authenticated"} {
+		if !searchNameCoversQuery(SearchResult{SymbolName: "Auth", Kind: "function"}, buildSearchQuery(query)) {
+			t.Errorf("lost alias coverage for %q", query)
 		}
 	}
 }

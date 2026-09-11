@@ -2027,7 +2027,6 @@ func preselectSearchFiles(
 		}
 		termMatches := make(map[string][]bool)
 		coalescedAliases := len(q.inferredAbbreviations) > 0 && !searchGitAliasScansFit(q)
-		coalescedPaths := make(map[string]bool)
 		saturated := make(map[string]bool)
 		fullyScanned := make(map[string]bool)
 		record := func(match gitutil.GrepMatch) error {
@@ -2087,8 +2086,28 @@ func preselectSearchFiles(
 				} else {
 					gitIndexPasses++
 					grepErr = gitutil.GrepIndexPatternSample(ctx, source.absRepo, patterns, func(match gitutil.GrepMatch) error {
-						if allowed[match.Path] {
-							coalescedPaths[match.Path] = true
+						if !allowed[match.Path] || saturated[match.Path] || fullyScanned[match.Path] {
+							return ctx.Err()
+						}
+						confirmed := false
+						for _, alias := range aliases {
+							if searchQueryTermMatches(q, match.Text, strings.ToLower(match.Text), alias) {
+								confirmed = true
+								break
+							}
+						}
+						if !confirmed {
+							// A conservative byte boundary can fill the sample before
+							// real Unicode-aware evidence; validate that file once.
+							if content, ok := source.read(match.Path); ok {
+								selection.filesContentRead++
+								match.Text = content
+								if err := record(match); err != nil {
+									return err
+								}
+								fullyScanned[match.Path] = true
+								return nil
+							}
 						}
 						return record(match)
 					})
@@ -2163,7 +2182,7 @@ func preselectSearchFiles(
 					}
 				}
 				pathScore := pathSearchScore(q, filePath)
-				if pathScore == 0 && matchedWeight == 0 && !coalescedPaths[filePath] {
+				if pathScore == 0 && matchedWeight == 0 {
 					continue
 				}
 				contentScore := matchedWeight
@@ -3864,11 +3883,11 @@ func searchQueryTermMatches(q searchQuery, text, lower, term string) bool {
 	return strings.Contains(lower, term)
 }
 
-// Use the same plural variants for retrieval and name coverage, including -ies
-// spellings such as repositories -> repository -> repo.
+// Use the same inflection routes for retrieval and name coverage, including
+// authenticating -> authenticate -> auth and repositories -> repository -> repo.
 func searchAbbreviations(term string) []string {
 	var aliases []string
-	for _, variant := range searchNameWordVariants(term) {
+	for _, variant := range appendUnique(searchNameWordVariants(term), morphologicalSearchTerms(term)...) {
 		aliases = appendUnique(aliases, searchTermAbbreviations[variant]...)
 	}
 	return aliases
@@ -5384,19 +5403,23 @@ func searchCompoundPayloadObject(tokens []string) bool {
 
 func searchCompoundJoins(tokens []string, index int) []string {
 	var out []string
-	if strings.ContainsAny(tokens[index], ";!?,") || strings.HasSuffix(tokens[index], ".") {
+	if strings.ContainsAny(tokens[index], ";!?,:") || strings.HasSuffix(tokens[index], ".") {
 		return out
 	}
 	if index+1 < len(tokens) {
 		joined, ok := searchCompoundJoin(tokens[index], tokens[index+1])
 		nounPhrase := searchCompoundNounPhraseBefore(tokens, index)
-		if ok && !(joined == "login" && nounPhrase) && !((joined == "login" || nounPhrase) && searchCompoundFormatPreposition(tokens, index+1)) {
+		if ok && !((joined == "login" || joined == "logout") && nounPhrase) && !((joined == "login" || nounPhrase) && searchCompoundFormatPreposition(tokens, index+1)) {
 			out = append(out, joined)
 		}
 	}
 	for gap := 2; gap <= searchMaxCompoundGap+1 && index+gap < len(tokens); gap++ {
-		if previous := tokens[index+gap-1]; strings.ContainsAny(previous, ";!?,") || strings.HasSuffix(previous, ".") {
+		if previous := tokens[index+gap-1]; strings.ContainsAny(previous, ";!?,:") || strings.HasSuffix(previous, ".") {
 			break
+		}
+		switch searchCompoundToken(tokens[index+gap-1]) {
+		case "and", "or", "but", "then", "while", "when":
+			return out
 		}
 		particle := searchCompoundToken(tokens[index+gap])
 		if !searchPhrasalVerbParticles[particle] {
@@ -5412,7 +5435,7 @@ func searchCompoundJoins(tokens []string, index int) []string {
 		// format describes that object for any verb ("sign the request in JSON").
 		// Adjacent "check in a JSON file" instead places the object after "in".
 		if joined, ok := searchCompoundJoin(tokens[index], particle); ok &&
-			!(joined == "login" && searchCompoundNounPhraseBefore(tokens, index)) &&
+			!((joined == "login" || joined == "logout") && searchCompoundNounPhraseBefore(tokens, index)) &&
 			!((joined == "login" || joined == "signin" && searchCompoundTrailingNounPhrase(tokens, index+gap)) && searchCompoundPayloadObject(tokens[index+1:index+gap])) &&
 			!searchCompoundFormatPreposition(tokens, index+gap) {
 			out = append(out, joined)
