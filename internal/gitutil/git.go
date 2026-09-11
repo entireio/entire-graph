@@ -624,10 +624,70 @@ func GrepIndexMatches(ctx context.Context, repo string, patterns []string, maxPe
 	return grepFixedStringMatches(ctx, repo, "", patterns, maxPerFile)
 }
 
-// GrepIndexPatternLines returns matching lines for caller-built, case-sensitive
-// POSIX extended expressions. Unlike GrepIndexMatches, it preserves boundaries.
-func GrepIndexPatternLines(ctx context.Context, repo string, patterns []string, maxPerFile int) ([]GrepMatch, error) {
-	return grepPatternMatches(ctx, repo, "", patterns, maxPerFile, true)
+// GrepIndexPatternLines streams whole matching lines for caller-built,
+// case-sensitive POSIX expressions. There is no shared per-file match cap:
+// callers can retain compact per-term evidence without buffering every line.
+func GrepIndexPatternLines(ctx context.Context, repo string, patterns []string, visit func(GrepMatch) error) error {
+	if len(patterns) == 0 {
+		return nil
+	}
+	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E"}
+	for _, pattern := range patterns {
+		args = append(args, "-e", pattern)
+	}
+	args = append(args, "--")
+	cmd := newGitCmdWithCallerLocale(ctx, repo, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+	reader := bufio.NewReader(stdout)
+	readErr := readGrepPatternLines(reader, visit)
+	if readErr != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return readErr
+	}
+	if waitErr != nil {
+		var exitError *exec.ExitError
+		if errors.As(waitErr, &exitError) && exitError.ExitCode() == 1 && stderr.Len() == 0 {
+			return nil
+		}
+		return fmt.Errorf("git grep pattern lines: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
+	}
+	if stderr.Len() > 0 {
+		return fmt.Errorf("git grep pattern lines: %s", strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+func readGrepPatternLines(reader *bufio.Reader, visit func(GrepMatch) error) error {
+	for {
+		path, err := reader.ReadString(0)
+		if err == io.EOF && path == "" {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("git grep path metadata: %w", err)
+		}
+		line, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return err
+		}
+		if visitErr := visit(GrepMatch{Path: strings.TrimSuffix(path, "\x00"), Text: strings.TrimSuffix(line, "\n")}); visitErr != nil {
+			return visitErr
+		}
+		if err == io.EOF {
+			return nil
+		}
+	}
 }
 
 // GrepTreeMatches returns a bounded sample of matched fixed strings per file
@@ -793,10 +853,6 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 }
 
 func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int) ([]GrepMatch, error) {
-	return grepPatternMatches(ctx, repo, treeish, patterns, maxPerFile, false)
-}
-
-func grepPatternMatches(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, boundaryLines bool) ([]GrepMatch, error) {
 	if len(patterns) == 0 {
 		return []GrepMatch{}, nil
 	}
@@ -810,12 +866,7 @@ func grepPatternMatches(ctx context.Context, repo, treeish string, patterns []st
 		"--no-column",
 		"--no-color",
 		"--no-full-name",
-		"-z", "-I", "-m", strconv.Itoa(maxPerFile),
-	}
-	if boundaryLines {
-		args = append(args, "-E")
-	} else {
-		args = append(args, "-i", "-F", "-o")
+		"-z", "-I", "-i", "-F", "-o", "-m", strconv.Itoa(maxPerFile),
 	}
 	patternCount := 0
 	for _, pattern := range patterns {

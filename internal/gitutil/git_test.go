@@ -3049,7 +3049,8 @@ func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
 		t.Fatal(err)
 	}
 	git(t, repo, "add", ".")
-	matches, err := GrepIndexPatternLines(t.Context(), repo, []string{"[[:lower:]]Int[^[:alnum:]]"}, 32)
+	var matches []GrepMatch
+	err := GrepIndexPatternLines(t.Context(), repo, []string{"[[:lower:]]Int[^[:alnum:]]"}, func(match GrepMatch) error { matches = append(matches, match); return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

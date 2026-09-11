@@ -8,7 +8,7 @@ import (
 )
 
 // One Git scan evaluates all alias routes. Its expressions reject substring-only
-// hits before Git's per-file line cap, so the provider need not hydrate noise.
+// hits while streaming, so the provider need not hydrate noise.
 func searchGitAliasPatterns(q searchQuery) []string {
 	var patterns []string
 	for _, term := range searchGitGrepPreselectionPatterns(q) {

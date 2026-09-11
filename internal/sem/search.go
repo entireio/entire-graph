@@ -2008,37 +2008,48 @@ func preselectSearchFiles(
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
 	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
-		var matches []gitutil.GrepMatch
+		allowed := make(map[string]bool, len(source.paths))
+		for _, filePath := range source.paths {
+			allowed[filePath] = true
+		}
+		termMatches := make(map[string][]bool)
+		record := func(match gitutil.GrepMatch) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !allowed[match.Path] {
+				return nil
+			}
+			seen := termMatches[match.Path]
+			if seen == nil {
+				seen = make([]bool, len(q.terms))
+			}
+			for index, matched := range matcher.match(match.Text) {
+				seen[index] = seen[index] || matched
+			}
+			termMatches[match.Path] = seen
+			return nil
+		}
 		var grepErr error
 		if len(q.inferredAbbreviations) > 0 {
-			matches, grepErr = gitutil.GrepIndexPatternLines(ctx, source.absRepo, searchGitAliasPatterns(q), 32)
+			grepErr = gitutil.GrepIndexPatternLines(ctx, source.absRepo, searchGitAliasPatterns(q), record)
 		} else {
+			var matches []gitutil.GrepMatch
 			matches, grepErr = gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
+			if grepErr == nil {
+				for _, match := range matches {
+					if grepErr = record(match); grepErr != nil {
+						break
+					}
+				}
+			}
 		}
 		tracked, trackedErr := gitutil.ListIndexFiles(ctx, source.absRepo)
 		if grepErr == nil && trackedErr == nil {
 			usedGitIndexPreselection = true
-			allowed := make(map[string]bool, len(source.paths))
-			for _, filePath := range source.paths {
-				allowed[filePath] = true
-			}
 			trackedSet := make(map[string]bool, len(tracked))
 			for _, filePath := range tracked {
 				trackedSet[filePath] = true
-			}
-			termMatches := make(map[string][]bool)
-			for _, match := range matches {
-				if !allowed[match.Path] {
-					continue
-				}
-				seen := termMatches[match.Path]
-				if seen == nil {
-					seen = make([]bool, len(q.terms))
-				}
-				for index, matched := range matcher.match(match.Text) {
-					seen[index] = seen[index] || matched
-				}
-				termMatches[match.Path] = seen
 			}
 			provisional := make([]searchFileCandidate, 0, len(termMatches)+16)
 			grepMatchedAnywhere := make([]bool, len(q.terms))

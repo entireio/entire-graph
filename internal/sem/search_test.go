@@ -2668,25 +2668,31 @@ func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
 	for index := 0; index < minGitGrepPreselectionFiles-1; index++ {
 		content := "package app\n"
 		if index < 12 {
-			content += "func Print() {}\n"
+			content += strings.Repeat("// common\n", 40) + "func Print() {}\n"
 		}
 		write(t, repo, fmt.Sprintf("a_%05d.go", index), content)
 	}
-	write(t, repo, "z_value.go", "package app\nfunc readInt() {}\n")
+	write(t, repo, "z_value.go", "package app\n"+strings.Repeat("// common\n", 40)+"func readInt() {}\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "large alias corpus")
-	response, err := SearchRepository(t.Context(), repo, "test", "integer", SearchOptions{Worktree: true, Profile: ProfileSyntaxOnly, MaxIndexedFiles: 1, TopK: 5})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.Stats.FilesContentRead > 1 {
-		t.Fatalf("hydrated substring noise before the pool limit: %#v", response.Stats)
-	}
-	if response.Stats.PreselectionBackend != "git-index-grep+go-content" {
-		t.Fatalf("expected large worktree path: %#v", response.Stats)
-	}
-	if len(response.Results) == 0 || response.Results[0].SymbolName != "readInt" {
-		t.Fatalf("substring noise displaced actual alias: %#v", response.Results)
+	for _, query := range []string{"integer", "integer common"} {
+		response, err := SearchRepository(t.Context(), repo, "test", query, SearchOptions{Worktree: true, Profile: ProfileSyntaxOnly, MaxIndexedFiles: 1, TopK: 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		limit := 1
+		if query == "integer common" {
+			limit = 4
+		}
+		if response.Stats.FilesContentRead > limit {
+			t.Fatalf("hydrated substring noise before the pool limit: %#v", response.Stats)
+		}
+		if response.Stats.PreselectionBackend != "git-index-grep+go-content" {
+			t.Fatalf("expected large worktree path: %#v", response.Stats)
+		}
+		if len(response.Results) == 0 || response.Results[0].SymbolName != "readInt" {
+			t.Fatalf("substring noise displaced actual alias: %#v", response.Results)
+		}
 	}
 }
 
