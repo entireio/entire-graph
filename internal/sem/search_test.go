@@ -2812,3 +2812,14 @@ func TestSearchUnicodeSourceTermEvidence(t *testing.T) {
 		t.Fatal("ASCII suffix inside a Unicode identifier is not a token")
 	}
 }
+
+func TestSearchGitAliasPatternsBoundArgumentBytes(t *testing.T) {
+	q := buildSearchQuery("authentication")
+	if patterns := searchGitAliasPatterns(q); len(patterns) == 0 {
+		t.Fatal("ordinary alias query unexpectedly fell back")
+	}
+	oversized := strings.Repeat("a", maxSearchGitAliasPatternBytes)
+	if patterns := searchGitAliasPatternsForTerms(q, []string{oversized}); patterns != nil {
+		t.Fatal("oversized generated arguments must fall back without truncating routes")
+	}
+}

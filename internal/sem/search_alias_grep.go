@@ -7,6 +7,10 @@ import (
 	"unicode"
 )
 
+// Keep generated arguments comfortably below platform command-line limits.
+// Oversized expansions use the existing content-scanning fallback.
+const maxSearchGitAliasPatternBytes = 128 * 1024
+
 // One Git scan evaluates all alias routes. Its expressions reject substring-only
 // hits while streaming, so the provider need not hydrate noise.
 func searchGitAliasPatterns(q searchQuery) []string {
@@ -37,6 +41,16 @@ func searchGitAliasPatternsForTerms(q searchQuery, terms []string) []string {
 			alternatives = append(alternatives, searchAliasBoundaryPatterns(form)...)
 		}
 		patterns = append(patterns, "("+strings.Join(alternatives, "|")+")")
+	}
+	bytes := 0
+	for _, pattern := range patterns {
+		if len(pattern) >= 128*1024 {
+			return nil
+		}
+		bytes += len(pattern) + 4 // include the -e argument and terminators
+		if bytes > maxSearchGitAliasPatternBytes {
+			return nil
+		}
 	}
 	return patterns
 }
