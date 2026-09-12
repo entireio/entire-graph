@@ -3040,3 +3040,65 @@ func TestChangedFilesReportsTreeEntryModes(t *testing.T) {
 		t.Fatalf("edited file = %#v", got)
 	}
 }
+
+func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	content := "func readInt() {}\n" + strings.Repeat("func otherInt() {}\n", 1000) + "func readint() {}\nfunc Print() {}\n"
+	if err := os.WriteFile(filepath.Join(repo, "source.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	var matches []GrepMatch
+	// Exceed the Windows command-line limit without changing matching semantics.
+	patterns := make([]string, 1500)
+	for i := range patterns {
+		patterns[i] = "[[:lower:]]Int[^[:alnum:]]"
+	}
+	err := GrepIndexPatternLines(t.Context(), repo, patterns, func(match GrepMatch) error { matches = append(matches, match); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Path != "source.go" || matches[0].Text != "func readInt() {}" {
+		t.Fatalf("lost boundary context or case: %#v", matches)
+	}
+	matches = nil
+	err = GrepIndexPatternSample(t.Context(), repo, patterns, func(match GrepMatch) error { matches = append(matches, match); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 32 {
+		t.Fatalf("ordinary-term sample returned %d lines, want 32", len(matches))
+	}
+}
+
+func TestGrepTreePatternLinesPinsCommittedContent(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "source.go"), []byte("func readInt() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(repo, "source.go"), []byte("func Other() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var matches []GrepMatch
+	err := GrepTreePatternLines(t.Context(), repo, "HEAD", []string{"readInt"}, func(match GrepMatch) error { matches = append(matches, match); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Path != "source.go" || matches[0].Text != "func readInt() {}" {
+		t.Fatalf("committed stream lost content or path: %#v", matches)
+	}
+}
+
+func TestGrepTreePatternLinesRejectsInvalidTreeish(t *testing.T) {
+	for _, treeish := range []string{"", "--help", "HEAD\x00other"} {
+		if err := GrepTreePatternLines(t.Context(), t.TempDir(), treeish, []string{"needle"}, func(GrepMatch) error { return nil }); err == nil {
+			t.Errorf("accepted invalid treeish %q", treeish)
+		}
+	}
+}

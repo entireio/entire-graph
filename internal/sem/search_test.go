@@ -8,10 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 func TestSearchRepositoryRanksExactSymbol(t *testing.T) {
@@ -2211,7 +2214,7 @@ func TestSearchNameTermCoverageIsPluralTolerantAndSaturates(t *testing.T) {
 		t.Fatalf("gold name coverage %v must exceed single-term rival %v", g, r)
 	}
 	// "sections" (plural, from the issue) must match "Section" inside the identifier.
-	if !searchNameContainsTerm("pagemap.getpagesinsection", "sections") {
+	if !searchNameTokenMatchesTerm(searchTokenVariants("pageMap.getPagesInSection"), "sections") {
 		t.Fatal("plural query term must match the singular identifier")
 	}
 	// Saturation: a name carrying many terms is not unboundedly better than one carrying three.
@@ -2224,7 +2227,908 @@ func TestSearchNameTermCoverageIsPluralTolerantAndSaturates(t *testing.T) {
 		t.Fatalf("unrelated name must score 0, got %v", got)
 	}
 	// Short tokens must not match: a 2-char fragment appears in almost any identifier.
-	if searchNameContainsTerm("pagemap.getpagesinsection", "in") {
+	if searchNameTokenMatchesTerm(searchTokenVariants("pageMap.getPagesInSection"), "in") {
 		t.Fatal("short tokens must not count as name coverage")
+	}
+}
+
+// TestSearchNameCoverageExpandsProseAbbreviations pins the entireio/cli regression: the prose
+// sentence "the main authentication function that logs a user in" returned the LOGGING package,
+// because "authentication" matched no identifier while "logs" matched RestoreLogsOnly. The name a
+// developer writes is `auth`; the word a reporter writes is "authentication".
+func TestSearchNameCoverageExpandsProseAbbreviations(t *testing.T) {
+	t.Parallel()
+	q := buildSearchQuery("the main authentication function that logs a user in")
+	login := SearchResult{QualifiedName: "runLogin"}
+	authFlag := SearchResult{QualifiedName: "addInsecureHTTPAuthFlag"}
+	logs := SearchResult{QualifiedName: "ManualCommitStrategy.RestoreLogsOnly"}
+
+	// Before the abbreviation table this was 0: "authentication" matched no token of any auth
+	// identifier, so the one signal that exists to separate the head scored the correct answers
+	// exactly as low as unrelated code.
+	if got := searchNameTermCoverage(authFlag, q, nil); got == 0 {
+		t.Fatal("an identifier spelled with the abbreviation must score for the prose spelling")
+	}
+	// Deliberately >=, not >. Both names carry exactly one of this query's terms, so at the
+	// coverage layer they TIE; the table removes the auth side's zero, it does not by itself
+	// outrank logging. Ordering the full query is BM25's job and is covered end to end by the
+	// bench, not here — asserting > would be asserting something this function does not do.
+	if a, l := searchNameTermCoverage(authFlag, q, nil), searchNameTermCoverage(logs, q, nil); a < l {
+		t.Fatalf("auth identifier %v must not score below the logging identifier %v", a, l)
+	}
+	// runLogin scores, and the REASON is what this pins. It must match through "login" — the term
+	// compound joining recovers from the split phrasal verb — and must NOT match through "logs".
+	// Under the old substring test the situation was exactly inverted: there was no "login" term
+	// at all, and runLogin scored because plural-stripped "logs" was found inside "runlogin", the
+	// same accident that matched RestoreLogsOnly. Right answer, wrong reason, and a signal that
+	// could not separate the two clusters.
+	if got := searchNameTermCoverage(login, q, nil); got == 0 {
+		t.Fatal("runLogin must match the recovered login term")
+	}
+	loginTokens := searchTokenVariants("runLogin")
+	if !searchNameTokenMatchesTerm(loginTokens, "login") {
+		t.Fatal("runLogin must match through the joined compound")
+	}
+	if searchNameTokenMatchesTerm(loginTokens, "logs") {
+		t.Fatal("login must not match a logging term at token boundaries")
+	}
+	if !searchNameTokenMatchesTerm(searchTokenVariants("ManualCommitStrategy.RestoreLogsOnly"), "logs") {
+		t.Fatal("a genuine logging identifier must still match the logging term")
+	}
+	if searchNameMatchesAbbreviation(searchTokenVariants("runLogin"), "authentication") {
+		t.Fatal("the table must not have invented a login/authentication synonym")
+	}
+}
+
+// TestSearchNameMatchesAbbreviationIsTokenScoped guards the false positives that a raw substring
+// test would manufacture from short abbreviations.
+func TestSearchNameMatchesAbbreviationIsTokenScoped(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		term  string
+		ident string
+		want  bool
+	}{
+		{"long alias matches token prefix", "authentication", "runAuthenticated", true},
+		{"long alias matches exact token", "configuration", "loadConfig", true},
+		{"plural long form", "configurations", "loadConfig", true},
+		{"plural ies long form", "repositories", "openRepo", true},
+		{"long alias spans qualified name", "repository", "gitrepo.OpenCurrent", true},
+		{"short alias matches whole token", "environment", "setEnv", true},
+		{"short alias matches whole token max", "maximum", "maxRetries", true},
+		{"short alias rejects substring", "minimum", "adminPanel", false},
+		{"pruned entry no longer fires", "context", "withCtx", false},
+		{"short alias rejects substring int", "integer", "interfaceBuilder", false},
+		{"unmapped term never matches", "kubernetes", "kubeClient", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := searchNameMatchesAbbreviation(searchTokenVariants(tc.ident), tc.term)
+			if got != tc.want {
+				t.Fatalf("searchNameMatchesAbbreviation(%q, %q) = %v, want %v", tc.ident, tc.term, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSearchCompoundJoinSeparablePhrasalVerbs pins the entireio/cli regression. The motivating
+// sentence is "the main authentication function that logs a user in", where the phrasal verb is
+// split around its object: `logs` and `in` are four tokens apart, so an adjacent-pair scan sees
+// nothing. Before the joined term existed the query returned the LOGGING package with no auth in
+// the top five.
+func TestSearchCompoundJoinSeparablePhrasalVerbs(t *testing.T) {
+	t.Parallel()
+	q := buildSearchQuery("the main authentication function that logs a user in")
+	if !q.termSet["login"] {
+		t.Fatalf("separated phrasal verb must yield the joined term; got %v", q.terms)
+	}
+	// Added, never substituted: the split spelling has to survive for repos that use it.
+	if !q.termSet["logs"] && !q.termSet["log"] {
+		t.Fatalf("the split spelling must survive alongside the joined one; got %v", q.terms)
+	}
+}
+
+func TestSearchCompoundJoins(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		query string
+		want  string
+		found bool
+	}{
+		{"adjacent phrasal verb", "cannot log in", "login", true},
+		{"separated by determiner", "logs a user in", "login", true},
+		{"separated, possessive object", "log the user out", "logout", true},
+		{"inflected verb", "logging a user in", "login", true},
+		{"past tense", "logged the user in", "login", true},
+		{"adjacent noun compound", "the end point returns 404", "endpoint", true},
+		{"other phrasal verb", "roll the migration back", "rollback", true},
+		// The object-head requirement keeps an unrelated SEPARATED particle out: no determiner
+		// directly after "log", so the gap scan must not reach the trailing "in".
+		{"no object head, no separated join", "write every log entry in json", "login", false},
+		// noun + preposition, not a phrasal verb. The determiner in front of "log" marks it as a
+		// noun, which is the only cue English gives. Without this check the query returned
+		// persistLogin, RecordLoginContext and runLogin at ranks 1-3.
+		{"determiner marks a noun, not a phrasal verb", "write the log in json format", "login", false},
+		// ...but the same words with a verb in front are the phrasal verb, and must still join.
+		{"no determiner, still a phrasal verb", "the user cannot log in", "login", true},
+		{"logging an error as JSON", "log the error in json", "login", false},
+		{"logging a message as JSON", "log a message in json format", "login", false},
+		{"logging as YAML", "logs the response in YAML", "login", false},
+		{"logging as plain text", "log the message in plain text", "login", false},
+		{"adjacent formatting preposition", "write log in JSON", "login", false},
+		{"format with determiner", "log the message in a binary format", "login", false},
+		{"custom format", "log the message in custom format", "login", false},
+		{"formatting words elsewhere", "log the user in and return JSON", "login", true},
+		{"login location", "log the user in from the browser", "login", true},
+		{"check in binary files", "check in binary files", "checkin", true},
+		{"check in a JSON file", "check in a JSON file", "checkin", true},
+		{"checking a file format", "check the file in json format", "checkin", false},
+		{"signing a request format", "sign the request in json format", "signin", false},
+		{"checking YAML content", "check the response in YAML", "checkin", false},
+		{"signing a custom encoding", "sign the request in custom encoding", "signin", false},
+		{"quantified login", "logs every user in", "login", true},
+		{"quantified signin", "sign some requests in", "signin", true},
+		{"quantified logging", "log every message in JSON", "login", false},
+		{"UTF-8 logging", "log a message in UTF-8", "login", false},
+		{"UTF-16 logging", "log a message in utf_16le", "login", false},
+		{"ASCII logging", "log a message in ASCII", "login", false},
+		{"separated check in", "check the file in and return JSON", "checkin", true},
+		{"separated sign in", "sign the user in and return JSON", "signin", true},
+		// Noun compounds are not separable; only the adjacent form counts.
+		{"noun compound is not separable", "the end of the point", "endpoint", false},
+		{"gap too wide", "logs every authenticated request payload in", "login", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildSearchQuery(tc.query).termSet[tc.want]
+			if got != tc.found {
+				t.Fatalf("buildSearchQuery(%q).termSet[%q] = %v, want %v", tc.query, tc.want, got, tc.found)
+			}
+		})
+	}
+}
+
+func TestSearchNameMatchesCodeAbbreviations(t *testing.T) {
+	for _, tc := range []struct {
+		name, term string
+		want       bool
+	}{
+		{"runAuthenticated", "auth", true},
+		{"Authz", "auth", true},
+		{"Configure", "config", true},
+		{"gitrepo.Open", "repo", true},
+		{"Inspect", "spec", false},
+		{"Interface", "int", false},
+		{"runLogin", "log", false},
+		{"openDB", "db", true},
+		{"userId", "id", true},
+		{"debug", "db", false},
+		{"signIn", "in", false},
+	} {
+		t.Run(tc.name+"/"+tc.term, func(t *testing.T) {
+			if got := searchNameTokenMatchesTerm(searchTokenVariants(tc.name), tc.term); got != tc.want {
+				t.Fatalf("name match %q / %q = %v, want %v", tc.name, tc.term, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSearchInferredAliasesDoNotScoreSubstrings(t *testing.T) {
+	q := buildSearchQuery("integer")
+	for _, name := range []string{"Interface", "Internal", "Print"} {
+		t.Run(name, func(t *testing.T) {
+			symbol := SymbolRecord{Name: name, QualifiedName: name, Kind: "function", Signature: "func " + name + "(value interface{})"}
+			if score, signals := symbolSearchScore(q, symbol); score != 2 || len(signals) != 0 {
+				t.Fatalf("inferred int must not add a name/signature bonus: %v %v", score, signals)
+			}
+			if searchSymbolNameMatchesQueryTerm(q, symbol) || searchNameCoversQuery(SearchResult{SymbolName: name}, q) {
+				t.Fatal("inferred int must not grant graph expansion or name coverage")
+			}
+		})
+	}
+	for _, name := range []string{"Int", "readInt"} {
+		if score, _ := symbolSearchScore(q, SymbolRecord{Name: name, Kind: "function"}); score <= 2 {
+			t.Fatalf("exact int token must score: %s = %v", name, score)
+		}
+	}
+}
+
+func TestSearchQueryAbbreviationsIncludeWordVariants(t *testing.T) {
+	t.Parallel()
+	for query, alias := range map[string]string{
+		"configurations": "config",
+		"repositories":   "repo",
+		"utilities":      "util",
+		"authenticating": "auth",
+	} {
+		t.Run(query, func(t *testing.T) {
+			q := buildSearchQuery(query)
+			if !q.termSet[alias] {
+				t.Fatalf("query %q must retrieve through %q; got %v", query, alias, q.terms)
+			}
+			if q.weights[alias] != searchAbbreviationTermWeight {
+				t.Fatalf("inferred alias weight = %v, want %v", q.weights[alias], searchAbbreviationTermWeight)
+			}
+		})
+	}
+}
+
+func TestSearchQueryMatcherAliasBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		query, text, term string
+		want              bool
+	}{
+		{"integer", "func Print(value interface{})", "int", false},
+		{"integer", "func readInt()", "int", true},
+		{"authentication", "func runAuthenticated()", "auth", true},
+		{"database", "func debug()", "db", false},
+		{"database", "func openDB()", "db", true},
+		{"integer int", "func Print()", "int", true},
+	} {
+		t.Run(tc.query+"/"+tc.text, func(t *testing.T) {
+			q := buildSearchQuery(tc.query)
+			matches := newSearchQueryTermMatcher(q).match(tc.text)
+			for index, term := range q.terms {
+				if term == tc.term && matches[index] != tc.want {
+					t.Fatalf("match %q in %q = %v, want %v", term, tc.text, matches[index], tc.want)
+				}
+			}
+			if got := searchQueryTermMatches(q, tc.text, strings.ToLower(tc.text), tc.term); got != tc.want {
+				t.Fatalf("scoring match = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCommittedPreselectionFiltersInferredAliasSubstrings(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "value.go", "package app\nfunc readInt() {}\n")
+	write(t, repo, "output.go", "package app\nfunc Print() {}\n")
+	write(t, repo, "contract.go", "package app\nfunc Interface() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	cacheDir := t.TempDir()
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test", ProviderSnapshotOptions{Profile: ProfileSyntaxOnly}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	response, err := SearchRepository(t.Context(), repo, "test", "integer", SearchOptions{Profile: ProfileSyntaxOnly, CacheDir: cacheDir, TopK: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.PreselectionBackend != "git-tree-grep" {
+		t.Fatalf("expected committed Git path: %#v", response.Stats)
+	}
+	if response.Stats.FilesContentRead != 0 {
+		t.Fatalf("hydrated substring noise in cached selection: %#v", response.Stats)
+	}
+	if response.Stats.FilesIndexed != 1 {
+		t.Fatalf("substring-only files entered the selection: %#v", response.Stats)
+	}
+	if len(response.Results) == 0 || response.Results[0].SymbolName != "readInt" {
+		t.Fatalf("lost the alias-only match: %#v", response.Results)
+	}
+}
+
+func TestSearchReviewRoundTwoRegressions(t *testing.T) {
+	t.Run("matcher rescans the complete text", func(t *testing.T) {
+		q := buildSearchQuery("integer")
+		hits := newSearchQueryTermMatcher(q).match("integer print(); readInt()")
+		for i, term := range q.terms {
+			if term == "int" && !hits[i] {
+				t.Fatal("lost later valid alias")
+			}
+		}
+	})
+	t.Run("all aliases reach bounded Git scans", func(t *testing.T) {
+		q := buildSearchQuery("authentication configuration database request response context")
+		patterns := searchGitAliasPatterns(q)
+		if len(patterns) > maxSearchQueryTerms {
+			t.Fatalf("unbounded patterns: %d", len(patterns))
+		}
+		for alias := range q.inferredAbbreviations {
+			matched := false
+			for _, pattern := range patterns {
+				if regexp.MustCompile(pattern).MatchString(alias) {
+					matched = true
+				}
+			}
+			if !matched {
+				t.Errorf("missing alias route %s", alias)
+			}
+		}
+	})
+	t.Run("aliases are alternative name concepts", func(t *testing.T) {
+		if !searchNameCoversQuery(SearchResult{SymbolName: "loadConfig"}, buildSearchQuery("configuration")) {
+			t.Fatal("config must cover configuration")
+		}
+	})
+	for _, tc := range []struct {
+		query string
+		want  bool
+	}{
+		{"logs all users in", true}, {"logs both users in", true},
+		{"log a message in the file", false}, {"log a message in compact JSON format", false},
+		{"log the user in and return JSON", true},
+		{"log the user in using JSON", true},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			if got := buildSearchQuery(tc.query).termSet["login"]; got != tc.want {
+				t.Fatalf("login = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	t.Run("deep expansion", func(t *testing.T) {
+		q := buildSparseSearchQuery("authentication logs a user in")
+		if !q.termSet["auth"] || !q.termSet["login"] {
+			t.Fatalf("missing deep query expansions: %v", q.terms)
+		}
+	})
+}
+
+func TestSearchAliasTermFrequencies(t *testing.T) {
+	for _, sparse := range []bool{false, true} {
+		q := buildSearchQuery("authentication")
+		count := searchTermCounts
+		if sparse {
+			q = buildSparseSearchQuery("authentication")
+			count = sparseSearchTermCounts
+		}
+		counts, _ := count("func runAuthenticated() {}", q)
+		if counts["auth"] == 0 {
+			t.Fatalf("sparse=%v: missing auth frequency: %v", sparse, counts)
+		}
+		q = buildSearchQuery("integer")
+		if sparse {
+			q = buildSparseSearchQuery("integer")
+		}
+		counts, _ = count("func Print() {}", q)
+		if counts["int"] != 0 {
+			t.Fatalf("sparse=%v: substring int frequency: %v", sparse, counts)
+		}
+	}
+}
+
+func TestSearchInferredAliasPathScoring(t *testing.T) {
+	if pathSearchScore(buildSearchQuery("configuration"), "config.yaml") <= 0 {
+		t.Fatal("path-only config alias must score")
+	}
+	if pathSearchScore(buildSearchQuery("integer"), "internal.go") != 0 {
+		t.Fatal("int substring must not score")
+	}
+}
+
+func TestSearchPathOnlyAliasInCommittedAndWorkingTrees(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "config.yaml", "enabled: true\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	cacheDir := t.TempDir()
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test", ProviderSnapshotOptions{Profile: ProfileSyntaxOnly}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	for _, worktree := range []bool{false, true} {
+		response, err := SearchRepository(t.Context(), repo, "test", "configuration", SearchOptions{Worktree: worktree, Profile: ProfileSyntaxOnly, CacheDir: cacheDir, TopK: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(response.Results) == 0 || response.Results[0].FilePath != "config.yaml" {
+			t.Fatalf("worktree=%v: lost path-only config alias: %#v", worktree, response.Results)
+		}
+	}
+}
+
+func TestSearchReviewRoundThreeRegressions(t *testing.T) {
+	t.Run("one alias frequency per occurrence", func(t *testing.T) {
+		q := buildSearchQuery("authentication")
+		counts, _ := searchTermCounts("AuthThing AuthThing", q)
+		if counts["auth"] != 2 {
+			t.Fatalf("auth frequency=%d, want 2", counts["auth"])
+		}
+	})
+	t.Run("one concept in name coverage", func(t *testing.T) {
+		result := SearchResult{SymbolName: "Auth"}
+		if got, want := searchNameTermCoverage(result, buildSearchQuery("authentication"), nil), searchNameTermCoverage(result, buildSearchQuery("auth"), nil); got != want {
+			t.Fatalf("alias coverage=%v, direct=%v", got, want)
+		}
+	})
+	for _, tc := range []struct {
+		query, term string
+		want        bool
+	}{
+		{"logs users in", "login", true},
+		{"log users. In another file", "login", false},
+		{"log. Users in a session", "login", false}, {"sign requests in", "signin", true},
+		{"logs a user in.", "login", true}, {"log a message in JSON.", "login", false},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			if got := buildSearchQuery(tc.query).termSet[tc.term]; got != tc.want {
+				t.Fatalf("%s=%v, want %v", tc.term, got, tc.want)
+			}
+		})
+	}
+	t.Run("plural short aliases", func(t *testing.T) {
+		for _, name := range []string{"ids", "getIDs", "getIDsForUser"} {
+			if !searchTextMatchesAlias(name, "id") {
+				t.Errorf("lost id in %s", name)
+			}
+		}
+	})
+}
+
+func TestSearchLargeWorktreeAliasBoundariesBeforePoolLimit(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv("LC_ALL", "C")
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	for index := 0; index < minGitGrepPreselectionFiles-1; index++ {
+		content := "package app\n"
+		if index < 12 {
+			content += strings.Repeat("// common\n", 40) + "func Print() {}\nfunc ReadAuth() {}\n"
+		}
+		write(t, repo, fmt.Sprintf("a_%05d.go", index), content)
+	}
+	write(t, repo, "z_value.go", "package app\n"+strings.Repeat("func αint() {}\n", 40)+strings.Repeat("// common\n", 40)+"func readInt() {}\nfunc readDB() {}\n")
+	write(t, repo, "z_unicode.go", "package app\nfunc İssueNeedle() {}\n")
+	write(t, repo, "b_other.go", "package app\nfunc AuthHelp() {}\n")
+	write(t, repo, "a_other.go", "package app\nfunc readInt() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "large alias corpus")
+	for _, query := range []string{"integer", "integer common", "issue authentication", "integer database", "authentication configuration database integer identifier environment"} {
+		response, err := SearchRepository(t.Context(), repo, "test", query, SearchOptions{Worktree: true, Profile: ProfileSyntaxOnly, MaxIndexedFiles: 1, TopK: 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		limit := 3 // one Unicode fallback plus two genuinely matching files
+		if query != "integer" {
+			limit = 4
+		}
+		if query == "integer common" || query == "authentication configuration database integer identifier environment" {
+			limit++
+		} // conservative fallback is counted separately from the four-file pool
+		if response.Stats.FilesContentRead > limit {
+			t.Fatalf("hydrated substring noise before the pool limit: %#v", response.Stats)
+		}
+		if response.Stats.PreselectionBackend != "git-index-grep+go-content" {
+			t.Fatalf("expected large worktree path: %#v", response.Stats)
+		}
+		if query == "integer common" && response.Stats.PreselectionPasses != 3 {
+			t.Fatalf("ordinary terms must share one Git scan: %#v", response.Stats)
+		}
+		if query == "integer database" || query == "authentication configuration database integer identifier environment" {
+			if len(response.Results) == 0 || response.Results[0].FilePath != "z_value.go" {
+				t.Fatalf("full-file validation lost the other alias: %#v", response.Results)
+			}
+			continue
+		}
+		want := "readInt"
+		if query == "issue authentication" {
+			want = "İssueNeedle"
+		}
+		if len(response.Results) == 0 || response.Results[0].SymbolName != want {
+			t.Fatalf("substring noise displaced actual alias: %#v", response.Results)
+		}
+	}
+}
+
+func TestSearchAliasExtensionsExcludeUnrelatedWords(t *testing.T) {
+	for _, tc := range []struct{ alias, token string }{{"doc", "docker"}, {"repo", "report"}, {"spec", "special"}, {"temp", "template"}, {"auth", "author"}} {
+		if searchNameMatchesAlias(searchTokenVariants(tc.token), tc.alias) {
+			t.Errorf("%s must not match %s", tc.alias, tc.token)
+		}
+	}
+	for _, tc := range []struct{ alias, token string }{{"auth", "Authenticated"}, {"auth", "Authenticating"}, {"auth", "Authz"}, {"config", "Configure"}, {"config", "Configured"}, {"repo", "gitrepo"}, {"repo", "repositories"}} {
+		if !searchNameMatchesAlias(searchTokenVariants(tc.token), tc.alias) {
+			t.Errorf("lost %s in %s", tc.alias, tc.token)
+		}
+	}
+}
+
+func TestSearchReviewRoundFourRegressions(t *testing.T) {
+	if !searchSymbolNameMatchesQueryTerm(buildSearchQuery("database"), SymbolRecord{Name: "openDB"}) {
+		t.Fatal("lost short alias graph evidence")
+	}
+	if searchNameCoversQuery(SearchResult{SymbolName: "runLogin"}, buildSearchQuery("log")) {
+		t.Fatal("log must not cover login")
+	}
+	if buildSearchQuery("the worker logs quickly in production").termSet["login"] {
+		t.Fatal("adverb is not a bare object")
+	}
+	for _, tc := range []struct {
+		alias, text string
+		want        bool
+	}{
+		{"int", "Print", false}, {"int", "Interface", false}, {"int", "INTERFACE", false}, {"int", "readInt", true}, {"int", "INTValue", true},
+		{"id", "getIDs", true}, {"id", "userID", true}, {"id", "ID", true}, {"id", "XID", false}, {"id", "XId", true},
+		{"auth", "runAuthenticated", true}, {"auth", "Authz", true}, {"auth", "author", false}, {"repo", "gitrepo", true},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			q := buildSearchQuery(map[string]string{"int": "integer", "id": "identifier", "auth": "authentication", "repo": "repository"}[tc.alias])
+			got := false
+			for _, pattern := range searchGitAliasPatterns(q) {
+				if regexp.MustCompile(pattern).MatchString(tc.text) {
+					got = true
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("Git alias %s in %s=%v, want %v", tc.alias, tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSearchReviewRoundFiveRegressions(t *testing.T) {
+	q := buildSearchQuery("authentication")
+	counts, _ := searchTermCounts("authentication", q)
+	if counts["authentication"] != 1 || counts["auth"] != 0 {
+		t.Errorf("long form counted twice: %v", counts)
+	}
+	hits := newSearchQueryTermMatcher(q).match("authentication")
+	for index, term := range q.terms {
+		if term == "auth" && hits[index] {
+			t.Error("long form counted as alias document presence")
+		}
+	}
+	q = buildSearchQuery("authorization")
+	counts, _ = searchTermCounts("Authz", q)
+	if counts["authz"]+counts["auth"] != 1 {
+		t.Errorf("overlapping aliases counted twice: %v", counts)
+	}
+	q = buildSearchQuery("issue authentication")
+	found := false
+	for _, pattern := range searchGitAliasPatterns(q) {
+		if regexp.MustCompile(pattern).MatchString("İssue") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Git alias route dropped Go Unicode lowercase equivalent")
+	}
+}
+
+func TestSearchOrdinaryQueryDoesNotAllocateAliasEvidence(t *testing.T) {
+	q := buildSearchQuery("needle")
+	counts := map[string]int{}
+	tokens := []string{"needle", "another"}
+	if allocs := testing.AllocsPerRun(100, func() { countSearchAliases(counts, q, tokens) }); allocs != 0 {
+		t.Fatalf("ordinary alias accounting allocated: %v", allocs)
+	}
+}
+
+func TestSearchUnicodeSourceTermEvidence(t *testing.T) {
+	for _, tc := range []struct{ query, text, term string }{
+		{"issue authentication", "İssueNeedle", "issue"},
+		{"integer", "getİnt", "int"},
+	} {
+		q := buildSearchQuery(tc.query)
+		found := newSearchQueryTermMatcher(q).match(tc.text)
+		for index, term := range q.terms {
+			if term == tc.term && !found[index] {
+				t.Errorf("matcher dropped %s in %s", term, tc.text)
+			}
+		}
+		counts, _ := searchTermCounts(tc.text, q)
+		if counts[tc.term] == 0 {
+			t.Errorf("frequency dropped %s in %s: %v", tc.term, tc.text, counts)
+		}
+	}
+	q := buildSearchQuery("integer")
+	if textMatchesSearchQuery(q, "πint") {
+		t.Fatal("ASCII suffix inside a Unicode identifier is not a token")
+	}
+}
+
+func TestSearchGitAliasPatternsBoundArgumentBytes(t *testing.T) {
+	q := buildSearchQuery("authentication")
+	if patterns := searchGitAliasPatterns(q); len(patterns) == 0 {
+		t.Fatal("ordinary alias query unexpectedly fell back")
+	}
+	oversized := strings.Repeat("a", maxSearchGitAliasPatternBytes)
+	if patterns := searchGitAliasPatternsForTerms(q, []string{oversized}); patterns != nil {
+		t.Fatal("oversized generated arguments must fall back without truncating routes")
+	}
+}
+
+func TestSearchReviewRoundSixRegressions(t *testing.T) {
+	for _, query := range []string{"log a message in UTF 8", "log a message! In the next step", "log a message? In the next step", "log a message, in another function", "log a message in another function", "log the request in the handler"} {
+		if buildSearchQuery(query).termSet["login"] {
+			t.Errorf("false login for %q", query)
+		}
+		if buildSparseSearchQuery(query).termSet["login"] {
+			t.Errorf("deep false login for %q", query)
+		}
+	}
+	for query, term := range map[string]string{"the sign in page": "signin", "the roll out command": "rollout", "log the user in and return JSON": "login"} {
+		if !buildSearchQuery(query).termSet[term] {
+			t.Errorf("lost %s for %q", term, query)
+		}
+	}
+	q := buildSearchQuery("log")
+	if searchSymbolNameMatchesQueryTerm(q, SymbolRecord{Name: "runLogin"}) {
+		t.Error("substring should not expand the graph")
+	}
+	if searchQueryNameTermMatches(q, "runLogin", "log") {
+		t.Error("substring should not score as symbol name")
+	}
+	if !searchQueryNameTermMatches(q, "writeLogs", "log") {
+		t.Error("lost plural name match")
+	}
+}
+
+func TestSearchReviewRoundSevenRegressions(t *testing.T) {
+	for _, query := range []string{"archive the logs in sequence", "archive the logging in sequence"} {
+		if buildSearchQuery(query).termSet["login"] {
+			t.Errorf("noun query inferred login: %q", query)
+		}
+	}
+	for _, query := range []string{"users that log in", "accounts that logged in", "clients that are logging in"} {
+		if !buildSearchQuery(query).termSet["login"] {
+			t.Errorf("relative clause lost login: %q", query)
+		}
+	}
+}
+
+func TestSearchProseHeadingCoveragePreservesTextMatching(t *testing.T) {
+	q := buildSearchQuery("start")
+	for _, kind := range []string{"section", "document", "function"} {
+		result := SearchResult{Kind: kind, SymbolName: "Getting Started Guide"}
+		want := kind != "function"
+		if got := searchNameTermCoverage(result, q, nil) > 0; got != want {
+			t.Errorf("%s coverage=%v", kind, got)
+		}
+		if got := searchNameCoversQuery(result, q); got != want {
+			t.Errorf("%s covers=%v", kind, got)
+		}
+	}
+}
+
+func TestSearchReviewRoundEightRegressions(t *testing.T) {
+	for _, query := range []string{"the function that logs in", "service that logs in", "handlers that log in", "logs authenticated users in", "logs newly authenticated users in"} {
+		if !buildSearchQuery(query).termSet["login"] {
+			t.Errorf("lost login for %q", query)
+		}
+	}
+	for query, term := range map[string]string{"write the check in JSON format": "checkin", "archive that log in sequence": "login"} {
+		if buildSearchQuery(query).termSet[term] {
+			t.Errorf("false %s for %q", term, query)
+		}
+	}
+	if searchGitAliasScansFit(buildSearchQuery("authentication configuration database integer identifier environment")) {
+		t.Error("excess aliases must coalesce")
+	}
+	if !searchGitAliasScansFit(buildSearchQuery("authentication")) {
+		t.Error("ordinary alias should use bounded scans")
+	}
+	q := buildSearchQuery("authentication")
+	counts := map[string]int{}
+	tokens := []string{"unrelated", "needle"}
+	if got := testing.AllocsPerRun(100, func() { countSearchAliases(counts, q, tokens) }); got != 0 {
+		t.Errorf("nonmatching tokens allocated %v", got)
+	}
+}
+
+func TestSearchTrimmedAliasesDoNotConsumeScanBudget(t *testing.T) {
+	words := []string{"authentication", "configuration", "database", "integer", "identifier", "environment"}
+	for i := 0; i < maxSearchQueryTerms+5; i++ {
+		words = append(words, fmt.Sprintf("uniquefillerword%03d", i))
+	}
+	q := buildSearchQuery(strings.Join(words, " "))
+	if len(q.terms) != maxSearchQueryTerms {
+		t.Fatalf("query did not exercise truncation: %d", len(q.terms))
+	}
+	for alias := range q.inferredAbbreviations {
+		if !q.termSet[alias] {
+			t.Errorf("unretained alias %s", alias)
+		}
+	}
+	if len(q.inferredAbbreviations) != 0 || !searchGitAliasScansFit(q) {
+		t.Fatalf("trimmed aliases affect preselection: %v", q.inferredAbbreviations)
+	}
+}
+
+func TestSearchReviewRoundTenRegressions(t *testing.T) {
+	for _, query := range []string{"write the detailed log in sequence", "write the extremely detailed log in sequence", "log the message in sequence", "log the event in parallel"} {
+		if buildSearchQuery(query).termSet["login"] {
+			t.Errorf("false login for %q", query)
+		}
+	}
+	for query, term := range map[string]string{"the end point in JSON format": "endpoint", "the meta data in JSON format": "metadata", "the worker logs in": "login", "the authenticated user logs in": "login", "the function that logs in": "login"} {
+		if !buildSearchQuery(query).termSet[term] {
+			t.Errorf("lost %s for %q", term, query)
+		}
+	}
+	q := buildSearchQuery("authentication")
+	for _, name := range []string{"NewOAuth2Client", "oauth2"} {
+		counts, _ := searchTermCounts(name, q)
+		if counts["auth"] != 1 || !searchQueryNameTermMatches(q, name, "auth") {
+			t.Errorf("lost OAuth2 evidence in %s: %v", name, counts)
+		}
+	}
+}
+
+func TestSearchReviewRoundElevenRegressions(t *testing.T) {
+	for _, query := range []string{"archive the log files in sequence", "log the requests in sequence", "write logs in sequence"} {
+		if buildSearchQuery(query).termSet["login"] {
+			t.Errorf("false login for %q", query)
+		}
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	write(t, repo, "database.go", "package app\nfunc DBThing() {}\n")
+	write(t, repo, "identifier.go", "package app\nfunc IDThing() {}\n")
+	git(t, repo, "add", ".")
+	for query, path := range map[string]string{"database": "database.go", "identifier": "identifier.go"} {
+		var matches []gitutil.GrepMatch
+		if err := gitutil.GrepIndexPatternLines(t.Context(), repo, searchGitAliasPatterns(buildSearchQuery(query)), func(m gitutil.GrepMatch) error { matches = append(matches, m); return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) != 1 || matches[0].Path != path {
+			t.Errorf("lost acronym for %s: %v", query, matches)
+		}
+	}
+}
+
+func TestSearchAliasPatternFactoringPreservesAlternatives(t *testing.T) {
+	forms := []string{"auth", "authn", "auth2", "authenticated", "authentication", "authorization", "db", "database", "id", "ids"}
+	factored := strings.Join(searchAliasBoundaryPatterns(forms), "|")
+	var expanded []string
+	for _, form := range forms {
+		expanded = append(expanded, searchAliasBoundaryPatterns([]string{form})...)
+	}
+	flat := strings.Join(expanded, "|")
+	if len(factored) >= len(flat) {
+		t.Fatalf("factoring did not reduce payload: %d >= %d", len(factored), len(flat))
+	}
+	got, want := regexp.MustCompile(factored), regexp.MustCompile(flat)
+	for _, form := range forms {
+		for _, spelling := range []string{form, strings.ToUpper(form), strings.ToUpper(form[:1]) + form[1:]} {
+			for _, prefix := range []string{"", "New", "X", "x", "α", "_"} {
+				for _, suffix := range []string{"", "Thing", "VALUE", "x", "_"} {
+					text := prefix + spelling + suffix
+					if got.MatchString(text) != want.MatchString(text) {
+						t.Errorf("factoring changed %q", text)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestSearchSigningPayloadDoesNotImplySignin(t *testing.T) {
+	for _, query := range []string{"sign a request in sequence", "sign the document in order", "sign the digest in parallel"} {
+		if buildSearchQuery(query).termSet["signin"] {
+			t.Errorf("false signin for %q", query)
+		}
+	}
+	for _, query := range []string{"sign the user in sequence", "sign requests in", "sign requests in and continue", "sign requests in. Sequence the next step"} {
+		if !buildSearchQuery(query).termSet["signin"] {
+			t.Errorf("lost signin for %q", query)
+		}
+	}
+}
+
+func TestSearchReviewRoundThirteenRegressions(t *testing.T) {
+	for _, tc := range []struct{ query, term string }{
+		{"log: a user in", "login"}, {"log a: user in", "login"},
+		{"write the log out", "logout"}, {"the service logs users and signs in", "login"},
+	} {
+		if buildSearchQuery(tc.query).termSet[tc.term] {
+			t.Errorf("false %s for %q", tc.term, tc.query)
+		}
+	}
+	for _, query := range []string{"authenticating", "authenticated"} {
+		if !searchNameCoversQuery(SearchResult{SymbolName: "Auth", Kind: "function"}, buildSearchQuery(query)) {
+			t.Errorf("lost alias coverage for %q", query)
+		}
+	}
+}
+
+func TestSearchReviewRoundFourteenRegressions(t *testing.T) {
+	for _, tc := range []struct{ query, term string }{
+		{"process logs in sequence", "login"}, {"write the sign in red", "signin"},
+		{"write the check in red", "checkin"}, {"log a message out", "logout"},
+	} {
+		if buildSearchQuery(tc.query).termSet[tc.term] {
+			t.Errorf("false %s for %q", tc.term, tc.query)
+		}
+	}
+	if !buildSearchQuery("the process logs in").termSet["login"] {
+		t.Fatal("lost process subject")
+	}
+	for _, query := range []string{"authentication", "the function logs a user in", "configuration database", "no aliases here"} {
+		if !reflect.DeepEqual(buildSparseSearchQuery(query), buildSparseSearchQueryExpanded(query, buildSearchQuery(query))) {
+			t.Errorf("shared expansion changed %q", query)
+		}
+	}
+}
+
+func TestSearchReviewRoundFifteenRegressions(t *testing.T) {
+	for _, query := range []string{"write the event log in sequence", "write the application log in sequence", "read the custom log in sequence", "application log in sequence", "system log in sequence", "event log in sequence", "request log in sequence"} {
+		if buildSearchQuery(query).termSet["login"] {
+			t.Errorf("false login for %q", query)
+		}
+	}
+	for _, query := range []string{"the system logs a user in", "the application logs a user in", "the system logs in", "write a function that logs a user in"} {
+		if !buildSearchQuery(query).termSet["login"] {
+			t.Errorf("lost login for %q", query)
+		}
+	}
+}
+
+func TestSearchReviewRoundSixteenRegressions(t *testing.T) {
+	for _, query := range []string{"logs Alice in", "code that logs in", "logs users in, JSON output"} {
+		if !buildSearchQuery(query).termSet["login"] {
+			t.Errorf("lost login for %q", query)
+		}
+	}
+	repo := t.TempDir()
+	t.Setenv("LC_ALL", "C")
+	git(t, repo, "init")
+	write(t, repo, "value.go", "package app\nfunc αInt() {}\n")
+	git(t, repo, "add", ".")
+	var matches []gitutil.GrepMatch
+	if err := gitutil.GrepIndexPatternLines(t.Context(), repo, searchGitAliasPatterns(buildSearchQuery("integer")), func(m gitutil.GrepMatch) error { matches = append(matches, m); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Path != "value.go" {
+		t.Fatalf("lost Unicode prefix: %v", matches)
+	}
+}
+
+func TestSearchReviewRoundSeventeenRegressions(t *testing.T) {
+	for query, term := range map[string]string{"time stamps": "timestamp", "web hooks": "webhook", "end points": "endpoint"} {
+		if !buildSearchQuery(query).termSet[term] {
+			t.Errorf("lost %s in %q", term, query)
+		}
+	}
+	q := buildSearchQuery("integer")
+	counts, _ := searchTermCounts("πinteger", q)
+	if counts["integer"] != 1 || counts["int"] != 0 {
+		t.Errorf("ordinary Unicode suffix counts: %v", counts)
+	}
+	value := "interface " + strings.Repeat("padding ", 30) + "readInt(value)" + strings.Repeat(" trailing", 30)
+	if got := truncateSearchText(value, 40, q); !strings.Contains(got, "readInt") {
+		t.Errorf("wrong alias center: %q", got)
+	}
+	if buildSearchQuery("log a message in. Next").termSet["login"] {
+		t.Fatal("payload inferred login")
+	}
+	if !buildSearchQuery("log the user in. Next").termSet["login"] {
+		t.Fatal("valid terminal particle lost")
+	}
+}
+
+func TestSearchPreindexedAliasAboveLoweredParseLimit(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv("LC_ALL", "C")
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "value.go", "package app\nfunc πint() {}\n"+strings.Repeat("// padding\n", 100)+"func readInt() {}\n")
+	for i := 0; i < 4; i++ {
+		write(t, repo, fmt.Sprintf("plain%d.go", i), "package app\nfunc Helper() {}\n")
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "alias above parse cap")
+	cacheDir := t.TempDir()
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test", ProviderSnapshotOptions{Profile: ProfileSyntaxOnly, MaxParseBytes: 128}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	response, err := SearchRepository(t.Context(), repo, "test", "integer", SearchOptions{Profile: ProfileSyntaxOnly, MaxParseBytes: 128, CacheDir: cacheDir, TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) == 0 || response.Results[0].FilePath != "value.go" {
+		t.Fatalf("lost lexical result above lowered parse limit: %#v", response.Results)
 	}
 }

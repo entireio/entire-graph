@@ -624,6 +624,102 @@ func GrepIndexMatches(ctx context.Context, repo string, patterns []string, maxPe
 	return grepFixedStringMatches(ctx, repo, "", patterns, maxPerFile)
 }
 
+// GrepIndexPatternLines streams whole matching lines for caller-built,
+// case-sensitive POSIX expressions, returning only the first match per file.
+// Callers needing separate term evidence must scan each term independently.
+func GrepIndexPatternLines(ctx context.Context, repo string, patterns []string, visit func(GrepMatch) error) error {
+	return grepPatternLines(ctx, repo, "", patterns, 1, visit)
+}
+
+// GrepIndexPatternSample retains the legacy bounded sample for ordinary terms.
+func GrepIndexPatternSample(ctx context.Context, repo string, patterns []string, visit func(GrepMatch) error) error {
+	return grepPatternLines(ctx, repo, "", patterns, 32, visit)
+}
+
+// GrepTreePatternLines streams matches from the specified immutable tree and
+// strips Git's treeish prefix from each returned path.
+func GrepTreePatternLines(ctx context.Context, repo, treeish string, patterns []string, visit func(GrepMatch) error) error {
+	if treeish == "" || strings.HasPrefix(treeish, "-") || strings.ContainsRune(treeish, '\x00') {
+		return fmt.Errorf("invalid git grep treeish %q", treeish)
+	}
+	return grepPatternLines(ctx, repo, treeish, patterns, 1, visit)
+}
+
+func grepPatternLines(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, visit func(GrepMatch) error) error {
+
+	if len(patterns) == 0 {
+		return nil
+	}
+	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E", "-m", strconv.Itoa(maxPerFile), "-f", "-"}
+	if treeish != "" {
+		args = append(args, treeish)
+	}
+	args = append(args, "--")
+	cmd := newGitCmdWithCallerLocale(ctx, repo, args...)
+	// Pattern data can exceed Windows command-line limits; send it on stdin.
+	cmd.Stdin = strings.NewReader(strings.Join(patterns, "\n") + "\n")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+	reader := bufio.NewReader(stdout)
+	readErr := readGrepPatternLines(reader, func(match GrepMatch) error {
+		if treeish != "" {
+			prefix := treeish + ":"
+			if !strings.HasPrefix(match.Path, prefix) {
+				return fmt.Errorf("git grep missing treeish prefix")
+			}
+			match.Path = strings.TrimPrefix(match.Path, prefix)
+		}
+		return visit(match)
+	})
+	if readErr != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return readErr
+	}
+	if waitErr != nil {
+		var exitError *exec.ExitError
+		if errors.As(waitErr, &exitError) && exitError.ExitCode() == 1 && stderr.Len() == 0 {
+			return nil
+		}
+		return fmt.Errorf("git grep pattern lines: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
+	}
+	if stderr.Len() > 0 {
+		return fmt.Errorf("git grep pattern lines: %s", strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+func readGrepPatternLines(reader *bufio.Reader, visit func(GrepMatch) error) error {
+	for {
+		path, err := reader.ReadString(0)
+		if err == io.EOF && path == "" {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("git grep path metadata: %w", err)
+		}
+		line, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return err
+		}
+		if visitErr := visit(GrepMatch{Path: strings.TrimSuffix(path, "\x00"), Text: strings.TrimSuffix(line, "\n")}); visitErr != nil {
+			return visitErr
+		}
+		if err == io.EOF {
+			return nil
+		}
+	}
+}
+
 // GrepTreeMatches returns a bounded sample of matched fixed strings per file
 // from an immutable Git tree. The returned paths are relative to repo and do
 // not include Git's "<treeish>:" display prefix. Query strings are always

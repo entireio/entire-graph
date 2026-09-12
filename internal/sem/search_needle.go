@@ -122,7 +122,9 @@ type searchNeedleIndex struct {
 	read           contentReader
 	termFiles      map[string][]string
 	termFileTotals map[string]int
-	corpus         []string
+	// Boundary-filtered aliases cannot bound a raw substring lookup.
+	inferredAbbreviations map[string]bool
+	corpus                []string
 	// grep, when non-nil, lists the files containing a fixed string case-sensitively. It is the
 	// Git route, and it reports ok=false when Git could not answer.
 	grep  func(pattern string) ([]string, bool)
@@ -180,7 +182,7 @@ func (index *searchNeedleIndex) candidatePathsFromPostings(needle string) ([]str
 	bestTotal := 0
 	var best []string
 	for term, paths := range index.termFiles {
-		if len(term) < 2 || !strings.Contains(lower, term) {
+		if index.inferredAbbreviations[term] || len(term) < 2 || !strings.Contains(lower, term) {
 			continue
 		}
 		total := index.termFileTotals[term]

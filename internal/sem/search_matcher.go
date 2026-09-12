@@ -6,9 +6,11 @@ import "strings"
 // Issue and source identifiers are overwhelmingly ASCII; uncommon non-ASCII
 // terms use a separate Unicode-aware fallback.
 type searchTermMatcher struct {
-	nodes     []searchMatcherNode
-	fallback  []searchFallbackTerm
-	termCount int
+	nodes       []searchMatcherNode
+	fallback    []searchFallbackTerm
+	termCount   int
+	aliasTerms  map[int]string
+	aliasTokens map[string][]int
 }
 
 type searchMatcherNode struct {
@@ -20,6 +22,26 @@ type searchMatcherNode struct {
 type searchFallbackTerm struct {
 	index int
 	term  string
+}
+
+// Query aliases carry stricter boundaries than the caller's explicit substrings.
+func newSearchQueryTermMatcher(q searchQuery) searchTermMatcher {
+	matcher := newSearchTermMatcher(q.terms)
+	matcher.aliasTerms = map[int]string{}
+	matcher.aliasTokens = map[string][]int{}
+	termIndexes := map[string]int{}
+	for index, term := range q.terms {
+		termIndexes[term] = index
+		if q.inferredAbbreviations[term] {
+			matcher.aliasTerms[index] = term
+		}
+	}
+	for token, aliases := range q.aliasTokens {
+		for _, alias := range aliases {
+			matcher.aliasTokens[token] = append(matcher.aliasTokens[token], termIndexes[alias])
+		}
+	}
+	return matcher
 }
 
 func newSearchTermMatcher(terms []string) searchTermMatcher {
@@ -82,10 +104,14 @@ func (matcher *searchTermMatcher) buildFailures() {
 
 func (matcher searchTermMatcher) match(text string) []bool {
 	found := make([]bool, matcher.termCount)
+	scanText := text
+	if !asciiString(text) {
+		scanText = strings.ToLower(text)
+	}
 	remaining := matcher.termCount
 	state := 0
-	for offset := 0; offset < len(text) && remaining > 0; offset++ {
-		character := text[offset]
+	for offset := 0; offset < len(scanText) && remaining > 0; offset++ {
+		character := scanText[offset]
 		if character >= 128 {
 			state = 0
 			continue
@@ -112,6 +138,18 @@ func (matcher searchTermMatcher) match(text string) []bool {
 		for _, fallback := range matcher.fallback {
 			if !found[fallback.index] && strings.Contains(lower, fallback.term) {
 				found[fallback.index] = true
+			}
+		}
+	}
+	if len(matcher.aliasTerms) > 0 {
+		for index := range matcher.aliasTerms {
+			found[index] = false
+		}
+		for _, raw := range searchSourceWordPattern.FindAllString(text, -1) {
+			for _, token := range searchTokenVariants(raw) {
+				for _, index := range matcher.aliasTokens[token] {
+					found[index] = true
+				}
 			}
 		}
 	}
