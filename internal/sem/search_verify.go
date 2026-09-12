@@ -87,8 +87,9 @@ const (
 	// searchVerifyNoneCommand is the residual floor. A payload with ranked results and no derivable
 	// command used to emit NOTHING, and silent absence is the worst outcome available: paired with the
 	// stop-early doctrine it lets an agent ship unverified, and it is indistinguishable from a bug in
-	// the deriver. One line that states the fact and prescribes the fallback costs 96 bytes.
-	searchVerifyNoneCommand = "none derivable (no build manifest found) - syntax-check the file you edited and stop."
+	// the deriver. The message names the unresolved command state rather than guessing why derivation
+	// failed; a manifest may exist without proving a safe command.
+	searchVerifyNoneCommand = "none derivable (no safe verification command found) - syntax-check the file you edited and stop."
 
 	// searchVerifyRunnerNote annotates a command whose runner is not installed HERE. It is an
 	// annotation and never a suppression: the command is still the right one, and a caller who cannot
@@ -311,8 +312,8 @@ func searchVerifyControlBytes(command string) bool {
 	return termsafe.EscapesLine(command)
 }
 
-// searchVerifyResidualFloor is the last rung: no manifest, no test file, no single-file checker. It
-// states the fact and prescribes the fallback, which is strictly better than the silence it replaces.
+// searchVerifyResidualFloor is the last rung when repository evidence does not establish a safe
+// command. It prescribes a fallback, which is strictly better than the silence it replaces.
 func searchVerifyResidualFloor(sourcePath, prefix, preFixStatus string) *SearchVerifyCommand {
 	targets := sourcePath
 	if targets == "" {
@@ -321,7 +322,7 @@ func searchVerifyResidualFloor(sourcePath, prefix, preFixStatus string) *SearchV
 	return &SearchVerifyCommand{
 		Command:      searchVerifyNoneCommand,
 		Targets:      targets,
-		DerivedFrom:  "no manifest, no test file, no single-file checker for this language",
+		DerivedFrom:  "repository evidence did not establish a safe verification command",
 		Tier:         searchVerifyTierNone,
 		Prefix:       prefix,
 		PreFixStatus: preFixStatus,
@@ -508,9 +509,11 @@ func searchVerifyMirrorTest(sourcePath string, evidence *searchVerifyEvidence) s
 // deriveSearchVerifyCommand walks from the subject's own directory towards the repository root and
 // stops at the FIRST manifest that licenses a narrow command.
 //
-// A manifest that exists but licenses nothing does not stop the walk: a `Cargo.toml` that is only a
-// workspace stanza, or a monorepo leaf `package.json` with no test runner in it, is evidence about
-// the tree, not about how to run a test, so the walk continues outward to the manifest that is.
+// A manifest that exists but licenses nothing generally does not stop the walk: a `Cargo.toml` that
+// is only a workspace stanza, or a monorepo leaf `package.json` with no test runner in it, is evidence
+// about the tree, not about how to run a test, so the walk continues outward to the manifest that is.
+// Gradle is different: an ancestor project can accept the same test pattern without owning the
+// nested project's sources, so a Gradle manifest that declines is a hard boundary.
 func deriveSearchVerifyCommand(subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	dir := path.Dir(subject.sourcePath)
 	if dir == "." || dir == "/" {
@@ -521,6 +524,9 @@ func deriveSearchVerifyCommand(subject searchVerifySubject, evidence *searchVeri
 			if command := derive(dir, subject, evidence); command != nil {
 				return command
 			}
+		}
+		if searchVerifyGradleManifest(dir, evidence) != "" {
+			return nil
 		}
 		if dir == "" {
 			break
@@ -565,6 +571,10 @@ func deriveSearchVerifySuiteCommand(subject searchVerifySubject, evidence *searc
 			if command := derive(dir, evidence); command != nil {
 				return command
 			}
+		}
+		// An ancestor suite is not evidence of coverage for a Gradle project that declined here.
+		if searchVerifyGradleManifest(dir, evidence) != "" {
+			return nil
 		}
 		if dir == "" {
 			break
@@ -637,70 +647,88 @@ func deriveSearchVerifySuiteMaven(dir string, evidence *searchVerifyEvidence) *S
 	return searchVerifySuiteCommandLiteral(searchVerifyMavenCommand(dir, "test", evidence), manifest)
 }
 
-func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
-	manifest := ""
+func searchVerifyGradleManifest(dir string, evidence *searchVerifyEvidence) string {
 	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
-		if evidence.exists(searchVerifyJoin(dir, name)) {
-			manifest = searchVerifyJoin(dir, name)
-			break
+		manifest := searchVerifyJoin(dir, name)
+		if evidence.exists(manifest) {
+			return manifest
 		}
 	}
+	return ""
+}
+
+type searchVerifyGradleTarget struct {
+	wrapperDir    string
+	commandPrefix string
+	project       string
+	derivedFrom   string
+	selectsBuild  bool
+}
+
+func (target searchVerifyGradleTarget) testCommand(qualifyRoot bool) string {
+	task := "test"
+	if target.project != "" {
+		task = target.project + ":test"
+	} else if qualifyRoot && !target.selectsBuild {
+		task = ":test"
+	}
+	return target.commandPrefix + " " + shellQuote(task)
+}
+
+func searchVerifyGradleTargetForDir(dir string, evidence *searchVerifyEvidence) (searchVerifyGradleTarget, bool) {
+	manifest := searchVerifyGradleManifest(dir, evidence)
 	if manifest == "" {
-		return nil
+		return searchVerifyGradleTarget{}, false
 	}
 	wrapperDir, wrapperPath, ok := searchVerifyAncestorFile(dir, "gradlew", evidence)
 	if !ok {
-		return nil
+		return searchVerifyGradleTarget{}, false
+	}
+	target := searchVerifyGradleTarget{
+		wrapperDir:    wrapperDir,
+		commandPrefix: "./gradlew",
+		derivedFrom:   manifest + " + " + wrapperPath,
 	}
 	if wrapperDir == dir {
-		return searchVerifySuiteCommand(wrapperDir, "./gradlew test", manifest+" + "+wrapperPath)
+		return target, true
 	}
-	// The wrapper lives above the build this derivation is about. Running `./gradlew test` from the
-	// wrapper's own directory would test whatever build sits THERE, because Gradle does not discover
-	// a descendant build by walking down — but WHICH command names this one is decided by the
-	// settings script, not by the directory layout.
-	//
-	// Gradle locates the settings file by walking UP from its start directory and then keeps what it
-	// found only if that file declares a project AT the start directory; otherwise it discards the
-	// settings and runs the start directory as its own empty-settings build. So `-p <dir> test` is
-	// NOT "the root build with a different default project": in an ordinary multi-project layout it
-	// is the root build when the root settings declares <dir>, and a different, sibling-less build
-	// when it does not — where `project(":core")` dependencies no longer resolve. A `build.gradle`
-	// sitting in a subdirectory says nothing about which of the two it is.
-	relative, inside := searchVerifyRelative(wrapperDir, dir)
+	settingsDir, settingsPath, settings, found := searchVerifyGradleAncestorSettings(dir, wrapperDir, evidence)
+	if !found {
+		return searchVerifyGradleTarget{}, false
+	}
+	target.derivedFrom += " + " + settingsPath
+	if settingsDir != wrapperDir {
+		buildRoot, inside := searchVerifyRelative(wrapperDir, settingsDir)
+		if !inside {
+			return searchVerifyGradleTarget{}, false
+		}
+		target.commandPrefix += " -p " + shellQuotePath(buildRoot)
+	}
+	if settingsDir == dir {
+		target.selectsBuild = true
+		return target, true
+	}
+	projectDir, inside := searchVerifyRelative(settingsDir, dir)
 	if !inside {
-		return nil
+		return searchVerifyGradleTarget{}, false
 	}
-	if settingsPath, _, own := searchVerifyGradleSettings(dir, evidence); own {
-		// The directory carries its own settings script, so it IS a build root and that is the
-		// settings file Gradle finds first when started there. `-p` is the spelling for that.
-		return searchVerifySuiteCommand(
-			wrapperDir,
-			"./gradlew -p "+shellQuotePath(relative)+" test",
-			manifest+" + "+wrapperPath+" + "+settingsPath,
-		)
-	}
-	settingsPath, settings, found := searchVerifyGradleSettings(wrapperDir, evidence)
-	project := ":" + strings.ReplaceAll(relative, "/", ":")
-	if !found || !searchVerifyGradleSettingsIncludes(settings, project) {
-		// Nothing in the tree says this directory is a build Gradle can be pointed at, so there is
-		// no command to emit. Silence costs a lookup; a `-p` that quietly ran a different build
-		// would report a pass the edit never earned.
-		return nil
+	project := ":" + strings.ReplaceAll(projectDir, "/", ":")
+	if !searchVerifyGradleSettingsIncludes(settings, project) {
+		return searchVerifyGradleTarget{}, false
 	}
 	if searchVerifyGradleSettingsRemapsProject(settings, project) {
-		// The project path is declared, but the settings script moves it somewhere else on disk, so
-		// the path derived from THIS directory names a different tree. `./gradlew :lib:test` would
-		// run, and pass, about code the edit never touched — which is worse than emitting nothing.
+		return searchVerifyGradleTarget{}, false
+	}
+	target.project = project
+	return target, true
+}
+
+func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	target, ok := searchVerifyGradleTargetForDir(dir, evidence)
+	if !ok {
 		return nil
 	}
-	// An included subproject is addressed by its project path from the root of the build that
-	// declares it — the documented spelling, `gradle :subproject:taskName`.
-	return searchVerifySuiteCommand(
-		wrapperDir,
-		"./gradlew "+shellQuote(project+":test"),
-		manifest+" + "+wrapperPath+" + "+settingsPath,
-	)
+	return searchVerifySuiteCommand(target.wrapperDir, target.testCommand(false), target.derivedFrom)
 }
 
 // searchVerifyGradleSettings returns the settings script that makes a directory a Gradle build root,
@@ -713,6 +741,27 @@ func searchVerifyGradleSettings(dir string, evidence *searchVerifyEvidence) (str
 		}
 	}
 	return "", "", false
+}
+
+func searchVerifyGradleAncestorSettings(
+	dir, stop string,
+	evidence *searchVerifyEvidence,
+) (string, string, string, bool) {
+	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
+		if settingsPath, settings, found := searchVerifyGradleSettings(dir, evidence); found {
+			return dir, settingsPath, settings, true
+		}
+		if dir == stop || dir == "" {
+			break
+		}
+		parent := path.Dir(dir)
+		if parent == "." || parent == "/" || parent == dir {
+			dir = ""
+			continue
+		}
+		dir = parent
+	}
+	return "", "", "", false
 }
 
 // searchVerifyGradleSettingsIncludes reports whether a settings script declares the project path.
@@ -736,18 +785,7 @@ func searchVerifyGradleSettingsIncludes(settings, project string) bool {
 	return false
 }
 
-// searchVerifyGradleSettingsRemapsProject reports whether the settings script MOVES the project's
-// directory, with `project(':lib').projectDir = file('other')` or the block spelling of the same
-// assignment.
-//
-// A project path is derived here from a directory, and `include ':lib'` alone says that derivation
-// holds. A remap breaks it: `:lib` is then a different tree, and `./gradlew :lib:test` for an edit
-// in `lib/` runs, and passes, about code the edit never touched. That is worse than a command that
-// cannot run, because nothing announces it.
-//
-// The scan is bounded to the STATEMENT the matching `project(...)` call starts — extended to the
-// matching brace when one follows — so a `projectDir` assignment elsewhere in the script, about a
-// different project, is not read as this one's.
+// A directory-derived task path is invalidated by relocating the project or renaming it or an ancestor.
 func searchVerifyGradleSettingsRemapsProject(settings, project string) bool {
 	want := strings.TrimPrefix(project, ":")
 	if want == "" {
@@ -780,42 +818,50 @@ func searchVerifyGradleSettingsRemapsProject(settings, project string) bool {
 		if width == 0 {
 			continue
 		}
-		named := false
+		named, ancestor := false, false
 		for _, argument := range arguments {
-			if strings.TrimPrefix(argument, ":") == want {
-				named = true
-				break
-			}
+			candidate := strings.TrimPrefix(argument, ":")
+			named = named || candidate == want
+			ancestor = ancestor || (candidate != "" && strings.HasPrefix(want, candidate+":"))
 		}
 		index += width
-		if named && searchVerifyGradleAssignsProjectDir(searchVerifyGradleStatementTail(script[index:])) {
-			return true
+		if named || ancestor {
+			statement := searchVerifyGradleStatementTail(script[index:])
+			if searchVerifyGradleAssignsProperty(statement, "name", "setName") ||
+				(named && searchVerifyGradleAssignsProperty(statement, "projectDir", "setProjectDir")) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// searchVerifyGradleAssignsProjectDir reports whether a statement MOVES a project's directory rather
-// than merely naming it.
-//
-// `println(project(':lib').projectDir)` reads the property; the project is still where it was, and
-// declining on a read costs a command that would have run for no reason. Only an assignment to it,
-// or the setter the assignment is sugar for, relocates the project. `==` is a comparison, not an
-// assignment, and is read as a mention.
-func searchVerifyGradleAssignsProjectDir(statement string) bool {
-	if strings.Contains(statement, "setProjectDir") {
-		return true
-	}
-	const property = "projectDir"
+// Reads and comparisons preserve the target; only assignments and setters invalidate it.
+func searchVerifyGradleAssignsProperty(statement, property, setter string) bool {
 	for index := 0; index < len(statement); {
-		found := strings.Index(statement[index:], property)
-		if found < 0 {
-			return false
+		if statement[index] == '\'' || statement[index] == '"' {
+			if width := searchVerifyGradleLiteralWidth(statement[index:]); width > 0 {
+				index += width
+				continue
+			}
 		}
-		index += found + len(property)
-		after := strings.TrimLeft(statement[index:], " \t\r\n")
-		if strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") {
+		if !searchVerifyScriptIdentifierByte(statement[index]) {
+			index++
+			continue
+		}
+		start := index
+		for index < len(statement) && searchVerifyScriptIdentifierByte(statement[index]) {
+			index++
+		}
+		identifier := statement[start:index]
+		if identifier == setter {
 			return true
+		}
+		if identifier == property {
+			after := strings.TrimLeft(statement[index:], " \t\r\n")
+			if strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") {
+				return true
+			}
 		}
 	}
 	return false
@@ -1958,25 +2004,15 @@ func searchVerifyModuleLabel(dir string) string {
 // because `:module:test` without `--tests` is the whole module and Gradle's project path is only
 // worth deriving when it buys a filter.
 func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
-	manifest := ""
-	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
-		if evidence.exists(searchVerifyJoin(dir, name)) {
-			manifest = searchVerifyJoin(dir, name)
-			break
-		}
-	}
-	if manifest == "" || !evidence.exists("gradlew") {
-		return nil
-	}
 	if subject.testPath == "" {
 		return nil
 	}
 	if _, inside := searchVerifyRelative(dir, subject.testPath); !inside {
 		return nil
 	}
-	project := ":"
-	if dir != "" {
-		project = ":" + strings.ReplaceAll(dir, "/", ":") + ":"
+	target, ok := searchVerifyGradleTargetForDir(dir, evidence)
+	if !ok {
+		return nil
 	}
 	class := searchVerifyStem(subject.testPath)
 	classArg := shellQuote(class)
@@ -1986,9 +2022,9 @@ func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence 
 		classArg = "'" + class + "'"
 	}
 	return &SearchVerifyCommand{
-		Command:     "./gradlew " + shellQuote(project+"test") + " --tests " + classArg,
+		Command:     searchVerifyRunIn(target.wrapperDir, target.testCommand(true)+" --tests "+classArg),
 		Targets:     subject.testPath,
-		DerivedFrom: manifest + " + gradlew + " + subject.testEvidence + " class",
+		DerivedFrom: target.derivedFrom + " + " + subject.testEvidence + " class",
 	}
 }
 
