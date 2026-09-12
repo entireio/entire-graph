@@ -697,12 +697,14 @@ func searchVerifyGradleTargetForDir(dir string, evidence *searchVerifyEvidence) 
 		return searchVerifyGradleTarget{}, false
 	}
 	target.derivedFrom += " + " + settingsPath
-	if settingsDir == dir {
-		relative, inside := searchVerifyRelative(wrapperDir, dir)
+	if settingsDir != wrapperDir {
+		buildRoot, inside := searchVerifyRelative(wrapperDir, settingsDir)
 		if !inside {
 			return searchVerifyGradleTarget{}, false
 		}
-		target.commandPrefix += " -p " + shellQuotePath(relative)
+		target.commandPrefix += " -p " + shellQuotePath(buildRoot)
+	}
+	if settingsDir == dir {
 		target.selectsBuild = true
 		return target, true
 	}
@@ -716,13 +718,6 @@ func searchVerifyGradleTargetForDir(dir string, evidence *searchVerifyEvidence) 
 	}
 	if searchVerifyGradleSettingsRemapsProject(settings, project) {
 		return searchVerifyGradleTarget{}, false
-	}
-	if settingsDir != wrapperDir {
-		buildRoot, inside := searchVerifyRelative(wrapperDir, settingsDir)
-		if !inside {
-			return searchVerifyGradleTarget{}, false
-		}
-		target.commandPrefix += " -p " + shellQuotePath(buildRoot)
 	}
 	target.project = project
 	return target, true
