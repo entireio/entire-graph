@@ -104,6 +104,11 @@ func TestSearchVerifyGradleNarrowProjectMembership(t *testing.T) {
 	}{
 		{"included_project", "include ':app', ':lib'\n", false, "./gradlew :lib:test --tests 'ATest'"},
 		{"remapped_project", "include ':lib'\nproject(':lib').projectDir = file('other')\n", false, ""},
+		{"renamed_project", "include ':lib'\nproject(':lib').name = 'core'\n", false, ""},
+		{"renamed_project_setter", "include ':lib'\nproject(':lib').setName('core')\n", false, ""},
+		{"project_name_read", "include ':lib'\nprintln(project(':lib').name)\n", false, "./gradlew :lib:test --tests 'ATest'"},
+		{"project_name_comparison", "include ':lib'\nif (project(':lib').name == 'lib') { }\n", false, "./gradlew :lib:test --tests 'ATest'"},
+		{"rename_in_string", "include ':lib'\nproject(':lib') { println(\"name = 'core'; setName('core')\") }\n", false, "./gradlew :lib:test --tests 'ATest'"},
 		{"undeclared_project", "include ':app'\n", false, ""},
 		{"undeclared_project_with_root_build", "include ':app'\n", true, ""},
 	} {
@@ -132,6 +137,81 @@ func TestSearchVerifyGradleNarrowProjectMembership(t *testing.T) {
 			t.Logf("settings = %q; generated command = %q", tc.settings, command)
 			if command != tc.want {
 				t.Fatalf("command = %q, want %q", command, tc.want)
+			}
+		})
+	}
+}
+
+func TestSearchVerifyGradleParentProjectRename(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		settings   string
+		wantNarrow string
+		wantSuite  string
+	}{
+		{
+			name:       "unchanged_parent",
+			settings:   "include ':modules:lib'\n",
+			wantNarrow: "./gradlew :modules:lib:test --tests 'ATest'",
+			wantSuite:  "./gradlew :modules:lib:test",
+		},
+		{
+			name:     "renamed_parent",
+			settings: "include ':modules:lib'\nproject(':modules').name = 'components'\n",
+		},
+		{
+			name:     "renamed_parent_setter",
+			settings: "include ':modules:lib'\nproject(':modules').setName('components')\n",
+		},
+		{
+			name:       "similarly_named_sibling",
+			settings:   "include ':modules:lib', ':module'\nproject(':module').name = 'component'\n",
+			wantNarrow: "./gradlew :modules:lib:test --tests 'ATest'",
+			wantSuite:  "./gradlew :modules:lib:test",
+		},
+		{
+			name:       "renamed_root",
+			settings:   "include ':modules:lib'\nproject(':').name = 'components'\n",
+			wantNarrow: "./gradlew :modules:lib:test --tests 'ATest'",
+			wantSuite:  "./gradlew :modules:lib:test",
+		},
+		{
+			name:       "relocated_parent",
+			settings:   "include ':modules:lib'\nproject(':modules').projectDir = file('other')\n",
+			wantNarrow: "./gradlew :modules:lib:test --tests 'ATest'",
+			wantSuite:  "./gradlew :modules:lib:test",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			evidence := searchVerifyTestEvidence(map[string]string{
+				"gradlew":                              "",
+				"settings.gradle":                      tc.settings,
+				"modules/lib/build.gradle":             "",
+				"modules/lib/src/main/java/A.java":     "",
+				"modules/lib/src/test/java/ATest.java": "",
+			})
+			subject := searchVerifySubject{
+				sourcePath:   "modules/lib/src/main/java/A.java",
+				testPath:     "modules/lib/src/test/java/ATest.java",
+				testEvidence: "covering test",
+			}
+			for _, route := range []struct {
+				name string
+				got  *SearchVerifyCommand
+				want string
+			}{
+				{"narrow", deriveSearchVerifyCommand(subject, &evidence), tc.wantNarrow},
+				{"suite", deriveSearchVerifySuiteCommand(subject, &evidence), tc.wantSuite},
+			} {
+				t.Run(route.name, func(t *testing.T) {
+					command := ""
+					if route.got != nil {
+						command = route.got.Command
+					}
+					if command != route.want {
+						t.Fatalf("command = %q, want %q", command, route.want)
+					}
+				})
 			}
 		})
 	}

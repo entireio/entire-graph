@@ -785,18 +785,7 @@ func searchVerifyGradleSettingsIncludes(settings, project string) bool {
 	return false
 }
 
-// searchVerifyGradleSettingsRemapsProject reports whether the settings script MOVES the project's
-// directory, with `project(':lib').projectDir = file('other')` or the block spelling of the same
-// assignment.
-//
-// A project path is derived here from a directory, and `include ':lib'` alone says that derivation
-// holds. A remap breaks it: `:lib` is then a different tree, and `./gradlew :lib:test` for an edit
-// in `lib/` runs, and passes, about code the edit never touched. That is worse than a command that
-// cannot run, because nothing announces it.
-//
-// The scan is bounded to the STATEMENT the matching `project(...)` call starts — extended to the
-// matching brace when one follows — so a `projectDir` assignment elsewhere in the script, about a
-// different project, is not read as this one's.
+// A directory-derived task path is invalidated by relocating the project or renaming it or an ancestor.
 func searchVerifyGradleSettingsRemapsProject(settings, project string) bool {
 	want := strings.TrimPrefix(project, ":")
 	if want == "" {
@@ -829,42 +818,50 @@ func searchVerifyGradleSettingsRemapsProject(settings, project string) bool {
 		if width == 0 {
 			continue
 		}
-		named := false
+		named, ancestor := false, false
 		for _, argument := range arguments {
-			if strings.TrimPrefix(argument, ":") == want {
-				named = true
-				break
-			}
+			candidate := strings.TrimPrefix(argument, ":")
+			named = named || candidate == want
+			ancestor = ancestor || (candidate != "" && strings.HasPrefix(want, candidate+":"))
 		}
 		index += width
-		if named && searchVerifyGradleAssignsProjectDir(searchVerifyGradleStatementTail(script[index:])) {
-			return true
+		if named || ancestor {
+			statement := searchVerifyGradleStatementTail(script[index:])
+			if searchVerifyGradleAssignsProperty(statement, "name", "setName") ||
+				(named && searchVerifyGradleAssignsProperty(statement, "projectDir", "setProjectDir")) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// searchVerifyGradleAssignsProjectDir reports whether a statement MOVES a project's directory rather
-// than merely naming it.
-//
-// `println(project(':lib').projectDir)` reads the property; the project is still where it was, and
-// declining on a read costs a command that would have run for no reason. Only an assignment to it,
-// or the setter the assignment is sugar for, relocates the project. `==` is a comparison, not an
-// assignment, and is read as a mention.
-func searchVerifyGradleAssignsProjectDir(statement string) bool {
-	if strings.Contains(statement, "setProjectDir") {
-		return true
-	}
-	const property = "projectDir"
+// Reads and comparisons preserve the target; only assignments and setters invalidate it.
+func searchVerifyGradleAssignsProperty(statement, property, setter string) bool {
 	for index := 0; index < len(statement); {
-		found := strings.Index(statement[index:], property)
-		if found < 0 {
-			return false
+		if statement[index] == '\'' || statement[index] == '"' {
+			if width := searchVerifyGradleLiteralWidth(statement[index:]); width > 0 {
+				index += width
+				continue
+			}
 		}
-		index += found + len(property)
-		after := strings.TrimLeft(statement[index:], " \t\r\n")
-		if strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") {
+		if !searchVerifyScriptIdentifierByte(statement[index]) {
+			index++
+			continue
+		}
+		start := index
+		for index < len(statement) && searchVerifyScriptIdentifierByte(statement[index]) {
+			index++
+		}
+		identifier := statement[start:index]
+		if identifier == setter {
 			return true
+		}
+		if identifier == property {
+			after := strings.TrimLeft(statement[index:], " \t\r\n")
+			if strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") {
+				return true
+			}
 		}
 	}
 	return false
