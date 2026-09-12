@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.10.7-nightly.202609080625.78a655db4.0.20260908145503-8bbfeb6d3901+dirty",
+  "checkpoint_id": "dd93c504e27e",
+  "strategy": "manual-commit",
+  "branch": "cole/readme-launch-copy",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/check-25887f69-linux-full/review/local-prep-dir.txt",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/frozen-baseline-initial.json",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/frozen-baseline-pre-counts.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/dd/93c504e27e/0/metadata.json",
+      "transcript": "/dd/93c504e27e/0/full.jsonl",
+      "compact_transcript": "/dd/93c504e27e/0/transcript.jsonl",
+      "content_hash": "/dd/93c504e27e/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1028424,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 89673600,
+    "output_tokens": 116789,
+    "api_call_count": 4935
+  }
+}

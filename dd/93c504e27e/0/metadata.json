@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.10.7-nightly.202609080625.78a655db4.0.20260908145503-8bbfeb6d3901+dirty",
+  "checkpoint_id": "dd93c504e27e",
+  "session_id": "01a07234-4ad8-7891-917c-831f5a3a2228",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-12T08:56:07.297862Z",
+  "branch": "cole/readme-launch-copy",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/check-25887f69-linux-full/review/local-prep-dir.txt",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/frozen-baseline-initial.json",
+    "docs/implementation/graph-advantage/p1-corpus-20260905/frozen-baseline-pre-counts.json"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "f1fd7034bc5c",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 1028424,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 89673600,
+    "output_tokens": 116789,
+    "api_call_count": 4935
+  },
+  "session_metrics": {
+    "turn_count": 9
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-12T08:56:05.676655Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 21678,
+    "human_modified": 2166,
+    "human_removed": 0,
+    "total_committed": 23844,
+    "total_lines_changed": 393103,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
