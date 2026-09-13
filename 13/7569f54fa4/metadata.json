@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.10.7-nightly.202609130627.8a43e78f1.0.20260913155315-d419fef66327",
+  "checkpoint_id": "137569f54fa4",
+  "strategy": "manual-commit",
+  "branch": "feat/graph-query-command",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "AGENTS.md",
+    "README.md",
+    "docs/README.md",
+    "docs/agents.md",
+    "docs/commands.md",
+    "docs/operations.md",
+    "docs/search.md",
+    "docs/semantic-provider-requirements.md",
+    "docs/trust-and-security.md",
+    "internal/cli/agentguide_test.go",
+    "internal/cli/agents.go",
+    "internal/cli/agents_test.go",
+    "internal/cli/help.go",
+    "internal/cli/help_test.go",
+    "internal/cli/preflight.go",
+    "internal/cli/preflight_test.go",
+    "internal/cli/root.go",
+    "internal/cli/search.go",
+    "internal/cli/stats.go",
+    "internal/cli/symbolref.go",
+    "internal/cli/symbolref_test.go",
+    "scripts/entire-graph-statusline.sh",
+    "scripts/entire-graph-statusline_test.sh",
+    "skills/stats/SKILL.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/13/7569f54fa4/0/metadata.json",
+      "transcript": "/13/7569f54fa4/0/full.jsonl",
+      "compact_transcript": "/13/7569f54fa4/0/transcript.jsonl",
+      "content_hash": "/13/7569f54fa4/0/content_hash.txt",
+      "prompt": "/13/7569f54fa4/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 112724,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4631040,
+    "output_tokens": 11578,
+    "api_call_count": 65,
+    "subagent_tokens_complete": true
+  }
+}

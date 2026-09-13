@@ -1,0 +1,21 @@
+I want to rename "entire graph search" to "entire graph query". For compatibility reasons, keep the search command as well, but hide it from README, agent instructions, and documentaiton and replace with the respective query command. You do not need to update all existing benchmark evidence, logs, etc. Make minimal changes.
+
+---
+
+Ignore the race tests. We can check those in CI.
+
+---
+
+Allow entire graph query (and the hidden entire graph search) to be called in such a way that the last param is interpreted as query string, i.e. allow omitting --query.
+
+---
+
+While we are at it, what's the default for the --repo param?
+
+---
+
+So all the "--repo ." in the README is pointless?
+
+---
+
+And what's the default for --profile?
