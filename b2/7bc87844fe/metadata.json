@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.7-nightly.202609130627.8a43e78f1.0.20260913155315-d419fef66327",
+  "checkpoint_id": "b27bc87844fe",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage-main-20260913",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "docs/implementation/graph-advantage/value-assessment-20260913.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b2/7bc87844fe/0/metadata.json",
+      "transcript": "/b2/7bc87844fe/0/full.jsonl",
+      "compact_transcript": "/b2/7bc87844fe/0/transcript.jsonl",
+      "content_hash": "/b2/7bc87844fe/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6959,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1033088,
+    "output_tokens": 1450,
+    "api_call_count": 17,
+    "subagent_tokens_complete": false
+  }
+}
