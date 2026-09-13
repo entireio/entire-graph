@@ -1,0 +1,13 @@
+Create a branch prefixed with ashtom and push. Open a trail as well.
+
+---
+
+Check the trail for findings
+
+---
+
+Entire's risk review says: "Additive schema bump to 1.3 (new optional completeness.health + partial-failure language field, both correctly additive with regenerated goldens and versioned caches), but it also changes the computation of the existing downstream-consumed completeness\_level from a raw-failure count to a 5% source-file threshold, moving the ok/degraded boundary for Entire Brain consumers; no-egress, stable IDs, and parser paths are untouched and the change is well-tested and reversible." Why did you bump the schema?
+
+---
+
+Ok, so what do we do? The 5% are not the problem, it's your sloppy work.
