@@ -1,0 +1,17 @@
+Review /Users/thomi/Projects/entire-graph-advantage/docs/implementation/graph-advantage/shutdown-handoff-20260906.md
+
+---
+
+Reconcile the plan, then outline next steps.
+
+---
+
+Implement the next steps. Use sub-agents on cheaper models, orchestrate and judge on this thread. Timebox the effort to 1h and focus on actual progress. No pointless evals and evidence runs.
+
+---
+
+What's with the Entire session?
+
+---
+
+Commit the code, then check if the session is attached and the trailer is in the commit message. If not, fix that.
