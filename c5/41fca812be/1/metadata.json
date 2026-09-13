@@ -1,0 +1,51 @@
+{
+  "cli_version": "0.10.7-nightly.202609080625.78a655db4.0.20260908145503-8bbfeb6d3901+dirty",
+  "checkpoint_id": "c541fca812be",
+  "session_id": "01a09a5f-a23d-70b2-a69d-c298332287e8",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-13T14:48:38.646644Z",
+  "branch": "codex/graph-advantage-resume-20260913",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/README.md",
+    "docs/implementation/graph-advantage/resumption-plan-20260907.md",
+    "docs/implementation/graph-advantage/shutdown-handoff-20260906.md",
+    "internal/sem/types.go",
+    "internal/sem/types_flow_prefilter_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "d1d8e8bbf8d2",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 12004,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1379712,
+    "output_tokens": 1855,
+    "api_call_count": 115
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-13T14:48:38.469127Z",
+    "agent_lines": 974,
+    "agent_removed": 94,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 974,
+    "total_lines_changed": 1068,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
