@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.10.7-nightly.202609080625.78a655db4.0.20260908145503-8bbfeb6d3901+dirty",
+  "checkpoint_id": "3adb635c0f2d",
+  "strategy": "manual-commit",
+  "branch": "codex/graph-advantage-resume-20260913",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/README.md",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/collector/observe_remote.py",
+    "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/controller/test_completion_controls.py",
+    "docs/implementation/graph-advantage/resumption-plan-20260907.md",
+    "docs/implementation/graph-advantage/shutdown-handoff-20260906.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3a/db635c0f2d/0/metadata.json",
+      "transcript": "/3a/db635c0f2d/0/full.jsonl",
+      "compact_transcript": "/3a/db635c0f2d/0/transcript.jsonl",
+      "content_hash": "/3a/db635c0f2d/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 11495,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1726336,
+    "output_tokens": 2090,
+    "api_call_count": 23
+  }
+}
