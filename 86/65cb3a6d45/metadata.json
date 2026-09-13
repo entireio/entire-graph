@@ -3,7 +3,7 @@
   "checkpoint_id": "8665cb3a6d45",
   "strategy": "manual-commit",
   "branch": "codex/graph-advantage-resume-20260913",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/README.md",
     "docs/implementation/graph-advantage/evidence/diagnostic-dispatch-effa358f-completion/collector/observe_remote.py",
@@ -23,13 +23,20 @@
       "compact_transcript": "/86/65cb3a6d45/0/transcript.jsonl",
       "content_hash": "/86/65cb3a6d45/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/86/65cb3a6d45/1/metadata.json",
+      "transcript": "/86/65cb3a6d45/1/full.jsonl",
+      "compact_transcript": "/86/65cb3a6d45/1/transcript.jsonl",
+      "content_hash": "/86/65cb3a6d45/1/content_hash.txt",
+      "prompt": ""
     }
   ],
   "token_usage": {
-    "input_tokens": 154857,
+    "input_tokens": 299375,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 13889664,
-    "output_tokens": 20401,
-    "api_call_count": 152
+    "cache_read_tokens": 17797632,
+    "output_tokens": 44704,
+    "api_call_count": 197
   }
 }
