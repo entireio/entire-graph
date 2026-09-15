@@ -1,0 +1,16 @@
+{
+  "cli_version": "0.10.7-nightly.202609130627.8a43e78f1.0.20260913155315-d419fef66327",
+  "checkpoint_id": "b116a8765a35",
+  "strategy": "manual-commit",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/b1/16a8765a35/0/metadata.json",
+      "transcript": "/b1/16a8765a35/0/full.jsonl",
+      "compact_transcript": "/b1/16a8765a35/0/transcript.jsonl",
+      "content_hash": "/b1/16a8765a35/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}

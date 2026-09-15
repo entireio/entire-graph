@@ -1,0 +1,18 @@
+{
+  "cli_version": "0.10.7-nightly.202609130627.8a43e78f1.0.20260913155315-d419fef66327",
+  "checkpoint_id": "b116a8765a35",
+  "session_id": "01a09a30-3acb-7bf1-b24d-38b3da9703f6",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-15T07:50:21.577864Z",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "turn_id": "a644f07c111f",
+  "checkpoint_transcript_start": 6821,
+  "transcript_lines_at_start": 6821,
+  "compact_transcript_start": 841,
+  "session_metrics": {
+    "turn_count": 6
+  }
+}
