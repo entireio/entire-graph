@@ -238,6 +238,16 @@ func TestSearchVerifySuiteGradleNamesTheProjectUnderAnAncestorWrapper(t *testing
 			wantCommand: "./gradlew -p modules/core test",
 		},
 		{
+			name: "the nearest settings script defines an intermediate build root",
+			files: map[string]string{
+				"gradlew":                           "",
+				"modules/settings.gradle":           "rootProject.name = 'modules'\ninclude ':core'\n",
+				"modules/core/build.gradle":         "",
+				"modules/core/src/main/java/A.java": "",
+			},
+			wantCommand: "./gradlew -p modules :core:test",
+		},
+		{
 			name: "a build.gradle no settings script declares gets silence",
 			files: map[string]string{
 				"gradlew":                           "",

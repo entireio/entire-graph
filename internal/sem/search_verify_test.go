@@ -243,6 +243,7 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 			name: "gradle needs the wrapper and a test class",
 			files: map[string]string{
 				"gradlew":                      "",
+				"settings.gradle":              "include ':lib'\n",
 				"lib/build.gradle.kts":         "",
 				"lib/src/main/kotlin/A.kt":     "",
 				"lib/src/test/kotlin/ATest.kt": "",
@@ -253,7 +254,7 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 			},
 			wantCommand: "./gradlew :lib:test --tests 'ATest'",
 			wantTargets: "lib/src/test/kotlin/ATest.kt",
-			wantDerived: "lib/build.gradle.kts + gradlew + mirror test file class",
+			wantDerived: "lib/build.gradle.kts + gradlew + settings.gradle + mirror test file class",
 		},
 		{
 			name: "gradle without the wrapper emits nothing",
@@ -1311,7 +1312,8 @@ func TestSearchVerifyCommandsDoNotExecuteRepositoryData(t *testing.T) {
 			name: "gradle project task",
 			derive: func() *SearchVerifyCommand {
 				evidence := searchVerifyTestEvidence(map[string]string{
-					"gradlew": "", attack + "/build.gradle": "",
+					"gradlew": "", "settings.gradle": "include ':" + attack + "'\n",
+					attack + "/build.gradle": "",
 				})
 				return deriveSearchVerifyGradle(attack, searchVerifySubject{
 					sourcePath: attack + "/src/A.kt", testPath: attack + "/src/ATest.kt",
@@ -1321,7 +1323,9 @@ func TestSearchVerifyCommandsDoNotExecuteRepositoryData(t *testing.T) {
 		{
 			name: "gradle test pattern",
 			derive: func() *SearchVerifyCommand {
-				evidence := searchVerifyTestEvidence(map[string]string{"gradlew": "", "lib/build.gradle": ""})
+				evidence := searchVerifyTestEvidence(map[string]string{
+					"gradlew": "", "settings.gradle": "include ':lib'\n", "lib/build.gradle": "",
+				})
 				return deriveSearchVerifyGradle("lib", searchVerifySubject{
 					sourcePath: "lib/src/A.kt", testPath: "lib/src/" + attack + ".kt",
 				}, &evidence)
