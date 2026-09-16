@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -407,7 +409,7 @@ func runGPSCheck(ctx context.Context, opts Options, args []string) error {
 	}
 	response := map[string]any{"schema_version": gpsSchemaVersion, "intent_digest": set.Digest, "repository_view": view.repositoryView(), "change_delta": changeDelta, "disposition": disposition, "findings": findings, "evidence": gpsEvidenceClassification(snapshot)}
 	if flags.evidence != "" {
-		response["execution_evidence"] = gpsExecutionEvidence(flags.evidence, set)
+		response["execution_evidence"] = gpsExecutionEvidence(ctx, repo, flags.evidence, set, view)
 	}
 	return gpsEncode(opts, flags.format, response)
 }
@@ -574,18 +576,65 @@ func runGPSReview(ctx context.Context, opts Options, args []string) error {
 			}
 		}
 	}
+	changedTests := map[string]bool{}
+	for _, delta := range deltas {
+		if delta["id"] == "GPS-DELTA-TEST" {
+			changedTests[delta["subject"].(string)] = true
+		}
+	}
+	seenRequirements, seenTests := map[string]bool{}, map[string]bool{}
+	for _, r := range requirements {
+		seenRequirements[r["specification"]+"/"+r["id"]] = true
+	}
+	for _, test := range tests {
+		seenTests[test.ID] = true
+	}
+	// Include both sides so removed declarations retain their review obligations.
+	for _, selected := range []intent.Set{set, baseSet} {
+		for _, spec := range selected.Specs {
+			for _, test := range spec.Tests {
+				if !changedTests[test.ID] {
+					continue
+				}
+				if !seenTests[test.ID] {
+					tests = append(tests, test)
+					seenTests[test.ID] = true
+				}
+				for _, acceptance := range spec.Acceptance {
+					key := spec.ID + "/" + acceptance.Requirement
+					if acceptance.ID == test.Acceptance && !seenRequirements[key] {
+						requirements = append(requirements, map[string]string{"specification": spec.ID, "id": acceptance.Requirement})
+						seenRequirements[key] = true
+					}
+				}
+			}
+		}
+	}
+	findings := []map[string]any{}
+	for _, selected := range []struct {
+		side     string
+		snapshot sem.ProviderSnapshot
+	}{{"base", baseSnapshot}, {"head", headSnapshot}} {
+		if len(selected.snapshot.Header.PartialFailures) != 0 || selected.snapshot.Header.Stats.CompletenessLevel != "ok" {
+			findings = append(findings, map[string]any{"id": "GPS-COMPLETENESS-INCOMPLETE", "severity": "incomplete", "side": selected.side, "message": "selected graph has partial or incomplete analysis", "partial_failures": selected.snapshot.Header.PartialFailures})
+		}
+	}
 	response := map[string]any{"schema_version": gpsSchemaVersion, "base": base, "repository_view": view.repositoryView(), "changed_files": changed, "symbol_deltas": deltas, "requirements": requirements, "tests": tests, "disposition": func() string {
-		if len(requirements) > 0 {
+		if len(findings) > 0 {
+			return "INCOMPLETE"
+		}
+		if len(deltas) > 0 || len(requirements) > 0 {
 			return "REVIEW_REQUIRED"
 		}
 		return "PASS"
 	}()}
 	if view.inputChanged(ctx, repo) {
 		response["disposition"] = "INCOMPLETE"
-		response["findings"] = []map[string]any{{"id": "GPS-INPUT-CHANGED", "severity": "incomplete", "subject": "repository", "message": "HEAD changed while GPS was reading committed inputs"}}
+		findings = append(findings, map[string]any{"id": "GPS-INPUT-CHANGED", "severity": "incomplete", "subject": "repository", "message": "HEAD changed while GPS was reading committed inputs"})
 	}
+	response["findings"] = findings
 	if flags.evidence != "" {
-		response["execution_evidence"] = gpsExecutionEvidence(flags.evidence, set)
+		response["execution_evidence"] = gpsExecutionEvidence(ctx, repo, flags.evidence, set, view)
 	}
 	return gpsEncode(opts, flags.format, response)
 }
@@ -659,20 +708,50 @@ func gpsFlags(args []string) (string, gpsOptions, error) {
 	return "", flags, nil
 }
 
-func gpsExecutionEvidence(path string, set intent.Set) map[string]any {
+func gpsExecutionEvidence(ctx context.Context, repo, path string, set intent.Set, view gpsView) map[string]any {
 	baseline, err := readVerifyBaseline(path)
 	if err != nil {
 		return map[string]any{"path": path, "status": "UNAVAILABLE"}
 	}
-	if baseline.IntentDigest != "" && baseline.IntentDigest != set.Digest {
-		return map[string]any{"path": path, "scope": baseline.Scope, "status": "STALE"}
+	result := map[string]any{"path": path, "scope": baseline.Scope, "status": "STALE"}
+	current := captureVerifyTree(ctx, repo, path)
+	selectedCommit, selectedTree := current.commit, current.tree
+	if view.head {
+		selectedCommit, selectedTree = view.revision, view.tree
 	}
-	for _, result := range baseline.Results {
-		if result != verifyStatusPass {
-			return map[string]any{"path": path, "scope": baseline.Scope, "status": "FAILED"}
+	baselineRepo, repoErr := filepath.EvalSymlinks(baseline.Repo)
+	selectedRepo, selectedErr := filepath.EvalSymlinks(repo)
+	policy, policyErr := intent.LoadVerificationPolicy(repo)
+	if baseline.FormatVersion != 1 || !baseline.CleanTree || !current.clean ||
+		baseline.Commit == "" || baseline.Tree == "" || baseline.Commit != selectedCommit || baseline.Tree != selectedTree ||
+		current.commit != selectedCommit || current.tree != selectedTree ||
+		repoErr != nil || selectedErr != nil || baselineRepo != selectedRepo ||
+		baseline.IntentDigest == "" || baseline.IntentDigest != set.Digest ||
+		policyErr != nil || baseline.PolicyDigest != policy.Digest ||
+		baseline.Platform != runtime.GOOS+"/"+runtime.GOARCH || baseline.TestCommand == "" ||
+		baseline.TimeoutMillis != verifyTimeout(baseline.TestCommand).Milliseconds() ||
+		policy.VerifyScope(baseline.Scope, baseline.TestCommand, baseline.SetupCommand) != nil {
+		return result
+	}
+	if baseline.ExitCode != 0 {
+		result["status"] = "FAILED"
+		return result
+	}
+	for _, status := range baseline.Results {
+		if status != verifyStatusPass {
+			result["status"] = "FAILED"
+			return result
 		}
 	}
-	return map[string]any{"path": path, "scope": baseline.Scope, "status": "CURRENT"}
+	// An empty parsed result set is not proof of test execution. Successful
+	// exit-code-only commands retain their explicitly limited evidence grade.
+	if baseline.Parser == "" || (baseline.Parser != "exit-code-only" && len(baseline.Results) == 0) {
+		result["status"] = "UNAVAILABLE"
+		return result
+	}
+	result["status"] = "CURRENT"
+	result["parser"] = baseline.Parser
+	return result
 }
 
 // gpsEvidenceClassification keeps graph facts, heuristic candidates, and
@@ -793,7 +872,7 @@ func gpsSymbolDeltaFindings(baseSet, headSet intent.Set, base, head sem.Provider
 	for _, id := range gpsSortedTestIDs(baseTests, headTests) {
 		before, beforeOK := baseTests[id]
 		after, afterOK := headTests[id]
-		if beforeOK && afterOK && !gpsSameSelectedSymbols(matchingSymbols(base.Symbols, before.Selector.Name, ""), matchingSymbols(head.Symbols, after.Selector.Name, "")) {
+		if !beforeOK || !afterOK || before != after || !gpsSameSelectedSymbols(matchingSymbols(base.Symbols, before.Selector.Name, ""), matchingSymbols(head.Symbols, after.Selector.Name, "")) {
 			findings = append(findings, map[string]any{"id": "GPS-DELTA-TEST", "severity": "warning", "subject": id, "message": "declared test implementation changed or was deleted since base revision"})
 		}
 	}

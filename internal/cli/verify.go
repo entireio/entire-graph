@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -60,6 +61,8 @@ type verifyBaseline struct {
 	FormatVersion int           `json:"format_version"`
 	RecordedAt    string        `json:"recorded_at"`
 	Repo          string        `json:"repo"`
+	CleanTree     bool          `json:"clean_tree"`
+	SetupCommand  string        `json:"setup_command,omitempty"`
 	Commit        string        `json:"commit,omitempty"`
 	Tree          string        `json:"tree,omitempty"`
 	IntentDigest  string        `json:"intent_digest,omitempty"`
@@ -149,6 +152,10 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	if err := policy.VerifyScope(flags.Scope, flags.Test, flags.Setup); err != nil {
 		return err
 	}
+	var before verifyTree
+	if flags.RecordBaseline != "" {
+		before = captureVerifyTree(ctx, repo, flags.RecordBaseline)
+	}
 	output, exitCode, runErr := runVerifyCommands(ctx, repo, flags)
 	if runErr != nil {
 		// A command that could not be LAUNCHED is a different failure from a command that ran and
@@ -158,7 +165,7 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	results, parser, parsed := parseVerifyOutput(output)
 
 	if flags.RecordBaseline != "" {
-		return writeVerifyBaseline(ctx, opts, repo, flags, policy.Digest, results, parser, parsed, exitCode)
+		return writeVerifyBaseline(ctx, opts, repo, flags, policy.Digest, before, results, parser, parsed, exitCode)
 	}
 	baseline, err := readVerifyBaseline(flags.PreEditBaseline)
 	if err != nil {
@@ -245,13 +252,14 @@ func errorsAs(err error, target **exec.ExitError) bool {
 
 func writeVerifyBaseline(
 	ctx context.Context, opts Options, repo string, flags verifyFlags,
-	policyDigest string, results verifyResults, parser string, parsed bool, exitCode int,
+	policyDigest string, before verifyTree, results verifyResults, parser string, parsed bool, exitCode int,
 ) error {
 	baseline := verifyBaseline{
 		FormatVersion: 1,
 		RecordedAt:    time.Now().UTC().Format(time.RFC3339),
 		Repo:          repo,
 		Scope:         flags.Scope,
+		SetupCommand:  flags.Setup,
 		PolicyDigest:  policyDigest,
 		Platform:      runtime.GOOS + "/" + runtime.GOARCH,
 		TimeoutMillis: verifyTimeout(flags.Test).Milliseconds(),
@@ -260,9 +268,9 @@ func writeVerifyBaseline(
 		ExitCode:      exitCode,
 		Results:       results,
 	}
-	if commit, tree, err := gitutil.HeadCommitAndTree(ctx, repo); err == nil {
-		baseline.Commit, baseline.Tree = commit, tree
-	}
+	after := captureVerifyTree(ctx, repo, flags.RecordBaseline)
+	baseline.Commit, baseline.Tree = before.commit, before.tree
+	baseline.CleanTree = before.clean && after.clean && before.commit == after.commit && before.tree == after.tree
 	if set, err := intent.Load(repo); err == nil {
 		baseline.IntentDigest = set.Digest
 	}
@@ -453,4 +461,46 @@ func verifyTruncateOutput(rendered string, maxBytes int) []byte {
 		budget -= len(line) + 1
 	}
 	return []byte(strings.Join(append(kept, verdict), "\n"))
+}
+
+// A baseline can certify a committed view only when the checkout was clean
+// both before and after execution. Dirty baselines still support verify deltas.
+type verifyTree struct {
+	commit, tree string
+	clean        bool
+}
+
+func captureVerifyTree(ctx context.Context, repo, evidencePath string) verifyTree {
+	commit, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
+	if err != nil {
+		return verifyTree{}
+	}
+	state := verifyTree{commit: commit, tree: tree}
+	// HEAD comparison includes both staged and unstaged changes. Never exclude
+	// a tracked evidence file, since its contents are part of the selected tree.
+	cmd := exec.CommandContext(ctx, "git", "-C", repo, "diff", "--quiet", "--no-ext-diff", "--ignore-submodules=none", "HEAD", "--")
+	if err := cmd.Run(); err != nil {
+		return state
+	}
+	cmd = exec.CommandContext(ctx, "git", "-C", repo, "ls-files", "--others", "--exclude-standard", "-z")
+	output, err := cmd.Output()
+	if err != nil {
+		return state
+	}
+	evidence, err := filepath.Abs(evidencePath)
+	if err != nil {
+		return state
+	}
+	evidence, _ = filepath.EvalSymlinks(evidence)
+	for _, path := range strings.Split(string(output), "\x00") {
+		if path == "" {
+			continue
+		}
+		candidate, err := filepath.EvalSymlinks(filepath.Join(repo, path))
+		if err != nil || evidencePath == "" || candidate != evidence {
+			return state
+		}
+	}
+	state.clean = true
+	return state
 }

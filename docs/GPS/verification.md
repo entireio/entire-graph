@@ -183,3 +183,25 @@ Gaps: REQ-AUTH-EXPIRY has no declared acceptance mapping
 
 Its output must cite facts, identify scope, and keep reviewer judgment separate.
 It cannot approve a change or mark a requirement correct automatically.
+
+## Execution evidence freshness
+
+`check --evidence` and `review --evidence` report `CURRENT` only when the
+recorded repository, commit, tree, intent digest, verification policy, platform,
+command scope, and timeout metadata match the selected view. A nonzero command
+exit or a failing individual result is `FAILED`, including exit-code-only runs.
+Successful exit-code-only evidence identifies its parser and does not establish
+which tests ran. An empty parsed result set is `UNAVAILABLE`.
+
+New baselines record whether the Git checkout was clean before and after the
+command, including untracked files except the evidence output itself. GPS treats
+legacy baselines without this evidence, dirty runs, changed checkouts, and
+mismatched provenance as `STALE`. Dirty baselines remain usable for `verify`
+before/after comparisons. Freshness is deliberately conservative: even a
+committed-view review requires a matching clean checkout when consuming evidence.
+Ignored files and external runtime dependencies are outside this Git-state check.
+
+Review includes changed or removed declared tests and their associated
+requirements in its review obligations. Incomplete parsing on either the base or
+head takes precedence over other findings and yields `INCOMPLETE`, with diagnostics
+identifying the affected side.
