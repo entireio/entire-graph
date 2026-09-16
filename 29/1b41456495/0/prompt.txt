@@ -1,0 +1,1 @@
+When running graph init-agents on an empty repo after brain init-agents, the graph call removes the brain config. Why?
