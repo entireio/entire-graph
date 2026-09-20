@@ -169,8 +169,10 @@ fi
 # Guard: a full cgo-enabled host listing must resolve cleanly, and every module
 # it reaches must already be in the union above.
 host_modules="$work/host-modules"
-CGO_ENABLED=1 go list -deps -f "$module_template" ./cmd/entire-graph |
-	sort -u >"$host_modules"
+# Not a pipeline: `set -e` reports only a pipeline's last exit status, which
+# would hide a `go list` failure behind a successful `sort`.
+CGO_ENABLED=1 go list -deps -f "$module_template" ./cmd/entire-graph >"$host_modules"
+sort -u -o "$host_modules" "$host_modules"
 while IFS= read -r host_line; do
 	[ -n "$host_line" ] || continue
 	if ! grep -Fqx "$host_line" "$modules"; then
