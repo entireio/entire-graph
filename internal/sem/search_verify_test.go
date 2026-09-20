@@ -240,9 +240,13 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 			wantDerived: "gson/pom.xml module + covering test class",
 		},
 		{
-			name: "gradle needs the wrapper and a test class",
+			// The wrapper, a test class, AND a settings script that declares the project: `:lib` is
+			// resolved against the projects the settings script declares, not against the
+			// directory layout, so the third is as load-bearing as the other two.
+			name: "gradle needs the wrapper, a test class and a declared project",
 			files: map[string]string{
 				"gradlew":                      "",
+				"settings.gradle.kts":          "include(\":lib\")\n",
 				"lib/build.gradle.kts":         "",
 				"lib/src/main/kotlin/A.kt":     "",
 				"lib/src/test/kotlin/ATest.kt": "",
@@ -253,7 +257,23 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 			},
 			wantCommand: "./gradlew :lib:test --tests 'ATest'",
 			wantTargets: "lib/src/test/kotlin/ATest.kt",
-			wantDerived: "lib/build.gradle.kts + gradlew + mirror test file class",
+			wantDerived: "lib/build.gradle.kts + gradlew + settings.gradle.kts + mirror test file class",
+		},
+		{
+			// Same tree with the settings script removed: Gradle answers `./gradlew :lib:test` with
+			// "Project 'lib' not found in root project", so the tier emits nothing.
+			name: "gradle without a settings script naming the project emits nothing",
+			files: map[string]string{
+				"gradlew":                      "",
+				"lib/build.gradle.kts":         "",
+				"lib/src/main/kotlin/A.kt":     "",
+				"lib/src/test/kotlin/ATest.kt": "",
+			},
+			subject: searchVerifySubject{
+				sourcePath: "lib/src/main/kotlin/A.kt",
+				testPath:   "lib/src/test/kotlin/ATest.kt", testEvidence: "mirror test file",
+			},
+			wantCommand: "",
 		},
 		{
 			name: "gradle without the wrapper emits nothing",
@@ -1308,10 +1328,13 @@ func TestSearchVerifyCommandsDoNotExecuteRepositoryData(t *testing.T) {
 			},
 		},
 		{
-			name: "gradle project task",
+			// The malicious directory name reaches the command as a `-p` argument, because a
+			// directory carrying its own settings script is a build root. That argument is the
+			// injection surface the project-path spelling does not have.
+			name: "gradle project directory",
 			derive: func() *SearchVerifyCommand {
 				evidence := searchVerifyTestEvidence(map[string]string{
-					"gradlew": "", attack + "/build.gradle": "",
+					"gradlew": "", attack + "/build.gradle": "", attack + "/settings.gradle": "",
 				})
 				return deriveSearchVerifyGradle(attack, searchVerifySubject{
 					sourcePath: attack + "/src/A.kt", testPath: attack + "/src/ATest.kt",
@@ -1321,7 +1344,9 @@ func TestSearchVerifyCommandsDoNotExecuteRepositoryData(t *testing.T) {
 		{
 			name: "gradle test pattern",
 			derive: func() *SearchVerifyCommand {
-				evidence := searchVerifyTestEvidence(map[string]string{"gradlew": "", "lib/build.gradle": ""})
+				evidence := searchVerifyTestEvidence(map[string]string{
+					"gradlew": "", "settings.gradle": "include ':lib'\n", "lib/build.gradle": "",
+				})
 				return deriveSearchVerifyGradle("lib", searchVerifySubject{
 					sourcePath: "lib/src/A.kt", testPath: "lib/src/" + attack + ".kt",
 				}, &evidence)
