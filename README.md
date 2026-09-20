@@ -55,7 +55,26 @@ any of the seven other systems we tested, including graphify, mem0, and cognee.
 | [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) † | 91.30 | 0 | [v0.9.0](https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.0) |
 | [graphify](https://github.com/Graphify-Labs/graphify)  | 87.34 | 0 | [0.9.37](https://github.com/Graphify-Labs/graphify/releases?page=3#release-v0.9.34)|
 | [letta](https://github.com/letta-ai/letta) | 84.68 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
-| [supermemory](https://github.com/supermemoryai/supermemory)  | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
+| [supermemory](https://github.com/supermemoryai/supermemory) ‡ | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
+
+§ **The measured build is the `#104` branch, not a released tag.** The run is
+dated 2026-08-14, before that branch merged. The retrieval path it exercises
+first shipped in
+[v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0), tagged
+2026-08-18 after further retrieval fixes, so the released tag itself was not
+benchmarked and this row should be quoted as the `#104` branch result.
+
+† **cmm is patched, not stock v0.9.0.** It was modified to emit Markdown sections
+([patch](bench/memory/patches/0005-cmm-v0.9.0-markdown-sections.patch)); the linked release alone
+does not reproduce 91.30.
+
+‡ **supermemory is patched, and its retrieval budget is half every other row's.** Reaching the
+shared extraction model required a binary capability-flag patch plus a wire-level parameter adapter,
+and a second fix made its content-dedup tolerate retries. Its search API also hard-caps retrieval at
+**100 items where every other arm gets 200** — a disclosed asymmetry that works against
+supermemory. The linked release alone does not reproduce 82.08. Full disclosure, including what is
+and is not reproducible from this repository:
+[`LOCOMO-COMPARISON.md` § ‡](bench/memory/LOCOMO-COMPARISON.md).
 
 See [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
 retractions, and reproduction steps.
@@ -84,6 +103,56 @@ entire graph version
 
 `entire graph version` printing a release tag confirms that a versioned build
 is active.
+
+### Download a release archive directly
+
+Every tagged release also publishes standalone archives on the
+[releases page](https://github.com/entireio/entire-graph/releases) for
+`linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`,
+and `windows/arm64`, alongside a `checksums.txt` covering all six. Use this
+when you want a pinned version, an air-gapped install, or a build you can
+verify before it runs:
+
+```sh
+version=0.4.0   # the release you want, from the releases page
+base="https://github.com/entireio/entire-graph/releases/download/v${version}"
+curl -fsSLO "${base}/entire-graph_${version}_$(uname -s | tr 'A-Z' 'a-z')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz"
+curl -fsSLO "${base}/checksums.txt"
+sha256sum -c checksums.txt --ignore-missing
+```
+
+`checksums.txt` lists all six archives, so verify only the one you downloaded.
+macOS ships `shasum` rather than GNU `sha256sum`; there, compare
+`shasum -a 256 <archive>` against the matching line by hand.
+
+An archive contains the `entire-graph` binary, `README.md`, `LICENSE`, and
+`entire-plugin.yml`, and from v0.5.0 onward also `NOTICES`, the third-party
+attribution for everything statically linked into the binary. Extract the
+binary anywhere on `PATH`; the plugin index install above remains the supported
+upgrade path.
+
+### Build from source
+
+Building requires:
+
+- **Go 1.27 or later** (`go.mod` declares `go 1.27`).
+- **cgo enabled with a working C toolchain.** Entire Graph compiles 13
+  tree-sitter grammars from C sources vendored under `internal/sem/`, so
+  `CGO_ENABLED=0` does not produce a usable binary. On Linux install `gcc` or
+  `clang`, on macOS install the Xcode command line tools, and on Windows use a
+  MinGW-w64 toolchain.
+
+```sh
+git clone https://github.com/entireio/entire-graph.git
+cd entire-graph
+go build ./cmd/entire-graph
+./entire-graph version
+```
+
+`scripts/release.sh` builds the same archives the release workflow publishes;
+set `ENTIRE_RELEASE_TARGETS` to cross-build, which needs a cross C toolchain
+for each target. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull
+request.
 
 ## Activate it for your agent
 
@@ -287,3 +356,10 @@ or open a pull request. Thank you! ❤️
 ## License
 
 Entire Graph is distributed under the [MIT License](LICENSE).
+
+The binary statically links third-party parser sources and Go modules under
+their own licenses, including Apache-2.0, CC0-1.0, and BSD-3-Clause terms.
+[`NOTICES`](NOTICES) reproduces each one verbatim and ships inside every
+release archive from v0.5.0 onward. It is generated from the vendored license
+files and the resolved module graph by `scripts/gen-notices.sh`; CI fails if it
+drifts.
