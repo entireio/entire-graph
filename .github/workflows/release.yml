@@ -6,6 +6,8 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/release.sh
+      - scripts/changelog-section.sh
+      - NOTICES
   push:
     tags:
       - "v*"
@@ -200,6 +202,12 @@ jobs:
           done
           (cd dist && sha256sum entire-graph_* > checksums.txt)
           test "$(wc -l < dist/checksums.txt)" -eq 6
+      # The publish job downloads artifacts only, so the release notes need the
+      # repository checked out to read CHANGELOG.md.
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          path: source
       - name: Publish release assets
         shell: bash
         env:
@@ -230,9 +238,21 @@ jobs:
             flags=(
               --repo "$GITHUB_REPOSITORY"
               --verify-tag
-              --generate-notes
               --title "$VERSION"
             )
+            # A tagged version with a CHANGELOG section publishes that section
+            # verbatim. Nightlies and any version not yet written up fall back
+            # to the auto-generated commit list.
+            if sh source/scripts/changelog-section.sh "$VERSION" > release-notes.md; then
+              {
+                printf '\n'
+                printf 'Verify a download against `checksums.txt`:\n\n'
+                printf '```sh\nsha256sum -c checksums.txt --ignore-missing\n```\n'
+              } >> release-notes.md
+              flags+=(--notes-file release-notes.md)
+            else
+              flags+=(--generate-notes)
+            fi
             # A prerelease-looking TAG does not by itself mark the RELEASE as
             # one: without these flags a nightly publishes to the normal
             # channel and takes the "Latest" badge from the current stable.
