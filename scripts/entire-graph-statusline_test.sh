@@ -57,6 +57,16 @@ assert_empty() {
 assert_eq() {
 	if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "want: $2" "got:  $3"; fi
 }
+# assert_all_distinct <name> <a> <b> <c>: three renders that must not agree. Written as one
+# assertion rather than three pairwise ones because the property is "the badge is a function of
+# the repository", and a pair agreeing is the same defect whichever pair it is.
+assert_all_distinct() {
+	if [ "$2" != "$3" ] && [ "$3" != "$4" ] && [ "$2" != "$4" ]; then
+		pass "$1"
+	else
+		fail "$1" "want three different lines" "a: $2" "b: $3" "c: $4"
+	fi
+}
 # assert_present <name> <path>
 assert_present() {
 	if [ -e "$2" ]; then pass "$1"; else fail "$1" "want present: $2"; fi
@@ -516,9 +526,17 @@ stub '{"sessions":7,"graph_calls":10,"exploration_calls":10,"sessions_with_locat
 OUT=$(run s-multi "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_SCOPE=project)
 assert_has 'multi-session renders a graph-first rate' 'graph-first 86%' "$OUT"
 
-# ...and scope=project must actually ASK the CLI a project-wide question: the whole session
-# directory over the requested window, not this one transcript. An arg-recording stub is the only
-# way to assert that; the rendered badge looks the same either way.
+# ...and scope=project must actually ASK the CLI a project-wide question: the whole project over
+# the requested window, not this one transcript. An arg-recording stub is the only way to assert
+# that; the rendered badge looks the same either way.
+#
+# This block used to assert the project-wide question as `--sessions-dir $(dirname $TRANSCRIPT)`.
+# The subject has not changed -- it is still "does project scope ask a project-wide question" --
+# but that was the wrong observation of it, because `dirname $TRANSCRIPT` is the directory Claude
+# Code was LAUNCHED from, not the project. Worse, an explicit --sessions-dir takes PRECEDENCE over
+# --repo in the CLI (internal/cli/stats.go runStats: --repo resolves the sessions directory only
+# in the `sessionsDir == ""` branch), so passing it made the badge report the launch directory's
+# sessions under the repository's name -- three different repositories rendering one number.
 cat >"$WORK/argstub" <<STUB
 #!/bin/sh
 printf '%s\n' "\$*" >"$WORK/args"
@@ -530,10 +548,60 @@ chmod +x "$WORK/argstub"
 RUN_BIN=$WORK/argstub
 OUT=$(run s-projectargs "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_SCOPE=project ENTIRE_GRAPH_STATUSLINE_SINCE=7d)
 ARGS=$(cat "$WORK/args")
-assert_has 'scope=project scans the session directory' "--sessions-dir $(dirname "$T")" "$ARGS"
+assert_has 'scope=project asks about the repository' "--repo $REPO" "$ARGS"
+assert_lacks 'scope=project does not override repo resolution with a launch-directory scan' '--sessions-dir' "$ARGS"
 assert_has 'scope=project honours the requested window' '--since 7d' "$ARGS"
 assert_lacks 'scope=project does not narrow to one transcript' '--transcript' "$ARGS"
 assert_has 'scope=project still renders the rate' 'graph-first 86%' "$OUT"
+
+# The property the argument assertions above exist to protect: ONE transcript, three repositories,
+# three different badges. Measured on the real binary before the fix, /devenv, /devenv/entire-graph
+# and /devenv/graphmark all rendered the identical "[GRAPH] ↗ ~17.7K saved".
+#
+# The stub models the CLI's actual precedence rather than echoing whatever it is handed, so this
+# case is not tautological: it fails against a script that passes --sessions-dir (every repository
+# collapses onto the launch directory's number) and passes against one that does not.
+cat >"$WORK/scopestub" <<'STUB'
+#!/bin/sh
+# Resolve the scope the way internal/cli/stats.go runStats does: an explicit --sessions-dir is
+# taken as-is and --repo is then only reported; --repo resolves the sessions directory only when
+# --sessions-dir is absent.
+repo=
+dir=
+next=
+for arg in "$@"; do
+	case $next in
+	repo)
+		repo=$arg
+		next=
+		continue
+		;;
+	dir)
+		dir=$arg
+		next=
+		continue
+		;;
+	esac
+	case $arg in
+	--repo) next=repo ;;
+	--sessions-dir) next=dir ;;
+	esac
+done
+if [ -n "$dir" ]; then key=$dir; else key=$repo; fi
+# A deterministic savings figure per resolved scope. The badge must be a function of it.
+n=$(printf '%s' "$key" | cksum | awk '{ print ($1 % 900) + 100 }')
+printf '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":%s,"estimated_savings_pct_of_session_tokens":1}\n' "$n"
+STUB
+chmod +x "$WORK/scopestub"
+RUN_BIN=$WORK/scopestub
+mkdir -p "$WORK/repo-a" "$WORK/repo-b" "$WORK/repo-c"
+SCOPE_A=$(run s-scope-a "$T" "$WORK/repo-a" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_SCOPE=project ENTIRE_GRAPH_STATUSLINE_CACHE=0)
+SCOPE_B=$(run s-scope-b "$T" "$WORK/repo-b" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_SCOPE=project ENTIRE_GRAPH_STATUSLINE_CACHE=0)
+SCOPE_C=$(run s-scope-c "$T" "$WORK/repo-c" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_SCOPE=project ENTIRE_GRAPH_STATUSLINE_CACHE=0)
+assert_all_distinct 'scope=project reports per repository, not per launch directory' \
+	"$SCOPE_A" "$SCOPE_B" "$SCOPE_C"
+
+RUN_BIN=$WORK/argstub
 
 OUT=$(run s-sessionargs "$T" "$REPO" NO_COLOR=1)
 ARGS=$(cat "$WORK/args")
