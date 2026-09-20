@@ -170,6 +170,44 @@ func TestSearchVerifyRakeNamespacedTaskIsQualified(t *testing.T) {
 			wantTask: "a:b:test", wantOK: true,
 		},
 		{
+			// Ruby opens both blocks on one line here, and `rake -AT` on this Rakefile lists
+			// `foo:bar:test` and nothing else. Naming only the first namespace produced
+			// `rake foo:test`, which rake answers with "Don't know how to build task 'foo:test'".
+			name:     "two namespaces opened on one line",
+			content:  "namespace :foo do namespace :bar do\n  task :test\nend end\n",
+			wantTask: "foo:bar:test", wantOK: true,
+		},
+		{
+			name:     "three namespaces opened on one line",
+			content:  "namespace :a do namespace :b do namespace :c do\n  task :test\nend end end\n",
+			wantTask: "a:b:c:test", wantOK: true,
+		},
+		{
+			name:     "a namespace opened after another block on the same line",
+			content:  "[1].each do namespace :foo do\n  task :test\nend end\n",
+			wantTask: "foo:test", wantOK: true,
+		},
+		{
+			name:     "a quoted namespace opened second on the same line",
+			content:  "namespace :foo do namespace \"bar\" do\n  task :test\nend end\n",
+			wantTask: "foo:bar:test", wantOK: true,
+		},
+
+		// --- names this cannot read: report NO namespace rather than a half-qualified one ---
+		{
+			// `rake test` fails loudly on this Rakefile. `rake foo:test` would be the confident
+			// wrong answer, and a half-qualified name is the failure this whole change exists to
+			// end, so an unreadable name degrades to the answer that predates namespace tracking.
+			name:     "a namespace named by a variable reports no namespace",
+			content:  "NAME = :foo\nnamespace NAME do\n  task :test\nend\n",
+			wantTask: "test", wantOK: true,
+		},
+		{
+			name:     "a namespace named by a method call reports no namespace",
+			content:  "namespace compute_name do\n  task :test\nend\n",
+			wantTask: "test", wantOK: true,
+		},
+		{
 			name:     "a namespace that closed before the declaration does not qualify it",
 			content:  "namespace :foo do\n  task :lint\nend\n\ntask :test\n",
 			wantTask: "test", wantOK: true,
@@ -243,6 +281,13 @@ func TestSearchVerifyRakeNamespacedSuiteCommandRuns(t *testing.T) {
 			name:        "a top-level task keeps the bare name",
 			rakefile:    "task :test do\nend\n",
 			wantCommand: "rake test",
+		},
+		{
+			// Verified against rake 13.0.6: this Rakefile declares `foo:bar:test` and nothing
+			// else, so `rake foo:test` answers "Don't know how to build task 'foo:test'".
+			name:        "both namespaces opened on one line are qualified",
+			rakefile:    "namespace :foo do namespace :bar do\n  task :test do\n  end\nend end\n",
+			wantCommand: "rake foo:bar:test",
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

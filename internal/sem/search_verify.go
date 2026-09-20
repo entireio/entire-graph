@@ -1717,24 +1717,27 @@ func searchVerifyRakefileTestTask(content string) (string, bool) {
 // Ruby block structure is tracked, not guessed at: the cheap approximation — "the file mentions
 // `namespace` and the declaration is indented" — also demotes a top-level task written inside `if`
 // or `begin`, which is ordinary Rake and the exact false negative an earlier round had to correct.
-// So the scan walks lines keeping a stack of open blocks, naming the frame a `namespace` statement
+// So the scan walks lines keeping a stack of open blocks, naming each frame a `namespace` statement
 // opens and leaving every other opener anonymous.
 //
-// It is a line scanner, not a Ruby parser, and it states its own limits rather than pretending
-// otherwise. Comments and string literals are removed before keywords are counted, so `desc 'run to
-// the end'` does not close a block; `if`/`unless`/`while`/`until`/`for` count only as the first word
-// of a line, so the modifier forms do not open one; `end` after a `.` is a method call. What it does
-// NOT read is a heredoc body, a brace-delimited block, and a `namespace` written with braces.
+// Every declaration pattern is anchored at a line's first non-blank byte, so the prefix a match
+// needs is the one in effect at the START of its line, which is what this records.
 //
-// Those are what the BALANCE check is for: any Rakefile whose blocks do not balance to zero by the
-// last line, or that closes more blocks than it opened, means the scan lost track — and every line
-// then reports no prefix, which is exactly the behaviour this function replaced. A desync degrades
-// to the previous answer instead of inventing a namespace that is not there.
+// It is a line scanner, not a Ruby parser, and it states its own limits rather than pretending
+// otherwise. What it does NOT read is a heredoc body, a brace-delimited block, and a `namespace`
+// written with braces.
+//
+// Two guards keep an unread construct from becoming a WRONG answer, which is the failure this whole
+// change exists to end. A Rakefile whose blocks do not balance to zero by the last line, or that
+// closes more than it opened, means the scan lost track; a `namespace` whose name is not a literal
+// — `namespace NAME do` — means the name is unknowable here. Either one makes every line report no
+// prefix, which is exactly the behaviour that predates namespace tracking: `rake test`, which fails
+// loudly on a namespaced Rakefile rather than running the wrong suite.
 func searchVerifyRakeNamespacePrefixes(content string) []string {
 	lines := strings.Split(content, "\n")
 	prefixes := make([]string, len(lines))
 	stack := []string{}
-	balanced := true
+	sound := true
 	for index, line := range lines {
 		prefix := ""
 		for _, name := range stack {
@@ -1743,132 +1746,183 @@ func searchVerifyRakeNamespacePrefixes(content string) []string {
 			}
 		}
 		prefixes[index] = prefix
-		code := searchVerifyRubyCodeOnly(line)
-		opens, closes := searchVerifyRubyBlockDelta(code)
-		// The namespace NAME is read from the raw line: `searchVerifyRubyCodeOnly` drops string
-		// bodies, which is where `namespace "foo" do` keeps it.
-		name := searchVerifyRakeNamespaceName(line)
-		for count := 0; count < opens; count++ {
-			if count == 0 {
-				stack = append(stack, name)
-				continue
-			}
-			stack = append(stack, "")
+		opens, closes, readable := searchVerifyRubyLineBlocks(line)
+		if !readable {
+			sound = false
+			break
 		}
+		stack = append(stack, opens...)
 		for count := 0; count < closes; count++ {
 			if len(stack) == 0 {
-				balanced = false
+				sound = false
 				break
 			}
 			stack = stack[:len(stack)-1]
 		}
-		if !balanced {
+		if !sound {
 			break
 		}
 	}
-	if !balanced || len(stack) != 0 {
+	if !sound || len(stack) != 0 {
 		return make([]string, len(lines))
 	}
 	return prefixes
 }
 
-// searchVerifyRakeNamespaceName reads the name a `namespace` statement opens, in the two spellings
-// Rake takes — `namespace :foo do` and `namespace "foo" do` — and "" for any other line.
+// searchVerifyRubyLineBlocks reports the blocks one line of Ruby opens — in order, each carrying the
+// `namespace` name it declares, or "" for every other opener — and how many it closes. It reports
+// false when it met a `namespace` whose name it could not read.
 //
-// The name is restricted to an identifier, which is both what Rake namespaces are called in
-// practice and what keeps the derived `foo:test` free of shell metacharacters.
-var searchVerifyRakeNamespacePattern = regexp.MustCompile(
-	`^[ \t]*namespace[ \t(]+(?::([A-Za-z_]\w*)|["']([A-Za-z_]\w*)["'])`)
-
-func searchVerifyRakeNamespaceName(line string) string {
-	match := searchVerifyRakeNamespacePattern.FindStringSubmatch(line)
-	if match == nil {
-		return ""
-	}
-	if match[1] != "" {
-		return match[1]
-	}
-	return match[2]
-}
-
-// searchVerifyRubyCodeOnly strips a line down to the bytes that can carry block keywords: a `#`
-// comment and the CONTENT of every string literal are removed, the quotes themselves replaced by a
-// space so the words around them stay separate.
+// Returning the openers as a LIST rather than a count is what makes `namespace :foo do namespace
+// :bar do` come out as two named frames. Ruby opens both blocks on that line, `rake -AT` lists
+// `foo:bar:test`, and naming only the first produced `rake foo:test` — a command rake answers with
+// "Don't know how to build task 'foo:test'". Pairing each name with the `do` that consumes it, in
+// token order, is also why a namespace opened after some other block on the same line is still
+// named.
 //
-// A `#` inside a string is not a comment, and `#{...}` interpolation lives inside one, so both are
-// skipped by the same rule: while a quote is open, nothing reaches the output.
-func searchVerifyRubyCodeOnly(line string) string {
-	code := make([]byte, 0, len(line))
-	var quote byte
-	for index := 0; index < len(line); index++ {
+// The scan is quote-aware rather than working on a stripped copy of the line, because the name and
+// the keywords have to be read from the same pass: `namespace "bar" do` keeps its name inside a
+// string literal, while `desc 'run to the end'` must not close a block. So a string literal yields
+// its CONTENT as a name candidate and nothing else, and a `#` outside one ends the line.
+//
+// The keyword rules are the ones a Ruby line needs and no more. `if`, `unless`, `while`, `until` and
+// `for` open a block only as the first token of the line: every one of them is also a trailing
+// MODIFIER, which opens nothing. `while`, `until` and `for` additionally admit a `do` on the same
+// line as part of the same statement, so that `do` is not counted twice. A word after `.`, `:`, `@`
+// or `$` is a method call or a symbol, not a keyword — `range.end` and `:do` close and open nothing.
+func searchVerifyRubyLineBlocks(line string) ([]string, int, bool) {
+	var opens []string
+	closes := 0
+	first, loopKeyword, naming := true, false, false
+	name := ""
+	for index := 0; index < len(line); {
 		character := line[index]
-		if quote != 0 {
-			if character == '\\' {
-				index++
+		switch {
+		case character == '#':
+			// A comment outside a string literal: nothing after it is code.
+			index = len(line)
+		case character == '\'' || character == '"' || character == '`':
+			literal, width := searchVerifyRubyStringLiteral(line[index:])
+			index += width
+			if naming {
+				if !searchVerifyRakeNamespaceNameIsLiteral(literal) {
+					return nil, 0, false
+				}
+				name, naming = literal, false
+			}
+			first = false
+		case searchVerifyRubyWordByte(character) && !searchVerifyRubyDigit(character):
+			end := index
+			for end < len(line) && searchVerifyRubyWordByte(line[end]) {
+				end++
+			}
+			word := line[index:end]
+			quoted := byte(' ')
+			if index > 0 {
+				quoted = line[index-1]
+			}
+			symbol := quoted == ':'
+			if naming {
+				// The only thing that may follow `namespace` is its name, as a symbol or a string.
+				// Anything else — a constant, a variable, a method call — is a name this cannot
+				// know, and guessing "" would half-qualify the task.
+				if !symbol || !searchVerifyRakeNamespaceNameIsLiteral(word) {
+					return nil, 0, false
+				}
+				name, naming = word, false
+				first, index = false, end
 				continue
 			}
-			if character == quote {
-				quote = 0
+			if symbol || quoted == '.' || quoted == '@' || quoted == '$' {
+				first, index = false, end
+				continue
 			}
+			switch word {
+			case "namespace":
+				naming = true
+			case "end":
+				closes++
+			case "do":
+				if loopKeyword {
+					loopKeyword = false
+					break
+				}
+				opens = append(opens, name)
+				name = ""
+			case "begin", "case", "def", "class", "module":
+				opens = append(opens, "")
+			case "if", "unless":
+				if first {
+					opens = append(opens, "")
+				}
+			case "while", "until", "for":
+				if first {
+					opens = append(opens, "")
+					loopKeyword = true
+				}
+			}
+			first = false
+			index = end
 			continue
-		}
-		switch character {
-		case '\'', '"', '`':
-			quote = character
-			code = append(code, ' ')
-		case '#':
-			return string(code)
 		default:
-			code = append(code, character)
+			index++
 		}
 	}
-	return string(code)
+	if naming || name != "" {
+		// A `namespace` whose block does not open on this line: the name was read but nothing
+		// consumed it, so the frame it belongs to is not one this scan can place.
+		return nil, 0, false
+	}
+	return opens, closes, true
 }
 
-var searchVerifyRubyWordPattern = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
-
-// searchVerifyRubyBlockDelta counts the blocks a line of Ruby opens and closes.
-//
-// `if`, `unless`, `while`, `until` and `for` open a block only as the first word of the line: every
-// one of them is also a trailing MODIFIER (`task :test if ENV['CI']`), which opens nothing. `while`
-// and `for` additionally admit a `do` on the same line as part of the same statement, so that `do`
-// is not counted twice. A word after `.`, `:`, `@` or `$` is a method call or a symbol, not a
-// keyword — `range.end` and `:do` close and open nothing.
-func searchVerifyRubyBlockDelta(code string) (int, int) {
-	opens, closes := 0, 0
-	first, loopKeyword := true, false
-	for _, location := range searchVerifyRubyWordPattern.FindAllStringIndex(code, -1) {
-		word := code[location[0]:location[1]]
-		if location[0] > 0 {
-			switch code[location[0]-1] {
-			case '.', ':', '@', '$':
-				first = false
-				continue
+// searchVerifyRubyStringLiteral consumes a `'`, `"` or backtick literal and returns its content
+// along with the bytes consumed, quotes included. A backslash escapes the byte after it. An
+// unterminated literal consumes the rest of the line, which is what a line scanner can say about it.
+func searchVerifyRubyStringLiteral(line string) (string, int) {
+	quote := line[0]
+	content := make([]byte, 0, len(line))
+	for index := 1; index < len(line); index++ {
+		switch line[index] {
+		case '\\':
+			if index+1 < len(line) {
+				index++
+				content = append(content, line[index])
 			}
+		case quote:
+			return string(content), index + 1
+		default:
+			content = append(content, line[index])
 		}
-		switch word {
-		case "end":
-			closes++
-		case "do":
-			if !loopKeyword {
-				opens++
-			}
-			loopKeyword = false
-		case "begin", "case", "def", "class", "module":
-			opens++
-		case "if", "unless":
-			if first {
-				opens++
-			}
-		case "while", "until", "for":
-			if first {
-				opens++
-				loopKeyword = true
-			}
-		}
-		first = false
 	}
-	return opens, closes
+	return string(content), len(line)
+}
+
+// searchVerifyRakeNamespaceNameIsLiteral reports whether a namespace name is one this may put in a
+// command: an identifier. That is what Rake namespaces are called in practice, and it is also what
+// keeps the derived `foo:test` free of shell metacharacters. Anything else is treated as unreadable
+// rather than passed through.
+func searchVerifyRakeNamespaceNameIsLiteral(name string) bool {
+	if name == "" || searchVerifyRubyDigit(name[0]) {
+		return false
+	}
+	for index := 0; index < len(name); index++ {
+		if !searchVerifyRubyWordByte(name[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func searchVerifyRubyWordByte(character byte) bool {
+	return character == '_' ||
+		(character >= 'a' && character <= 'z') ||
+		(character >= 'A' && character <= 'Z') ||
+		searchVerifyRubyDigit(character)
+}
+
+func searchVerifyRubyDigit(character byte) bool {
+	return character >= '0' && character <= '9'
 }
 
 // searchVerifyRakeTestTaskGeneratorPattern matches a Rake::TestTask / Minitest::TestTask generator
