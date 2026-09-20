@@ -50,11 +50,12 @@ documentation, and durable facts - Brain's episodic memory of what was decided,
 what went wrong before, and what must stay true. Record one when you learn
 something durable that the code does not already state:
 
-    entire brain remember "<fact>" --path <category.subcategory.type>
+    entire brain remember "<fact>" --path <category.subcategory.type> --json
 
 Categories are architecture, constraints, preferences, project and workflow.
-Omit --path to have it classified for you. No MCP tool writes a fact, so this
-is a CLI call. Retrieve with recall, and re-check anchors with verify.
+Omitting --path classifies the fact for you, which requires a supported coding
+agent on PATH. No MCP tool writes a fact, so this is a CLI call. Retrieve with
+recall, and re-check anchors with verify.
 
 Use Brain entities history to connect code changes to earlier checkpoints and
 sessions. Use Brain memory-informed review and workspace
