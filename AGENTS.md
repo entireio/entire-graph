@@ -163,20 +163,22 @@ what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status l
 
 ## Repository-specific workflow
 
-Follow `.entire/agent-guide.md`, generated from repository state. Graph-only
-instructions start needed discovery with
+Follow `.entire/agent-guide.md`, generated from repository state. Both Graph-only
+and combined instructions make the same first-action obligation: the first action on
+any task that requires finding code is ONE
 `entire graph query --repo . --profile full --query "<task>"`.
-Combined instructions begin substantive orientation with
+That holds for small edits, follow-ups, tasks that already name the file, and tasks
+where a Brain brief has already reported locations — a brief reports where code is,
+not what depends on it. Combined instructions also begin substantive orientation with
 `entire brain brief "<task>" --json` unless equivalent task context is available.
-Reuse useful brief locations; do not require a redundant Graph query. Use Graph
-for additional discovery, structural analysis, and semantic revision comparisons,
-and Brain for retained knowledge, prior decisions, and checkpoint/session history.
+Use Graph for discovery, structural analysis, and semantic revision comparisons, and
+Brain for retained knowledge, prior decisions, and checkpoint/session history.
 
-Direct source inspection is appropriate when locations are sufficient. Skip
-ceremonial queries for small edits and follow-ups. Current source and executed
-tests establish present behavior; historical answers explain prior intent.
-Investigate disagreements. Ordinary query failures do not authorize automatic
-installation, configuration, or repair. See [the contract](docs/agent-coordination.md).
+Current source and executed tests establish present behavior; historical answers
+explain prior intent. Investigate disagreements. A failed query is reported and falls
+back to direct source inspection for that query only — it does not retire the tool for
+the session — and does not authorize automatic installation, configuration, or repair.
+See [the contract](docs/agent-coordination.md).
 
 ## Operating doctrine
 

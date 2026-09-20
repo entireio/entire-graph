@@ -50,8 +50,12 @@ func TestGuidanceModeLifecycle(t *testing.T) {
 			for _, name := range []string{Path, "AGENTS.md", "CLAUDE.md"} {
 				before[name] = readFileForTest(t, filepath.Join(repo, name))
 			}
+			// "FOR THAT QUERY ONLY" is normal mode's scoped-fallback clause; strict has its
+			// own stricter accountability wording and never carries this one. It replaces
+			// "Skip ceremonial queries" as the normal-mode marker, which was deleted because
+			// it was one of the self-assessed exits that suppressed adoption.
 			normal, err := Preview(repo, second, Options{Mode: ModeNormal})
-			if err != nil || strings.Contains(normal, `"mode":"strict"`) || !strings.Contains(normal, "Skip ceremonial queries") {
+			if err != nil || strings.Contains(normal, `"mode":"strict"`) || !strings.Contains(normal, "FOR THAT QUERY ONLY") {
 				t.Fatal("normal override failed", err)
 			}
 			for name, contents := range before {
@@ -79,7 +83,7 @@ func TestGuidanceModeLifecycle(t *testing.T) {
 func TestStrictGuidanceContentAndScope(t *testing.T) {
 	for _, active := range []map[string]bool{{"graph": true}, {"brain": true}, {"graph": true, "brain": true}} {
 		guide := guideFor(active, ModeStrict)
-		for _, forbidden := range []string{"Skip ceremonial", "Skip this when equivalent", "Do not ask both tools"} {
+		for _, forbidden := range []string{"FOR THAT QUERY ONLY", "Skip this when equivalent", "Do not ask both tools"} {
 			if strings.Contains(guide, forbidden) {
 				t.Errorf("strict guide retains normal exception %q", forbidden)
 			}

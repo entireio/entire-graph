@@ -69,10 +69,19 @@ var graphLocateVerbs = map[string]bool{
 // graphVerbs is the closed set of verbs the plugin dispatches. Matching against it (rather
 // than "any word after entire-graph") is what stops a path argument from being read as an
 // invocation — e.g. `find /repos/entire-graph -path '*.go'` is exploration, not a graph call.
+//
+// It MUST list every command in the dispatch switch. A verb missing here is not merely
+// uncounted: it falls through BOTH classifications, counting as neither a graph call nor an
+// exploration call, so real usage of it is invisible in every report and in the status-line
+// badge. That is how def, explain, verify, health and snapshot-query — all shipped, all in
+// `entire graph help` — went unmeasured while adoption was being diagnosed from these numbers.
+// The drift is the defect, so TestGraphVerbsCoverEveryCommand fails the build on the next one
+// rather than trusting this list to be maintained by hand.
 var graphVerbs = map[string]bool{
 	"query": true, "search": true, "neighbors": true, "impact": true, "diff": true, "commit": true,
 	"checkpoint": true, "analyze": true, "doctor": true, "capabilities": true,
-	"snapshot": true, "symbols": true, "edges": true, "index": true, "stats": true,
+	"snapshot": true, "snapshot-query": true, "symbols": true, "edges": true, "index": true,
+	"stats": true, "def": true, "explain": true, "verify": true, "health": true,
 	"agent-guide": true, "init-agents": true, "version": true, "help": true,
 }
 
