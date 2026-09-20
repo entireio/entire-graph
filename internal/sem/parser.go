@@ -4274,7 +4274,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 		// callable, not member syntax, so it stays kind "function". A
 		// method_definition reached the same way — an object literal's method
 		// declared in a method body — IS member syntax and keeps "method".
-		if scopeIsCallable && entity.Kind == "method" && lexicalCallableForm(node) {
+		if scopeIsCallable && entity.Kind == "method" && lexicalCallableForm(node, language) {
 			entity.Kind = "function"
 		}
 		setEntitySourceRange(&entity, node, language, src)
@@ -4351,10 +4351,11 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 			// untouched — variable_declarator never consults the scope — so its
 			// bare, function-local shape is what it has always been.
 			//
-			// Scoped to JS/TS: other languages' nested callables (Java's
-			// anonymous-class members reached through initializerTypeBodies,
-			// Python's nested defs) rely on the type scope to stay
-			// container-qualified.
+			// Scoped by functionLocalScopeResets: the grammars left out of it
+			// rely on the type scope to stay container-qualified (Java's
+			// anonymous-class members reached through initializerTypeBodies) or
+			// genuinely declare a member that way (a Ruby nested `def` really
+			// does add an instance method to the enclosing class).
 			//
 			// Only a callable whose own name is QUALIFIED by the scope can
 			// become the new scope. The `const cb = () => {}` spelling is a
@@ -8908,37 +8909,74 @@ func isExportedTopLevelJSVariable(node *sitter.Node, language string) bool {
 // the enclosing TYPE scope with that callable, so declarations inside it are
 // emitted as function-local bindings of it rather than as members of the type.
 //
-// True only for JavaScript/TypeScript, where a nested `function name(){}` or
-// named function expression is a lexical binding of the enclosing function and
-// is never reachable as `Type.name`. Every other routed grammar keeps the type
-// scope for nested callables: Java's anonymous-class members are walked with the
-// outer scope on purpose (see initializerTypeBodies), and Python/Ruby nested
-// defs are qualified under their class today.
-func functionLocalScopeResets(language string) bool {
-	return language == "JavaScript" || language == "TypeScript"
-}
-
-// lexicalCallableForm reports whether a node is the `function name(){}`
-// spelling — a function declaration or a named function expression — rather
-// than `method_definition`, which is member syntax.
+// True where a callable declared inside another callable's body is a lexical
+// binding of that callable and is NEVER reachable as `Type.name`:
 //
-// It decides one thing: whether a callable qualified under an enclosing
-// CALLABLE keeps kind "function" (a lexical binding of it) or the "method"
-// entityFromNode gave it (an object literal's method, which is declared with
-// member syntax and stays a method of that literal). Callers gate it on
-// scopeIsCallable, which only the JS/TS re-anchoring sets, so the node types
-// here are read as JS/TS grammar node types and never as another grammar's
-// same-named node.
-func lexicalCallableForm(node *sitter.Node) bool {
-	if !validNode(node) {
-		return false
-	}
-	switch node.Type() {
-	case "function_declaration", "function_expression", "generator_function":
+//   - JavaScript/TypeScript: a nested `function name(){}` or named function
+//     expression binds in the enclosing function's scope.
+//   - Python: a nested `def` binds in the enclosing function's local frame when
+//     that function runs, and is gone when it returns. `C.helper` named a member
+//     no instance of `C` has ever had (issue #199).
+//
+// It stays FALSE for the grammars where the type scope is the right answer or
+// where the nested form means something else:
+//
+//   - Ruby: a nested `def` really does define an instance method on the
+//     enclosing class the first time the outer method runs, so `C.helper` is
+//     what Ruby itself produces. Not a phantom — left alone deliberately.
+//   - Java: anonymous-class members are walked with the outer scope on purpose
+//     (see initializerTypeBodies), and a named local class is already its own
+//     container.
+//   - Swift, Kotlin, Rust, PHP: these DO emit the same phantom member and are
+//     tracked separately; each needs its own lexicalCallableForm node types and
+//     its own regression coverage, and each moves IDs in its language.
+func functionLocalScopeResets(language string) bool {
+	switch language {
+	case "JavaScript", "TypeScript", "Python":
 		return true
 	default:
 		return false
 	}
+}
+
+// lexicalCallableForm reports whether a node is the spelling that BINDS A NAME
+// IN THE ENCLOSING SCOPE — `function name(){}` in JS/TS, `def name():` in
+// Python — rather than member syntax such as `method_definition`.
+//
+// It decides one thing: whether a callable qualified under an enclosing
+// CALLABLE keeps kind "function" (a lexical binding of it) or the "method"
+// entityFromNode gave it (an object literal's method, which is declared with
+// member syntax and stays a method of that literal). entityFromNode reads any
+// non-empty scope as a type and promotes to "method"; this undoes that
+// promotion where the scope names a callable instead.
+//
+// Node types are read PER LANGUAGE rather than as one shared set: several
+// grammars spell different constructs with the same node name (`function_definition`
+// is Python's `def`, but also C/C++'s function definition and R's anonymous
+// function), so a shared set would demote a real member in another grammar.
+// Callers gate this on scopeIsCallable, which only the re-anchoring in
+// walkEntitiesScoped sets, and that re-anchoring is gated on
+// functionLocalScopeResets — so only the languages listed there reach here.
+func lexicalCallableForm(node *sitter.Node, language string) bool {
+	if !validNode(node) {
+		return false
+	}
+	switch language {
+	case "JavaScript", "TypeScript":
+		switch node.Type() {
+		case "function_declaration", "function_expression", "generator_function":
+			return true
+		}
+	case "Python":
+		// Python has exactly one callable-binding spelling. `lambda` is
+		// anonymous (no entity, so it never reaches here) and a decorated
+		// `def` arrives as decorated_definition wrapping this node, which the
+		// walk descends into.
+		if node.Type() == "function_definition" {
+			return true
+		}
+	}
+	return false
 }
 
 func scopesChildren(language, kind string) bool {
