@@ -8917,6 +8917,20 @@ func isExportedTopLevelJSVariable(node *sitter.Node, language string) bool {
 //   - Python: a nested `def` binds in the enclosing function's local frame when
 //     that function runs, and is gone when it returns. `C.helper` named a member
 //     no instance of `C` has ever had (issue #199).
+//   - Swift: a nested `func` is a LOCAL FUNCTION, visible only inside the
+//     function that declares it. It takes no `self` and there is no expression
+//     that reaches it as `Widget.handler` (issue #259).
+//   - Kotlin: a nested `fun` is a LOCAL FUNCTION with the same rule — scoped to
+//     the enclosing function body, never a member of the class (issue #259).
+//   - Rust: a nested `fn` is an ITEM scoped to the enclosing BLOCK. It is not an
+//     associated function of the impl's type: it cannot take `self` and
+//     `Widget::handler` resolves only to the impl's own `handler` (issue #259).
+//   - PHP: a nested `function` is not a member under any reading. PHP has no
+//     nested function scope at all — executing the enclosing method declares the
+//     name in the CURRENT NAMESPACE, so afterwards it is the global `handler()`
+//     and `Widget::handler()` is a fatal undefined-method call. The enclosing
+//     callable is where it is written, which is the only true containment
+//     statement available; the class is not one (issue #259).
 //
 // It stays FALSE for the grammars where the type scope is the right answer or
 // where the nested form means something else:
@@ -8927,12 +8941,9 @@ func isExportedTopLevelJSVariable(node *sitter.Node, language string) bool {
 //   - Java: anonymous-class members are walked with the outer scope on purpose
 //     (see initializerTypeBodies), and a named local class is already its own
 //     container.
-//   - Swift, Kotlin, Rust, PHP: these DO emit the same phantom member and are
-//     tracked separately; each needs its own lexicalCallableForm node types and
-//     its own regression coverage, and each moves IDs in its language.
 func functionLocalScopeResets(language string) bool {
 	switch language {
-	case "JavaScript", "TypeScript", "Python":
+	case "JavaScript", "TypeScript", "Python", "Swift", "Kotlin", "Rust", "PHP":
 		return true
 	default:
 		return false
@@ -8972,6 +8983,33 @@ func lexicalCallableForm(node *sitter.Node, language string) bool {
 		// anonymous (no entity, so it never reaches here) and a decorated
 		// `def` arrives as decorated_definition wrapping this node, which the
 		// walk descends into.
+		if node.Type() == "function_definition" {
+			return true
+		}
+	case "Swift", "Kotlin":
+		// Both grammars spell a `func`/`fun` declaration the same way at any
+		// nesting depth, so the node type alone does not say member-or-local —
+		// the scope does, and scopeIsCallable is what the caller gates on. A
+		// type declared inside a method body scopes its own members again
+		// (scopesChildren clears scopeIsCallable), so a real member never
+		// reaches here. Closures are `lambda_literal`, which is anonymous and
+		// yields no entity.
+		if node.Type() == "function_declaration" {
+			return true
+		}
+	case "Rust":
+		// A nested `fn` and an `impl` method are both function_item; as above,
+		// only the callable scope tells them apart, and an `impl` block inside
+		// a function body re-establishes its own type scope.
+		if node.Type() == "function_item" {
+			return true
+		}
+	case "PHP":
+		// PHP is the one of these grammars that spells the two forms
+		// DIFFERENTLY: a class member is `method_declaration` and only a plain
+		// `function` statement is `function_definition`. Listing just the
+		// latter means an object-syntax member reached through a callable scope
+		// would keep kind "method" the way JS/TS's method_definition does.
 		if node.Type() == "function_definition" {
 			return true
 		}
