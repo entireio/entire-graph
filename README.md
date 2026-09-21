@@ -35,32 +35,12 @@ up to 71% depending on the coding scenario. As always, your mileage may vary.
 - Machine-readable coverage, exclusions, warnings, and partial failures, with relation confidence and resolution metadata.
 - Local analysis with no network requests, model calls, API keys, telemetry, or runtime grammar downloads.
 
-## Benchmarks
+## Setup
 
-To put entire-graph to the test, we ran it through
-[LoCoMo](https://github.com/snap-research/locomo), the standard benchmark for
-one hard skill: finding a single small detail buried in a pile of text. LoCoMo
-asks over 1,500 questions about long conversations that span many sessions and
-scores whether the tool can find the right piece of evidence.
+Two steps: install the plugin once per machine, then activate it in each
+repository you want your agent to understand.
 
-On identical questions, entire-graph found the right evidence more often than
-any of the seven other systems we tested, including graphify, mem0, and cognee.
-
-| System | LoCoMo | Index-time tokens | Version tested |
-| --- | --- | --- | --- |
-| **entire-graph** § | **94.74** | **0** | [#104](https://github.com/entireio/entire-graph/pull/104) branch, 2026-08-14 (pre-merge) |
-| [mem0](https://github.com/mem0ai/mem0) | 93.83 | 50.85M | commit [`4debc58`](https://github.com/mem0ai/mem0/commit/4debc58a83377b18be81ae1e5969a300736b2fac) |
-| [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M | commit [`38eece5`](https://github.com/topoteretes/cognee/commit/38eece5bbb0cb9f5706fed908abd16dba0f5505e) |
-| [bm25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 | [0.2.2](https://github.com/dorianbrown/rank_bm25/releases/tag/0.2.2) |
-| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) † | 91.30 | 0 | [v0.9.0](https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.0) |
-| [graphify](https://github.com/Graphify-Labs/graphify)  | 87.34 | 0 | [0.9.37](https://github.com/Graphify-Labs/graphify/releases?page=3#release-v0.9.34)|
-| [letta](https://github.com/letta-ai/letta) | 84.68 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
-| [supermemory](https://github.com/supermemoryai/supermemory)  | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
-
-See [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
-retractions, and reproduction steps.
-
-## Install
+### Install
 
 Entire Graph requires Entire CLI 0.10.0 or later and Git 2.36 or later on
 `PATH`. Git 2.36 added the single-session object protocol Entire Graph uses to
@@ -85,7 +65,7 @@ entire graph version
 `entire graph version` printing a release tag confirms that a versioned build
 is active.
 
-## Activate it for your agent
+### Activate it for your agent
 
 Activation is per repository:
 
@@ -113,24 +93,8 @@ apply to your team.
 
 After that, the interface is your coding agent: start it with the new instructions,
 then you ask a code question in plain language, the agent runs graph queries,
-reads the code the graph points at, and answers with citations. A captured example
-is shown further below.
-
-## What to ask
-
-Prompts are the interface. The commands are what the agent runs underneath;
-you can also invoke them directly for manual inspection, debugging, or
-automation. See the [command reference](docs/commands.md).
-
-| Goal | Example prompt | Graph command |
-| --- | --- | --- |
-| Find the implementation | Find where request routing is implemented. | `query` |
-| Read one definition | Show the definition of `ResolveRoute`. | `def` |
-| Trace callers or callees | What calls `ResolveRoute`? | `neighbors` |
-| Check the blast radius | What would changing `ResolveRoute` affect? | `impact` |
-| Review a branch | Summarize the semantic changes from `main` to `HEAD`. | `diff` |
-| Export the full graph | Export the repository graph as NDJSON. | `snapshot` |
-| Inspect indexing health | Show parser coverage and affected files, including healthy results. | `health` |
+reads the code the graph points at, and answers with citations. A captured session
+follows.
 
 ## Example Session
 
@@ -199,6 +163,47 @@ Follow the [coordinated workflow](docs/agent-coordination.md): Brain supplies ta
 context in combined mode; Graph handles further discovery and structural analysis.
 Sufficient task or brief locations permit direct source inspection. Ground claims
 in inspected source and executed verification.
+
+## What to ask
+
+Prompts are the interface. The commands are what the agent runs underneath;
+you can also invoke them directly for manual inspection, debugging, or
+automation. See the [command reference](docs/commands.md).
+
+| Goal | Example prompt | Graph command |
+| --- | --- | --- |
+| Find the implementation | Find where request routing is implemented. | `query` |
+| Read one definition | Show the definition of `ResolveRoute`. | `def` |
+| Trace callers or callees | What calls `ResolveRoute`? | `neighbors` |
+| Check the blast radius | What would changing `ResolveRoute` affect? | `impact` |
+| Review a branch | Summarize the semantic changes from `main` to `HEAD`. | `diff` |
+| Export the full graph | Export the repository graph as NDJSON. | `snapshot` |
+| Inspect indexing health | Show parser coverage and affected files, including healthy results. | `health` |
+
+## Benchmarks
+
+To put entire-graph to the test, we ran it through
+[LoCoMo](https://github.com/snap-research/locomo), the standard benchmark for
+one hard skill: finding a single small detail buried in a pile of text. LoCoMo
+asks over 1,500 questions about long conversations that span many sessions and
+scores whether the tool can find the right piece of evidence.
+
+On identical questions, entire-graph found the right evidence more often than
+any of the seven other systems we tested, including graphify, mem0, and cognee.
+
+| System | LoCoMo | Index-time tokens | Version tested |
+| --- | --- | --- | --- |
+| **entire-graph** § | **94.74** | **0** | [#104](https://github.com/entireio/entire-graph/pull/104) branch, 2026-08-14 (pre-merge) |
+| [mem0](https://github.com/mem0ai/mem0) | 93.83 | 50.85M | commit [`4debc58`](https://github.com/mem0ai/mem0/commit/4debc58a83377b18be81ae1e5969a300736b2fac) |
+| [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M | commit [`38eece5`](https://github.com/topoteretes/cognee/commit/38eece5bbb0cb9f5706fed908abd16dba0f5505e) |
+| [bm25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 | [0.2.2](https://github.com/dorianbrown/rank_bm25/releases/tag/0.2.2) |
+| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) † | 91.30 | 0 | [v0.9.0](https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.0) |
+| [graphify](https://github.com/Graphify-Labs/graphify)  | 87.34 | 0 | [0.9.37](https://github.com/Graphify-Labs/graphify/releases?page=3#release-v0.9.34)|
+| [letta](https://github.com/letta-ai/letta) | 84.68 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
+| [supermemory](https://github.com/supermemoryai/supermemory)  | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
+
+See [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
+retractions, and reproduction steps.
 
 ## Working tree and cache
 
