@@ -123,3 +123,43 @@ func TestProvenanceValuesAreTheThreeDocumentedOnes(t *testing.T) {
 		}
 	}
 }
+
+// "package" reads like a package-wide guess and is not one. Both producers emit
+// it only after narrowing to a single symbol — Go's same-package resolution
+// when len(samePkg) == 1, Dart's same-directory resolution on a single match —
+// and shallowCallRelationRetained independently groups it with "exact" and
+// "import_resolved" as the single-target, high-precision resolutions.
+//
+// Classifying it as ambiguous mislabelled a large share of Go and Dart CALLS
+// edges, which is the common case the label exists to be useful for.
+func TestPackageResolutionIsExtractedNotAmbiguous(t *testing.T) {
+	if got := EdgeProvenance("CALLS", "package"); got != ProvenanceExtracted {
+		t.Fatalf("EdgeProvenance(CALLS, package) = %s, want %s", got, ProvenanceExtracted)
+	}
+	// The three the provider itself treats as single-target must agree.
+	for _, resolution := range []string{"exact", "package", "import_resolved"} {
+		if got := EdgeProvenance("CALLS", resolution); got != ProvenanceExtracted {
+			t.Fatalf("%q is one of the provider's high-precision resolutions but is labelled %s", resolution, got)
+		}
+	}
+	// And the genuinely unpinned ones must not have drifted with it.
+	for _, resolution := range []string{"name_only", "file", "pattern", "signature"} {
+		if got := EdgeProvenance("CALLS", resolution); got != ProvenanceAmbiguous {
+			t.Fatalf("%q is unpinned but is labelled %s", resolution, got)
+		}
+	}
+}
+
+// The classification here and the provider's own single-target list must not
+// drift apart: they are two statements about the same property, and the defect
+// this test guards was them disagreeing.
+func TestHighPrecisionResolutionsAgreeWithTheProvider(t *testing.T) {
+	for _, resolution := range []string{"exact", "package", "import_resolved"} {
+		if !shallowCallRelationRetained(resolution) {
+			t.Fatalf("%q is no longer retained by shallow call resolution; the provenance table still calls it extracted", resolution)
+		}
+		if got := EdgeProvenance("CALLS", resolution); got != ProvenanceExtracted {
+			t.Fatalf("%q is retained as high-precision by the provider but labelled %s", resolution, got)
+		}
+	}
+}

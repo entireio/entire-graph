@@ -66,6 +66,18 @@ var knownResolutions = map[string]string{
 	"resolved":        ProvenanceExtracted,
 	"import_resolved": ProvenanceExtracted,
 
+	// "package" belongs here, not below, despite the name. Both producers emit
+	// it only after narrowing to exactly one symbol — Go's same-package call
+	// resolution returns it when len(samePkg) == 1, and Dart's same-directory
+	// resolution when there is a single match — so the target is specific, not
+	// a package-wide guess. shallowCallRelationRetained says the same thing in
+	// the other direction: it groups "package" with "exact" and
+	// "import_resolved" as the single-target, high-precision resolutions.
+	//
+	// Reading it as ambiguous mislabelled a large share of Go and Dart CALLS
+	// edges, which is the common case this label exists to be useful for.
+	"package": ProvenanceExtracted,
+
 	// A definite target, reached by inference rather than read off the source.
 	// Real, and not the same claim as a direct reference.
 	"type_inferred": ProvenanceInferred,
@@ -74,7 +86,6 @@ var knownResolutions = map[string]string{
 	// pattern match, a signature that may fit more than one symbol, a call into
 	// a dependency whose definition is outside this repository, or nothing.
 	"name_only":       ProvenanceAmbiguous,
-	"package":         ProvenanceAmbiguous,
 	"file":            ProvenanceAmbiguous,
 	"pattern":         ProvenanceAmbiguous,
 	"signature":       ProvenanceAmbiguous,
