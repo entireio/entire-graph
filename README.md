@@ -30,7 +30,7 @@ up to 71% depending on the coding scenario. As always, your mileage may vary.
 - Entity-level semantic diffs between Git revisions, including added, removed, renamed, signature-changed, and body-changed symbols, with heuristic dependent counts.
 - Commit and Entire checkpoint analysis for reviewing changes in their repository context.
 - Working-tree queries that include uncommitted edits by default, with explicit committed-tree queries and reusable caches for matching repository states and options.
-- Full graph export through versioned NDJSON snapshots, a compact NDJSON format, and experimental SCIP export. Symbol identifiers are stable across content edits within a release; across releases they move when a parser-identity correction lands, signalled by the `identity_revision` header ([details](docs/snapshot-format.md)).
+- Full graph export through versioned NDJSON snapshots, stable symbol identifiers, a compact NDJSON format, and experimental SCIP export.
 - Per-repository agent activation, which installs repository-specific guidance in AGENTS.md and CLAUDE.md.
 - Machine-readable coverage, exclusions, warnings, and partial failures, with relation confidence and resolution metadata.
 - Local analysis with no network requests, model calls, API keys, telemetry, or runtime grammar downloads.
