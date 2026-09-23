@@ -45,13 +45,20 @@ const (
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
 	//
+	// Revision 4: the same correction for Swift, Kotlin, Rust and PHP, whose
+	// nested callables are local functions / block-scoped items / namespace
+	// functions rather than members of the enclosing type. Revision 3 shipped
+	// the Python half; a build carrying only that half wrote records under the
+	// revision-3 namespace, so these four need their own bump to stop those
+	// records being served for the languages they do not cover.
+	//
 	// Revision 3: Python nested callables are qualified by the enclosing
 	// CALLABLE rather than the enclosing class, so a helper defined inside a
 	// method is `C.m.helper` (kind "function") instead of the phantom member
 	// `C.helper` (kind "method"). This re-keys every Python nested-callable
 	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
 	// real same-named members.
-	IdentityRevision     = "3"
+	IdentityRevision     = "4"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
