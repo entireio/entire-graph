@@ -5,6 +5,28 @@ harness lives in `cmd/graph-bench` (driver) and `internal/bench` (measurement
 core); see `bench/README.md` for layout and flags. Its original WP10 plan is
 [archived](archive/2026-06-18-entire-graph-v2-implementation-plan.md).
 
+## Provenance of measurement citations in code comments
+
+Comments in `internal/sem/` justify shipped defaults with named measurements: "R30PUB
+benchmark payloads", "measured over 79 agent sessions", "eight R30PUB instances"
+(`search.go`, `search_callee.go`, `search_editability_test.go`). None of those artifacts
+live in this repository, and finding them previously took an org-wide code search.
+
+They live in **`entirehq/graphmark`** (note the org: `entirehq`, not `entireio`), which
+carries four suites: Fidelity (`bench.py`, compiler-oracle graph correctness), Tasks
+(`bench_tasks.py`, oracle-derived lookups), Agentic-value (`agentic-swebench/`, official
+swebench-graded agent runs — `R30PUB_r1` and friends are run labels there, tracked in
+`dev/run_validation.py`), and graphify-parity (conversational memory retrieval, above).
+The session-level numbers ("79 agent sessions", token attribution) come from the
+agentic-swebench analysis directories.
+
+Free-text `search` ranking is scored by a fifth suite added 2026-09:
+`agentic-swebench/tools/recall_suite.py` — gold-file recall@k/MRR over SWE-bench
+Multilingual issue text, with committed baselines at this repo's `49a7ef60` and a `--check`
+regression gate. Ranking changes here should run it before merging; see
+entireio/entire-graph#247 for the measurement history that motivated it, including two
+mechanisms that read as plausible and were refuted by it.
+
 ## External native-memory comparison
 
 GraphMark's verified `memory-native-v52` release pairs the production prose
