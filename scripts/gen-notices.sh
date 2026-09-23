@@ -121,7 +121,11 @@ SECTION
 vendored="$work/vendored"
 # Test fixtures are not linked into the binary and must not be attributed as
 # if they were.
-find internal -type f -name LICENSE -not -path '*/testdata/*' | sort >"$vendored"
+# Split rather than piped into sort: in a pipeline only the last command's exit
+# status reaches `set -e`, so a failing `find` would hide behind a successful
+# `sort` and yield a short list that silently under-reports attribution.
+find internal -type f -name LICENSE -not -path '*/testdata/*' >"$vendored"
+sort -o "$vendored" "$vendored"
 if [ ! -s "$vendored" ]; then
 	printf '%s: found no vendored license files under internal/\n' "$0" >&2
 	exit 1
