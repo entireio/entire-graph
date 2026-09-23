@@ -57,7 +57,6 @@ any of the seven other systems we tested, including graphify, mem0, and cognee.
 | [letta](https://github.com/letta-ai/letta) | 84.68 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
 | [supermemory](https://github.com/supermemoryai/supermemory) | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
 
-
 See [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
 retractions, and reproduction steps.
 
@@ -85,30 +84,6 @@ entire graph version
 
 `entire graph version` printing a release tag confirms that a versioned build
 is active.
-
-
-### Build from source
-
-Building requires:
-
-- **Go 1.27 or later** (`go.mod` declares `go 1.27`).
-- **cgo enabled with a working C toolchain.** Entire Graph compiles 13
-  tree-sitter grammars from C sources vendored under `internal/sem/`, so
-  `CGO_ENABLED=0` does not produce a usable binary. On Linux install `gcc` or
-  `clang`, on macOS install the Xcode command line tools, and on Windows use a
-  MinGW-w64 toolchain.
-
-```sh
-git clone https://github.com/entireio/entire-graph.git
-cd entire-graph
-go build ./cmd/entire-graph
-./entire-graph version
-```
-
-`scripts/release.sh` builds the same archives the release workflow publishes;
-set `ENTIRE_RELEASE_TARGETS` to cross-build, which needs a cross C toolchain
-for each target. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull
-request.
 
 ## Activate it for your agent
 
@@ -312,10 +287,3 @@ or open a pull request. Thank you! ❤️
 ## License
 
 Entire Graph is distributed under the [MIT License](LICENSE).
-
-The binary statically links third-party parser sources and Go modules under
-their own licenses, including Apache-2.0, CC0-1.0, and BSD-3-Clause terms.
-[`NOTICES`](NOTICES) reproduces each one verbatim and ships inside every
-release archive from v0.5.0 onward. It is generated from the vendored license
-files and the resolved module graph by `scripts/gen-notices.sh`; CI fails if it
-drifts.
