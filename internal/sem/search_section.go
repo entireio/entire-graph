@@ -150,10 +150,45 @@ func searchDocsSectionClass(class searchFileClass) bool {
 // the gate is "the prior demoted this class" rather than a second, independently drifting
 // list of intent words.
 func searchDocsSectionPath(q searchQuery, filePath string) bool {
-	if !searchDocsSectionClass(classifySearchFile(filePath)) {
+	class := classifySearchFile(filePath)
+	if !searchDocsSectionClass(class) {
+		return false
+	}
+	if class == searchFileClassFixture && !searchFixtureIsRecording(filePath) {
 		return false
 	}
 	return searchFileClassPrior(q, filePath) < 1
+}
+
+// searchFixtureIsRecording separates the two things `searchFileClassFixture` covers, because only
+// one of them belongs in a section whose contract is "holds no program text".
+//
+// `classifySearchFile` assigns the fixture class by DIRECTORY segment — `testdata`, `fixtures`,
+// `snapshots`, `golden`, `baselines` — which is right for the ranking prior and wrong for this
+// section. A `.snap` is a machine-written recording; `internal/sem/testdata/fixtures/go-basic/auth.go`
+// is Go, and `pkg/golden/report.go` is ordinary source that happens to sit under a directory named
+// `golden`. Labelling those "not fix sites" contradicted the section's own doc comment, made
+// `AssessSearchConfidence` report "top hit holds no program text" for a `.go` file, and excluded
+// them from related-site expansion and every enrichment block.
+//
+// So the section keeps a fixture only when it really is a RECORDING: a fixture extension, a path
+// `NonProgramTextPath` already answers for, or a file no parsed language claims.
+//
+// This is half of a pair. Returning program-text fixtures to the primary section puts them in front
+// of `searchVerifySubjectFor`, which reads primary and would adopt `testdata/case.go` as the test to
+// RUN; `searchVerifyFixtureArtifactPath` is the half that stops it.
+func searchFixtureIsRecording(filePath string) bool {
+	lower := strings.ToLower(filepath.ToSlash(filePath))
+	for _, ext := range searchFixtureExtensions {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	if NonProgramTextPath(filePath) {
+		return true
+	}
+	_, known := languageForPath(filePath)
+	return !known
 }
 
 // assignSearchSections labels non-code results for the docs-and-fixtures section, in place.

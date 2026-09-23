@@ -354,7 +354,7 @@ func searchVerifySubjectFor(results []SearchResult) (searchVerifySubject, bool) 
 				continue
 			}
 			if searchTestArtifactPath(searchLowerPath(result.FilePath)) {
-				if rankedTestPath == "" {
+				if rankedTestPath == "" && !searchVerifyFixtureArtifactPath(result.FilePath) {
 					rankedTestPath = filePathToSlash(result.FilePath)
 					rankedTestName = searchVerifyTestName(result)
 				}
@@ -370,7 +370,8 @@ func searchVerifySubjectFor(results []SearchResult) (searchVerifySubject, bool) 
 				}
 			}
 		case searchSectionCoveringTest:
-			if subject.testPath == "" && result.FilePath != "" {
+			if subject.testPath == "" && result.FilePath != "" &&
+				!searchVerifyFixtureArtifactPath(result.FilePath) {
 				subject.testPath = filePathToSlash(result.FilePath)
 				subject.testName = searchVerifyTestName(result)
 				subject.testEvidence = "covering test"
@@ -388,6 +389,18 @@ func searchVerifySubjectFor(results []SearchResult) (searchVerifySubject, bool) 
 		subject.sourcePath = rankedTestPath
 	}
 	return subject, subject.sourcePath != ""
+}
+
+// searchVerifyFixtureArtifactPath reports whether a path is a fixture or golden artifact, which is
+// never a test to RUN even when it sits in a tree `searchTestArtifactPath` recognises.
+//
+// This is the VERIFY half of the pair described on `searchFixtureIsRecording`. A program-text
+// fixture — `internal/sem/testdata/case.go` — is in the primary section, and `testdata` satisfies
+// `searchTestArtifactPath`, so without this the payload would tell the agent to run a parser FIXTURE
+// as its verification command. Keying on the fixture CLASS rather than on test trees in general is
+// what keeps `internal/sem/parser_test.go` and every ordinary `tests/` file adopted as before.
+func searchVerifyFixtureArtifactPath(filePath string) bool {
+	return classifySearchFile(filePath) == searchFileClassFixture
 }
 
 // searchVerifyTestName is the covering test's own function name, unqualified: it is what every test
@@ -1384,6 +1397,32 @@ func searchVerifyNodeWorkspacePatterns(raw json.RawMessage) ([]string, bool) {
 // project cannot run. Not answering is the honest result for a pattern in a language this does not
 // read, and not answering means leaving the command as it was.
 func searchVerifyNodeWorkspaceMatches(pattern string, segments []string) bool {
+	if !strings.ContainsAny(pattern, "{}") {
+		return searchVerifyNodeWorkspaceMatchesExpanded(pattern, segments)
+	}
+	// Brace ALTERNATION is mechanically removable, and removing it is the only answer here that is
+	// not wrong for some repository: read permissively, `{packages,tools}/*` hands `yarn test` to a
+	// leaf Yarn will reject; read strictly, it hands `npm test` to a member a Plug'n'Play project
+	// cannot run that way. Expanded, both leaves get the right command.
+	//
+	// The expansion happens ONCE, here, and the results go to the brace-free matcher rather than
+	// back through this function: an expansion can still carry a brace the expander left alone — an
+	// ESCAPED one, which is a literal — and re-entering on it would not terminate.
+	expansions, expandable := searchVerifyExpandBraces(pattern)
+	if !expandable {
+		return true
+	}
+	for _, expansion := range expansions {
+		if searchVerifyNodeWorkspaceMatchesExpanded(expansion, segments) {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyNodeWorkspaceMatchesExpanded is the matcher proper, over a pattern whose brace groups
+// are already gone. It recurses only on its own tail, for `**`.
+func searchVerifyNodeWorkspaceMatchesExpanded(pattern string, segments []string) bool {
 	if searchVerifyNodeWorkspacePatternIsUnreadable(pattern) {
 		return true
 	}
@@ -1394,7 +1433,7 @@ func searchVerifyNodeWorkspaceMatches(pattern string, segments []string) bool {
 				return true
 			}
 			for skip := 0; skip <= len(segments); skip++ {
-				if searchVerifyNodeWorkspaceMatches(
+				if searchVerifyNodeWorkspaceMatchesExpanded(
 					strings.Join(patternSegments[1:], "/"), segments[skip:]) {
 					return true
 				}
@@ -1417,15 +1456,136 @@ func searchVerifyNodeWorkspaceMatches(pattern string, segments []string) bool {
 }
 
 // searchVerifyNodeWorkspacePatternIsUnreadable reports whether a workspaces glob uses micromatch
-// syntax `path.Match` would read as literal text: brace expansion, and the extglob groups
-// `?(`, `*(`, `+(`, `@(` and `!(`. Both would match nothing here and be mistaken for a package the
-// workspace does not declare.
+// syntax `path.Match` would read as literal text: the extglob groups `?(`, `*(`, `+(`, `@(` and
+// `!(`. They would match nothing here and be mistaken for a package the workspace does not declare.
+//
+// Brace alternation used to be on this list and is no longer: it is expanded before matching, so
+// only the groups remain unreadable. That residue is genuinely rare in a `workspaces` array, and
+// the permissive answer is a defensible default for a residue that small — stated as such rather
+// than as a shrug over the whole class.
 func searchVerifyNodeWorkspacePatternIsUnreadable(pattern string) bool {
-	if strings.ContainsAny(pattern, "{}") {
-		return true
-	}
 	for _, opener := range []string{"?(", "*(", "+(", "@(", "!("} {
 		if strings.Contains(pattern, opener) {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyBraceExpansionLimit bounds the patterns one glob may expand into. Brace alternation
+// multiplies — `{a,b}` seven times over is 128 patterns — and a `workspaces` field is a hand-written
+// list, not a generator, so a glob that needs more than this is not one this is reading correctly.
+// Past the bound the pattern is left unexpanded and answered permissively, as before.
+const searchVerifyBraceExpansionLimit = 64
+
+// searchVerifyExpandBraces expands micromatch brace ALTERNATION into the plain globs `path.Match`
+// can read: `{packages,tools}/*` becomes `packages/*` and `tools/*`, nesting and several groups
+// included. It reports false for a pattern it will not answer for, and the caller then keeps the
+// permissive default rather than guessing.
+//
+// Deliberately NOT a shell brace expander. Only alternation — a group with at least one top-level
+// comma — is expanded, because that is what a `workspaces` field spells. A sequence range
+// (`{1..3}`), a single-alternative group and an unbalanced brace are all declined, which is what
+// keeps this bounded to the manifest formats rather than to bash. A backslash escapes the byte that
+// follows it, so `\{` is a literal brace and not a group.
+func searchVerifyExpandBraces(pattern string) ([]string, bool) {
+	expanded, expandable := searchVerifyExpandBracesInto(nil, pattern)
+	if !expandable || len(expanded) == 0 {
+		return nil, false
+	}
+	return expanded, true
+}
+
+// searchVerifyExpandBracesInto expands the leftmost outermost group and recurses into each
+// alternative, so the results come out in the order the pattern reads.
+func searchVerifyExpandBracesInto(expanded []string, pattern string) ([]string, bool) {
+	if len(expanded) >= searchVerifyBraceExpansionLimit {
+		return nil, false
+	}
+	open, closeAt, found := searchVerifyBraceGroup(pattern)
+	if !found {
+		if searchVerifyHasUnescapedBrace(pattern) {
+			// A brace this did not read as a group: an unbalanced one, or a stray closer.
+			return nil, false
+		}
+		return append(expanded, pattern), true
+	}
+	alternatives, alternation := searchVerifyBraceAlternatives(pattern[open+1 : closeAt])
+	if !alternation {
+		return nil, false
+	}
+	for _, alternative := range alternatives {
+		var expandable bool
+		expanded, expandable = searchVerifyExpandBracesInto(
+			expanded, pattern[:open]+alternative+pattern[closeAt+1:])
+		if !expandable {
+			return nil, false
+		}
+	}
+	return expanded, true
+}
+
+// searchVerifyBraceGroup locates the first brace group and its matching close, counting nesting so
+// the OUTERMOST group is the one expanded first. It reports false when there is no unescaped `{`,
+// and when a `{` never closes.
+func searchVerifyBraceGroup(pattern string) (int, int, bool) {
+	open, depth := -1, 0
+	for index := 0; index < len(pattern); index++ {
+		switch pattern[index] {
+		case '\\':
+			index++
+		case '{':
+			if depth == 0 {
+				open = index
+			}
+			depth++
+		case '}':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 {
+				return open, index, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// searchVerifyBraceAlternatives splits a group body on its TOP-LEVEL commas, leaving nested groups
+// intact for the next pass. A body with no top-level comma is not alternation — `{1..3}` is a range
+// and `{s}` is a literal brace in every shell that does not expand it — so it reports false and the
+// whole pattern is declined.
+func searchVerifyBraceAlternatives(body string) ([]string, bool) {
+	alternatives, start, depth := []string{}, 0, 0
+	for index := 0; index < len(body); index++ {
+		switch body[index] {
+		case '\\':
+			index++
+		case '{':
+			depth++
+		case '}':
+			depth--
+		case ',':
+			if depth == 0 {
+				alternatives = append(alternatives, body[start:index])
+				start = index + 1
+			}
+		}
+	}
+	if len(alternatives) == 0 {
+		return nil, false
+	}
+	return append(alternatives, body[start:]), true
+}
+
+// searchVerifyHasUnescapedBrace reports whether a brace survives that was not read as a group.
+func searchVerifyHasUnescapedBrace(pattern string) bool {
+	for index := 0; index < len(pattern); index++ {
+		switch pattern[index] {
+		case '\\':
+			index++
+		case '{', '}':
 			return true
 		}
 	}
@@ -1470,8 +1630,9 @@ func deriveSearchVerifySuiteRuby(dir string, evidence *searchVerifyEvidence) *Se
 	}
 	if hasRakefile {
 		content, _ := evidence.file(searchVerifyJoin(dir, "Rakefile"))
-		if searchVerifyRakefileDefinesTest(content) {
-			return searchVerifySuiteCommand(dir, bundle+"rake test", searchVerifyJoin(dir, "Rakefile")+" test task")
+		if task, ok := searchVerifyRakefileTestTask(content); ok {
+			return searchVerifySuiteCommand(
+				dir, bundle+"rake "+task, searchVerifyJoin(dir, "Rakefile")+" "+task+" task")
 		}
 	}
 	return nil
@@ -1504,9 +1665,264 @@ func searchVerifyBundlePrefix(hasGemfile bool) string {
 // defines `:test` by default. Rejecting a shape is not free either: a Rakefile that declares
 // `task(:test)` and gets declined loses a command that would have run.
 func searchVerifyRakefileDefinesTest(content string) bool {
-	return searchVerifyRakeTestTaskGeneratorPattern.MatchString(content) ||
-		searchVerifyRakeTestTaskPattern.MatchString(content) ||
-		searchVerifyRakeDefineTaskPattern.MatchString(content)
+	_, ok := searchVerifyRakefileTestTask(content)
+	return ok
+}
+
+// searchVerifyRakefileTestTask returns the name of the task the Rakefile declares — the name `rake`
+// has to be given, not the name the declaration spells.
+//
+// Rake SCOPES a task declared inside `namespace :foo do … end` as `foo:test`. None of the three
+// declaration patterns knows that, so every one of them licensed `rake test` for a Rakefile whose
+// only `test` task is `foo:test`, and rake answers "Don't know how to build task 'test'". That is
+// the same hard-gate failure the declaration check itself was added to stop.
+//
+// Declining the namespaced case was the other option and is the worse one: it buys the correctness
+// at the price of silence on a Rakefile that HAS a test task. Qualifying the name emits a command
+// that runs.
+//
+// A top-level declaration wins over a namespaced one when both are present — `rake test` is then a
+// real task and is the narrower answer — and among namespaced declarations the first in file order
+// is taken.
+func searchVerifyRakefileTestTask(content string) (string, bool) {
+	prefixes := searchVerifyRakeNamespacePrefixes(content)
+	task, line := "", 0
+	for _, pattern := range []*regexp.Regexp{
+		searchVerifyRakeTestTaskGeneratorPattern,
+		searchVerifyRakeTestTaskPattern,
+		searchVerifyRakeDefineTaskPattern,
+	} {
+		for _, match := range pattern.FindAllStringIndex(content, -1) {
+			// A multi-line generator call is scoped by where it BEGINS, which is the line the
+			// namespace stack was computed for.
+			at := strings.Count(content[:match[0]], "\n")
+			prefix := ""
+			if at < len(prefixes) {
+				prefix = prefixes[at]
+			}
+			if prefix == "" {
+				return "test", true
+			}
+			if task == "" || at < line {
+				task, line = prefix+"test", at
+			}
+		}
+	}
+	return task, task != ""
+}
+
+// searchVerifyRakeNamespacePrefixes returns, for each line of a Rakefile, the `foo:` / `a:b:` prefix
+// Rake would give a task declared on it.
+//
+// Ruby block structure is tracked, not guessed at: the cheap approximation — "the file mentions
+// `namespace` and the declaration is indented" — also demotes a top-level task written inside `if`
+// or `begin`, which is ordinary Rake and the exact false negative an earlier round had to correct.
+// So the scan walks lines keeping a stack of open blocks, naming each frame a `namespace` statement
+// opens and leaving every other opener anonymous.
+//
+// Every declaration pattern is anchored at a line's first non-blank byte, so the prefix a match
+// needs is the one in effect at the START of its line, which is what this records.
+//
+// It is a line scanner, not a Ruby parser, and it states its own limits rather than pretending
+// otherwise. What it does NOT read is a heredoc body, a brace-delimited block, and a `namespace`
+// written with braces.
+//
+// Two guards keep an unread construct from becoming a WRONG answer, which is the failure this whole
+// change exists to end. A Rakefile whose blocks do not balance to zero by the last line, or that
+// closes more than it opened, means the scan lost track; a `namespace` whose name is not a literal
+// — `namespace NAME do` — means the name is unknowable here. Either one makes every line report no
+// prefix, which is exactly the behaviour that predates namespace tracking: `rake test`, which fails
+// loudly on a namespaced Rakefile rather than running the wrong suite.
+func searchVerifyRakeNamespacePrefixes(content string) []string {
+	lines := strings.Split(content, "\n")
+	prefixes := make([]string, len(lines))
+	stack := []string{}
+	sound := true
+	for index, line := range lines {
+		prefix := ""
+		for _, name := range stack {
+			if name != "" {
+				prefix += name + ":"
+			}
+		}
+		prefixes[index] = prefix
+		opens, closes, readable := searchVerifyRubyLineBlocks(line)
+		if !readable {
+			sound = false
+			break
+		}
+		stack = append(stack, opens...)
+		for count := 0; count < closes; count++ {
+			if len(stack) == 0 {
+				sound = false
+				break
+			}
+			stack = stack[:len(stack)-1]
+		}
+		if !sound {
+			break
+		}
+	}
+	if !sound || len(stack) != 0 {
+		return make([]string, len(lines))
+	}
+	return prefixes
+}
+
+// searchVerifyRubyLineBlocks reports the blocks one line of Ruby opens — in order, each carrying the
+// `namespace` name it declares, or "" for every other opener — and how many it closes. It reports
+// false when it met a `namespace` whose name it could not read.
+//
+// Returning the openers as a LIST rather than a count is what makes `namespace :foo do namespace
+// :bar do` come out as two named frames. Ruby opens both blocks on that line, `rake -AT` lists
+// `foo:bar:test`, and naming only the first produced `rake foo:test` — a command rake answers with
+// "Don't know how to build task 'foo:test'". Pairing each name with the `do` that consumes it, in
+// token order, is also why a namespace opened after some other block on the same line is still
+// named.
+//
+// The scan is quote-aware rather than working on a stripped copy of the line, because the name and
+// the keywords have to be read from the same pass: `namespace "bar" do` keeps its name inside a
+// string literal, while `desc 'run to the end'` must not close a block. So a string literal yields
+// its CONTENT as a name candidate and nothing else, and a `#` outside one ends the line.
+//
+// The keyword rules are the ones a Ruby line needs and no more. `if`, `unless`, `while`, `until` and
+// `for` open a block only as the first token of the line: every one of them is also a trailing
+// MODIFIER, which opens nothing. `while`, `until` and `for` additionally admit a `do` on the same
+// line as part of the same statement, so that `do` is not counted twice. A word after `.`, `:`, `@`
+// or `$` is a method call or a symbol, not a keyword — `range.end` and `:do` close and open nothing.
+func searchVerifyRubyLineBlocks(line string) ([]string, int, bool) {
+	var opens []string
+	closes := 0
+	first, loopKeyword, naming := true, false, false
+	name := ""
+	for index := 0; index < len(line); {
+		character := line[index]
+		switch {
+		case character == '#':
+			// A comment outside a string literal: nothing after it is code.
+			index = len(line)
+		case character == '\'' || character == '"' || character == '`':
+			literal, width := searchVerifyRubyStringLiteral(line[index:])
+			index += width
+			if naming {
+				if !searchVerifyRakeNamespaceNameIsLiteral(literal) {
+					return nil, 0, false
+				}
+				name, naming = literal, false
+			}
+			first = false
+		case searchVerifyRubyWordByte(character) && !searchVerifyRubyDigit(character):
+			end := index
+			for end < len(line) && searchVerifyRubyWordByte(line[end]) {
+				end++
+			}
+			word := line[index:end]
+			quoted := byte(' ')
+			if index > 0 {
+				quoted = line[index-1]
+			}
+			symbol := quoted == ':'
+			if naming {
+				// The only thing that may follow `namespace` is its name, as a symbol or a string.
+				// Anything else — a constant, a variable, a method call — is a name this cannot
+				// know, and guessing "" would half-qualify the task.
+				if !symbol || !searchVerifyRakeNamespaceNameIsLiteral(word) {
+					return nil, 0, false
+				}
+				name, naming = word, false
+				first, index = false, end
+				continue
+			}
+			if symbol || quoted == '.' || quoted == '@' || quoted == '$' {
+				first, index = false, end
+				continue
+			}
+			switch word {
+			case "namespace":
+				naming = true
+			case "end":
+				closes++
+			case "do":
+				if loopKeyword {
+					loopKeyword = false
+					break
+				}
+				opens = append(opens, name)
+				name = ""
+			case "begin", "case", "def", "class", "module":
+				opens = append(opens, "")
+			case "if", "unless":
+				if first {
+					opens = append(opens, "")
+				}
+			case "while", "until", "for":
+				if first {
+					opens = append(opens, "")
+					loopKeyword = true
+				}
+			}
+			first = false
+			index = end
+			continue
+		default:
+			index++
+		}
+	}
+	if naming || name != "" {
+		// A `namespace` whose block does not open on this line: the name was read but nothing
+		// consumed it, so the frame it belongs to is not one this scan can place.
+		return nil, 0, false
+	}
+	return opens, closes, true
+}
+
+// searchVerifyRubyStringLiteral consumes a `'`, `"` or backtick literal and returns its content
+// along with the bytes consumed, quotes included. A backslash escapes the byte after it. An
+// unterminated literal consumes the rest of the line, which is what a line scanner can say about it.
+func searchVerifyRubyStringLiteral(line string) (string, int) {
+	quote := line[0]
+	content := make([]byte, 0, len(line))
+	for index := 1; index < len(line); index++ {
+		switch line[index] {
+		case '\\':
+			if index+1 < len(line) {
+				index++
+				content = append(content, line[index])
+			}
+		case quote:
+			return string(content), index + 1
+		default:
+			content = append(content, line[index])
+		}
+	}
+	return string(content), len(line)
+}
+
+// searchVerifyRakeNamespaceNameIsLiteral reports whether a namespace name is one this may put in a
+// command: an identifier. That is what Rake namespaces are called in practice, and it is also what
+// keeps the derived `foo:test` free of shell metacharacters. Anything else is treated as unreadable
+// rather than passed through.
+func searchVerifyRakeNamespaceNameIsLiteral(name string) bool {
+	if name == "" || searchVerifyRubyDigit(name[0]) {
+		return false
+	}
+	for index := 0; index < len(name); index++ {
+		if !searchVerifyRubyWordByte(name[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func searchVerifyRubyWordByte(character byte) bool {
+	return character == '_' ||
+		(character >= 'a' && character <= 'z') ||
+		(character >= 'A' && character <= 'Z') ||
+		searchVerifyRubyDigit(character)
+}
+
+func searchVerifyRubyDigit(character byte) bool {
+	return character >= '0' && character <= '9'
 }
 
 // searchVerifyRakeTestTaskGeneratorPattern matches a Rake::TestTask / Minitest::TestTask generator
@@ -1530,9 +1946,12 @@ func searchVerifyRakefileDefinesTest(content string) bool {
 // a bare `TestTask` after `include Rake::DSL` all match, while `RSpec::Core::RakeTask.new` and a
 // project's own `MyTestTask.new` — whose default name nothing here knows — do not.
 //
-// Leading whitespace is admitted, which leaves the `namespace :foo do` case of issue #205 behaving
-// exactly as it did: a generator nested in a namespace defines `foo:test` and still matches, because
-// separating it needs block tracking rather than a regex.
+// Leading whitespace is admitted, so a generator nested in a namespace still MATCHES here — which
+// is correct, because it is a declaration. What it declares is `foo:test`, and naming the task is
+// no longer this pattern's job: `searchVerifyRakefileTestTask` qualifies every match against the
+// namespace stack, so issue #205's case emits `rake foo:test` rather than a `rake test` that does
+// not exist. This comment used to say the case was left behaving exactly as it did; it no longer
+// is.
 //
 // The name may also be written on its own line — `Rake::TestTask.new(\n  :test\n)` is one ordinary
 // way to format the call — so INSIDE the parentheses the separator spans newlines. Only there: the
@@ -1957,6 +2376,28 @@ func searchVerifyModuleLabel(dir string) string {
 // not be installed and would not be the repository's own version — and a covering test class,
 // because `:module:test` without `--tests` is the whole module and Gradle's project path is only
 // worth deriving when it buys a filter.
+//
+// A project path is not a directory path. `:lib` resolves against the projects the SETTINGS script
+// declares, and a `build.gradle` sitting in `lib/` says nothing about whether the root build
+// declares it: in a build whose settings script reads `include ':app'`, `./gradlew :lib:test`
+// answers "Project 'lib' not found in root project". So this tier asks the same question the SUITE
+// tier asks, through the same two predicates, and the two tiers now share one notion of what
+// declares a project. The three answers are the suite tier's three, with `--tests` on them:
+//
+//   - the directory carries its OWN settings script, so it is a separate build root and Gradle is
+//     pointed at it with `-p`;
+//   - the root settings script declares the project path, which is the documented
+//     `gradle :subproject:taskName` spelling;
+//   - nothing declares it, or the settings script REMAPS the project onto another tree, and the
+//     tier emits nothing.
+//
+// The remap case is the one that is not merely loud: `project(':lib').projectDir = file('other')`
+// leaves `./gradlew :lib:test` runnable, and passing, about code the edit never touched.
+//
+// A settings script that COMPUTES its includes declares nothing either predicate can read, so this
+// tier goes silent where it used to emit. That is the trade the suite tier already accepted, taken
+// here for the same reason: a command that cannot run is a hard gate on the agent's only
+// verification step, and silence leaves it free to find one.
 func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	manifest := ""
 	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
@@ -1974,10 +2415,6 @@ func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence 
 	if _, inside := searchVerifyRelative(dir, subject.testPath); !inside {
 		return nil
 	}
-	project := ":"
-	if dir != "" {
-		project = ":" + strings.ReplaceAll(dir, "/", ":") + ":"
-	}
 	class := searchVerifyStem(subject.testPath)
 	classArg := shellQuote(class)
 	if classArg == class {
@@ -1985,11 +2422,32 @@ func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence 
 		// byte-for-byte form while routing unsafe patterns through the same token encoder.
 		classArg = "'" + class + "'"
 	}
-	return &SearchVerifyCommand{
-		Command:     "./gradlew " + shellQuote(project+"test") + " --tests " + classArg,
-		Targets:     subject.testPath,
-		DerivedFrom: manifest + " + gradlew + " + subject.testEvidence + " class",
+	command := func(task, derived string) *SearchVerifyCommand {
+		return &SearchVerifyCommand{
+			Command:     "./gradlew " + task + " --tests " + classArg,
+			Targets:     subject.testPath,
+			DerivedFrom: derived + " + " + subject.testEvidence + " class",
+		}
 	}
+	derived := manifest + " + gradlew"
+	if dir == "" {
+		// The root project is the build. Nothing has to declare it.
+		return command(shellQuote(":test"), derived)
+	}
+	if settingsPath, _, own := searchVerifyGradleSettings(dir, evidence); own {
+		// The directory carries its own settings script, so it IS a build root and that is the
+		// settings file Gradle finds first when started there. `-p` is the spelling for that.
+		return command("-p "+shellQuotePath(dir)+" test", derived+" + "+settingsPath)
+	}
+	settingsPath, settings, found := searchVerifyGradleSettings("", evidence)
+	project := ":" + strings.ReplaceAll(dir, "/", ":")
+	if !found || !searchVerifyGradleSettingsIncludes(settings, project) {
+		return nil
+	}
+	if searchVerifyGradleSettingsRemapsProject(settings, project) {
+		return nil
+	}
+	return command(shellQuote(project+":test"), derived+" + "+settingsPath)
 }
 
 // searchVerifyNodeRunners maps a declared dependency or test script to the invocation that runs ONE
