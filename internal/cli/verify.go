@@ -130,6 +130,9 @@ func parseVerifyFlags(args []string) (verifyFlags, error) {
 	if strings.TrimSpace(flags.Test) == "" {
 		return flags, fmt.Errorf("verify requires --test <command>")
 	}
+	if flags.RecordBaseline != "" && flags.PreEditBaseline != "" {
+		return flags, fmt.Errorf("verify --record-baseline and --pre-edit-baseline are mutually exclusive")
+	}
 	if flags.RecordBaseline == "" && flags.PreEditBaseline == "" {
 		return flags, fmt.Errorf(
 			"verify requires --pre-edit-baseline <path> (or --record-baseline <path> to create one)")
