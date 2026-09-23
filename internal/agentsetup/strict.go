@@ -144,6 +144,19 @@ Cite the retrieved evidence for historical claims. Distinguish recorded rational
 from inference. An empty result means no evidence was found; it does not establish
 that a decision or previous attempt never existed.
 
+Durable facts are Brain's episodic memory. When you establish something durable
+that the code does not already state - a decision and its rationale, an
+invariant, a gotcha that cost you time - RECORD it before finishing:
+
+    entire brain remember "<fact>" --path <category.subcategory.type> --json
+
+Categories are architecture, constraints, preferences, project and workflow.
+Omitting --path classifies the fact for you and requires a supported coding
+agent on PATH; pass --path when none is guaranteed. No MCP tool writes a fact,
+so this is a CLI call; do not go looking for one. Retrieve with recall and
+re-check anchors with verify. A fact you author has no source anchor, so verify
+reports it unverifiable-here - that is expected, not a failure.
+
 Brain semantic answers refer to a stored index, which may differ from current
 working-tree source. Verify claims about present behavior against current source
 and executed tests.
