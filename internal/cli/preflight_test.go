@@ -39,6 +39,23 @@ func TestPreflightAcceptsFlagsThisBinaryHas(t *testing.T) {
 // agent's FIRST mandated action, in every session, for the whole run — and what a reviewer sees
 // afterwards is a graph arm whose numbers look like the baseline arm. One preflight call turns that
 // into a startup failure, before any instance runs.
+func TestPreflightPreservesQuotedArguments(t *testing.T) {
+	if err := checkPreflight("dev", `search --repo "C:\work trees\repo" --query "validate token" --format text`); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPreflight("dev", `search --repo 'C:\work trees\repo' --query 'validate token' --format text`); err != nil {
+		t.Fatal(err)
+	}
+	for _, spec := range []string{
+		`search --repo "C:\work trees\repo --query token`,
+		`search --repo C:\work trees\repo\`,
+	} {
+		if err := checkPreflight("dev", spec); err == nil {
+			t.Fatalf("accepted malformed command line %q", spec)
+		}
+	}
+}
+
 func TestPreflightCatchesVersionSkew(t *testing.T) {
 	t.Parallel()
 	out, err := doctorAssert(t, "--assert", "search --flag-from-a-newer-build")
