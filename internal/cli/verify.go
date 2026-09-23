@@ -55,7 +55,7 @@ const (
 // verifyBaselineFormatVersion is the on-disk shape this build writes AND the only shape it will
 // adjudicate. A baseline is compared field-by-field against ids the current run produced, so a file
 // this build cannot claim to understand must be refused rather than half-read.
-const verifyBaselineFormatVersion = 1
+const verifyBaselineFormatVersion = 2
 
 // verifyBaseline is the on-disk pre-edit record. The format is deliberately boring — a status per id
 // plus provenance — because its only consumer is the diff below and its only job is to still be
@@ -64,6 +64,7 @@ type verifyBaseline struct {
 	FormatVersion       int           `json:"format_version"`
 	RecordedAt          string        `json:"recorded_at"`
 	Repo                string        `json:"repo"`
+	Setup               string        `json:"setup"`
 	TestCommand         string        `json:"test_command"`
 	Parser              string        `json:"parser"`
 	ExitCode            int           `json:"exit_code"`
@@ -163,7 +164,7 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := validateVerifyBaseline(baseline, flags.PreEditBaseline, repo, flags.Test, parser, parsed, flags.TestFailureExitCode); err != nil {
+	if err := validateVerifyBaseline(baseline, flags.PreEditBaseline, repo, flags.Setup, flags.Test, parser, parsed, flags.TestFailureExitCode); err != nil {
 		return err
 	}
 	_, writeErr := opts.Stdout.Write(renderVerifyVerdict(
@@ -299,6 +300,7 @@ func writeVerifyBaseline(
 		FormatVersion:       verifyBaselineFormatVersion,
 		RecordedAt:          time.Now().UTC().Format(time.RFC3339),
 		Repo:                verifyRecordedRepo(repo),
+		Setup:               flags.Setup,
 		TestCommand:         flags.Test,
 		TestFailureExitCode: flags.TestFailureExitCode,
 		Parser:              parser,
@@ -358,7 +360,7 @@ func readVerifyBaseline(path string) (verifyBaseline, error) {
 // because the failure mode this verb exists to prevent is a confident verdict on a run that did not
 // happen the way the verdict assumes.
 func validateVerifyBaseline(
-	baseline verifyBaseline, path, repo, testCommand, parser string, parsed bool, testFailureExitCode int,
+	baseline verifyBaseline, path, repo, setup, testCommand, parser string, parsed bool, testFailureExitCode int,
 ) error {
 	if baseline.FormatVersion != verifyBaselineFormatVersion {
 		return fmt.Errorf(
@@ -378,6 +380,11 @@ func validateVerifyBaseline(
 		return fmt.Errorf(
 			"verify --pre-edit-baseline %s was recorded in repository %q but this run is in %q: "+
 				"a delta between two repositories is not a delta", path, baseline.Repo, repo)
+	}
+	if baseline.Setup != setup {
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s recorded setup command %q but this run used %q: "+
+				"the two id sets were prepared by different commands", path, baseline.Setup, setup)
 	}
 	if baseline.TestCommand != testCommand {
 		return fmt.Errorf(
