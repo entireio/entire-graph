@@ -86,32 +86,6 @@ entire graph version
 `entire graph version` printing a release tag confirms that a versioned build
 is active.
 
-### Download a release archive directly
-
-Every tagged release also publishes standalone archives on the
-[releases page](https://github.com/entireio/entire-graph/releases) for
-`linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`,
-and `windows/arm64`, alongside a `checksums.txt` covering all six. Use this
-when you want a pinned version, an air-gapped install, or a build you can
-verify before it runs:
-
-```sh
-version=0.4.0   # the release you want, from the releases page
-base="https://github.com/entireio/entire-graph/releases/download/v${version}"
-curl -fsSLO "${base}/entire-graph_${version}_$(uname -s | tr 'A-Z' 'a-z')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz"
-curl -fsSLO "${base}/checksums.txt"
-sha256sum -c checksums.txt --ignore-missing
-```
-
-`checksums.txt` lists all six archives, so verify only the one you downloaded.
-macOS ships `shasum` rather than GNU `sha256sum`; there, compare
-`shasum -a 256 <archive>` against the matching line by hand.
-
-An archive contains the `entire-graph` binary, `README.md`, `LICENSE`, and
-`entire-plugin.yml`, and from v0.5.0 onward also `NOTICES`, the third-party
-attribution for everything statically linked into the binary. Extract the
-binary anywhere on `PATH`; the plugin index install above remains the supported
-upgrade path.
 
 ### Build from source
 
