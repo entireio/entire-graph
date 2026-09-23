@@ -2,8 +2,9 @@
 
 Hand this to any coding agent working in a repo where the `entire graph` plugin
 is installed. It moves initial code-location work from broad grep/read
-exploration to targeted graph queries; token impact depends on the task and
-model, and no end-to-end savings claim is current.
+exploration to targeted graph queries. Token impact depends on the task and the
+model, so treat any single figure as scenario-dependent; the measured range and
+the conditions behind it are in the [README](README.md).
 
 Two guidance surfaces coexist here on purpose. `.entire/agent-guide.md` is the
 generated activation artifact — regenerated in full by `init-agents`, so never
