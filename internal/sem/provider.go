@@ -44,7 +44,14 @@ const (
 	StableSymbolIDVersion = "compound-v1"
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
-	IdentityRevision     = "2"
+	//
+	// Revision 3: Python nested callables are qualified by the enclosing
+	// CALLABLE rather than the enclosing class, so a helper defined inside a
+	// method is `C.m.helper` (kind "function") instead of the phantom member
+	// `C.helper` (kind "method"). This re-keys every Python nested-callable
+	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
+	// real same-named members.
+	IdentityRevision     = "3"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)

@@ -116,14 +116,31 @@ as a need to refresh derived semantic data. History consumers must also migrate
 previously persisted entity deltas rather than merely append newly parsed ones.
 
 This is one global revision for parser identity rules across all languages.
-The value is a decimal revision encoded as a string, currently `"2"`. Consumers
+The value is a decimal revision encoded as a string, currently `"3"`. Consumers
 compare the complete opaque string for equality rather than relying on numeric
 ordering. The field name supplies its meaning; the value names no language or
 feature. A bump invalidates both snapshot and search
 cache namespaces even when the source tree and provider release are unchanged.
 It does not change the individual symbol-ID format.
 
-The current revision `"2"` includes trail 154's JS/TS callable-scope
+The current revision `"3"` adds the Python nested-callable correction
+(issue #199). A callable declared inside a Python method body was qualified by
+the enclosing CLASS, so `def helper(...)` inside `C.m` emitted the method
+`C.helper` — a member no instance of `C` has ever had, because the name binds in
+the method's local frame when the method runs and is gone when it returns. It is
+now qualified by the enclosing CALLABLE: `C.m.helper`, kind `function`, marked
+local. Two kinds of ID move as a result:
+
+- Every Python nested-callable symbol is re-keyed from
+  `…:method:<Class>.<name>` to `…:function:<Class>.<method>.<name>`.
+- Real class members whose names collided with a nested callable are re-keyed in
+  the opposite direction — *back* to their bare ID. Before this revision,
+  `C.helper` (phantom) and a real `C.helper` shared one base ID, so the
+  signature-disambiguation branch fired for both and pushed the real member onto
+  `…:method:C.helper#sig:<hash>`. With the phantom gone the collision is gone and
+  the real member returns to `…:method:C.helper`.
+
+Revision `"2"` included trail 154's JS/TS callable-scope
 corrections and trail 163's anonymous default-export corrections. Callable exports
 previously classified as classes receive corrected function IDs, phantom exports
 in comments and literals are removed, and corrected source ranges/signatures can

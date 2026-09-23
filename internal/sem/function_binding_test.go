@@ -794,51 +794,74 @@ func TestNestedCallableQualificationOnlyReplacesATypeScope(t *testing.T) {
 	}
 }
 
-// The scope reset is JS/TS-only, and that gate is load-bearing: it bounds the
-// blast radius of the fix above to two languages.
+// The scope reset is gated per language, and that gate is load-bearing: it
+// bounds the blast radius of the fix above to the languages that have opted in.
+// Each entry moves every nested-callable compound-v1 ID in its language, so
+// adding one is an identity revision (see IdentityRevision in provider.go), not
+// a refactor. This table is what makes that impossible to do silently.
 //
-// Python's nested `def` reaches the same phantom-member shape (`C.helper` for a
-// helper defined inside `C.m`), and Java walks anonymous-class members with the
-// enclosing type scope on purpose (see initializerTypeBodies). Neither is
-// touched here — widening the gate would move every nested-callable compound-v1
-// ID in those languages, which is a separate decision with its own migration.
-// What this pins is only that the JS/TS fix did not silently make it for them.
-func TestNestedCallableScopeResetIsJavaScriptOnly(t *testing.T) {
+// Python joined in the fix for issue #199: a Python nested `def` binds in the
+// enclosing function's local frame and is gone when it returns, so `C.helper`
+// named a member no instance of `C` has ever had. Its behaviour is pinned in
+// python_nested_callable_test.go.
+//
+// The languages still at false are NOT all the same case:
+//
+//   - Ruby is CORRECT as-is. A nested `def` really does define an instance
+//     method on the enclosing class the first time the outer method runs, so
+//     `C.helper` is the symbol Ruby itself produces. Fixing it would be a bug.
+//   - Java is correct as-is: anonymous-class members are walked with the
+//     enclosing type scope on purpose (see initializerTypeBodies), and a named
+//     local class is already its own container.
+//   - Swift, Kotlin, Rust and PHP DO still emit the phantom member, confirmed
+//     on the released binary. Each needs its own lexicalCallableForm node types
+//     and its own regression coverage, and each is its own ID move; they are
+//     tracked separately rather than folded in here untested.
+//   - Go and C# never reach the shape: a Go closure is a `:=` binding and a C#
+//     local function emits no symbol at all.
+func TestNestedCallableScopeResetIsGatedByLanguage(t *testing.T) {
 	for _, testCase := range []struct {
 		language string
 		want     bool
 	}{
 		{"JavaScript", true},
 		{"TypeScript", true},
-		{"Python", false},
+		{"Python", true},
 		{"Java", false},
 		{"Ruby", false},
 		{"Go", false},
+		{"Swift", false},
+		{"Kotlin", false},
+		{"Rust", false},
+		{"PHP", false},
 	} {
 		if got := functionLocalScopeResets(testCase.language); got != testCase.want {
 			t.Errorf("functionLocalScopeResets(%q) = %v, want %v", testCase.language, got, testCase.want)
 		}
 	}
 
-	// Behavioural half: a Python helper defined inside a method keeps the
-	// qualified name it has today, so no Python symbol ID moved.
-	const src = "class C:\n" +
-		"    def m(self):\n" +
-		"        def helper(v):\n" +
-		"            return v\n" +
-		"        return helper(1)\n"
-	entities, _, status := TreeSitterParser{}.ParseWithStatus("c.py", src)
+	// Behavioural half, Ruby: a helper defined inside a method keeps the class
+	// qualification, because in Ruby that member genuinely comes into being.
+	const rubySrc = "class C\n" +
+		"  def m\n" +
+		"    def helper(v)\n" +
+		"      v\n" +
+		"    end\n" +
+		"    helper(1)\n" +
+		"  end\n" +
+		"end\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("c.rb", rubySrc)
 	if status.ParseError {
 		t.Fatalf("unexpected parse error: %s", status.Detail)
 	}
 	found := false
 	for _, entity := range entities {
-		if entity.Name == "C.helper" && entity.Local {
+		if entity.Name == "C.helper" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("Python nested def lost its class qualification; entities = %s", describeEntities(entities))
+		t.Errorf("Ruby nested def lost its class qualification; entities = %s", describeEntities(entities))
 	}
 }
 
