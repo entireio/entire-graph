@@ -1511,10 +1511,31 @@ func hasInPlaceFlag(stage string) bool {
 // splitShellSegments is the GRAPH side's splitter: every `|`/`;`/`&`/newline segment, because an
 // `entire graph` invocation is a real call wherever in the command it sits. The exploration side
 // uses pipelineHeadStages instead — see the note there before narrowing this.
+//
+// The two sides differ in WHICH segments they classify, not in what counts as a segment boundary.
+// Both honour quoting and both ignore here-document bodies, because an instrument that discounts a
+// quoted `grep` while still counting a quoted `entire graph query` is biased, not merely imprecise:
+// `git commit -m "risky; entire graph query foo"` is a commit, and the body of `cat > run.sh
+// <<'EOF'` is a file being written whichever tool its lines name.
 func splitShellSegments(command string) []string {
-	return strings.FieldsFunc(command, func(r rune) bool {
-		return r == '|' || r == ';' || r == '&' || r == '\n'
-	})
+	runes := []rune(stripHeredocBodies(command))
+	literal := shellQuoteMask(runes)
+	var segments []string
+	var current []rune
+	for index, character := range runes {
+		if !literal[index] && (character == '|' || character == ';' || character == '&' || character == '\n') {
+			if len(current) > 0 {
+				segments = append(segments, string(current))
+				current = current[:0]
+			}
+			continue
+		}
+		current = append(current, character)
+	}
+	if len(current) > 0 {
+		segments = append(segments, string(current))
+	}
+	return segments
 }
 
 // --- aggregation and rendering ----------------------------------------------------------
