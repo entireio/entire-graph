@@ -1242,6 +1242,12 @@ func pipelineHeadStages(command string) []string {
 			case index+1 < len(runes) && runes[index+1] == '&' && !literal[index+1]:
 				index++
 				endStatement()
+			case index+1 < len(runes) && runes[index+1] == '>' && !literal[index+1]:
+				// `&>` / `&>>` send both streams to a file. It is a redirect, and splitting the
+				// statement there hid the redirect from the write check that runs on the head.
+				if capturing {
+					current = append(current, character)
+				}
 			case previousNonSpaceIsRedirect(runes, literal, index):
 				// `2>&1` duplicates a file descriptor; it is not a statement boundary.
 				if capturing {

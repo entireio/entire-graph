@@ -1743,3 +1743,30 @@ func TestGraphVerbFromCommandHonoursQuotingAndHeredocs(t *testing.T) {
 		}
 	}
 }
+
+// TestCombinedRedirectIsARedirectNotAStatementBoundary pins bash's `&>` / `&>>`. Splitting the
+// statement at that `&` hid the redirect from the write check, which only ever sees the head stage:
+// `cat &> out.log` became the bare read `cat`.
+func TestCombinedRedirectIsARedirectNotAStatementBoundary(t *testing.T) {
+	t.Parallel()
+	for _, command := range []string{
+		`cat &> /tmp/out.log`,
+		`cat &>> /tmp/out.log`,
+		`cat x.go &>/dev/null`,
+	} {
+		if stages := pipelineHeadStages(command); len(stages) != 1 {
+			t.Fatalf("pipelineHeadStages(%q) = %q; `&>` is a redirect, not a boundary", command, stages)
+		}
+		if isExploringShellCommand(command) {
+			t.Fatalf("%q redirects both streams to a file; it is a write", command)
+		}
+	}
+	// A locate tool that is not `cat`/`sed`/`tee` still reads, redirect or no redirect.
+	if !isExploringShellCommand(`grep -rn foo . &> /tmp/hits.txt`) {
+		t.Fatal("a grep whose output is redirected is still a search")
+	}
+	// A real backgrounding `&` is still a boundary.
+	if stages := pipelineHeadStages(`sleep 1 & grep -rn foo .`); len(stages) != 2 {
+		t.Fatalf("a backgrounding & must still split statements, got %q", stages)
+	}
+}
