@@ -1651,3 +1651,63 @@ func TestHeredocStrippingDoesNotEatRealCommands(t *testing.T) {
 		}
 	}
 }
+
+// TestShellScanningHonoursQuoting pins that none of `|`, `;`, `&`, `>` or `<<` is an operator when
+// it appears inside quotes. A commit message is the everyday case — `git commit -m "fix: a; grep
+// the logs"` is one commit, and reading its message as a second statement made it a locate call —
+// and the same blindness turned a filename containing `>` into a write.
+func TestShellScanningHonoursQuoting(t *testing.T) {
+	t.Parallel()
+	notExploration := []string{
+		`git commit -m "fix: a; grep the logs"`,
+		`git commit -m 'refactor: drop the | grep pipeline'`,
+		`git commit -m "ci: keep 2>&1 & head -5 out of the gate"`,
+		`gh pr create --title "stats" --body "see cat > file and sed -i notes"`,
+		`echo "run: find . -name '*.go'"`,
+	}
+	for _, command := range notExploration {
+		if isExploringShellCommand(command) {
+			t.Fatalf("%q only MENTIONS a locate tool inside a quoted argument", command)
+		}
+	}
+	exploration := []string{
+		// A filename carrying a `>` is still a read, not a redirect.
+		`cat "odd>name.txt"`,
+		`cat 'a;b.go'`,
+		// Real operators outside quotes keep working.
+		`git commit -m "wip" && grep -rn foo internal`,
+		`grep -rn "a | b" internal`,
+	}
+	for _, command := range exploration {
+		if !isExploringShellCommand(command) {
+			t.Fatalf("%q reads the repo; quoting must not hide that", command)
+		}
+	}
+	// An unbalanced quote falls back to the unquoted reading rather than masking to end of string,
+	// which would hide every later statement.
+	if !isExploringShellCommand(`echo "unterminated; grep -rn foo .`) {
+		t.Fatal("an unbalanced quote hid a real locate call")
+	}
+}
+
+// TestShellQuoteMaskFallsBackOnUnbalancedQuotes pins the mask's own escape hatch directly.
+func TestShellQuoteMaskFallsBackOnUnbalancedQuotes(t *testing.T) {
+	t.Parallel()
+	balanced := shellQuoteMask([]rune(`echo "a; b" ; grep -rn foo .`))
+	if !balanced[6] {
+		t.Fatal("a character inside double quotes was not masked")
+	}
+	if balanced[len(balanced)-1] {
+		t.Fatal("a character outside the quotes was masked")
+	}
+	for index, masked := range shellQuoteMask([]rune(`echo "unterminated; grep -rn foo .`)) {
+		if masked {
+			t.Fatalf("an unbalanced quote masked index %d; the whole mask must fall back to false", index)
+		}
+	}
+	// A backslash escape hides the character it escapes, so `\;` is not a statement boundary.
+	escaped := shellQuoteMask([]rune(`echo a\; grep b`))
+	if !escaped[7] {
+		t.Fatal("a backslash-escaped character was not masked")
+	}
+}

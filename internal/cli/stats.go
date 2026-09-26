@@ -1212,8 +1212,11 @@ func shellCommandWord(stage string) string {
 // graphVerbFromCommand, which legitimately needs non-first segments (`cd /repo && entire graph
 // neighbors --symbol Foo`), so narrowing it in place would stop the graph half of the report from
 // finding its own calls. Two readers, two rules, two splitters.
+// Quoting is honoured throughout: `git commit -m "fix: a; grep the logs"` is ONE commit, not two
+// statements the second of which searches.
 func pipelineHeadStages(command string) []string {
 	runes := []rune(stripHeredocBodies(command))
+	literal := shellQuoteMask(runes)
 	var stages []string
 	var current []rune
 	capturing := true
@@ -1227,14 +1230,19 @@ func pipelineHeadStages(command string) []string {
 	for index := 0; index < len(runes); index++ {
 		character := runes[index]
 		switch {
+		case literal[index]:
+			// Inside quotes nothing is an operator; it is just text the command carries.
+			if capturing {
+				current = append(current, character)
+			}
 		case character == '\n' || character == ';':
 			endStatement()
 		case character == '&':
 			switch {
-			case index+1 < len(runes) && runes[index+1] == '&':
+			case index+1 < len(runes) && runes[index+1] == '&' && !literal[index+1]:
 				index++
 				endStatement()
-			case previousNonSpaceIsRedirect(runes, index):
+			case previousNonSpaceIsRedirect(runes, literal, index):
 				// `2>&1` duplicates a file descriptor; it is not a statement boundary.
 				if capturing {
 					current = append(current, character)
@@ -1243,7 +1251,7 @@ func pipelineHeadStages(command string) []string {
 				endStatement() // backgrounding operator
 			}
 		case character == '|':
-			if index+1 < len(runes) && runes[index+1] == '|' {
+			if index+1 < len(runes) && runes[index+1] == '|' && !literal[index+1] {
 				index++
 				endStatement()
 				continue
@@ -1264,8 +1272,47 @@ func pipelineHeadStages(command string) []string {
 	return stages
 }
 
-func previousNonSpaceIsRedirect(runes []rune, index int) bool {
+// shellQuoteMask marks the runes of a command that are inside single or double quotes, or are a
+// backslash escape and the character it escapes. Every scanner below consults it, because none of
+// the operators they look for — `|`, `;`, `&`, `>`, `<<` — is an operator inside quotes:
+// `git commit -m "fix: a; grep the logs"` is one commit, and `cat "odd>name.txt"` is a read.
+//
+// A command whose quotes do not balance gets an all-false mask: masking to end-of-string on an
+// unterminated quote would hide every later statement, and falling back to the unquoted reading is
+// this file's pre-existing behaviour, so the failure stays bounded.
+func shellQuoteMask(runes []rune) []bool {
+	masked := make([]bool, len(runes))
+	var quote rune
+	for index := 0; index < len(runes); index++ {
+		character := runes[index]
+		switch {
+		case character == '\\' && quote != '\'':
+			masked[index] = true
+			if index+1 < len(runes) {
+				masked[index+1] = true
+				index++
+			}
+		case quote != 0:
+			masked[index] = true
+			if character == quote {
+				quote = 0
+			}
+		case character == '\'' || character == '"':
+			quote = character
+			masked[index] = true
+		}
+	}
+	if quote != 0 {
+		return make([]bool, len(runes))
+	}
+	return masked
+}
+
+func previousNonSpaceIsRedirect(runes []rune, literal []bool, index int) bool {
 	for cursor := index - 1; cursor >= 0; cursor-- {
+		if literal[cursor] {
+			return false
+		}
 		switch runes[cursor] {
 		case ' ', '\t':
 			continue
@@ -1332,26 +1379,16 @@ func stripHeredocBodies(command string) string {
 // bounded rather than destructive.
 func heredocDelimiter(line string) string {
 	runes := []rune(line)
-	var quote rune
+	literal := shellQuoteMask(runes)
 	for index := 0; index < len(runes); index++ {
-		character := runes[index]
-		switch {
-		case character == '\\' && quote != '\'':
-			index++ // an escaped character can neither open nor close anything
+		if literal[index] || runes[index] != '<' {
 			continue
-		case quote != 0:
-			if character == quote {
-				quote = 0
-			}
-			continue
-		case character == '\'' || character == '"':
-			quote = character
-			continue
-		case character != '<' || index+1 >= len(runes) || runes[index+1] != '<':
+		}
+		if index+1 >= len(runes) || runes[index+1] != '<' || literal[index+1] {
 			continue
 		}
 		position := index + 2
-		if position < len(runes) && runes[position] == '<' {
+		if position < len(runes) && runes[position] == '<' && !literal[position] {
 			index = position // here-string
 			continue
 		}
@@ -1426,11 +1463,13 @@ func isWritingShellStage(stage string) bool {
 
 // hasStdoutRedirect reports whether a stage sends STDOUT to a file. `2>` is excluded on purpose:
 // silencing stderr is something a read does too, and treating `cat x.go 2>/dev/null` as a write
-// would drop a real read.
+// would drop a real read. A `>` inside quotes is not a redirect either — `cat "odd>name.txt"` reads
+// a file whose name contains the character.
 func hasStdoutRedirect(stage string) bool {
 	runes := []rune(stage)
+	literal := shellQuoteMask(runes)
 	for index, character := range runes {
-		if character != '>' {
+		if character != '>' || literal[index] {
 			continue
 		}
 		if index+1 < len(runes) && runes[index+1] == '&' {
