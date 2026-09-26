@@ -150,11 +150,21 @@ Local, read-only report over the coding-agent session transcripts already on dis
 calls per verb vs. exploration calls (`Read` whole-file / `Read` line-range / `Grep` / `Glob` /
 shell `grep|find|cat|head|tail|sed|awk`), the bytes each path pulled into context, billed session
 tokens read from transcript `usage`, a graph-first rate (share of sessions whose first locate-ish
-tool call was a graph call), and an **estimated** token saving. The savings model is an explicit
-assumption printed next to the number: each `query`/`neighbors`/`impact` call is credited with the
-one whole-file read it replaced — on-disk size of the top-hit file it pointed at (repo median
-tracked-file size when unresolvable) minus the bytes that call returned, floored at 0, at 4 bytes =
-1 token. It is not a measured counterfactual. No network, no writes. `--transcript <path>` narrows
+tool call was a graph call), and an **estimated** token saving.
+
+A shell call counts as exploration only when the LEADING stage of one of its pipelines runs a
+locate tool: `grep -rn foo . | head` does, `go test ./... 2>&1 | tail -40` does not, and a write
+(`cat > file`, a here-document, `tee`, `sed -i`) never does. `entire sem edges|symbols` counts as a
+graph call, like `entire graph <verb>`.
+
+The savings model is an explicit assumption printed next to the number: each
+`query`/`search`/`neighbors`/`impact` call is credited with the ONE exploration call it displaced,
+priced from the same session's own measured per-call bytes (exploration bytes/call minus graph
+bytes/call, at 4 bytes = 1 token). It is not a measured counterfactual. The headline
+`estimated_savings_est_tokens` sums only the sessions that came out above 0, which discards the
+losses and biases it upward; `estimated_savings_est_tokens_unfloored` is the same sum with the
+loss-making sessions kept in, and can be negative. Quote both. No network, no writes.
+`--transcript <path>` narrows
 the whole report to one session (that transcript plus its `<session>/subagents/*.jsonl`), which is
 what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status line badge.
 
