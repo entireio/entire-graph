@@ -131,13 +131,39 @@ func TestContextBlockBudgetExcludesTheAdditiveContainerMap(t *testing.T) {
 	}
 }
 
-// TestContextBlockBytesAccountsEveryBlock pins that the one summary counter really is the sum, so a
-// reader who trusts stats.context_block_bytes is not being told a partial truth.
+// TestContextBlockBytesAccountsEveryBlock pins that the one summary counter really is the sum of
+// every COSTED block, so a reader who trusts stats.context_block_bytes is not being told a partial
+// truth. The file outline is included explicitly: it is built, emitted and priced, and it was the
+// one block with a *Bytes counter that the summary silently left out.
 func TestContextBlockBytesAccountsEveryBlock(t *testing.T) {
 	t.Parallel()
-	stats := SearchStats{SignatureTypeBytes: 11, TypeCardBytes: 22, ContainerMapBytes: 33}
-	if total := searchContextBlockBytes(stats); total != 66 {
-		t.Fatalf("context block bytes = %d, want 66 (11+22+33)", total)
+	stats := SearchStats{
+		SignatureTypeBytes:  11,
+		TypeCardBytes:       22,
+		ContainerMapBytes:   33,
+		LiteralClusterBytes: 44,
+		FileOutlineBytes:    55,
+		VerifyCommandBytes:  66,
+		ClosedSetBytes:      77,
+	}
+	if total := searchContextBlockBytes(stats); total != 308 {
+		t.Fatalf("context block bytes = %d, want 308 (11+22+33+44+55+66+77)", total)
+	}
+	// Every *Bytes counter that prices a block outside `results` has to be in that sum. A new
+	// block whose cost is declared but not totalled is free in every report — which is exactly how
+	// the file outline went unaccounted.
+	for name, only := range map[string]SearchStats{
+		"signature types": {SignatureTypeBytes: 7},
+		"type card":       {TypeCardBytes: 7},
+		"container map":   {ContainerMapBytes: 7},
+		"literal cluster": {LiteralClusterBytes: 7},
+		"file outline":    {FileOutlineBytes: 7},
+		"verify command":  {VerifyCommandBytes: 7},
+		"closed set":      {ClosedSetBytes: 7},
+	} {
+		if got := searchContextBlockBytes(only); got != 7 {
+			t.Fatalf("the %s block contributes %d to context_block_bytes, want 7", name, got)
+		}
 	}
 	// A mismatched summary must be caught, not tolerated: it is the number that makes the cost
 	// of the integration attributable.
