@@ -1295,42 +1295,117 @@ func stripHeredocBodies(command string) string {
 		if delimiter == "" {
 			continue
 		}
-		for index+1 < len(lines) {
-			index++
-			if strings.TrimSpace(lines[index]) == delimiter {
+		// Strip only a body that is actually CLOSED. An unterminated here-document is far more
+		// likely to be a misread `<<` than a real one, and swallowing the rest of the command
+		// would silently drop whatever locate calls its later lines make — the failure mode this
+		// whole function exists to prevent, pointed the other way.
+		terminator := -1
+		for cursor := index + 1; cursor < len(lines); cursor++ {
+			if strings.TrimSpace(lines[cursor]) == delimiter {
+				terminator = cursor
 				break
 			}
 		}
+		if terminator < 0 {
+			continue
+		}
+		index = terminator
 	}
 	return strings.Join(kept, "\n")
 }
 
 // heredocDelimiter returns the terminator word a line's here-document opens with, or "" when it
-// opens none. `<<<` is a here-STRING — its data is on the same line — so it opens nothing.
+// opens none.
+//
+// It is deliberately conservative, because a false positive costs real commands: stripHeredocBodies
+// would discard the lines that follow. Three guards here, and stripHeredocBodies adds a fourth by
+// refusing to strip an unterminated body:
+//
+//   - the `<<` must be OUTSIDE quotes, so `echo "count << 2"` opens nothing;
+//   - `<<<` is a here-STRING, whose data is on the same line;
+//   - the word must be quoted (`<<'EOF'`) or an unquoted SHOUTING identifier (EOF, PY, PYEOF) —
+//     the shapes real here-documents actually use. That is what rejects `std::cout << x` and
+//     `n << 2`, whose operands are a lowercase word and a number.
+//
+// A lowercase unquoted delimiter (`<<eof`) is therefore missed, and the command falls back to
+// being classified line by line — the behaviour that predates this function, so the failure is
+// bounded rather than destructive.
 func heredocDelimiter(line string) string {
-	for cursor := 0; cursor <= len(line); {
-		at := strings.Index(line[cursor:], "<<")
-		if at < 0 {
-			return ""
-		}
-		position := cursor + at + 2
-		if position < len(line) && line[position] == '<' {
-			cursor = position + 1
+	runes := []rune(line)
+	var quote rune
+	for index := 0; index < len(runes); index++ {
+		character := runes[index]
+		switch {
+		case character == '\\' && quote != '\'':
+			index++ // an escaped character can neither open nor close anything
+			continue
+		case quote != 0:
+			if character == quote {
+				quote = 0
+			}
+			continue
+		case character == '\'' || character == '"':
+			quote = character
+			continue
+		case character != '<' || index+1 >= len(runes) || runes[index+1] != '<':
 			continue
 		}
-		if position < len(line) && line[position] == '-' {
+		position := index + 2
+		if position < len(runes) && runes[position] == '<' {
+			index = position // here-string
+			continue
+		}
+		if position < len(runes) && runes[position] == '-' {
 			position++
 		}
-		rest := strings.TrimLeft(line[position:], " \t")
-		if end := strings.IndexAny(rest, " \t|;&<>()"); end >= 0 {
-			rest = rest[:end]
+		for position < len(runes) && (runes[position] == ' ' || runes[position] == '\t') {
+			position++
 		}
-		if word := strings.Trim(rest, "\"'"); word != "" {
+		word, quoted := heredocWord(runes[position:])
+		if word != "" && (quoted || isShoutingWord(word)) {
 			return word
 		}
-		cursor = position
+		index = position - 1
 	}
 	return ""
+}
+
+// heredocWord reads the delimiter token after a `<<`, reporting whether it was quoted. A quoted
+// delimiter is unambiguous, so it is accepted whatever it spells.
+func heredocWord(runes []rune) (string, bool) {
+	if len(runes) == 0 {
+		return "", false
+	}
+	if runes[0] == '\'' || runes[0] == '"' {
+		for cursor := 1; cursor < len(runes); cursor++ {
+			if runes[cursor] == runes[0] {
+				return string(runes[1:cursor]), true
+			}
+		}
+		return "", false
+	}
+	end := 0
+	for end < len(runes) && !strings.ContainsRune(" \t|;&<>()'\"", runes[end]) {
+		end++
+	}
+	return string(runes[:end]), false
+}
+
+// isShoutingWord reports whether a word is an all-caps identifier — EOF, PY, PYEOF, SQL2. It is
+// the shape an unquoted here-document delimiter takes in practice, and the cheapest way to tell
+// one from the right-hand side of a shift or a stream insertion.
+func isShoutingWord(word string) bool {
+	hasLetter := false
+	for _, character := range word {
+		switch {
+		case character >= 'A' && character <= 'Z':
+			hasLetter = true
+		case character >= '0' && character <= '9' || character == '_':
+		default:
+			return false
+		}
+	}
+	return hasLetter
 }
 
 // isWritingShellStage reports whether a stage's purpose is to write rather than to read. The
