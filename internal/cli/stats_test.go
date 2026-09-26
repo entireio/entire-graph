@@ -1604,3 +1604,50 @@ func TestSemGraphVerbsAreIndexable(t *testing.T) {
 		}
 	}
 }
+
+// TestHeredocStrippingDoesNotEatRealCommands pins the cost of getting here-document detection
+// wrong in the other direction. `<<` appears in shell commands that open no here-document at all —
+// a shift inside a quoted string, a C++ line echoed into a file — and a naive match would treat the
+// operand as a delimiter and swallow every following line up to one that happened to match it, or
+// to the end of the command. That silently DROPS locate calls, which is worse than the
+// over-counting this rewrite fixes.
+//
+// Two guards are pinned here: the delimiter must be quoted or a SHOUTING identifier found outside
+// quotes, and a body is only stripped when its terminator line is actually present.
+func TestHeredocStrippingDoesNotEatRealCommands(t *testing.T) {
+	t.Parallel()
+	stillExplores := []string{
+		// `<< 2` inside a quoted string opens nothing; the grep on the next line is a real search.
+		"echo \"count << 2\"\ngrep -rn foo .",
+		"python3 -c 'print(1 << 3)'\ncat internal/cli/stats.go",
+		// A bareword operand is not a delimiter shape, quoted or not.
+		"awk '{ print x << 2 }' f\nrg --files internal",
+		// A real opener whose body is never terminated must not swallow the rest either.
+		"cat > /tmp/x.sh <<'EOF'\ngrep -rn foo .",
+		// ...and after a CLOSED here-document, later statements are classified normally.
+		"cat > /tmp/x.sh <<'EOF'\nnoop\nEOF\ngrep -rn foo .",
+	}
+	for _, command := range stillExplores {
+		if !isExploringShellCommand(command) {
+			t.Fatalf("heredoc stripping ate a real locate call in %q", command)
+		}
+	}
+	// The body of a properly closed here-document is still data, not commands.
+	if isExploringShellCommand("cat > /tmp/x.sh <<'EOF'\ngrep -rn foo .\nEOF") {
+		t.Fatal("a closed here-document's body was classified as a locate call")
+	}
+	// And the delimiter itself is read correctly in both forms.
+	for command, want := range map[string]string{
+		"cat <<'PYEOF'":      "PYEOF",
+		"cat <<EOF":          "EOF",
+		"cat <<-EOF":         "EOF",
+		`cat <<< "here str"`: "",
+		`echo "a << b"`:      "",
+		`cout << x`:          "",
+		`shift << 2`:         "",
+	} {
+		if got := heredocDelimiter(command); got != want {
+			t.Fatalf("heredocDelimiter(%q) = %q, want %q", command, got, want)
+		}
+	}
+}
