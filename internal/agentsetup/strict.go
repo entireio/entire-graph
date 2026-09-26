@@ -32,7 +32,8 @@ questions from Brain. Small edits, follow-ups, read-only reconnaissance, specs,
 and reviews are subject to the same rules for the enabled products.
 Do not re-read files or retrieved records that Graph or Brain already answered for.
 A follow-up read MUST address a specific missing fact, stale result, heuristic
-relationship, or the focused source inspection required before editing. Repeating
+relationship, or source the payload did not carry. A result marked [complete] IS
+that source, so it is not one of those cases. Repeating
 an answered question in source is not verification.
 ` + verificationGuide + `
 Do not silently substitute source inspection, text search, or recollection for
