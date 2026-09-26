@@ -1711,3 +1711,35 @@ func TestShellQuoteMaskFallsBackOnUnbalancedQuotes(t *testing.T) {
 		t.Fatal("a backslash-escaped character was not masked")
 	}
 }
+
+// TestGraphVerbFromCommandHonoursQuotingAndHeredocs keeps the two halves of the instrument
+// symmetric. Discounting a quoted `grep` on the exploration side while still counting a quoted
+// `entire graph query` on the graph side would not be imprecision, it would be bias: both errors
+// push the report the same way.
+func TestGraphVerbFromCommandHonoursQuotingAndHeredocs(t *testing.T) {
+	t.Parallel()
+	notGraphCalls := []string{
+		`git commit -m "risky; entire graph query foo"`,
+		`gh pr create --title "stats" --body "run entire graph search --query x | head"`,
+		`echo 'then & entire graph impact --symbol Foo'`,
+		// A here-document's body is a file being written, whichever tool its lines name.
+		"cat > /tmp/run.sh <<'EOF'\nentire graph search --query x\nEOF",
+	}
+	for _, command := range notGraphCalls {
+		if got, ok := graphVerbFromCommand(command); ok {
+			t.Fatalf("graphVerbFromCommand(%q) = %q,true; the invocation is quoted text or heredoc data", command, got)
+		}
+	}
+	// Real invocations behind a real operator are untouched.
+	stillGraphCalls := map[string]string{
+		`git commit -m "wip" && entire graph impact --symbol Foo`:   "impact",
+		`entire graph search --query "a | b" --repo .`:              "search",
+		"cat > /tmp/x <<'EOF'\nnoop\nEOF\nentire graph query --q x": "query",
+	}
+	for command, want := range stillGraphCalls {
+		got, ok := graphVerbFromCommand(command)
+		if !ok || got != want {
+			t.Fatalf("graphVerbFromCommand(%q) = %q,%v; want %q,true", command, got, ok, want)
+		}
+	}
+}
