@@ -3,11 +3,11 @@
 ## full_graphify  (2026-08-14T16:26:53+00:00)
 ```
 === full_graphify  (locomo_results_20260814_162508.json)
-  ACC top_200: 8733.77%  (1345/1540)  avg_score=87.3377
-    multi-hop      8191.49%  (231/282)
-    open-domain    7395.83%  (71/96)
-    single-hop     9227.11%  (776/841)
-    temporal       8317.76%  (267/321)
+  ACC top_200: 87.34%  (1345/1540)  avg_score=87.3377
+    multi-hop       81.91%  (231/282)
+    open-domain     73.96%  (71/96)
+    single-hop      92.27%  (776/841)
+    temporal        83.18%  (267/321)
   GATES: drops=0 (0.00%)  zero_ctx=0 (0.00%)  empty_generated_answers=0 (0.00%)
   units/q mean=98.0 median=94.5 min=1  chars/q mean=16342 min=164
   zero-ctx by conv: none

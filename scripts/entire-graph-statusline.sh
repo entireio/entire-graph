@@ -11,9 +11,10 @@
 #
 # Segment order is fixed; any segment whose value is missing or zero is dropped rather than
 # rendered as a zero. Only WORK verbs are named (locate verbs search/neighbors/impact first,
-# then diff/analyze/commit/checkpoint/symbols/edges/snapshot/index). The self-reporting meta
-# verbs — stats, version, help, doctor, init-agents, agent-guide, capabilities — replace no
-# exploration, so they are struck from the verb split AND from the residual "other" count.
+# then def/explain/verify/diff/analyze/commit/checkpoint/symbols/edges/snapshot/snapshot-query/
+# index). The self-reporting meta verbs — stats, version, help, doctor, init-agents,
+# agent-guide, capabilities, health — replace no exploration, so they are struck from the verb
+# split AND from the residual "other" count.
 #
 # The line is held under 152 visible characters. When it would overflow, whole segments are
 # dropped from the right — session %, then explore tok, then explore calls — never truncated.
@@ -40,9 +41,16 @@
 # Environment:
 #   ENTIRE_GRAPH_BIN               explicit path to the entire-graph binary
 #   ENTIRE_GRAPH_STATUSLINE_SCOPE  session (default) | project
-#                                  project re-scans the whole ~/.claude/projects/<slug>
-#                                  directory — hundreds of MB on a busy project, and far too
-#                                  slow to render per keystroke. Opt in knowingly.
+#                                  project re-scans the whole sessions directory belonging to
+#                                  the REPOSITORY (resolved by `stats --repo`, not by where
+#                                  the session happened to be launched) — hundreds of MB on a
+#                                  busy project, and far too slow to render per keystroke.
+#                                  Opt in knowingly. Sessions are grouped by the directory
+#                                  Claude Code was launched from, so a repository with no
+#                                  sessions of its own renders nothing rather than borrowing
+#                                  a parent directory's total. Attributing individual calls
+#                                  by their recorded cwd would be finer-grained still; stats
+#                                  does not do that yet.
 #   ENTIRE_GRAPH_STATUSLINE_SINCE  window for scope=project (default 30d)
 #   ENTIRE_GRAPH_STATUSLINE_CACHE  0 disables the render cache (always recompute, in-line)
 #   NO_COLOR                       set to any value to drop ANSI escapes
@@ -127,7 +135,15 @@ fi
 # --- measure + render ----------------------------------------------------------------------
 render() {
 	if [ "$SCOPE" = "project" ]; then
-		report=$("$BIN" stats --repo "$REPO" --sessions-dir "$(dirname "$TRANSCRIPT")" \
+		# No --sessions-dir. Passing `dirname $TRANSCRIPT` looked like "this project's
+		# sessions" and is not: Claude Code files a transcript under the directory the
+		# session was LAUNCHED from, so a session started in a parent directory and
+		# working inside a sub-repo reported the parent's sessions under the sub-repo's
+		# name. Measured before this change, /devenv, /devenv/entire-graph and
+		# /devenv/graphmark all rendered the identical "~17.7K saved". `stats --repo`
+		# resolves the sessions directory from the repository itself, which is what the
+		# badge has always claimed to show.
+		report=$("$BIN" stats --repo "$REPO" \
 			--since "$SINCE" --format json 2>/dev/null) || return 1
 	else
 		report=$("$BIN" stats --repo "$REPO" --transcript "$TRANSCRIPT" \
@@ -177,12 +193,16 @@ render() {
 		}
 		# Self-reporting verbs: they answer questions ABOUT the graph and replace no
 		# exploration, so they must never be named in the badge nor counted as work.
+		# health belongs here -- it reports on the index, not on the codebase.
 		function isMeta(n) {
-			return index(" stats version help doctor init-agents agent-guide capabilities ", " " n " ") > 0
+			return index(" stats version help doctor init-agents agent-guide capabilities health ", " " n " ") > 0
 		}
 		# Verbs that do work on the codebase. Locate verbs rank first in the split.
+		# Must cover every non-meta verb in internal/cli/stats.go graphVerbs: one missing
+		# here is counted in the graph total but named nowhere, so it silently inflates
+		# the residual "other" bucket instead of appearing as the usage it is.
 		function isWork(n) {
-			return index(" query search neighbors impact diff analyze commit checkpoint symbols edges snapshot index ", " " n " ") > 0
+			return index(" query search neighbors impact def explain verify diff analyze commit checkpoint symbols edges snapshot snapshot-query index ", " " n " ") > 0
 		}
 		function isLocate(n) { return index(" query search neighbors impact ", " " n " ") > 0 }
 		# Segments are accumulated with their VISIBLE width (colour codes and multi-byte

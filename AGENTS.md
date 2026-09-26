@@ -2,8 +2,9 @@
 
 Hand this to any coding agent working in a repo where the `entire graph` plugin
 is installed. It moves initial code-location work from broad grep/read
-exploration to targeted graph queries; token impact depends on the task and
-model, and no end-to-end savings claim is current.
+exploration to targeted graph queries. Token impact depends on the task and the
+model, so treat any single figure as scenario-dependent; the measured range and
+the conditions behind it are in the [README](README.md).
 
 Two guidance surfaces coexist here on purpose. `.entire/agent-guide.md` is the
 generated activation artifact — regenerated in full by `init-agents`, so never
@@ -163,20 +164,22 @@ what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status l
 
 ## Repository-specific workflow
 
-Follow `.entire/agent-guide.md`, generated from repository state. Graph-only
-instructions start needed discovery with
+Follow `.entire/agent-guide.md`, generated from repository state. Both Graph-only
+and combined instructions make the same first-action obligation: the first action on
+any task that requires finding code is ONE
 `entire graph query --repo . --profile full --query "<task>"`.
-Combined instructions begin substantive orientation with
+That holds for small edits, follow-ups, tasks that already name the file, and tasks
+where a Brain brief has already reported locations — a brief reports where code is,
+not what depends on it. Combined instructions also begin substantive orientation with
 `entire brain brief "<task>" --json` unless equivalent task context is available.
-Reuse useful brief locations; do not require a redundant Graph query. Use Graph
-for additional discovery, structural analysis, and semantic revision comparisons,
-and Brain for retained knowledge, prior decisions, and checkpoint/session history.
+Use Graph for discovery, structural analysis, and semantic revision comparisons, and
+Brain for retained knowledge, prior decisions, and checkpoint/session history.
 
-Direct source inspection is appropriate when locations are sufficient. Skip
-ceremonial queries for small edits and follow-ups. Current source and executed
-tests establish present behavior; historical answers explain prior intent.
-Investigate disagreements. Ordinary query failures do not authorize automatic
-installation, configuration, or repair. See [the contract](docs/agent-coordination.md).
+Current source and executed tests establish present behavior; historical answers
+explain prior intent. Investigate disagreements. A failed query is reported and falls
+back to direct source inspection for that query only — it does not retire the tool for
+the session — and does not authorize automatic installation, configuration, or repair.
+See [the contract](docs/agent-coordination.md).
 
 ## Operating doctrine
 
@@ -211,7 +214,7 @@ mise run test    # go test ./...
 mise run check   # fmt + vet + race tests + build
 ```
 
-Contract rules that must not break: schema `1.x` is frozen and additive-only (`docs/adr/0001-ga-schema-contract.md`); the provider is **no-egress** (never add remote fetches, hosted API calls, telemetry, or runtime grammar downloads); `compound-v1` symbol IDs must stay stable across ordinary edits; unsupported/unparseable files must surface as machine-readable partial failures, never silent drops. All logic lives under `internal/` (`sem` = parsing/graph/search, `cli` = hand-rolled dispatch, `gitutil` = git subprocess); `cmd/entire-graph/main.go` is a thin entry point. The plugin manifest (`entire-plugin.yml`) registers the subcommand `graph`, so users type `entire graph ...`. This project was **previously named `entire-sem`** — do not reintroduce the old name. **Entire Brain** (`entire-brain`) is the separate downstream consumer of this provider's NDJSON — not an old name for this project.
+Contract rules that must not break: schema `1.x` is frozen and additive-only (`docs/adr/0001-ga-schema-contract.md`); the provider is **no-egress** (never add remote fetches, hosted API calls, telemetry, or runtime grammar downloads); `compound-v1` symbol IDs must stay stable across ordinary edits, and any parser change that RE-KEYS existing symbols must bump `IdentityRevision` (`internal/sem/provider.go`) in the same commit — the record and search caches are keyed on the git tree of the source, which a parser edit does not change, so without the bump upgraded users keep being served the old symbols from a stale cache and the fix is invisible; unsupported/unparseable files must surface as machine-readable partial failures, never silent drops. All logic lives under `internal/` (`sem` = parsing/graph/search, `cli` = hand-rolled dispatch, `gitutil` = git subprocess); `cmd/entire-graph/main.go` is a thin entry point. The plugin manifest (`entire-plugin.yml`) registers the subcommand `graph`, so users type `entire graph ...`. This project was **previously named `entire-sem`** — do not reintroduce the old name. **Entire Brain** (`entire-brain`) is the separate downstream consumer of this provider's NDJSON — not an old name for this project.
 
 ### Working in a scratch worktree: adopt the session first
 

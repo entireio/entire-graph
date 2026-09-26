@@ -135,20 +135,28 @@ func TestCoordinationActivationOrdersAndStableMigration(t *testing.T) {
 		})
 	}
 }
+
+// TestCoordinationNoRuntimeProbes keeps the normal-mode guides free of tool-presence probing:
+// the guide must not tell an agent to go and find out whether Graph or Brain is installed.
+//
+// "FIRST action" and "SEARCH FIRST" used to be banned here alongside those probes. They are not
+// probes; they are the directive that makes the product get used, and banning them was benchmark
+// arm-fairness doctrine applied to shipped text. See the header comment in guide.go, and
+// TestNormalGuideStaysDirective, which now asserts the opposite of what this list used to.
 func TestCoordinationNoRuntimeProbes(t *testing.T) {
 	for _, guide := range []string{GraphGuide, BrainGuide(), CombinedGuide} {
-		for _, bad := range []string{"entire plugin list", "entire graph version", "entire brain version", "command -v", "setup.json", "if Brain is installed", "FIRST action", "SEARCH FIRST"} {
+		for _, bad := range []string{"entire plugin list", "entire graph version", "entire brain version", "command -v", "setup.json", "if Brain is installed"} {
 			if strings.Contains(guide, bad) {
 				t.Errorf("guide contains %q", bad)
 			}
 		}
-		for _, want := range []string{"sufficient locations", "focused tests", "untrusted", "Do not automatically install"} {
+		for _, want := range []string{"useful locations", "focused tests", "untrusted", "Do not automatically install"} {
 			if !strings.Contains(guide, want) {
 				t.Errorf("guide missing %q", want)
 			}
 		}
 	}
-	for _, want := range []string{`entire brain brief "<task>" --json`, "equivalent task context", "redundant", "identified gap", "entities history", "memory-informed review", "workspace", "working tree", "stored index"} {
+	for _, want := range []string{`entire brain brief "<task>" --json`, "equivalent task context", "not redundant", "identified gap", "entities history", "memory-informed review", "workspace", "working tree", "stored index"} {
 		if !strings.Contains(CombinedGuide, want) {
 			t.Errorf("combined guide missing %q", want)
 		}

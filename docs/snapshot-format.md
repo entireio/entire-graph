@@ -86,6 +86,32 @@ segment; cut at the FIRST separator only inside the `external:<kind>:<value>`
 namespace, whose kind cannot contain a `:`; and take a file path from the
 record's own `file_path` field rather than from the ID.
 
+**Symbol IDs are stable across content edits, and NOT across releases.** This
+is two separate guarantees and consumers routinely conflate them.
+
+*Within a release*, an ID is stable across ordinary content edits: it encodes no
+line numbers, so editing a body, moving a symbol down a file, or editing an
+unrelated symbol does not move it. This is the property derived data can be keyed
+on, and it is pinned by tests.
+
+*Between releases*, IDs are NOT guaranteed stable. A parser-identity correction —
+fixing a symbol that was mis-qualified, mis-classified, or should never have been
+emitted — re-keys the affected symbols by construction, and entire-graph ships
+such corrections in ordinary minor releases. Through `0.x`, expect at least one
+identity revision per minor release, affecting any language.
+
+The signal is the `identity_revision` header field, described in
+[ADR 0001](adr/0001-ga-schema-contract.md). **A consumer that persists symbol IDs
+must store `identity_revision` alongside them and re-index when it changes**;
+comparing the complete opaque string for equality is the whole protocol. A
+consumer that ignores it will silently serve IDs that no longer resolve, and
+entire-graph's own on-disk caches are namespaced by it for exactly this reason.
+
+Note that a correction moves IDs in both directions. Removing a phantom symbol
+can move a *real* symbol back to a shorter ID, because the phantom was forcing a
+`#sig:` disambiguation suffix onto it. An ID gaining or losing a `#sig:` suffix
+is therefore expected across an identity revision, not a sign of corruption.
+
 **The final `summary` record is authoritative for aggregate metadata.** It
 carries the real `languages`, `language_tiers` (each present language
 classified `semantic` or `inventory-only`), `warnings`, `partial_failures`,

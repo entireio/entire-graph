@@ -27,6 +27,20 @@ jobs:
             exit 1
           fi
 
+  # Release archives are immutable once published, so third-party attribution
+  # has to be correct before a tag, not after it. This regenerates NOTICES from
+  # the vendored license files and the resolved module graph and fails on any
+  # drift.
+  notices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with: { go-version: "1.27.x" }
+      - run: sh scripts/gen-notices.sh --check
+
   build:
     strategy:
       matrix:
