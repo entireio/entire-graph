@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -673,7 +674,6 @@ func TestIsExploringShellCommandClassification(t *testing.T) {
 		`rtk grep -n foo bar.go`,
 		`sudo find / -name "*.go"`,
 		`cat src/app.go`,
-		`ls -la | grep foo`,
 		`sed -n '1,80p' file.go`,
 		"cat a.go\nhead -5 b.go",
 	}
@@ -688,6 +688,12 @@ func TestIsExploringShellCommandClassification(t *testing.T) {
 		``,
 		`npm test`,
 		`FOO=grep make build`,
+		// `ls -la | grep foo` was pinned as exploration here. It is not: `ls` is what reads, and
+		// the grep only filters a listing that is already in context — no repository content is
+		// located by the downstream stage. Classifying any pipe segment made `go test ./... 2>&1 |
+		// tail -40` a locate call too, and 32.2% of the matches in a real corpus were
+		// pipe-downstream-only. See TestIsExploringShellCommandCountsOnlyPipelineHeads.
+		`ls -la | grep foo`,
 	}
 	for _, command := range notExplore {
 		if isExploringShellCommand(command) {
@@ -1345,5 +1351,256 @@ func TestStatsPruneKeepsAFileWhoseMtimeIsExactlyTheCutoff(t *testing.T) {
 	if justAfter.transcripts != 0 {
 		t.Fatalf("a transcript one nanosecond older than the cutoff was parsed (%d, want 0)",
 			justAfter.transcripts)
+	}
+}
+
+// --- instrument repairs -----------------------------------------------------------------
+
+// runStatsRawJSON decodes the report as a bare map. It exists so a test can assert on a key
+// BEFORE the Go struct carries a field for it: a missing key then fails at runtime, which is what
+// makes these regressions provable against the pre-fix binary rather than merely uncompilable.
+func runStatsRawJSON(t *testing.T, args ...string) map[string]any {
+	t.Helper()
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out},
+		append([]string{"stats"}, args...)); err != nil {
+		t.Fatalf("stats failed: %v\n%s", err, out.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("stats json invalid: %v\n%s", err, out.String())
+	}
+	return decoded
+}
+
+func rawInt(t *testing.T, report map[string]any, key string) int64 {
+	t.Helper()
+	value, ok := report[key]
+	if !ok {
+		t.Fatalf("stats JSON has no key %q; keys present: %v", key, sortedKeys(report))
+	}
+	number, ok := value.(float64)
+	if !ok {
+		t.Fatalf("stats JSON key %q is %T, want a number", key, value)
+	}
+	return int64(number)
+}
+
+func sortedKeys(report map[string]any) []string {
+	keys := make([]string, 0, len(report))
+	for key := range report {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestStatsUnflooredSavingsKeepsTheLosses pins the one direct SIGN bias in the report.
+//
+// Savings are computed per session and the total sums max(0, saved). Wins are kept and losses are
+// discarded, so the headline can only ever move up: a corpus that lost bytes overall still reports
+// a positive saving. The floored total stays — scripts/entire-graph-statusline.sh reads it on every
+// prompt render, and its awk `number()` returns -1 for a MISSING key, so a genuine negative on that
+// key would be indistinguishable from an absent one — and the signed total is published beside it.
+//
+// Two sessions, one of each sign: s1 saves 500 B, s2 loses 1,900 B. Floored: +500. Truth: -1,400.
+func TestStatsUnflooredSavingsKeepsTheLosses(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	// s1 SAVES: exploration measured at (500+700)/2 = 600 B/call, one locate call costing 100 B.
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "a"`}),
+		toolResultLine(t, now, "g1", strings.Repeat("g", 100)),
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "a"}),
+		toolResultLine(t, now, "e1", strings.Repeat("x", 500)),
+		toolUseLine(t, now, "Read", "e2", map[string]any{"file_path": "/x/a.go"}),
+		toolResultLine(t, now, "e2", strings.Repeat("y", 700)),
+	)
+	// s2 LOSES: exploration measured at 100 B/call, one locate call costing 2,000 B.
+	writeTranscript(t, sessions, "s2.jsonl",
+		toolUseLine(t, now, "Bash", "g2", map[string]any{"command": `entire graph search --query "b"`}),
+		toolResultLine(t, now, "g2", strings.Repeat("G", 2000)),
+		toolUseLine(t, now, "Grep", "e3", map[string]any{"pattern": "b"}),
+		toolResultLine(t, now, "e3", strings.Repeat("z", 100)),
+	)
+
+	raw := runStatsRawJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+
+	// The published badge keys are unchanged: floored, and the loss-making session is not counted.
+	if got := rawInt(t, raw, "estimated_savings_bytes"); got != 500 {
+		t.Fatalf("floored savings = %d, want 500 (the badge must not change)", got)
+	}
+	if got := rawInt(t, raw, "estimated_savings_est_tokens"); got != 125 {
+		t.Fatalf("floored savings tokens = %d, want 125", got)
+	}
+	if got := rawInt(t, raw, "sessions_with_positive_savings"); got != 1 {
+		t.Fatalf("sessions with positive savings = %d, want 1", got)
+	}
+	// ...and the signed total says what the floored one cannot.
+	if got := rawInt(t, raw, "estimated_savings_bytes_unfloored"); got != -1400 {
+		t.Fatalf("unfloored savings = %d, want -1400 (+500 saved, -1900 lost)", got)
+	}
+	if got := rawInt(t, raw, "estimated_savings_est_tokens_unfloored"); got != -350 {
+		t.Fatalf("unfloored savings tokens = %d, want -350", got)
+	}
+}
+
+// TestStatsUnflooredSavingsIsAdditiveOnly: a session with only one side of the comparison
+// contributes 0 to BOTH totals. That zero means "nothing to compare against", not "a measured
+// result of zero", and conflating it with a loss would invent a counterfactual.
+func TestStatsUnflooredSavingsIsAdditiveOnly(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", strings.Repeat("s", 10)),
+	)
+	raw := runStatsRawJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if got := rawInt(t, raw, "estimated_savings_bytes_unfloored"); got != 0 {
+		t.Fatalf("unfloored savings = %d, want 0 for a session with no exploration to price against", got)
+	}
+}
+
+// TestIsExploringShellCommandCountsOnlyPipelineHeads pins the classifier's stage rule.
+//
+// Only the LEADING stage of a pipeline reads the repository; everything downstream reshapes text
+// that is already in context. Counting any pipe segment whose first word was grep/rg/head/tail/awk
+// made `go test ./... 2>&1 | tail -40` a locate call: 32.2% of a real corpus's exploration matches
+// were pipe-downstream-only.
+//
+// It is per STATEMENT, not per command: `cd internal && grep -rn foo .` is a real search, so the
+// head of every `;`/`&&`/`||`/newline-separated statement is classified, not just the first.
+func TestIsExploringShellCommandCountsOnlyPipelineHeads(t *testing.T) {
+	t.Parallel()
+	downstreamOnly := []string{
+		`go test ./... 2>&1 | tail -40`,
+		`go build ./... 2>&1 | head -20`,
+		`git log --oneline | head -5`,
+		`ls -la | grep foo`,
+		`docker ps | awk '{print $1}'`,
+		`curl -s http://x | sed -n '1,5p'`,
+	}
+	for _, command := range downstreamOnly {
+		if isExploringShellCommand(command) {
+			t.Fatalf("%q reads nothing from the repo; only its output formatting is grep-shaped", command)
+		}
+	}
+	headsThatDoRead := map[string]bool{
+		`grep -rn foo . | head -20`:             true,
+		`cd internal && grep -rn foo .`:         true,
+		`npm run lint || grep -n TODO src/x.ts`: true,
+		`go build ./... ; cat internal/x.go`:    true,
+		"go vet ./...\nrg --files internal":     true,
+		`find . -name '*.go' | xargs wc -l`:     true,
+	}
+	for command, want := range headsThatDoRead {
+		if got := isExploringShellCommand(command); got != want {
+			t.Fatalf("isExploringShellCommand(%q) = %v, want %v", command, got, want)
+		}
+	}
+}
+
+// TestIsExploringShellCommandIgnoresWrites: a write is not a locate. No redirection was parsed at
+// all before this, so `cat > file`, `cat <<'EOF' > file`, `tee` and `sed -i` all counted as
+// exploration: 4,502 calls in a real 2,690-transcript corpus, on top of what the head rule removes.
+// A heredoc BODY is data, not commands, so its lines are not classified either.
+func TestIsExploringShellCommandIgnoresWrites(t *testing.T) {
+	t.Parallel()
+	writes := []string{
+		`cat > /tmp/script.sh`,
+		`cat >> notes.md`,
+		`cat > internal/cli/x.go <<'EOF'`,
+		"cat > /tmp/run.sh <<'EOF'\ngrep -rn foo .\nfind . -name '*.go'\nEOF",
+		"cat <<EOF > /tmp/run.sh\nhead -5 a.go\nEOF",
+		`tee /tmp/out.log`,
+		`sed -i 's/a/b/' internal/cli/stats.go`,
+		`sed -i.bak 's/a/b/' x.go`,
+		`sed --in-place 's/a/b/' x.go`,
+	}
+	for _, command := range writes {
+		if isExploringShellCommand(command) {
+			t.Fatalf("%q writes a file; it is not a locate call", command)
+		}
+	}
+	reads := []string{
+		`cat internal/cli/stats.go`,
+		`cat internal/cli/stats.go 2>/dev/null`,
+		`sed -n '1,80p' internal/cli/stats.go`,
+		`grep -rn foo . > /tmp/hits.txt`,
+		`cat a.go b.go`,
+	}
+	for _, command := range reads {
+		if !isExploringShellCommand(command) {
+			t.Fatalf("%q reads the repo; it must still count as exploration", command)
+		}
+	}
+}
+
+// TestStatsDoesNotCountWritesOrPipeTailsAsExploration is the end-to-end half: the classifier fix
+// has to reach the report, not just the predicate.
+func TestStatsDoesNotCountWritesOrPipeTailsAsExploration(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "b1", map[string]any{"command": `go test ./... 2>&1 | tail -40`}),
+		toolResultLine(t, now, "b1", strings.Repeat("t", 900)),
+		toolUseLine(t, now, "Bash", "b2", map[string]any{"command": "cat > /tmp/run.sh <<'EOF'\ngrep -rn foo .\nEOF"}),
+		toolResultLine(t, now, "b2", "ok"),
+		toolUseLine(t, now, "Bash", "b3", map[string]any{"command": `grep -rn "login" internal | head -20`}),
+		toolResultLine(t, now, "b3", strings.Repeat("h", 400)),
+	)
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if report.ExplorationCalls != 1 {
+		t.Fatalf("exploration calls = %d, want 1 (only the grep); by kind %+v",
+			report.ExplorationCalls, report.ExplorationByKind)
+	}
+}
+
+// TestGraphVerbFromCommandCountsSemEdgesAndSymbols: `entire sem edges|symbols` is the structural
+// locate pair this repo's own agent instructions recommend by name, and it was counted in NEITHER
+// arm — not a graph call, and not exploration either — so a session driven entirely by it read as
+// a session that used no tool at all.
+func TestGraphVerbFromCommandCountsSemEdgesAndSymbols(t *testing.T) {
+	t.Parallel()
+	semCalls := map[string]string{
+		`entire sem edges --repo . --format ndjson`:     "edges",
+		`entire sem symbols --repo . --format ndjson`:   "symbols",
+		`cd /repo && entire sem edges --repo .`:         "edges",
+		`rtk entire sem symbols --repo . | head -20`:    "symbols",
+		`ENTIRE_REPO_ROOT=/r entire sem edges --repo .`: "edges",
+	}
+	for command, want := range semCalls {
+		got, ok := graphVerbFromCommand(command)
+		if !ok || got != want {
+			t.Fatalf("graphVerbFromCommand(%q) = %q,%v; want %q,true", command, got, ok, want)
+		}
+	}
+	notSemCalls := []string{
+		`entire sem`,
+		`cat /repos/entire/sem/edges.go`,
+		`echo "run entire sem edges first"`,
+	}
+	for _, command := range notSemCalls {
+		if got, ok := graphVerbFromCommand(command); ok {
+			t.Fatalf("graphVerbFromCommand(%q) = %q,true; want no match", command, got)
+		}
+	}
+}
+
+// TestSemGraphVerbsAreIndexable: every verb the sem form reports must already be in the closed set
+// the rest of the report indexes by, or it lands in graph_calls_by_verb under a name nothing else
+// knows — the same drift TestGraphVerbsCoverEveryCommand exists to stop.
+func TestSemGraphVerbsAreIndexable(t *testing.T) {
+	t.Parallel()
+	for verb := range semGraphVerbs {
+		if !graphVerbs[verb] {
+			t.Fatalf("semGraphVerbs[%q] is not in graphVerbs; it would be uncounted downstream", verb)
+		}
 	}
 }
