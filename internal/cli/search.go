@@ -1417,6 +1417,41 @@ func searchResultCarriesCompleteBody(result sem.SearchResult) bool {
 	return false
 }
 
+// completeMarker rides the agent header for a body that is the whole symbol. It is the
+// only per-result token that can remove a follow-up read, which is the only way this
+// tool saves anything: a graph call that routes the agent to a file it then opens is
+// additive, and measured that way it loses. The tool makes +19.6% MORE Read calls than
+// the no-tool baseline while total tool calls fall 14.5% (search_span_merge.go:20-23,
+// n=55 paired), and re-reading a file the payload already printed is 10.1% of
+// post-payload tool calls (search.go:1245). Bodies removed greps and added reads.
+//
+// ~11 bytes per marked result against a follow-up read the engine prices at a whole
+// turn (search_enclosure.go:10-27: 95.9% of billed tokens are context re-read, a mean
+// turn re-reads ~47.5k tokens to deliver ~390 tokens of new information).
+const completeMarker = "[complete]"
+
+// searchResultNeedsNoFollowUpRead is deliberately NARROWER than
+// searchResultCarriesCompleteBody, and the difference is the whole point.
+//
+// complete-symbol and full-unit both "assert that the reader is looking at the whole
+// unit and needs no follow-up read" (search_enclosure.go:779-781). head-window does
+// NOT: the allocator spent budget widening it, but ":774-776" is explicit that a window
+// "deliberately does NOT get complete-symbol: that signal is the promise 'you need no
+// follow-up read', and a window cannot make it." callee-hop is a separate promise again.
+//
+// So the broad predicate is right for "did we spend bytes on source here" (its job: the
+// body diet) and wrong for "may the agent skip the file". Marking a window complete
+// would send the agent away holding a fragment it believes is whole, which is worse
+// than not marking anything at all.
+func searchResultNeedsNoFollowUpRead(result sem.SearchResult) bool {
+	for _, signal := range result.Signals {
+		if signal == sem.CompleteSymbolSignal || signal == sem.FullUnitSignal {
+			return true
+		}
+	}
+	return false
+}
+
 // orderAgentSearchResults groups a payload for `--format agent`: candidate fix sites, then the
 // related-site block, then docs and fixtures. The agent format is a hard byte cap that fits
 // results one block at a time, so a group HEADER is the one thing it cannot afford — the label
@@ -2349,6 +2384,38 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 		return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget)
 	}
 
+	// A result that promises no follow-up read is BINARY: the whole symbol, or a locator.
+	// CompleteSymbolSignal's exported contract says a result carrying it "must never be
+	// abbreviated on the way out" (search_enclosure.go:342-344), and the span loop below
+	// abbreviates: it walks the body down line by line until some prefix fits. On a
+	// promise-carrying result that is the worst of both worlds -- the bytes are spent AND
+	// the agent still opens the file -- and it turns a truthful marker into a false one,
+	// because the header would then vouch for a body that is missing its tail.
+	//
+	// So: offer the complete body once. If it does not fit, fall through to a locator with
+	// no marker, which costs ~40 bytes and tells the truth. Dropping to a locator is not a
+	// loss here: an abbreviated complete symbol was never going to remove the read that
+	// justifies its cost.
+	if searchResultNeedsNoFollowUpRead(result) {
+		text := strings.Join(lines, "\n")
+		startLine, endLine := snippetStart, snippetStart+len(lines)-1
+		for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag, scored, completeMarker) {
+			// The minimal rung drops the marker, so it must not be used to seat a body:
+			// measured at a 200-byte cap it printed the whole symbol under `budget.go:10 *`,
+			// handing the agent a complete answer with nothing saying so -- which buys the
+			// bytes and none of the saved read. Body present implies marker present; if only
+			// the marker-less rung fits, this is a locator instead.
+			if !strings.Contains(header, completeMarker) {
+				break
+			}
+			candidate := []byte(header + text + "\n")
+			if budget <= 0 || len(candidate) <= budget {
+				return candidate
+			}
+		}
+		return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget)
+	}
+
 	// Prefer the widest balanced span containing the focus line. The location
 	// in the header is rebuilt for each candidate, so it always describes the
 	// lines actually displayed rather than the original untrimmed region.
@@ -2367,7 +2434,9 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 			right := left + span - 1
 			text := strings.Join(lines[left:right+1], "\n")
 			startLine, endLine := snippetStart+left, snippetStart+right
-			for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag, scored) {
+			// No marker: this loop only runs for results that made no no-follow-up promise,
+			// and it is also the loop that abbreviates, so nothing it emits could honour one.
+			for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag, scored, "") {
 				candidate := []byte(header + text + "\n")
 				if budget <= 0 || len(candidate) <= budget {
 					balance := focus - left - (right - focus)
@@ -2397,7 +2466,16 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 // from the best of a bad lot, and its absence from this format let a query about a technology
 // absent from a repo come back as six confident-looking hits. It rides on the two roomier
 // variants at ~7 bytes each and is dropped by the minimal one along with rank and name.
-func agentSearchLocationHeaders(rank int, path string, start, end, focus int, name, tag, scored string) []string {
+// `complete` is completeMarker when the body below the header is the whole symbol, and
+// empty otherwise. It rides the two roomier variants beside `tag`; the minimal rung
+// drops it along with rank and name.
+//
+// That makes the minimal rung unusable for seating a complete body, and the caller
+// enforces it rather than this function: agentSearchPrimaryBlock stops at the first
+// marker-less rung and emits a locator instead. Measured before that guard existed, a
+// 200-byte cap printed the whole symbol under `budget.go:10 *` -- a complete answer
+// with nothing saying it was complete, which costs the bytes and saves no read.
+func agentSearchLocationHeaders(rank int, path string, start, end, focus int, name, tag, scored, complete string) []string {
 	location := fmt.Sprintf("%d. %s:%d", rank, path, start)
 	if end != start {
 		location += fmt.Sprintf("-%d", end)
@@ -2409,6 +2487,9 @@ func agentSearchLocationHeaders(rank int, path string, start, end, focus int, na
 	if tag != "" {
 		rich += " " + tag
 	}
+	if complete != "" {
+		rich += " " + complete
+	}
 	rich += scored + fmt.Sprintf(" [focus:%d]\n", focus)
 	compact := location
 	if name != "" {
@@ -2417,13 +2498,20 @@ func agentSearchLocationHeaders(rank int, path string, start, end, focus int, na
 	if tag != "" {
 		compact += " " + tag
 	}
+	if complete != "" {
+		compact += " " + complete
+	}
 	compact += scored + " *\n"
 	minimal := fmt.Sprintf("%s:%d *\n", path, focus)
 	return []string{rich, compact, minimal}
 }
 
+// A locator carries no body, so it never carries completeMarker: the marker vouches for
+// source printed beneath it, and there is none here. This is the landing place for a
+// complete symbol that could not fit its budget, which is exactly the case where
+// claiming completeness would be worst.
 func fitAgentSearchLocation(rank int, path string, focus int, name, tag, scored string, budget int) []byte {
-	for _, header := range agentSearchLocationHeaders(rank, path, focus, focus, focus, name, tag, scored) {
+	for _, header := range agentSearchLocationHeaders(rank, path, focus, focus, focus, name, tag, scored, "") {
 		if budget <= 0 || len(header) <= budget {
 			return []byte(header)
 		}
