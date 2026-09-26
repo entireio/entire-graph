@@ -25,7 +25,7 @@ default**; `--head` switches to the committed tree.
 
 | Command | What it does |
 | --- | --- |
-| `query` | Ranked source regions for a plain-language query. Defaults: `--format json`, `--profile fast` (the installed agent guide asks for `--profile full`). Formats: `json`, `ndjson`, `text`, `agent`. See [search results](search.md). |
+| `query` | Ranked source regions for a plain-language query. Defaults: `--format json`, `--profile fast` (the installed agent guide asks for `--profile full --format agent`, which is ~2.9x cheaper than the json default for the same results). Formats: `json`, `ndjson`, `text`, `agent`. See [search results](search.md). |
 | `def` | One name's declaration, fields, and method surface. Default format is text. |
 | `explain` | Resolves symbols named by a failing build or test into definitions and context. |
 | `neighbors` | Direct relations of one symbol (`--relation`, `--direction`, `--depth 1\|2`). Ambiguous names return a definition list; disambiguate with `--file`. |
