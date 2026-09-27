@@ -766,19 +766,23 @@ def tests():
     reported alongside, because losing the real error to a cleanup complaint would be worse
     than the leak.
     """
+    # THIS SUITE RETURNS TRUTHY ON SUCCESS -- its caller is `sys.exit(0 if tests() else 1)`.
+    # The wrapper first returned 1 on residue, which is TRUTHY, so a detected leak would have
+    # exited 0 and passed. A cleanup guard that reports the leak and then reports success is
+    # worse than no guard: it prints a FAIL line and still goes green.
     raised = None
     try:
-        rc = _tests_body()
+        ok = _tests_body()
     except BaseException as exc:
-        raised, rc = exc, 1
+        raised, ok = exc, False
     survivors = _finish_tempdirs()
     if survivors:
         print(f"  FAIL the suite left {len(survivors)} owned temp path(s) behind: "
               f"{survivors[0]}")
-        rc = 1
+        ok = False
     if raised is not None:
         raise raised
-    return rc
+    return ok
 
 
 if __name__ == "__main__":
