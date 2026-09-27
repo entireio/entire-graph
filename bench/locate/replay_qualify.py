@@ -470,9 +470,32 @@ def qualify(root):
 
 
 
+# EVERY temp directory this suite makes, so the run can remove them. Without it each --test
+# leaked its fixtures: a single sweep runs the suite dozens of times, the seal cases BUILD A GO
+# BINARY into a fresh directory each pass, and by the end of one session 15,946 directories and
+# 1.1 GB were sitting in TMPDIR. Nothing failed, which is why nobody noticed.
+_TEMPDIRS = []
+
+
+def _mkdtemp(prefix):
+    import tempfile
+    d = tempfile.mkdtemp(prefix=prefix)
+    _TEMPDIRS.append(d)
+    return d
+
+
+def _cleanup_tempdirs():
+    import shutil
+    for d in _TEMPDIRS:
+        shutil.rmtree(d, ignore_errors=True)
+    n = len(_TEMPDIRS)
+    _TEMPDIRS.clear()
+    return n
+
+
 def _tmpjsonl(line):
     import tempfile
-    d = tempfile.mkdtemp(prefix="rq-")
+    d = _mkdtemp(prefix="rq-")
     p = os.path.join(d, "t.jsonl")
     with open(p, "w") as fh:
         fh.write('{"type":"x","tool_use":1,"tool_result":1}\n' + line + "\n")
@@ -486,7 +509,7 @@ def _tier_for_command(cmd, body):
     graph render.
     """
     import tempfile
-    d = tempfile.mkdtemp(prefix="rq-")
+    d = _mkdtemp(prefix="rq-")
     with open(os.path.join(d, "t.jsonl"), "w") as fh:
         fh.write(json.dumps({"message": {"content": [
             {"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": cmd}}]}}) + "\n")
@@ -499,7 +522,7 @@ def _tier_for_command(cmd, body):
 def _tier_for_identity():
     """Classify one clean invocation whose response carries a real commit and tree."""
     import tempfile
-    d = tempfile.mkdtemp(prefix="rq-")
+    d = _mkdtemp(prefix="rq-")
     body = json.dumps({"commit": "a" * 40, "tree": "b" * 40, "results": []})
     with open(os.path.join(d, "t.jsonl"), "w") as fh:
         fh.write(json.dumps({"message": {"content": [
@@ -514,7 +537,7 @@ def _tier_for_identity():
 def _qualify_str_input():
     """A Bash block whose `input` is a bare string reached .get and raised."""
     import tempfile
-    d = tempfile.mkdtemp(prefix="rq-")
+    d = _mkdtemp(prefix="rq-")
     with open(os.path.join(d, "t.jsonl"), "w") as fh:
         fh.write(json.dumps({"message": {"content": [
             {"type": "tool_use", "id": "u1", "name": "Bash", "input": "entire graph query --repo ."}]}}) + "\n")
@@ -710,6 +733,7 @@ def tests():
           "frozen-render")
     check("a top-level JSON list does not crash", tool_events(_tmpjsonl("[1,2,3]")), [])
     check("a string Bash input does not crash", _qualify_str_input(), True)
+    _removed = _cleanup_tempdirs()
     print("  ALL PASS" if ok else "  FAILURES ABOVE")
     return ok
 

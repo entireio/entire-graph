@@ -95,6 +95,29 @@ def seal_refusal(build, fixtures, outdir_exists, allow_dirty):
     return None
 
 
+# EVERY temp directory this suite makes, so the run can remove them. Without it each --test
+# leaked its fixtures: a single sweep runs the suite dozens of times, the seal cases BUILD A GO
+# BINARY into a fresh directory each pass, and by the end of one session 15,946 directories and
+# 1.1 GB were sitting in TMPDIR. Nothing failed, which is why nobody noticed.
+_TEMPDIRS = []
+
+
+def _mkdtemp(prefix):
+    import tempfile
+    d = tempfile.mkdtemp(prefix=prefix)
+    _TEMPDIRS.append(d)
+    return d
+
+
+def _cleanup_tempdirs():
+    import shutil
+    for d in _TEMPDIRS:
+        shutil.rmtree(d, ignore_errors=True)
+    n = len(_TEMPDIRS)
+    _TEMPDIRS.clear()
+    return n
+
+
 def _git(path, *args):
     subprocess.run(["git", "-C", path] + list(args), capture_output=True, check=False)
 
@@ -102,7 +125,7 @@ def _git(path, *args):
 def _temp_repo(dirty=False):
     """A real git repository, optionally with an uncommitted change."""
     import tempfile
-    d = tempfile.mkdtemp(prefix="seal-fx-")
+    d = _mkdtemp(prefix="seal-fx-")
     _git(d, "init", "-q")
     with open(os.path.join(d, "a.txt"), "w") as fh:
         fh.write("one\n")
@@ -121,7 +144,7 @@ def _temp_go_binary(dirty):
     So these drive the actual entrypoint against actual build stamps.
     """
     import tempfile
-    d = tempfile.mkdtemp(prefix="seal-bin-")
+    d = _mkdtemp(prefix="seal-bin-")
     with open(os.path.join(d, "go.mod"), "w") as fh:
         fh.write("module sealprobe\n\ngo 1.24\n")
     with open(os.path.join(d, "main.go"), "w") as fh:
@@ -147,7 +170,7 @@ def _e2e(ck):
     """The PRODUCTION PATH, not the predicate: real repos, real build stamps, real exit codes."""
     import json as _j, tempfile
     clean_fx, dirty_fx = _temp_repo(), _temp_repo(dirty=True)
-    fresh = lambda: os.path.join(tempfile.mkdtemp(prefix="seal-out-"), "new")
+    fresh = lambda: os.path.join(_mkdtemp(prefix="seal-out-"), "new")
 
     for label, dirty, expect_refusal in (("a clean build is sealed", False, False),
                                          ("a dirty build is refused", True, True)):
@@ -220,6 +243,7 @@ def _selftest():
     _e2e(lambda cond, label, detail="": (
         print(("  ok   " if cond else "  FAIL ") + label + (("  <- " + detail) if detail and not cond else "")),
         None if cond else fails.append(label)))
+    _removed = _cleanup_tempdirs()
     print("\nALL SEAL REFUSALS HELD" if not fails else "\nFAILURES: " + ", ".join(fails))
     return 1 if fails else 0
 

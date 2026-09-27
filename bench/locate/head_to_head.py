@@ -433,9 +433,32 @@ def graph_arm(binary,repo,query,name,target_file,budget,tgt_lo=0,tgt_hi=0):
 # SYNTHETIC FALSIFIERS for the phrase arm. Each targets one defect peer review
 # found, and each FAILS on the code as it stood before this commit. Run: --test
 # ---------------------------------------------------------------------------
+# EVERY temp directory this suite makes, so the run can remove them. Without it each --test
+# leaked its fixtures: a single sweep runs the suite dozens of times, the seal cases BUILD A GO
+# BINARY into a fresh directory each pass, and by the end of one session 15,946 directories and
+# 1.1 GB were sitting in TMPDIR. Nothing failed, which is why nobody noticed.
+_TEMPDIRS = []
+
+
+def _mkdtemp(prefix):
+    import tempfile
+    d = tempfile.mkdtemp(prefix=prefix)
+    _TEMPDIRS.append(d)
+    return d
+
+
+def _cleanup_tempdirs():
+    import shutil
+    for d in _TEMPDIRS:
+        shutil.rmtree(d, ignore_errors=True)
+    n = len(_TEMPDIRS)
+    _TEMPDIRS.clear()
+    return n
+
+
 def _mkrepo(files):
     import tempfile
-    d = tempfile.mkdtemp(prefix="pharm-")
+    d = _mkdtemp(prefix="pharm-")
     for rel, body in files.items():
         fp = os.path.join(d, rel)
         os.makedirs(os.path.dirname(fp), exist_ok=True)
@@ -626,7 +649,7 @@ def _selftest(require_orchestration=False):
     import tempfile as _tfa, subprocess as _spa
     # A REAL Go binary with REAL vcs stamps. sys.executable has none, so seal_run correctly
     # refused it and took the test process with it -- the refusal working exactly as designed.
-    _bd = _tfa.mkdtemp(prefix="seal-bin-")
+    _bd = _mkdtemp(prefix="seal-bin-")
     with open(os.path.join(_bd, "go.mod"), "w") as fh: fh.write("module sealprobe\n\ngo 1.24\n")
     with open(os.path.join(_bd, "main.go"), "w") as fh: fh.write("package main\n\nfunc main() {}\n")
     for _a in (["init", "-q"], ["add", "-A"],
@@ -634,7 +657,7 @@ def _selftest(require_orchestration=False):
         _spa.run(["git", "-C", _bd] + _a, capture_output=True)
     _probe = os.path.join(_bd, "probe")
     _built = _spa.run(["go", "build", "-o", _probe, "."], cwd=_bd, capture_output=True).returncode == 0
-    _sd = _tfa.mkdtemp(prefix="seal-u-")
+    _sd = _mkdtemp(prefix="seal-u-")
     if not _built:
         print("  skip  seal payload cases (no working Go toolchain)")
         skipped.append("seal payload: no Go toolchain")
@@ -653,7 +676,7 @@ def _selftest(require_orchestration=False):
         ck(json.load(open(os.path.join(_sd, "SEAL.json")))["selected_queries"][0]["symbol"] == "Sym",
            "the seal carries the selected queries, not just their count")
 
-    _nd = _tfa.mkdtemp(prefix="note-")
+    _nd = _mkdtemp(prefix="note-")
     write_receipts(_nd, "001-Sym-f_go", "q", "Sym", "f.go", 1, 2, False,
                    (("phrase", 0, False, False, True, b"",
                      {"argv": [], "rc": None, "stderr_bytes": b"", "note": "no phrase in q"}),))
@@ -687,9 +710,9 @@ def _selftest(require_orchestration=False):
     _me = os.path.abspath(__file__)
     def _run_eval(*a):
         return _sp.run([sys.executable, _me] + list(a), capture_output=True, text=True, timeout=1800)
-    _fresh = lambda: os.path.join(_tf2.mkdtemp(prefix="seal-e2e-"), "out")
+    _fresh = lambda: os.path.join(_mkdtemp(prefix="seal-e2e-"), "out")
 
-    _nb = os.path.join(_tf2.mkdtemp(prefix="seal-nb-"), "notgo")
+    _nb = os.path.join(_mkdtemp(prefix="seal-nb-"), "notgo")
     os.makedirs(os.path.dirname(_nb), exist_ok=True)
     with open(_nb, "w") as fh:
         fh.write("#!/bin/sh\necho hi\n")
@@ -709,7 +732,7 @@ def _selftest(require_orchestration=False):
        "an unknown build carries no vcs_modified at all")
 
     # GATE 1. A malformed vcs.modified is UNKNOWN, not clean.
-    _mb = os.path.join(_tfa.mkdtemp(prefix="mal-"), "b")
+    _mb = os.path.join(_mkdtemp(prefix="mal-"), "b")
     with open(_mb, "w") as fh: fh.write("x")
     ck(binary_build_identity(_mb)["known"] is False, "a non-Go file has no build identity")
     # PRESENT BUT MALFORMED, which is the case that mattered: the stamp is there and unreadable,
@@ -727,7 +750,7 @@ def _selftest(require_orchestration=False):
        "GATE1: a literal true still reads as a dirty tree")
 
     # GATE 3. A comparable REJECTION with a VALID oracle -- the combination nothing forced.
-    _g3 = _tfa.mkdtemp(prefix="g3-")
+    _g3 = _mkdtemp(prefix="g3-")
     _st3 = {"valid": 0, "na": 0, "bytes": [], "loc": 0, "dec": 0}
     _meta3 = {"argv": [], "rc": 1, "stderr_bytes": b""}
     _arms3 = (("graph", 0, False, False, False, b"", _meta3),   # comparable arm FAILS
@@ -740,7 +763,7 @@ def _selftest(require_orchestration=False):
        "GATE3: ...and the VALID oracle on that rejected attempt is still counted", str(_st3))
 
     # GATE 4. The receipt's cost is the cost SUPPLIED, not inflated by stderr.
-    _g4 = _tfa.mkdtemp(prefix="g4-")
+    _g4 = _mkdtemp(prefix="g4-")
     _big = b"e" * 9000
     for _cid, _cost in (("001-Z-f_go", 0), ("002-Z-f_go", 1234)):
         write_receipts(_g4, _cid, "q", "Z", "f.go", 1, 2, False,
@@ -786,7 +809,7 @@ def _selftest(require_orchestration=False):
         for _a in (["init", "-q"], ["add", "-A"],
                    ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"]):
             _spa.run(["git", "-C", _ofx] + _a, capture_output=True)
-        _oout = os.path.join(_tfa.mkdtemp(prefix="order-"), "out")
+        _oout = os.path.join(_mkdtemp(prefix="order-"), "out")
         _rr = _spa.run([sys.executable, os.path.abspath(__file__), "--diagnostic-dirty-build",
                         _egbin, _ofx, "2", "4096", _oout], capture_output=True, text=True, timeout=1800)
         if not os.path.exists(os.path.join(_oout, "run-manifest.json")):
@@ -889,7 +912,7 @@ def _selftest(require_orchestration=False):
     #        forever and nothing finalised them, so a completed run and one killed halfway
     #        were indistinguishable on disk. These pin the lifecycle rather than the demo.
     import tempfile as _tf, json as _j
-    rd = _tf.mkdtemp(prefix="rcpt-")
+    rd = _mkdtemp(prefix="rcpt-")
     meta = {"argv": ["rg", "x"], "rc": 1, "stderr": "", "oracle": False}
     write_receipts(rd, "001-Sym-f_go", "q", "Sym", "f.go", 1, 2, False,
                    (("graph", 0, False, False, False, b"", meta),))
@@ -902,7 +925,7 @@ def _selftest(require_orchestration=False):
 
     # THE WIRING, not just the writer. The original defect was the ORDER of two call sites --
     # gate first, write second -- so a unit test of write_receipts could never have caught it.
-    rd2 = _tf.mkdtemp(prefix="rcpt-")
+    rd2 = _mkdtemp(prefix="rcpt-")
     failing = (("graph", 0, False, False, False, b"", meta),
                ("grep", 0, False, False, True, b"", meta),
                ("phrase", 0, False, False, True, b"", meta),
@@ -911,7 +934,7 @@ def _selftest(require_orchestration=False):
     ck(not adm, "a failed comparable arm refuses admission")
     ck(os.path.exists(os.path.join(rd2, "002-Sym-f_go.txt")),
        "...and the refused attempt is on disk anyway")
-    rd3 = _tf.mkdtemp(prefix="rcpt-")
+    rd3 = _mkdtemp(prefix="rcpt-")
     oracle_only = tuple((lbl, 0, False, False, lbl != "oracle", b"", meta)
                         for lbl in ("graph", "grep", "phrase", "oracle"))
     ck(record_attempt(rd3, "003-Sym-f_go", "q", "Sym", "f.go", 1, 2, oracle_only),
@@ -947,12 +970,12 @@ def _selftest(require_orchestration=False):
     after = {f: open(os.path.join(rd, f), "rb").read() for f in sorted(os.listdir(rd))}
     ck(before == after, "...and the refusal touched none of the existing receipt bytes",
        f"{len(before)} -> {len(after)} files")
-    fresh = os.path.join(_tf.mkdtemp(prefix="rcpt-"), "new")
+    fresh = os.path.join(_mkdtemp(prefix="rcpt-"), "new")
     claim_outdir(fresh)
     ck(os.path.isdir(fresh), "a fresh directory is created and claimed")
     # An EMPTY existing directory is refused too: two runs would both find it empty, both
     # proceed, and interleave their receipts under one verdict.
-    empty = _tf.mkdtemp(prefix="rcpt-empty-")
+    empty = _mkdtemp(prefix="rcpt-empty-")
     refused_empty = False
     try:
         claim_outdir(empty)
@@ -971,6 +994,19 @@ def _selftest(require_orchestration=False):
     if require_orchestration and skipped:
         print("REQUIRED ORCHESTRATION PROOF WAS SKIPPED -- treating as failure")
         fails.extend(skipped)
+    # THE SUITE MUST NOT LEAK. Each --test used to leave its fixtures behind, and the seal
+    # cases BUILD A GO BINARY into a fresh directory every pass; one session left 15,946
+    # directories and 1.1 GB in TMPDIR. Nothing failed, which is exactly why it went unnoticed
+    # for a whole night of running this suite dozens of times.
+    import tempfile as _tfx
+    _root = _tfx.gettempdir()
+    _mine_before = len([d for d in os.listdir(_root) if d.startswith(("pharm-", "rcpt-", "seal-",
+                        "note-", "order-", "g3-", "g4-", "mal-"))])
+    _removed = _cleanup_tempdirs()
+    _mine_after = len([d for d in os.listdir(_root) if d.startswith(("pharm-", "rcpt-", "seal-",
+                       "note-", "order-", "g3-", "g4-", "mal-"))])
+    ck(_mine_after == 0, "the suite leaves no temp directories behind",
+       f"{_mine_after} left of {_mine_before}; removed {_removed}")
     print("\nALL PHRASE-ARM FALSIFIERS PASS" if not fails else "\nFAILURES: " + ", ".join(fails))
     return 1 if fails else 0
 
