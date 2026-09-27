@@ -338,13 +338,17 @@ def phrase_arm(repo, q, name, target_file, lo, hi, follow=12):
     phrase = phrase_for(q)
     if not phrase:
         return 0, False, False, True, b"", {"argv": [], "rc": None, "stderr": "no phrase in q"}
-    p = subprocess.run(["rg", "-n", "--no-heading", "-F", "-g", "!node_modules", phrase, repo],
+    # `--` BEFORE THE PATTERN. Without it a pattern beginning with a dash is parsed as an rg
+    # option: case 012 of the fx-cli run drew the phrase "--dry-run ..." out of a doc comment,
+    # rg exited 2, and the whole case was dropped from EVERY arm. A literal taken from user text
+    # has to be passed as a literal.
+    p = subprocess.run(["rg", "-n", "--no-heading", "-F", "-g", "!node_modules", "--", phrase, repo],
                        capture_output=True, timeout=300)
     # rg exits 1 for "no matches", a real empty result. Above that is a broken run; BELOW zero
     # is signal death (SIGKILL is -9), which the original `> 1` guard admitted as a valid run
     # with empty output -- scoring a killed process as a legitimate miss.
-    meta = {"argv": ["rg","-n","--no-heading","-F","-g","!node_modules",phrase,repo],
-            "rc": p.returncode, "stderr": p.stderr.decode("utf8","replace")[:4000]}
+    meta = {"argv": ["rg","-n","--no-heading","-F","-g","!node_modules","--",phrase,repo],
+            "rc": p.returncode, "stderr_bytes": p.stderr}
     if p.returncode < 0 or p.returncode > 1:
         return 0, False, False, False, b"", meta
     cost = len(p.stdout)
@@ -382,15 +386,16 @@ def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
     term = name if oracle else max((w for w in WORD.findall(query) if w.lower() not in STOP),
                                    key=len, default="")
     if not term: return 0, False, False, False, b"", {"argv": [], "rc": None, "stderr": "no term"}
-    p=subprocess.run(["rg","-n","--no-heading","-g","!node_modules",term,repo],capture_output=True,timeout=300)
+    # `--` for the same reason as the phrase arm: the term comes from the query text.
+    p=subprocess.run(["rg","-n","--no-heading","-g","!node_modules","--",term,repo],capture_output=True,timeout=300)
     # rg exits 1 for "no matches", which is a real empty result, not a failure. Anything
     # above that is a broken run and the case is dropped rather than counted as a miss.
     # rg exits 1 for "no matches", which is a real empty result. Anything ABOVE that is a
     # broken run -- and anything BELOW zero is a signal death (SIGKILL is -9), which the
     # original `> 1` guard let through as a valid run with empty output, scoring a killed
     # process as a legitimate miss. A timeout or OOM would have silently become evidence.
-    meta = {"argv": ["rg","-n","--no-heading","-g","!node_modules",term,repo],
-            "rc": p.returncode, "stderr": p.stderr.decode("utf8","replace")[:4000],
+    meta = {"argv": ["rg","-n","--no-heading","-g","!node_modules","--",term,repo],
+            "rc": p.returncode, "stderr_bytes": p.stderr,
             "oracle": bool(oracle)}
     if p.returncode < 0 or p.returncode > 1:
         return 0, False, False, False, b"", meta
@@ -407,7 +412,7 @@ def graph_arm(binary,repo,query,name,target_file,budget,tgt_lo=0,tgt_hi=0):
                      capture_output=True,timeout=900)
     meta = {"argv": [binary,"query","--repo",repo,"--query",query,"--format","agent",
                      "--max-context-bytes",str(budget),"--no-cache"],
-            "rc": p.returncode, "stderr": p.stderr.decode("utf8","replace")[:4000]}
+            "rc": p.returncode, "stderr_bytes": p.stderr}
     # != 0 already covers signal death here (negative codes), unlike the grep guards above.
     if p.returncode != 0:
         return 0, False, False, False, b"", meta
@@ -597,6 +602,16 @@ def _selftest():
                                         "ApplyRetryBudget", "a.go", 1, 9)
     ck(not kok, "a signal-killed arm reports failure, not a miss", f"ok={kok}")
 
+    # A PATTERN BEGINNING WITH A DASH, at the production seam. Case 012 of the fx-cli run drew
+    # "--dry-run ..." out of a doc comment, rg read it as a flag, exited 2, and the case was
+    # dropped from EVERY arm -- one arm's quoting bug silently shrinking the population.
+    dashrepo = _mkrepo({"d.go": "package p\n// --dry-run prints what would change\nfunc DryRunPlan() {}\n"})
+    dq = _canonical_q(["--dry-run prints what would change"], "DryRunPlan")
+    dcost, dloc, ddec, dok, _, dmeta = phrase_arm(dashrepo, dq, "DryRunPlan", "d.go", 3, 3)
+    ck(dok, "a phrase starting with a dash does not fail the arm", f"rc={dmeta.get('rc')}")
+    ck("--" in dmeta.get("argv", []), "the pattern is passed after an option terminator")
+    ck(dloc and ddec, "...and it still finds the declaration", f"loc={dloc} dec={ddec}")
+
     # 13-16. THE RECEIPT VERDICT. Peer review's point was that receipts said PROVISIONAL
     #        forever and nothing finalised them, so a completed run and one killed halfway
     #        were indistinguishable on disk. These pin the lifecycle rather than the demo.
@@ -628,6 +643,16 @@ def _selftest():
                         for lbl in ("graph", "grep", "phrase", "oracle"))
     ck(record_attempt(rd3, "003-Sym-f_go", "q", "Sym", "f.go", 1, 2, oracle_only),
        "an oracle failure alone does not exclude the case")
+
+    # THE CONTROL'S DENOMINATOR IS ITS OWN. A valid oracle run on a case the comparable arms
+    # rejected must still count: counting it after the admission gate made the denominator
+    # "valid oracle runs among paired-admitted cases", which moves whenever another arm fails.
+    st = {"valid": 0, "na": 0, "bytes": [], "loc": 0, "dec": 0}
+    tally_oracle(st, True, 100, True, True)      # an attempt the comparable arms will reject
+    ck(st["valid"] == 1 and st["loc"] == 1,
+       "a valid oracle run counts even when the case is not admitted", str(st))
+    tally_oracle(st, False, 0, False, False)
+    ck(st["valid"] == 1 and st["na"] == 1, "a failed oracle run is N/A, not a miss", str(st))
 
     mani = {"schema": 1, "cases": [{"case_id": "001-Sym-f_go", "admitted": False}]}
     finalize_manifest(rd, mani, "VOID", "killed")
@@ -692,11 +717,20 @@ def write_receipts(outdir, cid, q, name, fp, lo, hi, admitted, arms):
             # was absent from the record entirely
             with open(base + ".scored", "wb") as fh:
                 fh.write(meta["evidence"])
+        # ORIGINAL BYTES, in their own file. Decoding and capping stderr into the JSON made it
+        # unverifiable: a replacement character is indistinguishable from a byte that was really
+        # there, and a cap silently drops the tail. Its cost scope is named too -- stderr is NOT
+        # part of the payload charged to the arm.
+        if meta.get("stderr_bytes"):
+            with open(base + ".stderr", "wb") as fh:
+                fh.write(meta["stderr_bytes"])
         with open(base + ".json", "w") as fh:
             json.dump({"case_id": cid, "arm": arm, "ok": ok, "cost_bytes": cost,
                        "locator": loc, "declaration": dec,
                        "argv": meta.get("argv"), "returncode": meta.get("rc"),
-                       "stderr": meta.get("stderr"),
+                       "stderr_bytes_len": len(meta.get("stderr_bytes") or b""),
+                       "stderr_file": (cid + "." + arm + ".stderr") if meta.get("stderr_bytes") else None,
+                       "stderr_not_charged": True,
                        "oracle": meta.get("oracle", False)}, fh, indent=1)
     with open(os.path.join(outdir, cid + ".txt"), "w") as fh:
         fh.write(f"case_id: {cid}\nquery: {q!r}\ntarget: {name} {fp}:{lo}-{hi}\n"
@@ -706,6 +740,27 @@ def write_receipts(outdir, cid, q, name, fp, lo, hi, admitted, arms):
         for arm, cost, loc, dec, ok, _, meta in arms:
             tag = "   CAPABILITY CONTROL: given the target name; not a comparator" if arm == "oracle" else ""
             fh.write(f"{arm:7s} ok={ok} bytes {cost}  locator {loc}  declaration {dec}{tag}\n")
+
+
+def tally_oracle(state, ok, cost, loc, dec):
+    """Record the capability control's result, for EVERY attempt, independent of admission.
+
+    This was inline and after the comparable-admission gate, which quietly redefined the
+    oracle's denominator as "valid oracle runs among paired-admitted cases". An independent
+    audit of the fx-cli run found all 20 oracle receipts valid while the manifest reported 19 --
+    one case had been dropped for an unrelated arm's failure. A control whose denominator moves
+    when another arm fails is not independent of that arm, which is the only thing a control is
+    for. It is a function so a test can reach it; the ordering bug lived in a call site, and a
+    call site is not testable from a suite.
+    """
+    if ok:
+        state["valid"] += 1
+        state["bytes"].append(cost)
+        state["loc"] += bool(loc)
+        state["dec"] += bool(dec)
+    else:
+        state["na"] += 1
+    return state
 
 
 def record_attempt(outdir, cid, q, name, fp, lo, hi, arms):
@@ -837,7 +892,7 @@ if __name__=="__main__":
     # or of the repository, and a mean lets one such case decide the headline. Both are
     # printed; the median is the one to quote.
     tg=tp=to=0; k=0; dropped=0; attempt=0
-    ovalid=0; ona=0          # the oracle's OWN validity, tracked apart from the comparison
+    ostate={"valid":0,"na":0,"bytes":[],"loc":0,"dec":0}   # the control's OWN tally
     manifest={"schema":1,"repo":repo,"rev":rev0,"dirty":bool(dirty0),"content_sha256":cont0,
               "binary":binary,"binary_sha256":bsha,
               "script_sha256":hashlib.sha256(open(os.path.abspath(__file__),"rb").read()).hexdigest(),
@@ -868,6 +923,12 @@ if __name__=="__main__":
         manifest["cases"].append({"case_id":cid,"symbol":name,"file":fp,"span":[s_lo,s_hi],
                                   "admitted":admitted,
                                   "arm_ok":{"graph":gok,"grep":pok,"phrase":sok,"oracle":ook}})
+        # THE ORACLE IS COUNTED FIRST, before the comparable-admission gate. Counting it after
+        # meant its denominator silently became "valid oracle runs among PAIRED-ADMITTED cases",
+        # not oracle validity -- the fx-cli audit found all 20 oracle receipts valid while the
+        # manifest said 19, because one case was dropped for an unrelated arm. A control with a
+        # denominator that moves when another arm fails is not independent of that arm.
+        tally_oracle(ostate, ook, oc, o_l, o_d)
         if not admitted:
             dropped+=1      # a failed comparable arm excludes the case, never scores as a miss
             continue
@@ -875,13 +936,6 @@ if __name__=="__main__":
         gL+=g_l; gD+=g_d; pL+=p_l; pD+=p_d
         gvals.append(g); pvals.append(pr); svals.append(sc)
         sL+=s_l; sD+=s_d
-        # The oracle is outside the comparison, so its own failures must not be folded in as
-        # zeroes. Counting a failed oracle run as a miss made the capability ceiling look
-        # lower than it is -- the same "a failure is not a miss" rule the comparable arms get.
-        if ook:
-            ovalid+=1; to+=oc; oL+=o_l; oD+=o_d; ovals.append(oc)
-        else:
-            ona+=1
 
     rev1,dirty1,cont1=state()
     if (rev0,dirty0,cont0)!=(rev1,dirty1,cont1):
@@ -911,8 +965,12 @@ if __name__=="__main__":
     # not a same-input comparator and putting it in the same block invited exactly the reading
     # the rest of this file exists to prevent.
     print(f"\n{'-- capability ceiling, NOT a comparator (given the target name) --':60s}")
+    ovalid, ona, ovals, oL, oD = (ostate["valid"], ostate["na"], ostate["bytes"],
+                                  ostate["loc"], ostate["dec"])
     print(f"{'grep (oracle: name)':24s} {med(ovals):10,.0f} {oL:6d}/{ovalid} {oD:10d}/{ovalid}")
-    print(f"  its own denominator is {ovalid}, not {k}: {ona} oracle run(s) failed and are N/A.")
+    print(f"  its own denominator is {ovalid} of {attempt} ATTEMPTS, not {k} paired-admitted cases:")
+    print(f"  {ona} oracle run(s) failed and are N/A. A control whose denominator moves when")
+    print(f"  another arm fails is not independent of that arm.")
     print(f"  A failed oracle run is not an oracle miss, the same rule the other arms get.")
     print(f"\nscored {k}, dropped {dropped} (arm failure, not scored as miss)")
     print(f"state before/after: {rev0} dirty={dirty0}  ->  {rev1} dirty={dirty1}")
@@ -923,4 +981,4 @@ if __name__=="__main__":
     # makes the receipts quotable, and a run that dies before here stays provisional -- which
     # reads as invalid, deliberately.
     finalize_manifest(outdir, manifest, "VALID",
-                      f"scored {k}, dropped {dropped}, oracle valid {ovalid} n/a {ona}")
+                      f"scored {k}, dropped {dropped}, oracle valid {ostate['valid']} n/a {ostate['na']} of {attempt} attempts")
