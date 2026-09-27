@@ -1610,7 +1610,25 @@ var searchVerifyPytestSections = map[string][]string{
 	"pytest.ini":     {"[pytest]"},
 	"tox.ini":        {"[pytest]"},
 	"setup.cfg":      {"[tool:pytest]"},
-	"pyproject.toml": {"[tool.pytest"},
+	"pyproject.toml": {"[tool.pytest.ini_options]"},
+}
+
+// searchVerifyHasSection reports whether `content` declares `heading` as a real, uncommented
+// section header on a line of its own. A COMMENTED heading -- "# [pytest]", "; [tool:pytest]" --
+// is something a config carries while using a different runner, and substring matching accepted
+// every one of them. An open-ended "[tool.pytest" prefix also matched headings pytest does not
+// read.
+func searchVerifyHasSection(content, heading string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		if trimmed == heading {
+			return true
+		}
+	}
+	return false
 }
 
 func deriveSearchVerifySuitePytest(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
@@ -1631,7 +1649,7 @@ func deriveSearchVerifySuitePytest(dir string, evidence *searchVerifyEvidence) *
 		// derived VERIFY fails with "No module named pytest", and the agent is told to treat a
 		// failure as its own code's fault.
 		for _, section := range searchVerifyPytestSections[name] {
-			if strings.Contains(content, section) {
+			if searchVerifyHasSection(content, section) {
 				return searchVerifySuiteCommand(dir, "python -m pytest", candidate+" pytest config")
 			}
 		}
@@ -2509,6 +2527,63 @@ func searchVerifyNodeRunnerFromManifest(parsed searchVerifyNodeManifest) (string
 	return "", ""
 }
 
+// searchVerifyShellStatements splits a package.json script into statements, treating quoted
+// spans as opaque and ending a statement at an unquoted comment.
+//
+// FieldsFunc on & | ; \n did neither, so separators inside quotes and comments began statements
+// the shell never runs:
+//
+//	echo ok # disabled; jest                        -> a statement "jest"
+//	echo 'disabled; jest; still disabled'           -> a statement "jest"
+//
+// Both then qualified as a jest invocation. Deliberately not a shell parser: an unterminated
+// quote returns false and the caller fails closed.
+func searchVerifyShellStatements(script string) ([]string, bool) {
+	var statements []string
+	var current strings.Builder
+	var quote rune
+	flush := func() {
+		if trimmed := strings.TrimSpace(current.String()); trimmed != "" {
+			statements = append(statements, trimmed)
+		}
+		current.Reset()
+	}
+	runes := []rune(script)
+	for index := 0; index < len(runes); index++ {
+		char := runes[index]
+		switch {
+		case quote != 0:
+			if char == quote {
+				quote = 0
+			}
+			current.WriteRune(char)
+		case char == '\'' || char == '"' || char == '`':
+			quote = char
+			current.WriteRune(char)
+		case char == '\\':
+			current.WriteRune(char)
+			if index+1 < len(runes) {
+				index++
+				current.WriteRune(runes[index])
+			}
+		case char == '#':
+			for index < len(runes) && runes[index] != '\n' {
+				index++
+			}
+			flush()
+		case char == '&' || char == '|' || char == ';' || char == '\n':
+			flush()
+		default:
+			current.WriteRune(char)
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	flush()
+	return statements, true
+}
+
 // searchVerifyScriptInvokesRunner reports whether `script` actually INVOKES `runner`, rather
 // than merely mentioning it somewhere.
 //
@@ -2528,9 +2603,11 @@ func searchVerifyNodeRunnerFromManifest(parsed searchVerifyNodeManifest) (string
 // A runner counts when it is the HEAD of a statement, after environment assignments and the
 // usual wrappers are stepped over. Anything else -- a flag value, a path, prose -- does not.
 func searchVerifyScriptInvokesRunner(script, runner string) bool {
-	for _, statement := range strings.FieldsFunc(script, func(r rune) bool {
-		return r == '&' || r == '|' || r == ';' || r == '\n'
-	}) {
+	statements, parsed := searchVerifyShellStatements(script)
+	if !parsed {
+		return false // a form we do not model: fail closed rather than guess
+	}
+	for _, statement := range statements {
 		fields := strings.Fields(statement)
 		index := 0
 		// Assignments and wrappers INTERLEAVE and must be consumed in one loop, not in two
@@ -2546,8 +2623,15 @@ func searchVerifyScriptInvokesRunner(script, runner string) bool {
 				continue
 			}
 			switch field {
-			case "npx", "pnpm", "yarn", "bun", "cross-env", "dotenv", "env", "run", "exec", "-s", "--silent":
+			case "npx", "pnpm", "yarn", "bun", "cross-env", "dotenv", "env":
 				index++
+				// `run`, `exec` and the quiet flags mean something only AFTER a manager. A bare
+				// `run jest` names no invoker, and skipping those words context-free accepted
+				// it as a jest invocation.
+				for index < len(fields) && (fields[index] == "run" || fields[index] == "exec" ||
+					fields[index] == "-s" || fields[index] == "--silent") {
+					index++
+				}
 				continue
 			case "npm":
 				index++
