@@ -49,6 +49,65 @@ def fixture_identity(path):
             "origin": url.stdout.strip() or None}
 
 
+def seal_refusal(build, fixtures, outdir_exists, allow_dirty):
+    """Why this run must not start, or None if it may.
+
+    A PURE FUNCTION, deliberately, because the whole point of this file is a set of refusals
+    and refusals that no test can reach are decoration. The I/O -- reading git, reading the
+    binary's build stamp -- is the caller's; every decision is here.
+
+    Extracted after a night in which two separate bugs turned out to live in CALL-SITE ORDERING
+    rather than in any function, and were invisible to the suite for exactly that reason.
+    """
+    if outdir_exists:
+        return ("output directory exists; a run must create its own, so that nothing can "
+                "splice two runs' receipts under one verdict")
+    if build.get("vcs_modified") and not allow_dirty:
+        return (f"binary built from a DIRTY tree (revision {build.get('vcs_revision')}); the "
+                f"exact source cannot be reproduced, so no result from it can be either. Pass "
+                f"--allow-dirty-build to record it as artifact-tied development diagnostics.")
+    for fixture in fixtures:
+        if not fixture.get("clean"):
+            return f"{fixture.get('path')} is dirty; a frozen fixture must be clean"
+    if not fixtures:
+        return "no fixtures given; there is nothing to seal"
+    return None
+
+
+def _selftest():
+    clean = {"vcs_modified": False, "vcs_revision": "a" * 40}
+    dirty = {"vcs_modified": True, "vcs_revision": "b" * 40}
+    okfx = [{"path": "/fx", "clean": True}]
+    badfx = [{"path": "/fx", "clean": False}]
+    cases = [
+        ("a clean build with a clean fixture may start", (clean, okfx, False, False), None),
+        ("an existing output directory is refused", (clean, okfx, True, False), "output directory"),
+        ("a dirty build is refused", (dirty, okfx, False, False), "DIRTY tree"),
+        ("...and the refusal names the revision", (dirty, okfx, False, False), "bbbbbbbb"),
+        ("--allow-dirty-build lets it through", (dirty, okfx, False, True), None),
+        ("...but an existing outdir still refuses", (dirty, okfx, True, True), "output directory"),
+        ("a dirty fixture is refused", (clean, badfx, False, False), "must be clean"),
+        ("...even with --allow-dirty-build", (clean, badfx, False, True), "must be clean"),
+        ("no fixtures is refused", (clean, [], False, False), "nothing to seal"),
+    ]
+    fails = []
+    for label, args, want in cases:
+        got = seal_refusal(*args)
+        ok = (got is None) if want is None else (got is not None and want in got)
+        print(("  ok   " if ok else "  FAIL ") + label + ("" if ok else f"  <- {got!r}"))
+        if not ok:
+            fails.append(label)
+    # ORDER MATTERS AND IS PART OF THE CONTRACT: the output directory is checked FIRST, so a
+    # refusal never depends on reading a binary or a git tree that may not be there.
+    ordered = seal_refusal(dirty, badfx, True, False)
+    okorder = ordered is not None and "output directory" in ordered
+    print(("  ok   " if okorder else "  FAIL ") + "the outdir check runs before any other")
+    if not okorder:
+        fails.append("ordering")
+    print("\nALL SEAL REFUSALS HELD" if not fails else "\nFAILURES: " + ", ".join(fails))
+    return 1 if fails else 0
+
+
 def main(argv):
     allow_dirty = "--allow-dirty-build" in argv
     argv = [a for a in argv if a != "--allow-dirty-build"]
@@ -56,26 +115,21 @@ def main(argv):
         raise SystemExit(__doc__)
     binary, outdir, fixtures = argv[0], argv[1], argv[2:]
 
-    if os.path.exists(outdir):
-        raise SystemExit(f"{outdir} exists; a run must create its own output directory")
-
-    build = build_identity(binary)
-    if build["vcs_modified"] and not allow_dirty:
-        raise SystemExit(
-            f"{binary} was built from a DIRTY tree (revision {build['vcs_revision']}).\n"
-            f"The exact built source cannot be reproduced, so no result from it can be either.\n"
-            f"Rebuild from a clean tree, or pass --allow-dirty-build to record it explicitly as "
-            f"artifact-tied development diagnostics.")
+    outdir_exists = os.path.exists(outdir)
+    build = {} if outdir_exists else build_identity(binary)
+    identities = [] if outdir_exists else [fixture_identity(f) for f in fixtures]
+    if refusal := seal_refusal(build, identities, outdir_exists, allow_dirty):
+        raise SystemExit(f"REFUSING TO START: {refusal}")
 
     seal = {"binary": {"path": binary, "sha256": sha256(binary), "build": build,
-                       "build_source_reproducible": not build["vcs_modified"]},
-            "fixtures": [fixture_identity(f) for f in fixtures]}
-    for f in seal["fixtures"]:
-        if not f["clean"]:
-            raise SystemExit(f"{f['path']} is dirty; a frozen fixture must be clean")
+                       "build_source_reproducible": not build["vcs_modified"],
+                       "recorded_as_artifact_tied_only": bool(build["vcs_modified"])},
+            "fixtures": identities}
     print(json.dumps(seal, indent=1))
     return 0
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        sys.exit(_selftest())
     sys.exit(main(sys.argv[1:]))
