@@ -563,44 +563,49 @@ def _qualify_str_input():
         return False
 
 def _entrypoint_residue_guard(check):
-    # THE ACTUAL ENTRYPOINT, not a copy of its exit expression. A driver that reimplements
-    # `0 if tests() else 1` tests the driver; the defect lives between this module's return
-    # value and the real __main__ line. RQ_FORCE_RESIDUE drives the real script into the state.
-    #
-    # And a bare exit 1 is not enough -- a crash, an import error or a syntax error all give 1
-    # and would satisfy a naive check. The run must also REACH THE END, which the residue line
-    # proves, so the exit code is read together with a completion sentinel.
-    # THE CHILD MUST NOT RUN THIS GUARD. The first version had the guard spawn --test, whose
-    # child ran the guard, which spawned --test: a recursive fork bomb that hung for ten
-    # minutes before I killed it. The forcing variable doubles as the marker that we ARE the
-    # child.
-    import subprocess as _sp, sys as _sys
-    _env = dict(os.environ, RQ_FORCE_RESIDUE="1")
-    _r = _sp.run([_sys.executable, os.path.abspath(__file__), "--test"],
-                 capture_output=True, text=True, timeout=600, env=_env)
-    _out = _r.stdout + _r.stderr
-    check("forced residue: the real entrypoint exits non-zero", _r.returncode, 1)
-    check("forced residue: ...and the run completed rather than crashed",
-          "owned temp path(s) behind" in _out, True)
-    check("forced residue: ...and the body itself still passed",
-          "ALL PASS" in _out or "FAILURES ABOVE" in _out, True)
+    """Drive the REAL entrypoint into the residue state and check its exit, owning the fixture.
+
+    A driver that reimplements `0 if tests() else 1` tests the driver; the defect lives between
+    this module's return value and the actual __main__ line. And a bare exit 1 is what a crash,
+    an import error or a syntax error also produce, so the exit code is read together with a
+    completion sentinel.
+    """
+    import shutil as _sh, subprocess as _sp, sys as _sys, tempfile as _tf
+    holder = _tf.mkdtemp(prefix="rq-guard-")
+    stuck = os.path.join(holder, "stuck")
+    os.makedirs(stuck, exist_ok=True)
+    os.chmod(holder, 0o500)                      # the child cannot unlink `stuck`
+    try:
+        env = dict(os.environ, RQ_FORCE_RESIDUE="1", RQ_FORCE_RESIDUE_PATH=stuck)
+        r = _sp.run([_sys.executable, os.path.abspath(__file__), "--test"],
+                    capture_output=True, text=True, timeout=600, env=env)
+        out = r.stdout + r.stderr
+        check("forced residue: the real entrypoint exits non-zero", r.returncode, 1)
+        check("forced residue: ...and the run completed rather than crashed",
+              "owned temp path(s) behind" in out, True)
+        check("forced residue: ...and the body itself still passed",
+              "ALL PASS" in out or "FAILURES ABOVE" in out, True)
+    finally:
+        # The parent created it, so the parent removes it -- named exactly, never by scanning.
+        os.chmod(holder, 0o700)
+        _sh.rmtree(holder, ignore_errors=True)
+    check("forced residue: the guard leaves no fixture behind", os.path.exists(holder), False)
 
 
 def _force_residue_for_testing():
-    """Create an unremovable owned path when asked by the environment.
+    """Adopt a residual path the PARENT created and owns, when the environment names one.
 
-    Exists so the guard below can execute the ACTUAL entrypoint rather than a copy of its exit
-    expression. Reimplementing `0 if tests() else 1` in a driver tests the driver; the defect
-    being guarded lives in the relationship between this module's return value and the real
-    __main__ line, and only running that line can see it.
+    The first version CREATED the fixture itself, at mode 0500, inside the child -- and the
+    child exits non-zero by design and never cleans up, while the parent did not know the path
+    to clean. A guard against leaking fixtures that leaked its own fixture, every time it ran.
+
+    Ownership now sits entirely with the parent: it creates the path, passes it by name, and
+    removes it in a finally. The child only ADOPTS it into its tracker, so the refusal behaviour
+    under test is unchanged and nothing here scans or deletes anything it was not handed.
     """
-    if os.environ.get("RQ_FORCE_RESIDUE") != "1":
-        return
-    ro = _mkdtemp(prefix="rq-forced-")
-    stuck = os.path.join(ro, "stuck")
-    os.makedirs(stuck, exist_ok=True)
-    os.chmod(ro, 0o500)
-    _TEMPDIRS.append(stuck)
+    path = os.environ.get("RQ_FORCE_RESIDUE_PATH")
+    if path and os.path.isdir(path):
+        _TEMPDIRS.append(path)
 
 
 def _finish_tempdirs():
