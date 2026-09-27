@@ -2485,9 +2485,65 @@ func searchVerifyNodeRunnerFromManifest(parsed searchVerifyNodeManifest) (string
 	return "", ""
 }
 
+// searchVerifyScriptInvokesRunner reports whether `script` actually INVOKES `runner`, rather
+// than merely mentioning it somewhere.
+//
+// The predicate was strings.Contains, and a substring is not an invocation. Three scripts that
+// run no jest at all were each reported as jest:
+//
+//	"playwright test --reporter=jest-junit"   a Playwright suite naming a jest REPORTER
+//	"node scripts/jest-shim.js"               a filename
+//	"echo skipping jest for now && exit 0"    a script saying it is not running jest
+//
+// This matters more than a mis-detection usually would. The derived command is printed to the
+// agent as VERIFY, with "run it ONCE after editing; if it fails, fix the code" -- so a wrong
+// runner produces either a spurious failure the agent then "fixes" working code to satisfy, or
+// a spurious pass. It also beat better evidence: scripts.test is consulted BEFORE the declared
+// dependencies, so a substring in a string overrode an explicit devDependency.
+//
+// A runner counts when it is the HEAD of a statement, after environment assignments and the
+// usual wrappers are stepped over. Anything else -- a flag value, a path, prose -- does not.
+func searchVerifyScriptInvokesRunner(script, runner string) bool {
+	for _, statement := range strings.FieldsFunc(script, func(r rune) bool {
+		return r == '&' || r == '|' || r == ';' || r == '\n'
+	}) {
+		fields := strings.Fields(statement)
+		index := 0
+		// Assignments and wrappers INTERLEAVE and must be consumed in one loop, not in two
+		// passes: `cross-env NODE_ENV=test jest` puts a wrapper before the assignment, and a
+		// fixed order missed it. A wrapper delegates to the real command; `npm`/`yarn` may be
+		// followed by a subcommand, which is stepped over too. A bare `npm test` then names no
+		// runner, which is right -- it names a script, and resolving that is not a guess to
+		// make here.
+		for index < len(fields) {
+			field := fields[index]
+			if strings.Contains(field, "=") && !strings.HasPrefix(field, "-") {
+				index++
+				continue
+			}
+			switch field {
+			case "npx", "pnpm", "yarn", "bun", "cross-env", "dotenv", "env", "run", "exec", "-s", "--silent":
+				index++
+				continue
+			case "npm":
+				index++
+				if index < len(fields) && (fields[index] == "run" || fields[index] == "exec") {
+					index++
+				}
+				continue
+			}
+			break
+		}
+		if index < len(fields) && fields[index] == runner {
+			return true
+		}
+	}
+	return false
+}
+
 func searchVerifyNodeRunnerFromScript(script string) (string, bool) {
 	for _, candidate := range searchVerifyNodeRunners {
-		if strings.Contains(script, candidate.name) {
+		if searchVerifyScriptInvokesRunner(script, candidate.name) {
 			return candidate.command, true
 		}
 	}
