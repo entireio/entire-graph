@@ -1,7 +1,9 @@
 # Locate-cost benchmarks
 
 Four deterministic, offline, zero-cost benchmarks for the question the tool exists to answer:
-**what does it cost to find code, and does the graph beat grep at it?**
+**what does it cost to find code, and how does the graph compare with grep at it?**
+
+No comparative answer is currently established — see the status section below.
 
 Nothing here calls a model or a paid API.
 
@@ -111,9 +113,11 @@ side knowledge. A first repair got this wrong in a subtler way than the original
 the line structure straight off the source file, which is still a second channel the graph has
 no access to.
 
-Keeping the breaks was verified to be neutral for the graph rather than assumed — the same
-query with and without them returns a byte-identical ranking, the same five symbols at the same
-scores.
+Keeping the breaks was checked rather than assumed, but the check is **one query**: that query
+with and without them returned a byte-identical ranking, the same five symbols at the same
+scores. One example is one example. It refutes "line breaks obviously degrade the query"; it
+does not establish that they are neutral in general, and no measurement here rests on their
+being so.
 The corrected instrument has not been run at cohort scale, and it is the run, not the repair,
 that decides what is true. Rerun it yourself and read the number off your own output.
 
@@ -125,7 +129,8 @@ Kept because the withdrawals are more useful than the survivors:
   repo size across five fixtures. It tracks how common the symbol name is.
 - **"A lexical search structurally cannot bridge a description to an identifier."** Refuted —
   the description is in the file, above the declaration. The doc-phrase arm was added because
-  of this and beats the graph on one fixture.
+  of this. It was once reported as beating the graph on one fixture; that comparison used the
+  broken arm described above and is withdrawn along with everything else it produced.
 - **"Exact replay is unreachable by construction."** Refuted — the query JSON already carries
   `commit` and `tree`. The identity was in the result, not the argv.
 - **"The doc-phrase arm's weakness is coverage, not precision."** Withdrawn. That read a
