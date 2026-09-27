@@ -122,3 +122,46 @@ func TestACompleteSymbolIsNeverAbbreviatedIntoATruncatedBody(t *testing.T) {
 		}
 	}
 }
+
+// A CLIPPED forced unit is the case that makes the naive predicate unsafe, and it was
+// caught in peer review rather than by these tests -- which were formatter-level and
+// structurally could not see it.
+//
+// The producer is explicit (internal/sem/search_enclosure.go:792-803): a forced unit the
+// safety cap clipped gets full-unit AND unit-elided, and deliberately WITHHOLDS
+// complete-symbol, "for the same reason a window does". search_editability_test.go:274-292
+// pins that contract. A predicate accepting full-unit alone therefore stamps [complete]
+// on a fragment, and the conditional-read guidance then tells the agent not to open the
+// file -- so it edits against source it believes is whole and is not.
+//
+// Requiring complete-symbol is sufficient on today's producer. Rejecting unit-elided as
+// well is deliberate belt-and-braces: it keeps the renderer correct if a future producer
+// ever emits both, which is exactly the drift that would otherwise reach users silently.
+func TestAClippedForcedUnitIsNeverMarkedComplete(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		signals []string
+		want    bool
+	}{
+		{"clipped forced unit", []string{sem.FullUnitSignal, sem.FullUnitElidedSignal}, false},
+		{"whole forced unit", []string{sem.FullUnitSignal, sem.CompleteSymbolSignal}, true},
+		{"complete symbol alone", []string{sem.CompleteSymbolSignal}, true},
+		{"full-unit alone", []string{sem.FullUnitSignal}, false},
+		{"head window", []string{sem.HeadWindowSignal}, false},
+		{"belt-and-braces: both, contradictory", []string{sem.CompleteSymbolSignal, sem.FullUnitElidedSignal}, false},
+	} {
+		if got := searchResultNeedsNoFollowUpRead(sem.SearchResult{Signals: tc.signals}); got != tc.want {
+			t.Errorf("%s: signals %v -> needsNoFollowUpRead=%v, want %v", tc.name, tc.signals, got, tc.want)
+		}
+	}
+
+	// End to end: the renderer must not print the marker for a clipped unit.
+	var out bytes.Buffer
+	if err := writeAgentSearch(&out, completeSymbolResponse(completeBody, sem.FullUnitSignal, sem.FullUnitElidedSignal), 4096); err != nil {
+		t.Fatal(err)
+	}
+	if rendered := out.String(); strings.Contains(rendered, completeMarker) {
+		t.Errorf("a clipped forced unit was rendered as [complete]:\n%s", rendered)
+	}
+}
