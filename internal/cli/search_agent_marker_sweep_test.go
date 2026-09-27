@@ -156,6 +156,53 @@ func TestAlreadyCompleteProducerEmitsExactCertifiedBody(t *testing.T) {
 	}
 }
 
+func TestAlreadyCompleteProducerKeepsTransformedBodyMarkerGuard(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	write(t, repo, "control.go", "package control\n\n// PreserveControl returns a raw control byte.\nfunc PreserveControl() string {\n\treturn `A\x7fB`\n}\n")
+	args := []string{"query", "--repo", repo, "--query", "PreserveControl returns raw control byte", "--no-cache"}
+	var jsonOut bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "audit", Env: EntireEnv{RepoRoot: repo}, Stdout: &jsonOut}, append(args, "--format", "json")); err != nil {
+		t.Fatal(err)
+	}
+	var response sem.SearchResponse
+	if err := json.Unmarshal(jsonOut.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) == 0 || response.Results[0].SymbolName != "PreserveControl" || !searchResultNeedsNoFollowUpRead(response.Results[0]) || !strings.ContainsRune(response.Results[0].Snippet, '\x7f') {
+		t.Fatalf("fixture did not produce a structurally complete raw body: %+v", response.Results)
+	}
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "audit", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, append(args, "--format", "agent")); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), completeMarker) || strings.ContainsRune(out.String(), '\x7f') || !strings.Contains(out.String(), `A\x7fB`) {
+		t.Fatalf("transformed body claimed completeness or lost escaping:\n%s", out.String())
+	}
+}
+
+func TestAlreadyCompleteCertificationLeavesPublicNoHitResponseValid(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	write(t, repo, "present.go", "package present\nfunc Present() bool { return true }\n")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "audit", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
+		"query", "--repo", repo, "--query", "ZzxxyyAbsentIdentifierNeverOccurs", "--format", "json", "--no-cache",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var response sem.SearchResponse
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Results == nil || len(response.Results) != 0 || response.Stats.ResultBytes != 2 || response.Stats.CompleteSymbols != 0 {
+		t.Fatalf("no-hit response changed shape/accounting: %s", out.String())
+	}
+	if err := response.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Marker ABSENCE proves nothing on its own -- a renderer that never marks anything passes
 // the sweep above trivially. This positively establishes, through the public JSON surface,
 // that the clipped shape the sweep targets is actually produced by the fixture.
@@ -251,52 +298,5 @@ func TestTheRealSearchPathStillMarksAGenuinelyCompleteSymbol(t *testing.T) {
 		// truncation. Reported over the peer channel with the failing test names.
 		t.Skipf("KNOWN GAP (producer): a whole callable rendered without %s; bounds-based fix reverted, see comment.\n%s",
 			completeMarker, rendered)
-	}
-}
-
-func TestAlreadyCompleteProducerKeepsTransformedBodyMarkerGuard(t *testing.T) {
-	t.Parallel()
-	repo := t.TempDir()
-	write(t, repo, "control.go", "package control\n\n// PreserveControl returns a raw control byte.\nfunc PreserveControl() string {\n\treturn `A\x7fB`\n}\n")
-	args := []string{"query", "--repo", repo, "--query", "PreserveControl returns raw control byte", "--no-cache"}
-	var jsonOut bytes.Buffer
-	if err := Run(t.Context(), Options{Version: "audit", Env: EntireEnv{RepoRoot: repo}, Stdout: &jsonOut}, append(args, "--format", "json")); err != nil {
-		t.Fatal(err)
-	}
-	var response sem.SearchResponse
-	if err := json.Unmarshal(jsonOut.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Results) == 0 || response.Results[0].SymbolName != "PreserveControl" || !searchResultNeedsNoFollowUpRead(response.Results[0]) || !strings.ContainsRune(response.Results[0].Snippet, '\x7f') {
-		t.Fatalf("fixture did not produce a structurally complete raw body: %+v", response.Results)
-	}
-	var out bytes.Buffer
-	if err := Run(t.Context(), Options{Version: "audit", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, append(args, "--format", "agent")); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(out.String(), completeMarker) || strings.ContainsRune(out.String(), '\x7f') || !strings.Contains(out.String(), `A\x7fB`) {
-		t.Fatalf("transformed body claimed completeness or lost escaping:\n%s", out.String())
-	}
-}
-
-func TestAlreadyCompleteCertificationLeavesPublicNoHitResponseValid(t *testing.T) {
-	t.Parallel()
-	repo := t.TempDir()
-	write(t, repo, "present.go", "package present\nfunc Present() bool { return true }\n")
-	var out bytes.Buffer
-	if err := Run(t.Context(), Options{Version: "audit", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
-		"query", "--repo", repo, "--query", "ZzxxyyAbsentIdentifierNeverOccurs", "--format", "json", "--no-cache",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var response sem.SearchResponse
-	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
-	if response.Results == nil || len(response.Results) != 0 || response.Stats.ResultBytes != 2 || response.Stats.CompleteSymbols != 0 {
-		t.Fatalf("no-hit response changed shape/accounting: %s", out.String())
-	}
-	if err := response.Validate(); err != nil {
-		t.Fatal(err)
 	}
 }
