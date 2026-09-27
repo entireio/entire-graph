@@ -554,7 +554,20 @@ def _qualify_str_input():
     except Exception:
         return False
 
-def tests():
+def _finish_tempdirs():
+    """Remove everything allocated and return the OWNED paths that survived.
+
+    Called from a `finally`, so a suite that raises -- an exception, a timeout, a SystemExit
+    from a refusal under test -- still cleans up. Cleanup at the normal tail only meant the
+    failure paths, which are the ones that allocate most and are hit most during a mutation
+    sweep, leaked every time.
+    """
+    owned = list(_TEMPDIRS)
+    _cleanup_tempdirs()
+    return [d for d in owned if os.path.exists(d)]
+
+
+def _tests_body():
     """Retained fixtures, including the two RED cases peer review supplied."""
     ok = True
 
@@ -744,6 +757,28 @@ def tests():
     _removed = _cleanup_tempdirs()
     print("  ALL PASS" if ok else "  FAILURES ABOVE")
     return ok
+
+
+def tests():
+    """Run the suite, and REMOVE WHAT IT ALLOCATED whether or not it finishes.
+
+    Residual owned paths fail a normal return; an in-flight exception is preserved and simply
+    reported alongside, because losing the real error to a cleanup complaint would be worse
+    than the leak.
+    """
+    raised = None
+    try:
+        rc = _tests_body()
+    except BaseException as exc:
+        raised, rc = exc, 1
+    survivors = _finish_tempdirs()
+    if survivors:
+        print(f"  FAIL the suite left {len(survivors)} owned temp path(s) behind: "
+              f"{survivors[0]}")
+        rc = 1
+    if raised is not None:
+        raise raised
+    return rc
 
 
 if __name__ == "__main__":
