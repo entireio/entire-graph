@@ -2,8 +2,9 @@
 test. Any GREEN row below is a guard nothing is actually holding."""
 import subprocess, os, sys
 
-H = "os.path.join(os.path.dirname(os.path.abspath(__file__)), 'head_to_head.py')"
-R = "os.path.join(os.path.dirname(os.path.abspath(__file__)), 'replay_qualify.py')"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+H = os.path.join(_HERE, "head_to_head.py")
+R = os.path.join(_HERE, "replay_qualify.py")
 
 MUT = [
   # (file, label, find, replace)
