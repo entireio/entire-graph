@@ -1089,10 +1089,16 @@ def _selftest_body(require_orchestration=False):
     os.makedirs(_stuck, exist_ok=True)
     os.chmod(_ro, 0o500)
     try:
-        _TEMPDIRS.append(_stuck)
+        # THIS path, not the global count. The list also holds every fixture allocated earlier,
+        # all removable, so `gone == 0` was only ever true by accident of ordering -- and
+        # retaining failed paths made that accident visible.
+        _before = list(_TEMPDIRS)
+        _TEMPDIRS[:] = [_stuck]
         _n = _cleanup_tempdirs()
         ck(os.path.exists(_stuck), "the fixture really is unremovable")
         ck(_n == 0, "a removal that FAILED is not counted as done", f"reported {_n}")
+        ck(_stuck in _TEMPDIRS, "...and it stays TRACKED, so the evidence is not erased")
+        _TEMPDIRS[:] = _before + [_stuck]
     finally:
         os.chmod(_ro, 0o700)
         import shutil as _sh
