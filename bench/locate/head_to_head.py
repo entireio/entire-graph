@@ -612,6 +612,28 @@ def _selftest():
     ck("--" in dmeta.get("argv", []), "the pattern is passed after an option terminator")
     ck(dloc and ddec, "...and it still finds the declaration", f"loc={dloc} dec={ddec}")
 
+    # THE SIBLING BENCHMARKS' HIT PREDICATE, tested here because this is the suite the mutation
+    # sweep runs. doccomment_bench and budget_falsifier matched the symbol name against the
+    # WHOLE ranked line, path included, and never checked the file -- so a directory called
+    # `resolve/` scored as retrieving a symbol called `resolve`, and so did a same-named symbol
+    # in any other file. head_to_head had the identical bug, was fixed, and the fix was never
+    # carried across. Both siblings measure the graph ALONE, so both inflated it.
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location("_dcb", os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "doccomment_bench.py"))
+    _dcb = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_dcb)
+    for line, want, label in (
+        ("1. internal/resolve/cache.go:12 loadCache s=9.1", False, "a directory named like the symbol"),
+        ("2. internal/sem/other.go:40 resolve s=8.0",       False, "the right name in the wrong file"),
+        ("3. internal/sem/target.go:40 resolve s=8.0",      True,  "the right name in the right file"),
+        # THE CASE THE FILE CHECK CANNOT COVER: the path IS the target and the name appears
+        # only inside it, so only matching against the text AFTER the path:line prefix rejects
+        # this. Without it, a directory named like the symbol scores in its own file.
+        ("4. internal/resolve/target.go:40 loadCache s=7.0", False, "name only in the target's own path"),
+    ):
+        tf = "internal/resolve/target.go" if "internal/resolve" in line else "internal/sem/target.go"
+        ck(_dcb.ranked_hit(line, "resolve", tf, "/r") is want, "sibling hit predicate: " + label)
+
     # 13-16. THE RECEIPT VERDICT. Peer review's point was that receipts said PROVISIONAL
     #        forever and nothing finalised them, so a completed run and one killed halfway
     #        were indistinguishable on disk. These pin the lifecycle rather than the demo.
