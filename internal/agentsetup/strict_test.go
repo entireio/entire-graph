@@ -106,7 +106,7 @@ func TestStrictGuidanceContentAndScope(t *testing.T) {
 				"entire graph capabilities --json",
 				"ALWAYS use --head for interactive Graph queries by default, including the first",
 				"Use the working tree ONLY when the answer depends on uncommitted edits",
-				`entire graph query --repo . --profile full --head --query "<task>"`,
+				`entire graph query --repo . --profile full --head --format agent --query "<task>"`,
 			},
 			"brain": {
 				"ALWAYS check Brain availability and version once per session",
