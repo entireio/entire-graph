@@ -478,7 +478,20 @@ def _canonical_q(dlines, name):
     q = "\n".join(strip_name(l, name).replace("\x00", "\n").rstrip() for l in dlines)
     return "\n".join(l for l in (x.strip() for x in q.splitlines()) if l)[:240]
 
-def _selftest(require_orchestration=False):
+def _finish_tempdirs():
+    """Remove everything allocated and return the OWNED paths that survived.
+
+    Called from a `finally`, so a suite that raises -- an exception, a timeout, a SystemExit
+    from a refusal under test -- still cleans up. Cleanup at the normal tail only meant the
+    failure paths, which are the ones that allocate most and are hit most during a mutation
+    sweep, leaked every time.
+    """
+    owned = list(_TEMPDIRS)
+    _cleanup_tempdirs()
+    return [d for d in owned if os.path.exists(d)]
+
+
+def _selftest_body(require_orchestration=False):
     fails = []
     skipped = []
     def ck(cond, label, detail=""):
@@ -1025,6 +1038,29 @@ def _selftest(require_orchestration=False):
        "...and reports the number it actually removed",
        f"reported {_removed}, really removed {len(_tracked) - len(_survivors)}")
 
+    # _finish_tempdirs IS WHAT THE finally CALLS, so these two are the whole lifecycle contract:
+    # a removable path goes and is not reported; an unremovable one survives and IS reported, so
+    # a leak cannot pass a normal return. Cheap, and they need no subprocess.
+    _fa = _mkdtemp(prefix="pharm-fin-")
+    ck(not _finish_tempdirs(), "a removable allocation leaves no survivor")
+    ck(not os.path.exists(_fa), "...and is actually gone")
+    _fro = _mkdtemp(prefix="pharm-fro-")
+    _fstuck = os.path.join(_fro, "stuck")
+    os.makedirs(_fstuck, exist_ok=True)
+    os.chmod(_fro, 0o500)
+    try:
+        _TEMPDIRS.append(_fstuck)
+        # The read-only PARENT is tracked too and also survives, so the check is membership,
+        # not equality -- an exact-list assertion here would be asserting the fixture's shape
+        # rather than the contract.
+        _surv = _finish_tempdirs()
+        ck(_fstuck in _surv,
+           "an unremovable allocation is REPORTED as a survivor, not silently dropped", str(_surv))
+    finally:
+        os.chmod(_fro, 0o700)
+        import shutil as _sh2
+        _sh2.rmtree(_fro, ignore_errors=True)
+
     # A REMOVAL THAT FAILS MUST NOT BE COUNTED. With cleanup working every directory goes, so
     # counting attempts and counting successes agree and neither test can tell them apart. This
     # forces a genuine failure: a child inside a read-only parent cannot be unlinked.
@@ -1333,6 +1369,28 @@ def finalize_manifest(outdir, manifest, status, note=""):
     with open(tmp, "w") as fh:
         json.dump(manifest, fh, indent=1)
     os.replace(tmp, os.path.join(outdir, "run-manifest.json"))
+
+def _selftest(require_orchestration=False):
+    """Run the suite, and REMOVE WHAT IT ALLOCATED whether or not it finishes.
+
+    Residual owned paths fail a normal return; an in-flight exception is preserved and simply
+    reported alongside, because losing the real error to a cleanup complaint would be worse
+    than the leak.
+    """
+    raised = None
+    try:
+        rc = _selftest_body(require_orchestration)
+    except BaseException as exc:
+        raised, rc = exc, 1
+    survivors = _finish_tempdirs()
+    if survivors:
+        print(f"  FAIL the suite left {len(survivors)} owned temp path(s) behind: "
+              f"{survivors[0]}")
+        rc = 1
+    if raised is not None:
+        raise raised
+    return rc
+
 
 if __name__=="__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--test":
