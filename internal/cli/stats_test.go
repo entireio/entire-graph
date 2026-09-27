@@ -599,13 +599,12 @@ func TestStatsTextOutputCarriesRatioAndCaveat(t *testing.T) {
 	for _, want := range []string{
 		"graph calls: 1",
 		"exploration calls: 1",
-		"graph-first rate: 100%",
 		"graph calls by verb",
-		"exploration calls (what the graph is meant to replace)",
-		"session tokens (billed",
-		"ESTIMATED SAVINGS",
+		"observed exploration calls",
+		"session usage tokens (reported by transcripts)",
+		"1:1 context model:",
 		"assumption, not a measurement",
-		"measured per-call cost",
+		"observed bytes per result",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text output missing %q:\n%s", want, text)
@@ -934,9 +933,9 @@ func TestStatsDefaultOutputIsOneHeadlineLine(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("default output must be exactly one line, got %d:\n%s", len(lines), text)
 	}
-	// (840-40) bytes saved -> 200 tokens
-	if lines[0] != "[entire-graph] ~200 tokens saved" {
-		t.Fatalf("headline = %q, want %q", lines[0], "[entire-graph] ~200 tokens saved")
+	// (840-40) modeled bytes -> +200 estimated tokens; not measured savings.
+	if lines[0] != "[entire-graph] 1:1 context model: +200 est. tokens; not measured savings" {
+		t.Fatalf("unexpected model headline = %q", lines[0])
 	}
 	for _, unwanted := range []string{"graph calls by verb", "session tokens (billed", "ESTIMATED SAVINGS", "assumption"} {
 		if strings.Contains(text, unwanted) {
@@ -949,7 +948,7 @@ func TestStatsDefaultOutputIsOneHeadlineLine(t *testing.T) {
 		[]string{"stats", "--repo", repo, "--sessions-dir", sessions, "--since", "all", "--verbose"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(verbose.String(), "ESTIMATED SAVINGS  ~200 tokens") {
+	if !strings.Contains(verbose.String(), "1:1 context model: +200 est. tokens; not measured savings") {
 		t.Fatalf("--verbose must restore the full report:\n%s", verbose.String())
 	}
 }

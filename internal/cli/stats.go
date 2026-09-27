@@ -26,36 +26,31 @@ import (
 // ~/.claude/projects/<path-slug>/). Nothing is uploaded; the only thing written is a per-file
 // memo under the cache directory, which --no-cache turns off.
 //
-// The DEFAULT output is one line: the estimated tokens saved. --verbose restores the full report
-// (per-verb and per-kind tables, billed tokens, the graph-first rate, the model text), and
+// The DEFAULT output is one line: a signed, explicitly counterfactual context model.
+// --verbose restores the full report (per-verb/per-kind tables, usage and model text), and
 // --format json is a machine contract whose shape only ever grows.
 
 // savingsModelShort/savingsModelText document the counterfactual. Both the text and the JSON
 // output carry it verbatim so the number is never quoted without its assumption.
-const savingsModelShort = "each graph locate call is credited with one exploration call it displaced, " +
-	"priced from this session's own measured per-call costs"
+const savingsModelShort = "unvalidated 1:1 substitution assumption using same-session result bytes; not measured savings"
 
-const savingsModelText = "Model (assumption, not a measurement): each graph locate call " +
-	"(query/neighbors/impact) is credited with the ONE exploration call (Read/Grep/Glob/bash " +
-	"grep-find-read) it displaced. Both prices are MEASURED from the same session's own " +
-	"transcript: graph bytes per locate call, and exploration bytes per exploration call. Saving " +
-	"per substitution = exploration bytes/call minus graph bytes/call, converted at 4 bytes = 1 " +
-	"token. This headline sums only the sessions that came out above 0, which discards the losses " +
-	"and biases it upward; estimated_savings_bytes_unfloored is the same sum with the loss-making " +
-	"sessions kept in. The only assumption left is the 1:1 substitution ratio, and a paired A/B " +
-	"benchmark of this tool measured 0.980 exploration calls displaced per graph call; 1:1 is that " +
-	"number rounded in the understating direction. What you would actually have read instead is " +
-	"not observable, so treat this as an estimate, not ground truth."
+const savingsModelText = "Model (assumption, not a measurement): assume each observed graph locate " +
+	"result replaces one exploration result at that session's average exploration bytes/result. " +
+	"Subtract observed graph locate bytes and sum signed results, including losses, across sessions " +
+	"with both result types. Positive means fewer bytes under this unvalidated 1:1 substitution " +
+	"assumption; negative means more. Convert bytes to estimated tokens using the rough 4 bytes = 1 " +
+	"token approximation. Unmatched queries, transformed or truncated outputs, and task quality " +
+	"are not controlled. Transcripts cannot establish what would have been read instead or causal " +
+	"billed-token savings. Legacy JSON savings fields retain their positive-only floor for " +
+	"compatibility; the headline uses the signed unfloored fields."
 
 // bytesPerToken is the standard rough transcript-accounting conversion. Tool results are raw
 // text, so token counts are not recorded per call anywhere; 4 bytes/token is the usual
-// approximation and is stated in the output. Real code runs nearer 3.2-3.6 bytes/token, so
-// dividing by 4 understates the tokens a byte count stands for.
+// approximation and is stated in the output. Actual ratios depend on the content and tokenizer.
 const bytesPerToken = 4
 
 // substitutionRatio is how many exploration calls one graph locate call is assumed to displace.
-// Measured at 0.980 in a paired A/B benchmark of this tool; carried as 1 because rounding the
-// ratio up understates the saving and keeps the arithmetic exact in integers.
+// This is an unvalidated counterfactual, not an empirical coefficient for these transcripts.
 const substitutionRatio = 1
 
 // graphLocateVerbs are the verbs whose whole purpose is to replace exploration, and therefore
@@ -144,8 +139,7 @@ type statsTokens struct {
 }
 
 // statsResponse is a machine contract: fields are only ever ADDED, never removed or renamed.
-// scripts/entire-graph-statusline.sh reads estimated_savings_est_tokens and
-// estimated_savings_pct_of_session_tokens out of it on every prompt render.
+// The statusline reads the signed unfloored estimate plus comparison availability.
 type statsResponse struct {
 	FormatVersion             int          `json:"format_version"`
 	Provider                  string       `json:"provider"`
@@ -196,9 +190,7 @@ type statsResponse struct {
 	GraphLocateReturnedBytes int64   `json:"graph_locate_returned_bytes"`
 	GraphBytesPerLocateCall  float64 `json:"graph_bytes_per_locate_call"`
 	ExplorationBytesPerCall  float64 `json:"exploration_bytes_per_call"`
-	// SessionsWithPositiveSavings is how many in-window sessions produced a saving above 0. A
-	// session whose graph calls returned more per call than the exploration they displaced
-	// contributes 0 — a correct answer, not one to be floored away at the total.
+	// SessionsWithPositiveSavings counts positive modeled results, not verified task savings.
 	SessionsWithPositiveSavings int     `json:"sessions_with_positive_savings"`
 	SubstitutionRatio           float64 `json:"substitution_ratio"`
 	// EstimatedSavingsBytesUnfloored / EstimatedSavingsTokensUnfloored are the SAME model with the
@@ -206,13 +198,13 @@ type statsResponse struct {
 	// contributing 0. EstimatedSavingsBytes sums max(0, saved) per session, which keeps every win
 	// and discards every loss — a positive bias, and the only direct sign bias in this report.
 	//
-	// Both numbers are published because they answer different questions. The floored one is what
-	// the status line renders and the one the headline has always quoted; the unfloored one is the
-	// honest net, and a large gap between them is itself the finding. Sessions with only one side
-	// of the comparison contribute 0 to BOTH: that zero is "nothing to compare against", not a
-	// measured result.
+	// The floored fields remain for compatibility. Human output uses the signed model and
+	// SessionsWithSavingsComparison to distinguish zero from an unavailable comparison.
 	EstimatedSavingsBytesUnfloored  int64 `json:"estimated_savings_bytes_unfloored"`
 	EstimatedSavingsTokensUnfloored int64 `json:"estimated_savings_est_tokens_unfloored"`
+	// SessionsWithSavingsComparison counts sessions containing at least one observed graph
+	// locate result and one observed exploration result. Availability is not causal validity.
+	SessionsWithSavingsComparison int `json:"sessions_with_savings_comparison"`
 }
 
 func runStats(ctx context.Context, opts Options, args []string) error {
@@ -791,17 +783,8 @@ func (a *sessionAcc) locateTotals() (calls, results int, bytes int64) {
 // The subtracted term is exactly locateResults * (locateBytes / locateResults), which is why the
 // graph-side division cancels and no per-call rounding accumulates.
 //
-// The result is SIGNED. A session whose graph calls returned MORE per call than the exploration
-// they displaced cost bytes rather than saving them, and that negative is the answer — this tool's
-// own paired A/B benchmark found graph output larger per call than the baseline's.
-//
-// This used to return 0 in that case, and the total is a sum over sessions, so losses were dropped
-// while wins were kept: a straight positive bias in the only number anyone quotes. The old comment
-// here claimed the floor was "not floored away at the total" — it was exactly that, one session at
-// a time. estimated_savings_bytes still carries the floored sum, because the status-line badge
-// reads it and cannot represent a negative (its awk `number()` returns -1 for a missing key, so a
-// real negative would be indistinguishable from an absent one), and the signed sum is published
-// beside it as estimated_savings_bytes_unfloored.
+// The result is SIGNED: larger graph results produce a modeled loss. Legacy JSON keeps
+// its per-session floor, but human output uses the signed sum and a separate availability count.
 //
 // The 0 returned when either side is missing is a DIFFERENT zero: it means "one side of the
 // comparison is absent", not "the comparison came out flat". It stays, and must not be conflated
@@ -1610,9 +1593,12 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 		report.GraphLocateCalls += locateCalls
 		report.CreditedGraphCalls += locateResults
 		report.GraphLocateReturnedBytes += locateBytes
-		exploreResults += sumCounts(acc.kindResults)
-		// Two totals from ONE per-session result: the floored sum the badge reads, and the signed
-		// sum that keeps the loss-making sessions in the arithmetic.
+		sessionExploreResults := sumCounts(acc.kindResults)
+		exploreResults += sessionExploreResults
+		if locateResults > 0 && sessionExploreResults > 0 {
+			report.SessionsWithSavingsComparison++
+		}
+		// Preserve the legacy positive-only sum; human output uses the signed model.
 		saved := acc.savingsBytes()
 		report.EstimatedSavingsBytesUnfloored += saved
 		if saved > 0 {
@@ -1709,9 +1695,7 @@ func roundTo(value float64, places int) float64 {
 
 const statsPrefix = "[entire-graph]"
 
-// writeStatsSummary is the DEFAULT text output: one line, the number, nothing else. The tilde is
-// load-bearing — it is what stops a modelled estimate from reading as a measurement — and the
-// full model text is one --verbose away.
+// writeStatsSummary is one line with the sign, assumption and availability at the point of use.
 func writeStatsSummary(out io.Writer, report statsResponse) {
 	if !report.SessionsDirFound {
 		fmt.Fprintf(out, "%s no coding-agent session transcripts for this repo yet (looked in %s)\n",
@@ -1723,8 +1707,18 @@ func writeStatsSummary(out io.Writer, report statsResponse) {
 			statsPrefix, termsafe.Line(report.Since))
 		return
 	}
-	fmt.Fprintln(out, statsGreen(out, fmt.Sprintf("%s ~%s tokens saved",
-		statsPrefix, humanInt(report.EstimatedSavingsTokens))))
+	fmt.Fprintf(out, "%s %s\n", statsPrefix, statsModelSummary(report))
+}
+
+func statsModelSummary(report statsResponse) string {
+	if report.SessionsWithSavingsComparison == 0 {
+		return "1:1 context model: unavailable (no session has both result types)"
+	}
+	signed := humanInt(report.EstimatedSavingsTokensUnfloored)
+	if report.EstimatedSavingsTokensUnfloored > 0 {
+		signed = "+" + signed
+	}
+	return "1:1 context model: " + signed + " est. tokens; not measured savings"
 }
 
 // statsGreen styles the headline for a terminal and degrades to plain text everywhere else,
@@ -1761,11 +1755,9 @@ func writeStatsText(out io.Writer, report statsResponse) {
 		return
 	}
 
-	fmt.Fprintf(out, "graph calls: %s · exploration calls: %s · graph-first rate: %s (%d/%d sessions)\n",
+	fmt.Fprintf(out, "graph calls: %s · exploration calls: %s\n",
 		humanInt(int64(report.GraphCalls)),
-		humanInt(int64(report.ExplorationCalls)),
-		percent(report.GraphFirstRate),
-		report.GraphFirstSessions, report.SessionsWithLocate)
+		humanInt(int64(report.ExplorationCalls)))
 	fmt.Fprintln(out)
 
 	if len(report.GraphByVerb) > 0 {
@@ -1779,7 +1771,7 @@ func writeStatsText(out io.Writer, report statsResponse) {
 	}
 
 	if len(report.ExplorationByKind) > 0 {
-		fmt.Fprintln(out, "exploration calls (what the graph is meant to replace)")
+		fmt.Fprintln(out, "observed exploration calls")
 		fmt.Fprintf(out, "  %-22s %8s %14s\n", "kind", "calls", "est. tokens")
 		for _, entry := range report.ExplorationByKind {
 			fmt.Fprintf(out, "  %-22s %8s %14s\n", entry.Name, humanInt(int64(entry.Calls)), humanInt(entry.ReturnedTokens))
@@ -1788,32 +1780,24 @@ func writeStatsText(out io.Writer, report statsResponse) {
 		fmt.Fprintln(out)
 	}
 
-	fmt.Fprintln(out, "session tokens (billed, read from transcript usage)")
+	fmt.Fprintln(out, "session usage tokens (reported by transcripts)")
 	fmt.Fprintf(out, "  input %s · cache write %s · cache read %s · output %s · total %s\n",
 		humanInt(report.SessionTokens.Input), humanInt(report.SessionTokens.CacheWrite),
 		humanInt(report.SessionTokens.CacheRead), humanInt(report.SessionTokens.Output),
 		humanInt(report.SessionTokens.Total))
 	fmt.Fprintln(out)
 
-	fmt.Fprintln(out, "measured per-call cost (what the model prices from)")
+	fmt.Fprintln(out, "observed bytes per result (not monetary cost)")
 	fmt.Fprintf(out, "  graph locate %s bytes/call · exploration %s bytes/call\n",
 		strconv.FormatFloat(report.GraphBytesPerLocateCall, 'f', -1, 64),
 		strconv.FormatFloat(report.ExplorationBytesPerCall, 'f', -1, 64))
 	fmt.Fprintln(out)
 
-	fmt.Fprintf(out, "ESTIMATED SAVINGS  ~%s tokens", humanInt(report.EstimatedSavingsTokens))
-	if report.EstimatedSavingsPct > 0 {
-		fmt.Fprintf(out, "  (~%.2f%% of billed session tokens)", report.EstimatedSavingsPct)
-	}
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  credited graph calls: %d of %d (query/neighbors/impact only)\n",
+	fmt.Fprintln(out, statsModelSummary(report))
+	fmt.Fprintf(out, "  observed graph locate results: %d of %d graph calls (query/search/neighbors/impact only)\n",
 		report.CreditedGraphCalls, report.GraphCalls)
-	fmt.Fprintf(out, "  sessions with a saving above 0: %d of %d\n",
-		report.SessionsWithPositiveSavings, report.Sessions)
-	// The headline drops the loss-making sessions. Printing the signed total beside it is what
-	// stops that from being invisible.
-	fmt.Fprintf(out, "  net of the sessions that lost bytes: ~%s tokens\n",
-		humanInt(report.EstimatedSavingsTokensUnfloored))
+	fmt.Fprintf(out, "  sessions with both result types: %d of %d\n",
+		report.SessionsWithSavingsComparison, report.Sessions)
 	for _, line := range wrapText(savingsModelText, 88) {
 		fmt.Fprintf(out, "  %s\n", line)
 	}

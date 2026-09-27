@@ -227,13 +227,13 @@ T=$WORK/graphfirst.jsonl
 
 OUT=$(run s-graphfirst "$T" "$REPO")
 assert_has 'graph-first session: badge' '[GRAPH]' "$OUT"
-assert_has 'graph-first session: saved'  'saved'  "$OUT"
+assert_has 'graph-first session: explicit model' '1:1 model +' "$OUT"
 assert_has 'graph-first session: query verb split' '1 query' "$OUT"
 assert_has 'graph-first session: search verb split' '1 search' "$OUT"
 assert_has 'graph-first session: impact verb split' '1 impact' "$OUT"
-assert_has 'graph-first session: graph-first tick' 'graph-first ✓' "$OUT"
-assert_has 'graph-first session: locate share' '60% of locates' "$OUT"
-assert_has 'graph-first session: pct of session' 'of session' "$OUT"
+assert_lacks 'graph-first session: no behavioral claim' 'graph-first' "$OUT"
+assert_lacks 'graph-first session: no locate share claim' 'of locates' "$OUT"
+assert_lacks 'graph-first session: no billed savings claim' 'of session' "$OUT"
 assert_has 'graph-first session: exploration calls' 'vs 2 explore' "$OUT"
 assert_has 'graph-first session: exploration tokens' 'explore tok' "$OUT"
 assert_lacks 'graph-first session: single line' '
@@ -243,7 +243,7 @@ assert_lacks 'graph-first session: single line' '
 STATS=$("$BIN" stats --repo "$REPO" --transcript "$T" --since all --format json)
 WANT_SAVED=$(printf '%s' "$STATS" | awk '
 	{
-		if (!match($0, /"estimated_savings_est_tokens":[0-9]+/)) next
+		if (!match($0, /"estimated_savings_est_tokens_unfloored":[0-9]+/)) next
 		s = substr($0, RSTART, RLENGTH)
 		sub(/^[^:]*:/, "", s)
 		v = s + 0
@@ -254,7 +254,7 @@ WANT_SAVED=$(printf '%s' "$STATS" | awk '
 		print t u
 	}')
 [ -n "$WANT_SAVED" ] || WANT_SAVED='<no savings field>'
-assert_has 'renders the CLI savings number' "$WANT_SAVED saved" "$(run s-cli-number "$T" "$REPO" NO_COLOR=1)"
+assert_has 'renders the signed CLI model number' "1:1 model +$WANT_SAVED tok" "$(run s-cli-number "$T" "$REPO" NO_COLOR=1)"
 
 # --- integration: grep first ------------------------------------------------------------------
 T2=$WORK/grepfirst.jsonl
@@ -266,7 +266,8 @@ T2=$WORK/grepfirst.jsonl
 	usage 10 20 30 40
 } >"$T2"
 OUT=$(run s-grepfirst "$T2" "$REPO")
-assert_has 'grep-first session: cross mark' 'graph-first ✗' "$OUT"
+assert_has 'grep-first session: modeled loss is visible' '1:1 model -' "$OUT"
+assert_lacks 'grep-first session: no behavioral claim' 'graph-first' "$OUT"
 
 # --- integration: no graph calls ---------------------------------------------------------------
 T3=$WORK/nograph.jsonl
@@ -314,7 +315,7 @@ for planted in "$WORK/xdg/entire/plugins/bin/entire-graph:managed" "$WORK/gohome
 	which=${planted##*:}
 	cat >"$path" <<PLANTED
 #!/bin/sh
-printf '{"sessions":1,"graph_calls":9,"exploration_calls":9,"graph_calls_by_verb":[{"name":"search","calls":9,"returned_bytes":1}],"estimated_savings_est_tokens":%s}\n' "$([ "$which" = managed ] && echo 4242 || echo 999999)"
+printf '{"sessions":1,"graph_calls":9,"exploration_calls":9,"graph_calls_by_verb":[{"name":"search","calls":9,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":%s}\n' "$([ "$which" = managed ] && echo 4242 || echo 999999)"
 PLANTED
 	chmod +x "$path"
 done
@@ -349,14 +350,14 @@ assert_absent 'missing binary exits before the cache block' \
 cat >"$WORK/minstub" <<'STUB'
 #!/bin/sh
 cat <<'JSON'
-{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":100,"estimated_savings_pct_of_session_tokens":1}
+{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":100,"estimated_savings_pct_of_session_tokens":1}
 JSON
 STUB
 chmod +x "$WORK/minstub"
 set -- "PATH=/usr/bin:/bin" "HOME=$WORK/nohome"
 OUT=$(stdin_json s-nobin-ok "$T" "$REPO" |
 	env -i "$@" TMPDIR="$WORK/cache" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=1 ENTIRE_GRAPH_BIN="$WORK/minstub" /bin/sh "$SCRIPT")
-assert_has 'the stripped environment reaches the binary lookup at all' '100 saved' "$OUT"
+assert_has 'the stripped environment reaches the binary lookup at all' '+100 tok' "$OUT"
 
 # A binary that exits non-zero must not leak an error onto the status line.
 cat >"$WORK/broken" <<'STUB'
@@ -392,23 +393,54 @@ STUB
 	RUN_BIN=$WORK/stub
 }
 
+# A signed model is not measured savings. The legacy positive-only value is deliberately
+# flattering in every fixture: using it as a fallback would make these assertions fail.
+model_case() { # model_case <name> <additive fields> <expected model>
+	stub '{"sessions":2,"graph_calls":2,"exploration_calls":2,"graph_calls_by_verb":[{"name":"search","calls":2,"returned_bytes":1}],"estimated_savings_est_tokens":999999'"$2"'}'
+	model_out=$(run "s-model-$1" "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0 ENTIRE_GRAPH_STATUSLINE_CACHE=0)
+	assert_eq "signed model: $1" "[GRAPH] 1:1 model $3" "$model_out"
+	assert_lacks "signed model: $1 makes no savings claim" 'saved' "$model_out"
+}
+model_case positive ',"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":2500' '+2.5K tok'
+model_case negative ',"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":-2500' '-2.5K tok'
+model_case minus-one ',"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":-1' '-1 tok'
+model_case zero ',"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":0' '0 tok'
+model_case cancelled ',"sessions_with_savings_comparison":2,"estimated_savings_est_tokens_unfloored":0' '0 tok'
+model_case missing-value ',"sessions_with_savings_comparison":1' 'unavailable'
+model_case null-value ',"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":null' 'unavailable'
+model_case missing-count ',"estimated_savings_est_tokens_unfloored":100' 'unavailable'
+model_case zero-count ',"sessions_with_savings_comparison":0,"estimated_savings_est_tokens_unfloored":100' 'unavailable'
+model_case null-count ',"sessions_with_savings_comparison":null,"estimated_savings_est_tokens_unfloored":100' 'unavailable'
+model_case negative-count ',"sessions_with_savings_comparison":-1,"estimated_savings_est_tokens_unfloored":100' 'unavailable'
+model_case string-value ',"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":"2500"' 'unavailable'
+model_case legacy-only '' 'unavailable'
+
+# Positive and negative modeled balances receive identical neutral styling, not success/failure
+# colors. Assertions name the actual ANSI scope so a neutral label alone cannot satisfy them.
+for sign in + -; do
+	case $sign in +) value=2500 ;; -) value=-2500 ;; esac
+	stub '{"sessions":1,"graph_calls":1,"exploration_calls":1,"graph_calls_by_verb":[{"name":"search","calls":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":'"$value"'}'
+	OUT=$(run "s-model-color-$value" "$T" "$REPO" ENTIRE_GRAPH_STATUSLINE_DETAIL=0 ENTIRE_GRAPH_STATUSLINE_CACHE=0)
+	assert_has "model $sign uses neutral styling" "$(printf '\033[2m')1:1 model ${sign}2.5K tok$(printf '\033[0m')" "$OUT"
+done
+
 stub '{"sessions":0,"graph_calls":0,"exploration_calls":0}'
 OUT=$(run s-zero "$T" "$REPO")
 assert_empty 'zero sessions prints nothing' "$OUT"
 
-stub '{"sessions":1,"graph_calls":41,"exploration_calls":14,"exploration_returned_est_tokens":1500000,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":28,"returned_bytes":1},{"name":"impact","calls":9,"returned_bytes":1},{"name":"neighbors","calls":3,"returned_bytes":1},{"name":"diff","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":2100000,"estimated_savings_pct_of_session_tokens":12.4}'
+stub '{"sessions":1,"graph_calls":41,"exploration_calls":14,"exploration_returned_est_tokens":1500000,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":28,"returned_bytes":1},{"name":"impact","calls":9,"returned_bytes":1},{"name":"neighbors","calls":3,"returned_bytes":1},{"name":"diff","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":2100000,"estimated_savings_pct_of_session_tokens":12.4}'
 OUT=$(run s-rich "$T" "$REPO" NO_COLOR=1)
 assert_eq 'rich line renders exactly' \
-	'[GRAPH] ↗ ~2.1M saved · 28 search · 9 impact · 3 nbrs · 1 other · vs 14 explore · 1.5M explore tok · graph-first ✓ · 75% of locates · ~12% of session' \
+	'[GRAPH] 1:1 model +2.1M tok · 28 search · 9 impact · 3 nbrs · 1 other · vs 14 explore · 1.5M est. explore tok' \
 	"$OUT"
 assert_within 'rich line stays within the width budget' 152 "$OUT"
 
-# The default is the savings figure alone. Everything the line above renders is
+# The default is the model figure alone. Everything the line above renders is
 # opt-in, so the same fixture with detail off must print one segment and nothing
 # else -- no verb split, no exploration totals, no percentages. Asserted AFTER the
 # width check above, which reads the same $OUT and is about the rich line.
 OUT=$(run s-terse "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
-assert_eq 'default line is the savings figure alone' '[GRAPH] ↗ ~2.1M saved' "$OUT"
+assert_eq 'default line is the model figure alone' '[GRAPH] 1:1 model +2.1M tok' "$OUT"
 for seg in 'search' 'impact' 'nbrs' 'explore' 'graph-first' 'of locates' 'of session'; do
 	assert_lacks "default line omits $seg" "$seg" "$OUT"
 done
@@ -419,7 +451,7 @@ done
 OUT=$(run s-toggle "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=1)
 assert_has 'toggle: the detailed line is cached first' 'explore tok' "$OUT"
 OUT=$(run s-toggle "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
-assert_eq 'flipping detail is not served the other setting cached line' '[GRAPH] ↗ ~2.1M saved' "$OUT"
+assert_eq 'flipping detail is not served the other setting cached line' '[GRAPH] 1:1 model +2.1M tok' "$OUT"
 
 # --- meta verbs ------------------------------------------------------------------------------
 # stats/version/help/doctor/init-agents/agent-guide/capabilities are self-reporting: they
@@ -427,10 +459,10 @@ assert_eq 'flipping detail is not served the other setting cached line' '[GRAPH]
 # residual "other". Here 12 stats + 2 doctor + 1 version + 1 help + 1 capabilities +
 # 1 init-agents + 1 agent-guide = 19 meta calls out of 41; the work total is 22, of which
 # 13 search + 3 impact + 1 neighbors are named, leaving 5 other (4 diff + 1 unknown verb).
-stub '{"sessions":1,"graph_calls":41,"exploration_calls":2600,"exploration_returned_est_tokens":1500000,"sessions_with_locate":1,"graph_first_sessions":0,"graph_calls_by_verb":[{"name":"search","calls":13,"returned_bytes":1},{"name":"stats","calls":12,"returned_bytes":1},{"name":"diff","calls":4,"returned_bytes":1},{"name":"impact","calls":3,"returned_bytes":1},{"name":"doctor","calls":2,"returned_bytes":1},{"name":"neighbors","calls":1,"returned_bytes":1},{"name":"version","calls":1,"returned_bytes":1},{"name":"help","calls":1,"returned_bytes":1},{"name":"capabilities","calls":1,"returned_bytes":1},{"name":"init-agents","calls":1,"returned_bytes":1},{"name":"agent-guide","calls":1,"returned_bytes":1},{"name":"newverb","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":6600,"estimated_savings_pct_of_session_tokens":0.2}'
+stub '{"sessions":1,"graph_calls":41,"exploration_calls":2600,"exploration_returned_est_tokens":1500000,"sessions_with_locate":1,"graph_first_sessions":0,"graph_calls_by_verb":[{"name":"search","calls":13,"returned_bytes":1},{"name":"stats","calls":12,"returned_bytes":1},{"name":"diff","calls":4,"returned_bytes":1},{"name":"impact","calls":3,"returned_bytes":1},{"name":"doctor","calls":2,"returned_bytes":1},{"name":"neighbors","calls":1,"returned_bytes":1},{"name":"version","calls":1,"returned_bytes":1},{"name":"help","calls":1,"returned_bytes":1},{"name":"capabilities","calls":1,"returned_bytes":1},{"name":"init-agents","calls":1,"returned_bytes":1},{"name":"agent-guide","calls":1,"returned_bytes":1},{"name":"newverb","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":6600,"estimated_savings_pct_of_session_tokens":0.2}'
 OUT=$(run s-meta "$T" "$REPO" NO_COLOR=1)
 assert_eq 'meta verbs are excluded from the split and from "other"' \
-	'[GRAPH] ↗ ~6.6K saved · 13 search · 3 impact · 1 nbrs · 5 other · vs 2.6K explore · 1.5M explore tok · graph-first ✗ · 2% of locates · ~0.20% of session' \
+	'[GRAPH] 1:1 model +6.6K tok · 13 search · 3 impact · 1 nbrs · 5 other · vs 2.6K explore · 1.5M est. explore tok' \
 	"$OUT"
 for meta in stats version help doctor init-agents agent-guide capabilities; do
 	assert_lacks "meta verb '$meta' is never named" " $meta" "$OUT"
@@ -438,7 +470,7 @@ done
 assert_within 'meta line stays within the width budget' 152 "$OUT"
 
 # A session that only ever asked the graph about itself did no graph work at all.
-stub '{"sessions":1,"graph_calls":9,"exploration_calls":4,"exploration_returned_est_tokens":100,"sessions_with_locate":1,"graph_first_sessions":0,"graph_calls_by_verb":[{"name":"stats","calls":7,"returned_bytes":1},{"name":"doctor","calls":2,"returned_bytes":1}],"estimated_savings_est_tokens":0,"estimated_savings_pct_of_session_tokens":0}'
+stub '{"sessions":1,"graph_calls":9,"exploration_calls":4,"exploration_returned_est_tokens":100,"sessions_with_locate":1,"graph_first_sessions":0,"graph_calls_by_verb":[{"name":"stats","calls":7,"returned_bytes":1},{"name":"doctor","calls":2,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":0,"estimated_savings_pct_of_session_tokens":0}'
 OUT=$(run s-metaonly "$T" "$REPO" NO_COLOR=1)
 assert_eq 'a meta-only session claims nothing' '[GRAPH] no graph calls yet · 4 explore' "$OUT"
 
@@ -448,83 +480,81 @@ OUT=$(run s-meta-terse "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_DETAIL=0)
 assert_eq 'a meta-only session is bare with detail off' '[GRAPH] no graph calls yet' "$OUT"
 
 # Locate verbs rank ahead of bulk/change verbs even when they were called less often.
-stub '{"sessions":1,"graph_calls":30,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"symbols","calls":15,"returned_bytes":1},{"name":"edges","calls":9,"returned_bytes":1},{"name":"search","calls":4,"returned_bytes":1},{"name":"impact","calls":2,"returned_bytes":1}],"estimated_savings_est_tokens":800,"estimated_savings_pct_of_session_tokens":1}'
+stub '{"sessions":1,"graph_calls":30,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"symbols","calls":15,"returned_bytes":1},{"name":"edges","calls":9,"returned_bytes":1},{"name":"search","calls":4,"returned_bytes":1},{"name":"impact","calls":2,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":800,"estimated_savings_pct_of_session_tokens":1}'
 OUT=$(run s-order "$T" "$REPO" NO_COLOR=1)
 assert_eq 'locate verbs rank first in the split' \
-	'[GRAPH] ↗ ~800 saved · 4 search · 2 impact · 15 symbols · 9 other · graph-first ✓ · 100% of locates · ~1.0% of session' \
+	'[GRAPH] 1:1 model +800 tok · 4 search · 2 impact · 15 symbols · 9 other' \
 	"$OUT"
 
 # --- new context segments ---------------------------------------------------------------------
 # Exploration counters are dropped rather than rendered as zeros.
-stub '{"sessions":1,"graph_calls":3,"exploration_calls":0,"exploration_returned_est_tokens":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":3,"returned_bytes":1}],"estimated_savings_est_tokens":700,"estimated_savings_pct_of_session_tokens":2}'
+stub '{"sessions":1,"graph_calls":3,"exploration_calls":0,"exploration_returned_est_tokens":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":3,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":700,"estimated_savings_pct_of_session_tokens":2}'
 OUT=$(run s-noexplore "$T" "$REPO" NO_COLOR=1)
 assert_eq 'zero exploration drops both explore segments' \
-	'[GRAPH] ↗ ~700 saved · 3 search · graph-first ✓ · 100% of locates · ~2.0% of session' "$OUT"
+	'[GRAPH] 1:1 model +700 tok · 3 search' "$OUT"
 
 # A savings percentage that rounds to 0.00% is a zero, not a number worth a segment.
-stub '{"sessions":1,"graph_calls":1,"exploration_calls":1,"exploration_returned_est_tokens":5,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":40,"estimated_savings_pct_of_session_tokens":0.0004}'
+stub '{"sessions":1,"graph_calls":1,"exploration_calls":1,"exploration_returned_est_tokens":5,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":40,"estimated_savings_pct_of_session_tokens":0.0004}'
 OUT=$(run s-tinypct "$T" "$REPO" NO_COLOR=1)
 assert_lacks 'a percentage that rounds to zero is dropped' 'of session' "$OUT"
-assert_has 'explore tokens render beside the tiny percentage' '5 explore tok' "$OUT"
+assert_has 'explore tokens render beside the tiny percentage' '5 est. explore tok' "$OUT"
 
 # --- width discipline ---------------------------------------------------------------------------
-# An over-long line sheds whole segments from the right: session %, then explore tok, then
-# explore calls. Nothing is ever truncated mid-segment.
-LONG='{"sessions":1,"graph_calls":9999999,"exploration_calls":8888888,"exploration_returned_est_tokens":7777777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":999999,"returned_bytes":1},{"name":"checkpoint","calls":888888,"returned_bytes":1},{"name":"snapshot","calls":777777,"returned_bytes":1}],"estimated_savings_est_tokens":999999999,"estimated_savings_pct_of_session_tokens":12.4}'
+# An over-long line sheds whole estimated-token and exploration-call segments.
+# Nothing is ever truncated mid-segment, even for very large counters.
+LONG='{"sessions":1,"graph_calls":9999999999,"exploration_calls":8888888,"exploration_returned_est_tokens":777777777777777777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":999999999,"returned_bytes":1},{"name":"checkpoint","calls":888888888,"returned_bytes":1},{"name":"snapshot","calls":777777777,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":999999999,"estimated_savings_pct_of_session_tokens":12.4}'
 stub "$LONG"
 OUT=$(run s-long "$T" "$REPO" NO_COLOR=1)
-assert_eq 'over-long line drops session % then explore tok, keeping explore calls' \
-	'[GRAPH] ↗ ~1000M saved · 999999 search · 888888 checkpoint · 777777 snapshot · 7333335 other · vs 8.9M explore · graph-first ✓ · 53% of locates' \
+assert_eq 'over-long line drops estimated tokens, keeping explore calls' \
+	'[GRAPH] 1:1 model +1000M tok · 999999999 search · 888888888 checkpoint · 777777777 snapshot · 7333333335 other · vs 8.9M explore' \
 	"$OUT"
 assert_within 'over-long line is brought under the width budget' 152 "$OUT"
 assert_lacks 'width discipline drops the session segment whole' 'of session' "$OUT"
 assert_lacks 'width discipline drops the explore-token segment whole' 'explore tok' "$OUT"
 assert_lacks 'width discipline never leaves a dangling separator' '· ·' "$OUT"
 
-# Only the last segment needs to go when the overflow is small: this one renders at exactly
-# 167 visible chars and lands on exactly 150 once the session segment is shed.
-stub '{"sessions":1,"graph_calls":19665,"exploration_calls":88888,"exploration_returned_est_tokens":77777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":9999,"returned_bytes":1},{"name":"checkpoint","calls":8888,"returned_bytes":1},{"name":"snapshot","calls":777,"returned_bytes":1}],"estimated_savings_est_tokens":999999999,"estimated_savings_pct_of_session_tokens":12.4}'
+# A line that fits retains the observed context rather than discarding useful counters.
+stub '{"sessions":1,"graph_calls":19665,"exploration_calls":88888,"exploration_returned_est_tokens":77777,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":9999,"returned_bytes":1},{"name":"checkpoint","calls":8888,"returned_bytes":1},{"name":"snapshot","calls":777,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":999999999,"estimated_savings_pct_of_session_tokens":12.4}'
 OUT=$(run s-long2 "$T" "$REPO" NO_COLOR=1)
-assert_eq 'a small overflow sheds only the session segment' \
-	'[GRAPH] ↗ ~1000M saved · 9999 search · 8888 checkpoint · 777 snapshot · 1 other · vs 88.9K explore · 77.8K explore tok · graph-first ✓ · 18% of locates' \
+assert_eq 'a fitting line retains both observed exploration counters' \
+	'[GRAPH] 1:1 model +1000M tok · 9999 search · 8888 checkpoint · 777 snapshot · 1 other · vs 88.9K explore · 77.8K est. explore tok' \
 	"$OUT"
 assert_within 'mildly-long line is brought under the width budget' 152 "$OUT"
-# Segments are shed whole, never truncated, so the line lands at or just under the
-# budget rather than exactly on it: the next segment back would take it past 152.
-assert_eq 'the ladder sheds no more than it must' 151 "$(vwidth "$OUT")"
+assert_has 'the ladder sheds no more than it must' '77.8K est. explore tok' "$OUT"
 
 # Width is measured in visible characters, so colour must not push segments off the line.
 stub "$LONG"
 COLOURED=$(run s-longcolor "$T" "$REPO")
-assert_has 'coloured over-long line keeps the same last segment' 'of locates' "$COLOURED"
+assert_has 'coloured over-long line keeps the same last segment' 'vs 8.9M explore' "$COLOURED"
 assert_lacks 'coloured over-long line drops the same segments' 'explore tok' "$COLOURED"
 
 # NO_COLOR still applies to every new segment.
-stub '{"sessions":1,"graph_calls":5,"exploration_calls":2600,"exploration_returned_est_tokens":1500000,"sessions_with_locate":1,"graph_first_sessions":0,"graph_calls_by_verb":[{"name":"search","calls":5,"returned_bytes":1}],"estimated_savings_est_tokens":6600,"estimated_savings_pct_of_session_tokens":0.2}'
+stub '{"sessions":1,"graph_calls":5,"exploration_calls":2600,"exploration_returned_est_tokens":1500000,"sessions_with_locate":1,"graph_first_sessions":0,"graph_calls_by_verb":[{"name":"search","calls":5,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":6600,"estimated_savings_pct_of_session_tokens":0.2}'
 OUT=$(run s-newcolor "$T" "$REPO" NO_COLOR=1)
 assert_lacks 'NO_COLOR strips escapes from the extended line' "$(printf '\033')" "$OUT"
 assert_eq 'extended line renders exactly under NO_COLOR' \
-	'[GRAPH] ↗ ~6.6K saved · 5 search · vs 2.6K explore · 1.5M explore tok · graph-first ✗ · <1% of locates · ~0.20% of session' \
+	'[GRAPH] 1:1 model +6.6K tok · 5 search · vs 2.6K explore · 1.5M est. explore tok' \
 	"$OUT"
 OUT=$(run s-newcolor2 "$T" "$REPO")
 assert_has 'the extended line is coloured by default' "$(printf '\033')" "$OUT"
 assert_has 'colour does not disturb the new segments' 'vs 2.6K explore' "$OUT"
 
 # 2.0M must print as "2M", not "2\1" — POSIX awk sub() has no backreferences.
-stub '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":2000000,"estimated_savings_pct_of_session_tokens":50}'
+stub '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":2000000,"estimated_savings_pct_of_session_tokens":50}'
 OUT=$(run s-round "$T" "$REPO" NO_COLOR=1)
-assert_has 'round millions print without a stray backreference' '2M saved' "$OUT"
+assert_has 'round millions print without a stray backreference' '+2M tok' "$OUT"
 assert_lacks 'round millions contain no backslash' '\' "$OUT"
 
-stub '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":12345,"estimated_savings_pct_of_session_tokens":0.04}'
+stub '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":12345,"estimated_savings_pct_of_session_tokens":0.04}'
 OUT=$(run s-thousands "$T" "$REPO" NO_COLOR=1)
-assert_has 'thousands abbreviate' '12.3K saved' "$OUT"
-assert_has 'sub-1% keeps two decimals' '~0.04% of session' "$OUT"
+assert_has 'thousands abbreviate' '+12.3K tok' "$OUT"
+assert_lacks 'legacy savings percentage is not presented as evidence' 'of session' "$OUT"
 
-# Multi-session scope reports graph-first as a rate, matching `entire graph stats`.
-stub '{"sessions":7,"graph_calls":10,"exploration_calls":10,"sessions_with_locate":7,"graph_first_sessions":6,"graph_calls_by_verb":[{"name":"search","calls":10,"returned_bytes":1}],"estimated_savings_est_tokens":900,"estimated_savings_pct_of_session_tokens":3}'
+# Multi-session scope still reports the model, not an unvalidated graph-first rate.
+stub '{"sessions":7,"graph_calls":10,"exploration_calls":10,"sessions_with_locate":7,"graph_first_sessions":6,"graph_calls_by_verb":[{"name":"search","calls":10,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":900,"estimated_savings_pct_of_session_tokens":3}'
 OUT=$(run s-multi "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_SCOPE=project)
-assert_has 'multi-session renders a graph-first rate' 'graph-first 86%' "$OUT"
+assert_has 'multi-session renders the model' '1:1 model +900 tok' "$OUT"
+assert_lacks 'multi-session omits unvalidated graph-first rate' 'graph-first' "$OUT"
 
 # ...and scope=project must actually ASK the CLI a project-wide question: the whole project over
 # the requested window, not this one transcript. An arg-recording stub is the only way to assert
@@ -541,7 +571,7 @@ cat >"$WORK/argstub" <<STUB
 #!/bin/sh
 printf '%s\n' "\$*" >"$WORK/args"
 cat <<'JSON'
-{"sessions":7,"graph_calls":10,"exploration_calls":10,"sessions_with_locate":7,"graph_first_sessions":6,"graph_calls_by_verb":[{"name":"search","calls":10,"returned_bytes":1}],"estimated_savings_est_tokens":900,"estimated_savings_pct_of_session_tokens":3}
+{"sessions":7,"graph_calls":10,"exploration_calls":10,"sessions_with_locate":7,"graph_first_sessions":6,"graph_calls_by_verb":[{"name":"search","calls":10,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":900,"estimated_savings_pct_of_session_tokens":3}
 JSON
 STUB
 chmod +x "$WORK/argstub"
@@ -552,7 +582,7 @@ assert_has 'scope=project asks about the repository' "--repo $REPO" "$ARGS"
 assert_lacks 'scope=project does not override repo resolution with a launch-directory scan' '--sessions-dir' "$ARGS"
 assert_has 'scope=project honours the requested window' '--since 7d' "$ARGS"
 assert_lacks 'scope=project does not narrow to one transcript' '--transcript' "$ARGS"
-assert_has 'scope=project still renders the rate' 'graph-first 86%' "$OUT"
+assert_has 'scope=project still renders the model' '1:1 model +900 tok' "$OUT"
 
 # The property the argument assertions above exist to protect: ONE transcript, three repositories,
 # three different badges. Measured on the real binary before the fix, /devenv, /devenv/entire-graph
@@ -590,7 +620,7 @@ done
 if [ -n "$dir" ]; then key=$dir; else key=$repo; fi
 # A deterministic savings figure per resolved scope. The badge must be a function of it.
 n=$(printf '%s' "$key" | cksum | awk '{ print ($1 % 900) + 100 }')
-printf '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":%s,"estimated_savings_pct_of_session_tokens":1}\n' "$n"
+printf '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":%s,"estimated_savings_pct_of_session_tokens":1}\n' "$n"
 STUB
 chmod +x "$WORK/scopestub"
 RUN_BIN=$WORK/scopestub
@@ -610,7 +640,7 @@ assert_has 'scope=session ignores the window' '--since all' "$ARGS"
 assert_lacks 'scope=session does not scan the session directory' '--sessions-dir' "$ARGS"
 
 # Escape hygiene: a verb name carrying ANSI/control bytes must never reach the terminal.
-stub '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":100,"estimated_savings_pct_of_session_tokens":1}'
+stub '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":100,"estimated_savings_pct_of_session_tokens":1}'
 OUT=$(run s-clean "$T" "$REPO" NO_COLOR=1)
 assert_lacks 'NO_COLOR strips every escape' "$(printf '\033')" "$OUT"
 
@@ -625,10 +655,10 @@ assert_has 'colour survives the NO_COLOR render' "$(printf '\033')" "$OUT"
 # A verb name outside the closed lowercase set the CLI dispatches is dropped outright and the
 # badge falls back to the plain call count. This is the gate that stops a doctored stats payload
 # painting arbitrary bytes onto the terminal; clean() behind it is belt-and-braces.
-stub '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"sea[31mrch;rm -rf /","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":100,"estimated_savings_pct_of_session_tokens":1}'
+stub '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"sea[31mrch;rm -rf /","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":100,"estimated_savings_pct_of_session_tokens":1}'
 OUT=$(run s-inject "$T" "$REPO" NO_COLOR=1)
 assert_eq 'hostile verb name is dropped, not rendered' \
-	'[GRAPH] ↗ ~100 saved · 1 graph · graph-first ✓ · 100% of locates · ~1.0% of session' "$OUT"
+	'[GRAPH] 1:1 model +100 tok · 1 graph' "$OUT"
 assert_lacks 'hostile verb name cannot inject an escape' "$(printf '\033')" "$OUT"
 assert_lacks 'hostile verb name cannot inject a shell metacharacter' ';' "$OUT"
 assert_lacks 'hostile verb name cannot inject a bracket' '[31m' "$OUT"
@@ -639,7 +669,7 @@ cat >"$WORK/counter" <<STUB
 #!/bin/sh
 echo x >>"$WORK/calls"
 cat <<'JSON'
-{"sessions":1,"graph_calls":2,"exploration_calls":2,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":2,"returned_bytes":1}],"estimated_savings_est_tokens":500,"estimated_savings_pct_of_session_tokens":1}
+{"sessions":1,"graph_calls":2,"exploration_calls":2,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":2,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":500,"estimated_savings_pct_of_session_tokens":1}
 JSON
 STUB
 chmod +x "$WORK/counter"
@@ -656,6 +686,16 @@ assert_eq 'cache collapses 3 renders to 1 scan' 1 "$(wc -l <"$WORK/calls" | tr -
 run s-nocache "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_CACHE=0 >/dev/null
 run s-nocache "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_CACHE=0 >/dev/null
 assert_eq 'cache can be disabled' 2 "$(wc -l <"$WORK/calls" | tr -d ' ')"
+
+# The old renderer cached a flattering savings claim. Same transcript and stamp are not enough
+# to reuse it: upgrading the rendering contract must invalidate v4 entries immediately.
+CACHE_V4=$(cache_file s-cache-v4 "$T")
+run s-cache-v4 "$T" "$REPO" NO_COLOR=1 >/dev/null
+awk -F'\t' 'BEGIN{OFS="\t"} {sub(/^v5 /, "v4 ", $1); print $1, $2, "[GRAPH] OLD-POSITIVE saved"}' "$CACHE_V4" >"$CACHE_V4.old"
+mv "$CACHE_V4.old" "$CACHE_V4"
+OUT=$(run s-cache-v4 "$T" "$REPO" NO_COLOR=1)
+assert_lacks 'v4 savings badge is not served after upgrade' 'OLD-POSITIVE saved' "$OUT"
+assert_has 'v4 savings badge is recomputed as a model' '1:1 model +500 tok' "$OUT"
 
 # A stale cache entry (same config, older transcript stamp) is served immediately and refreshed
 # behind the render. The entry is produced by a real run, then only its stamp+line are aged, so
@@ -677,7 +717,7 @@ while [ "$tries" -lt 50 ]; do
 	sleep 0.1
 done
 OUT=$(run s-stale "$T" "$REPO" NO_COLOR=1)
-assert_has 'stale cache is refreshed in the background' '500 saved' "$OUT"
+assert_has 'stale cache is refreshed in the background' '+500 tok' "$OUT"
 
 # A cache entry written for a DIFFERENT question (other repo/scope/colour) must be recomputed,
 # never served — that is what makes the NO_COLOR case above safe.
@@ -687,7 +727,7 @@ awk -F'\t' 'BEGIN{OFS="\t"} {print "v1 session 30d color /somewhere/else", $2, "
 mv "$CACHE_LINE2.x" "$CACHE_LINE2"
 OUT=$(run s-otherconfig "$T" "$REPO" NO_COLOR=1)
 assert_lacks 'cache from a different question is not served' 'WRONG-QUESTION' "$OUT"
-assert_has 'cache from a different question is recomputed' '500 saved' "$OUT"
+assert_has 'cache from a different question is recomputed' '+500 tok' "$OUT"
 
 # A symlinked cache file is refused rather than rendered (it could point anywhere). The payload
 # must be a VALID entry for exactly this render — right config in the first tab field, right
@@ -702,7 +742,7 @@ ln -sf "$SYM_TARGET" "$(cache_file s-symlink "$T")"
 OUT=$(run s-symlink "$T" "$REPO" NO_COLOR=1)
 assert_lacks 'a symlinked cache entry is never served' 'SYMLINKED-BADGE' "$OUT"
 assert_lacks 'symlinked cache contents never leak' 'root:' "$OUT"
-assert_has 'symlinked cache is recomputed instead' '500 saved' "$OUT"
+assert_has 'symlinked cache is recomputed instead' '+500 tok' "$OUT"
 
 # A symlinked cache DIRECTORY is the same attack one level up: mkdir -p follows it, and a file
 # planted in the target is a regular file, so it passes the per-file guard above and its bytes
@@ -714,7 +754,7 @@ awk -F'\t' 'BEGIN{OFS="\t"} {print $1, $2, "PLANTED-BADGE"}' "$(cache_file s-dir
 	>"$WORK/evil-target/$(cache_key s-dirlink "$T").line"
 OUT=$(run s-dirlink "$T" "$REPO" NO_COLOR=1 TMPDIR="$WORK/evil-tmp")
 assert_lacks 'a symlinked cache directory is never read' 'PLANTED-BADGE' "$OUT"
-assert_has 'a symlinked cache directory falls back to a real render' '500 saved' "$OUT"
+assert_has 'a symlinked cache directory falls back to a real render' '+500 tok' "$OUT"
 # ...and the WRITE path refuses it too. This needs a session with NO planted record: the case above
 # is served straight from the (refused) entry and exits before store() is ever reached, so it says
 # nothing about writing. A fresh key forces the miss -> render -> store path, and nothing may then
@@ -768,7 +808,7 @@ if chflags uchg "$FOREIGN_DIR" 2>/dev/null && ! chmod 700 "$FOREIGN_DIR" 2>/dev/
 	chflags nouchg "$FOREIGN_DIR" 2>/dev/null
 	assert_lacks 'a cache directory this user cannot chmod is never read' 'HOSTILE-BADGE' "$OUT"
 	assert_lacks 'an adopted cache directory cannot inject an escape' "$(printf '\033')" "$OUT"
-	assert_has 'an unchmodable cache directory falls back to a real render' '500 saved' "$OUT"
+	assert_has 'an unchmodable cache directory falls back to a real render' '+500 tok' "$OUT"
 	# The write half. NB: uchg also blocks writes inside the directory, so this assertion cannot
 	# distinguish "the gate refused" from "the flag refused" — the non-vacuous version of it is the
 	# shimmed-chmod case below, where the directory stays fully writable.
@@ -807,7 +847,7 @@ EPERM_BEFORE=$(cksum <"$EPERM_LINE")
 OUT=$(run s-eperm "$T" "$REPO" NO_COLOR=1 TMPDIR="$EPERM_TMP" PATH="$WORK/shim-chmod-fail:$PATH")
 assert_lacks 'a cache directory chmod refuses is never read' 'EPERM-BADGE' "$OUT"
 assert_lacks 'a chmod-refused cache directory cannot inject an escape' "$(printf '\033')" "$OUT"
-assert_has 'a chmod-refused cache directory falls back to a real render' '500 saved' "$OUT"
+assert_has 'a chmod-refused cache directory falls back to a real render' '+500 tok' "$OUT"
 assert_eq 'a chmod-refused cache directory is never written into' \
 	"$EPERM_BEFORE" "$(cksum <"$EPERM_LINE")"
 # ...and on a key with no entry at all, which is the only path that reaches store() (the case above
@@ -854,7 +894,7 @@ if [ -n "$NOTOWNED" ]; then
 		TMPDIR="$NOTOWNED_TMP" PATH="$WORK/shim-notowned:$PATH")
 	assert_lacks 'a cache directory this user does not own is never read' 'NOTOWNED-BADGE' "$OUT"
 	assert_lacks 'an unowned cache directory cannot inject an escape' "$(printf '\033')" "$OUT"
-	assert_has 'an unowned cache directory falls back to a real render' '500 saved' "$OUT"
+	assert_has 'an unowned cache directory falls back to a real render' '+500 tok' "$OUT"
 	assert_eq 'an unowned cache directory is never written into' \
 		"$NOTOWNED_BEFORE" "$(cksum <"$NOTOWNED_PLANT")"
 	rm -f "$NOTOWNED_PLANT"
@@ -884,7 +924,7 @@ TAB_STAMP=$(stat -c '%s-%Y' "$T" 2>/dev/null) || TAB_STAMP=
 case $TAB_STAMP in
 '' | *[!0-9-]*) TAB_STAMP=$(stat -f '%z-%m' "$T" 2>/dev/null) || TAB_STAMP= ;;
 esac
-assert_has 'a tab in the repo path still renders' '500 saved' "$TAB_FIRST"
+assert_has 'a tab in the repo path still renders' '+500 tok' "$TAB_FIRST"
 assert_eq 'a tab in the repo path does not shift the cached record' "$TAB_FIRST" "$TAB_SECOND"
 assert_lacks 'the cache stamp never leaks into the served badge' "$TAB_STAMP" "$TAB_SECOND"
 
@@ -898,7 +938,7 @@ ESC_DIR=$ESC_TMP/entire-graph-statusline-$(id -u)
 mkdir -p "$ESC_TMP"
 for hostile in '../../../../escaped' '/etc/shadow'; do
 	OUT=$(run "$hostile" "$T" "$REPO" NO_COLOR=1 TMPDIR="$ESC_TMP")
-	assert_has "hostile session id still renders ($hostile)" '500 saved' "$OUT"
+	assert_has "hostile session id still renders ($hostile)" '+500 tok' "$OUT"
 	assert_lacks "hostile session id leaves no separator in the key ($hostile)" \
 		'/' "$(cache_key "$hostile" "$T")"
 	assert_present "hostile session id cannot leave the cache dir ($hostile)" \
@@ -906,7 +946,7 @@ for hostile in '../../../../escaped' '/etc/shadow'; do
 done
 LONGSID=0123456789012345678901234567890123456789TAIL
 OUT=$(run "$LONGSID" "$T" "$REPO" NO_COLOR=1 TMPDIR="$ESC_TMP")
-assert_has 'an over-long session id still renders' '500 saved' "$OUT"
+assert_has 'an over-long session id still renders' '+500 tok' "$OUT"
 assert_present 'an over-long session id is cut to 40 characters' \
 	"$ESC_DIR/$(cache_key "$LONGSID" "$T").line"
 assert_lacks 'an over-long session id leaves no untruncated key behind' 'TAIL' "$(ls -a "$ESC_DIR")"
@@ -927,17 +967,17 @@ for arg in "$@"; do
 	*/perB.jsonl) saved=222 ;;
 	esac
 done
-printf '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":%s,"estimated_savings_pct_of_session_tokens":1}\n' "$saved"
+printf '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":%s,"estimated_savings_pct_of_session_tokens":1}\n' "$saved"
 STUB
 chmod +x "$WORK/pertranscript"
 RUN_BIN=$WORK/pertranscript
 
 OUT=$(run_json "$(stdin_json_nosid "$WORK/perA.jsonl" "$REPO")" NO_COLOR=1)
-assert_has 'no session_id: first transcript renders its own numbers' '111 saved' "$OUT"
+assert_has 'no session_id: first transcript renders its own numbers' '+111 tok' "$OUT"
 OUT=$(run_json "$(stdin_json_nosid "$WORK/perB.jsonl" "$REPO")" NO_COLOR=1)
-assert_has 'no session_id: second transcript renders its own numbers' '222 saved' "$OUT"
+assert_has 'no session_id: second transcript renders its own numbers' '+222 tok' "$OUT"
 OUT=$(run_json "$(stdin_json_nosid "$WORK/perA.jsonl" "$REPO")" NO_COLOR=1)
-assert_has 'no session_id: the second transcript did not overwrite the first' '111 saved' "$OUT"
+assert_has 'no session_id: the second transcript did not overwrite the first' '+111 tok' "$OUT"
 assert_two_files 'no session_id: two transcripts get two cache files' \
 	"$(cache_file - "$WORK/perA.jsonl")" "$(cache_file - "$WORK/perB.jsonl")"
 
@@ -946,11 +986,11 @@ assert_two_files 'no session_id: two transcripts get two cache files' \
 # worktree, or two ids the sanitising squashes onto one key). Keying on the id alone made the two
 # flip-flop each other's badge on every render.
 OUT=$(run s-dup "$WORK/perA.jsonl" "$REPO" NO_COLOR=1)
-assert_has 'duplicate session_id: first transcript renders its own numbers' '111 saved' "$OUT"
+assert_has 'duplicate session_id: first transcript renders its own numbers' '+111 tok' "$OUT"
 OUT=$(run s-dup "$WORK/perB.jsonl" "$REPO" NO_COLOR=1)
-assert_has 'duplicate session_id: second transcript renders its own numbers' '222 saved' "$OUT"
+assert_has 'duplicate session_id: second transcript renders its own numbers' '+222 tok' "$OUT"
 OUT=$(run s-dup "$WORK/perA.jsonl" "$REPO" NO_COLOR=1)
-assert_has 'duplicate session_id: no flip-flop between the two transcripts' '111 saved' "$OUT"
+assert_has 'duplicate session_id: no flip-flop between the two transcripts' '+111 tok' "$OUT"
 assert_two_files 'duplicate session_id: two transcripts get two cache files' \
 	"$(cache_file s-dup "$WORK/perA.jsonl")" "$(cache_file s-dup "$WORK/perB.jsonl")"
 
@@ -968,14 +1008,14 @@ mkdir -p "$NOCK_TMP"
 nocksum_lines() { ls -a "$NOCK_DIR" 2>/dev/null | grep -c '\.line$'; }
 OUT=$(run_json "$(stdin_json_nosid "$WORK/perA.jsonl" "$REPO")" NO_COLOR=1 \
 	TMPDIR="$NOCK_TMP" PATH="$WORK/shim:$PATH")
-assert_has 'no cksum: the badge still renders' '111 saved' "$OUT"
+assert_has 'no cksum: the badge still renders' '+111 tok' "$OUT"
 OUT=$(run_json "$(stdin_json_nosid "$WORK/perA.jsonl" "$REPO")" NO_COLOR=1 \
 	TMPDIR="$NOCK_TMP" PATH="$WORK/shim:$PATH")
-assert_has 'no cksum: one transcript keeps one key across renders' '111 saved' "$OUT"
+assert_has 'no cksum: one transcript keeps one key across renders' '+111 tok' "$OUT"
 assert_eq 'no cksum: one transcript, one cache file' 1 "$(nocksum_lines)"
 OUT=$(run_json "$(stdin_json_nosid "$WORK/perB.jsonl" "$REPO")" NO_COLOR=1 \
 	TMPDIR="$NOCK_TMP" PATH="$WORK/shim:$PATH")
-assert_has 'no cksum: a second transcript renders its own numbers' '222 saved' "$OUT"
+assert_has 'no cksum: a second transcript renders its own numbers' '+222 tok' "$OUT"
 assert_eq 'no cksum: two transcripts, two cache files' 2 "$(nocksum_lines)"
 
 # --- prune -------------------------------------------------------------------------------------
