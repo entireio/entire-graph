@@ -35,6 +35,7 @@ auto-generated notes on
 - Fixed nine CLI and gitutil navigation defects that previously answered wrongly instead of not answering at all, and stopped `explain` buffering its input.
 - Fixed parameter-clause parsing to read every clause, let `--force` reach derived snapshots, and fixed the compact-tree walker to list only regular files.
 - Fixed verification and search to stop advertising commands that cannot run, and stopped reporting a failed verification as a pass.
+- Fixed opt-in agent session replay to respect the current output byte budget, including attribution and terminal escaping; oversized stored responses now yield a fresh bounded search instead of an over-budget echo.
 - Fixed pipeline workers to observe shared context correctly, closed a map-race condition, and fixed the semantic diff to report pure file renames instead of hiding them.
 - Fixed the doctor handshake, git-metadata error reporting, and repository agent activation so failures explain themselves and activation survives initializers.
 - Fixed statusline to prefer the managed install over a stray developer build, and fixed the LoCoMo benchmark reproduction kit to run off the author's machine with stronger scoring and redaction guards.
