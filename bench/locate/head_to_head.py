@@ -345,7 +345,7 @@ def phrase_arm(repo, q, name, target_file, lo, hi, follow=12):
     """
     phrase = phrase_for(q)
     if not phrase:
-        return 0, False, False, True, b"", {"argv": [], "rc": None, "stderr": "no phrase in q"}
+        return 0, False, False, True, b"", {"argv": [], "rc": None, "stderr_bytes": b"", "note": "no phrase in q"}
     # `--` BEFORE THE PATTERN. Without it a pattern beginning with a dash is parsed as an rg
     # option: case 012 of the fx-cli run drew the phrase "--dry-run ..." out of a doc comment,
     # rg exited 2, and the whole case was dropped from EVERY arm. A literal taken from user text
@@ -393,7 +393,7 @@ def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
     must be excluded, never scored as a retrieval miss (peer-review note 2)."""
     term = name if oracle else max((w for w in WORD.findall(query) if w.lower() not in STOP),
                                    key=len, default="")
-    if not term: return 0, False, False, False, b"", {"argv": [], "rc": None, "stderr": "no term"}
+    if not term: return 0, False, False, False, b"", {"argv": [], "rc": None, "stderr_bytes": b"", "note": "no term"}
     # `--` for the same reason as the phrase arm: the term comes from the query text.
     p=subprocess.run(["rg","-n","--no-heading","-g","!node_modules","--",term,repo],capture_output=True,timeout=300)
     # rg exits 1 for "no matches", which is a real empty result, not a failure. Anything
@@ -620,6 +620,72 @@ def _selftest():
     ck("--" in dmeta.get("argv", []), "the pattern is passed after an option terminator")
     ck(dloc and ddec, "...and it still finds the declaration", f"loc={dloc} dec={ddec}")
 
+    # THE SEAL BINDING and the writer's diagnostic note -- both were verified by hand and
+    # neither had a test, which the sweep reported as two real gaps.
+    import tempfile as _tfa, subprocess as _spa
+    # A REAL Go binary with REAL vcs stamps. sys.executable has none, so seal_run correctly
+    # refused it and took the test process with it -- the refusal working exactly as designed.
+    _bd = _tfa.mkdtemp(prefix="seal-bin-")
+    with open(os.path.join(_bd, "go.mod"), "w") as fh: fh.write("module sealprobe\n\ngo 1.24\n")
+    with open(os.path.join(_bd, "main.go"), "w") as fh: fh.write("package main\n\nfunc main() {}\n")
+    for _a in (["init", "-q"], ["add", "-A"],
+               ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"]):
+        _spa.run(["git", "-C", _bd] + _a, capture_output=True)
+    _probe = os.path.join(_bd, "probe")
+    _built = _spa.run(["go", "build", "-o", _probe, "."], cwd=_bd, capture_output=True).returncode == 0
+    _sd = _tfa.mkdtemp(prefix="seal-u-")
+    if not _built:
+        print("  skip  seal payload cases (no working Go toolchain)")
+        _sha = None
+    else:
+        _sha = seal_run(_sd, _probe, "deadbeef", "/r", "a" * 40, "b" * 40, 4096, 2,
+                        [("q", "Sym", "f.go", 1, 2)], True)
+    if _built:
+        ck(_sha == hashlib.sha256(open(os.path.join(_sd, "SEAL.json"), "rb").read()).hexdigest(),
+           "the returned seal hash is the hash of the seal actually written")
+        ck(json.load(open(os.path.join(_sd, "SEAL.json")))["class"].startswith("reproducible"),
+           "a CLEAN build is sealed as a reproducible-source measurement")
+    ck(new_manifest("SEALHASH", "/r", "a" * 40, "", "b", "bin", "s", "e", 4096, 2)["seal_sha256"]
+       == "SEALHASH", "the manifest names the seal it ran under")
+    if _built:
+        ck(json.load(open(os.path.join(_sd, "SEAL.json")))["selected_queries"][0]["symbol"] == "Sym",
+           "the seal carries the selected queries, not just their count")
+
+    _nd = _tfa.mkdtemp(prefix="note-")
+    write_receipts(_nd, "001-Sym-f_go", "q", "Sym", "f.go", 1, 2, False,
+                   (("phrase", 0, False, False, True, b"",
+                     {"argv": [], "rc": None, "stderr_bytes": b"", "note": "no phrase in q"}),))
+    ck(json.load(open(os.path.join(_nd, "001-Sym-f_go.phrase.json")))["note"] == "no phrase in q",
+       "an arm that produced nothing records WHY")
+
+    # THE SEAL, through the production evaluator rather than a predicate. Peer review's point:
+    # a preflight that checks a path and hands control to another process has sealed nothing.
+    import subprocess as _sp
+    _tf2 = _tfa
+    _me = os.path.abspath(__file__)
+    def _run_eval(*a):
+        return _sp.run([sys.executable, _me] + list(a), capture_output=True, text=True, timeout=1800)
+    _fresh = lambda: os.path.join(_tf2.mkdtemp(prefix="seal-e2e-"), "out")
+
+    _nb = os.path.join(_tf2.mkdtemp(prefix="seal-nb-"), "notgo")
+    os.makedirs(os.path.dirname(_nb), exist_ok=True)
+    with open(_nb, "w") as fh:
+        fh.write("#!/bin/sh\necho hi\n")
+    os.chmod(_nb, 0o755)
+    _gitfx = _mkrepo({"a.go": "package p\n\n// A does a thing worth describing in prose here.\nfunc A() {}\n"})
+    for _a in (["init", "-q"], ["add", "-A"],
+               ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"]):
+        _sp.run(["git", "-C", _gitfx] + _a, capture_output=True)
+    _r = _run_eval(_nb, _gitfx, "1", "4096", _fresh())
+    ck("cannot establish the binary's build identity" in (_r.stdout + _r.stderr),
+       "an UNKNOWN build is refused, not defaulted to clean", _r.stderr.strip()[:80])
+    ck(binary_build_identity(_nb)["known"] is False,
+       "...and build identity reports unknown rather than vcs_modified=False")
+
+    # A missing stamp must never resolve to the reassuring answer.
+    ck("vcs_modified" not in binary_build_identity(_nb),
+       "an unknown build carries no vcs_modified at all")
+
     # RANGE OVERLAP, with the negatives that keep it from becoming "anything nearby counts".
     for header, want, label in (
         (b"1. a.go:142-143 Sym s=9 [focus:143]\n", True,  "a range that starts one line before the span"),
@@ -770,6 +836,10 @@ def write_receipts(outdir, cid, q, name, fp, lo, hi, admitted, arms):
             json.dump({"case_id": cid, "arm": arm, "ok": ok, "cost_bytes": cost,
                        "locator": loc, "declaration": dec,
                        "argv": meta.get("argv"), "returncode": meta.get("rc"),
+                       # The early-return arms record WHY they produced nothing. These used a
+                       # key the writer never read, so "no phrase in q" and "no term" -- the
+                       # only explanation a zero-byte arm ever gives -- were written nowhere.
+                       "note": meta.get("note"),
                        "stderr_bytes_len": len(meta.get("stderr_bytes") or b""),
                        "stderr_file": (cid + "." + arm + ".stderr") if meta.get("stderr_bytes") else None,
                        "stderr_not_charged": True,
@@ -822,6 +892,86 @@ def record_attempt(outdir, cid, q, name, fp, lo, hi, arms):
         write_receipts(outdir, cid, q, name, fp, lo, hi,
                        all(a[4] for a in arms if a[0] != "oracle"), arms)
     return all(a[4] for a in arms if a[0] != "oracle")
+
+
+def binary_build_identity(binary):
+    """The binary's own build stamps, or UNKNOWN. Never a confident default.
+
+    `go version -m` failing, or the stamps being absent, previously produced vcs_modified=false
+    and therefore build_source_reproducible=TRUE -- a missing answer silently became the
+    reassuring one. Absence is reported as unknown and the caller refuses it.
+    """
+    try:
+        out = subprocess.run(["go", "version", "-m", binary], capture_output=True, text=True,
+                             timeout=120)
+    except Exception:
+        return {"known": False, "reason": "go version -m could not be run"}
+    if out.returncode != 0:
+        return {"known": False, "reason": f"go version -m exited {out.returncode}"}
+    kv = dict(re.findall(r"build\s+(\S+)=(\S+)", out.stdout))
+    if "vcs.revision" not in kv or "vcs.modified" not in kv:
+        return {"known": False, "reason": "binary carries no vcs stamps"}
+    mod = re.search(r"mod\s+(\S+)\s+(\S+)", out.stdout)
+    return {"known": True, "vcs_revision": kv["vcs.revision"], "vcs_time": kv.get("vcs.time"),
+            "vcs_modified": kv["vcs.modified"] == "true",
+            "module_version": mod.group(2) if mod else None}
+
+
+def seal_run(outdir, binary, bsha, repo, rev, content_sha, budget, want, cases, diagnostic):
+    """Create the seal, in the directory this run owns, BEFORE any arm runs.
+
+    A separate preflight tool cannot do this. It can check a path and then hand control to
+    something else that creates the directory, runs the arms and writes its own manifest --
+    and nothing binds the three together. The evaluator is the only process that knows the
+    selected list, so it is the only one that can seal it before measuring it.
+
+    Returns the seal's sha256, which the final manifest carries: a manifest that names the seal
+    it ran under cannot be paired with a different one afterwards.
+    """
+    build = binary_build_identity(binary)
+    if not build["known"]:
+        raise SystemExit(f"REFUSING TO START: cannot establish the binary's build identity "
+                         f"({build['reason']}). An unknown build is not a clean one.")
+    if build["vcs_modified"] and not diagnostic:
+        raise SystemExit(
+            f"REFUSING TO START: {binary} was built from a DIRTY tree "
+            f"(revision {build['vcs_revision']}); its source cannot be reproduced, so no result "
+            f"from it can be either. Pass --diagnostic-dirty-build to record it explicitly as "
+            f"artifact-tied development diagnostics.")
+    me = os.path.abspath(__file__)
+    seal = {"schema": 1,
+            "class": "artifact-tied development diagnostics" if build["vcs_modified"]
+                     else "reproducible-source measurement",
+            "binary": {"path": binary, "sha256": bsha, "build": build,
+                       "build_source_reproducible": not build["vcs_modified"]},
+            "evaluator": {"path": os.path.basename(me), "sha256": file_sha256(me)},
+            "options": {"cases_requested": want, "max_context_bytes": budget, "seed": 7,
+                        "format": "agent", "no_cache": True},
+            "fixture": {"repo": repo, "rev": rev, "content_sha256": content_sha},
+            "selected_queries": [{"symbol": c[1], "file": c[2], "span": [c[3], c[4]],
+                                  "query": c[0]} for c in cases]}
+    blob = json.dumps(seal, indent=1, sort_keys=True).encode()
+    with open(os.path.join(outdir, "SEAL.json"), "wb") as fh:
+        fh.write(blob)
+    return hashlib.sha256(blob).hexdigest()
+
+
+def file_sha256(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def new_manifest(seal_sha, repo, rev, dirty, content_sha, binary, bsha, script_sha, budget, want):
+    """The run manifest, with the seal it ran under named in it.
+
+    A function for the same reason the oracle tally and the receipt writer became functions:
+    built inline, the binding was a line in a call site and no test could reach it. Three
+    defects tonight lived in exactly that position.
+    """
+    return {"schema": 2, "seal_sha256": seal_sha, "repo": repo, "rev": rev,
+            "dirty": bool(dirty), "content_sha256": content_sha, "binary": binary,
+            "binary_sha256": bsha, "script_sha256": script_sha, "budget": budget,
+            "requested_cases": want, "run_status": "PROVISIONAL", "cases": []}
 
 
 def claim_outdir(outdir):
@@ -877,8 +1027,13 @@ if __name__=="__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--test":
         sys.exit(_selftest())
 
-    binary,repo,n,budget=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4])
-    outdir=sys.argv[5] if len(sys.argv)>5 else None
+    # Recorded in the seal as a CLASS, not swallowed as a flag: a dirty build produces
+    # artifact-tied diagnostics and can never produce a reproducible-source measurement.
+    # Stripped before the positionals are read, or it would be taken for the output directory.
+    diagnostic_dirty = "--diagnostic-dirty-build" in sys.argv
+    argv = [a for a in sys.argv if a != "--diagnostic-dirty-build"]
+    binary,repo,n,budget=argv[1],argv[2],int(argv[3]),int(argv[4])
+    outdir=argv[5] if len(argv)>5 else None
     def state():
         """Exact fixture state. Three things the first version got wrong, all peer-reviewed:
 
@@ -916,16 +1071,12 @@ if __name__=="__main__":
     bsha=hashlib.sha256(open(binary,"rb").read()).hexdigest()
     cases=build_cases(binary,repo,n)
     claim_outdir(outdir)
-    if outdir:
-        # THE SELECTED LIST, FIXED BEFORE THE FIRST QUERY. A run went out without this and the
-        # list had to be reconstructed from its own receipts afterwards -- which records what
-        # ran but cannot show that the set was chosen before the measurement rather than after
-        # it. Written here, between selection and the first arm, it can.
-        with open(os.path.join(outdir, "selected-queries.json"), "w") as fh:
-            json.dump({"note": "selected before the first query; the population is frozen here",
-                       "repo": repo, "rev": rev0, "budget": budget, "requested": n,
-                       "cases": [{"symbol": c[1], "file": c[2], "span": [c[3], c[4]],
-                                  "query": c[0]} for c in cases]}, fh, indent=1)
+    # ONE OWNER. This process created the directory, it is the only one that knows the selected
+    # list, and it writes the seal here -- after selection, before the first arm. A separate
+    # preflight cannot do this: it can check a path and hand control to something that creates
+    # the directory, measures, and writes its own manifest, with nothing binding the three.
+    seal_sha = seal_run(outdir, binary, bsha, repo, rev0, cont0, budget, n, cases,
+                        diagnostic_dirty) if outdir else None
     print(f"repo {repo}\nrev {rev0} dirty={'YES' if dirty0 else 'no'}")
     print(f"binary {binary}\nbinary sha256 {bsha}\nbudget {budget}  cases {len(cases)}\n")
     # MEANS ARE NOT REPORTABLE HERE and medians are. The grep arms are heavy-tailed: one
@@ -935,10 +1086,10 @@ if __name__=="__main__":
     # printed; the median is the one to quote.
     tg=tp=to=0; k=0; dropped=0; attempt=0
     ostate={"valid":0,"na":0,"bytes":[],"loc":0,"dec":0}   # the control's OWN tally
-    manifest={"schema":1,"repo":repo,"rev":rev0,"dirty":bool(dirty0),"content_sha256":cont0,
-              "binary":binary,"binary_sha256":bsha,
-              "script_sha256":hashlib.sha256(open(os.path.abspath(__file__),"rb").read()).hexdigest(),
-              "budget":budget,"requested_cases":n,"run_status":"PROVISIONAL","cases":[]}
+    # The manifest NAMES THE SEAL it ran under, so a run's results cannot be paired with a
+    # different seal after the fact.
+    manifest=new_manifest(seal_sha, repo, rev0, dirty0, cont0, binary, bsha,
+                          file_sha256(os.path.abspath(__file__)), budget, n)
     gvals=[]; pvals=[]; ovals=[]; svals=[]
     gL=gD=pL=pD=oL=oD=sL=sD=0
     for q,name,fp,s_lo,s_hi in cases:
