@@ -1934,6 +1934,16 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// One number for everything outside `results`, so the payload's true size never has to be
 	// re-derived from three separate counters. See search_blocks.go.
 	stats.ContextBlockBytes = searchContextBlockBytes(stats)
+	// LAST PASS, and deliberately so: every consumer of complete-symbol has already run, and
+	// the blocks outside `results` are now priced, so the remaining headroom is known exactly.
+	// See searchMarkAlreadyCompleteSnippets for why neither an earlier nor an unbounded
+	// version of this works.
+	if marked := searchMarkAlreadyCompleteSnippets(
+		results, options.MaxContextBytes-stats.ContextBlockBytes); marked > 0 {
+		stats.CompleteSymbols += marked
+		resultBytes = serializedSearchResultBytes(results)
+		stats.ResultBytes = resultBytes
+	}
 	stats.ContextBudgetBytes = callerContextBytes
 	stats.ResultsDropped = dropped
 	stats.SnippetsTruncated = truncated

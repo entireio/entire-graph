@@ -1435,3 +1435,68 @@ func removeSearchSignal(signals []string, drop string) []string {
 	}
 	return out
 }
+
+// searchMarkAlreadyCompleteSnippets adds complete-symbol to results whose snippet ALREADY
+// contains the whole symbol but never went through the enclosure-widening path that assigns
+// the signal.
+//
+// The gap is live and costs exactly what this tool exists to save. A result like
+// `exactSymbolSource snippet=28310-28315 symbol=28310-28315` renders the entire symbol and
+// says nothing about it, so an agent reading the payload cannot tell the body is whole and
+// issues a follow-up read for source it has already been given. complete-symbol is the signal
+// the CLI turns into "no follow-up read needed"; withholding it where it is true is a pure,
+// silent waste of a read.
+//
+// THIS PASS RUNS LAST, AND BOTH HALVES OF THAT ARE LOAD-BEARING. Two earlier attempts at this
+// fix were reverted, for two different reasons that pull in opposite directions:
+//
+//   - Marking EARLY (in or before the allocator) changes behaviour, because complete-symbol is
+//     consumed by span merging (search_span_merge.go) and callee-hop demotion
+//     (search_callee.go). Marking more results changed which same-file regions merged and
+//     broke TestSearchRepositoryPreservesDistinctRegionsInOneFile and
+//     TestSearchRepositoryExpandsSemanticNeighbor. Running after every consumer leaves all of
+//     that untouched by construction.
+//   - Marking LATE grows the payload after the byte budget has closed, which is the
+//     post-allocator growth class of issue #208: roughly fifteen bytes of signal per result,
+//     and SearchResponse.Validate trips with "context exceeds byte budget".
+//
+// So this pass is late AND budget-aware: it prices each mark before adding it and stops at the
+// ceiling. A mark that does not fit is simply not added. That asymmetry is the point -- a
+// missing complete-symbol costs one unnecessary read, while a false one tells the agent not to
+// read a body that was clipped, so under-marking is the safe direction and is chosen
+// deliberately over any scheme that reserves bytes up front.
+//
+// It also never overrides a pass that has already judged the body incomplete: full-unit-elided
+// and head-window both mean "clipped, on purpose", and a bounds check must not second-guess
+// them.
+func searchMarkAlreadyCompleteSnippets(results []SearchResult, ceiling int) int {
+	if ceiling <= 0 || len(results) == 0 {
+		return 0
+	}
+	used := serializedSearchResultBytes(results)
+	added := 0
+	for index := range results {
+		result := results[index]
+		if result.Snippet == "" || result.SymbolStartLine <= 0 || result.SnippetStartLine <= 0 {
+			continue
+		}
+		if hasSearchSignal(result, searchCompleteSymbolSignal) ||
+			hasSearchSignal(result, searchFullUnitElidedSignal) ||
+			hasSearchSignal(result, searchHeadWindowSignal) {
+			continue
+		}
+		if result.SnippetStartLine > result.SymbolStartLine || result.SnippetEndLine < result.SymbolEndLine {
+			continue
+		}
+		candidate := result
+		candidate.Signals = appendUnique(append([]string(nil), result.Signals...), searchCompleteSymbolSignal)
+		grown := serializedSearchResultBytes(candidate) - serializedSearchResultBytes(result)
+		if used+grown > ceiling {
+			continue
+		}
+		results[index] = candidate
+		used += grown
+		added++
+	}
+	return added
+}
