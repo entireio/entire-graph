@@ -447,8 +447,9 @@ def _canonical_q(dlines, name):
     q = "\n".join(strip_name(l, name).replace("\x00", "\n").rstrip() for l in dlines)
     return "\n".join(l for l in (x.strip() for x in q.splitlines()) if l)[:240]
 
-def _selftest():
+def _selftest(require_orchestration=False):
     fails = []
+    skipped = []
     def ck(cond, label, detail=""):
         print(("  ok   " if cond else "  FAIL ") + label + (("  <- " + detail) if detail and not cond else ""))
         if not cond: fails.append(label)
@@ -636,6 +637,7 @@ def _selftest():
     _sd = _tfa.mkdtemp(prefix="seal-u-")
     if not _built:
         print("  skip  seal payload cases (no working Go toolchain)")
+        skipped.append("seal payload: no Go toolchain")
         _sha = None
     else:
         _sha = seal_run(_sd, _probe, "deadbeef", "/r", "a" * 40, "b" * 40, 4096, 2,
@@ -764,7 +766,11 @@ def _selftest():
     _egbin = os.environ.get("ENTIRE_GRAPH_BIN") or os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "entire-graph")
     if not os.path.exists(_egbin):
+        # A SKIP MUST NOT BE ABLE TO LOOK LIKE A PASS. Under --require-orchestration this is a
+        # failure: the orchestration guards are the only evidence that the seal precedes the
+        # arms, and a green line that means "did not check" is worse than a red one.
         print("  skip  production-ordering cases (set ENTIRE_GRAPH_BIN to run them)")
+        skipped.append("production-ordering: no binary")
     else:
         # The doc comments must clear build_cases' own filters -- at least eight words survive
         # after the name is stripped -- or the run yields NO cases and every ordering assertion
@@ -785,6 +791,7 @@ def _selftest():
                         _egbin, _ofx, "2", "4096", _oout], capture_output=True, text=True, timeout=1800)
         if not os.path.exists(os.path.join(_oout, "run-manifest.json")):
             print(f"  skip  production-ordering cases (run produced no manifest: {_rr.stderr.strip()[:70]})")
+            skipped.append("production-ordering: no manifest")
         else:
             _man = json.load(open(os.path.join(_oout, "run-manifest.json")))
             _sealp = os.path.join(_oout, "SEAL.json")
@@ -959,6 +966,11 @@ def _selftest():
         refused_twice = True
     ck(refused_twice, "a second run cannot claim the directory the first created")
 
+    if skipped:
+        print("\nSKIPPED (checked nothing): " + "; ".join(skipped))
+    if require_orchestration and skipped:
+        print("REQUIRED ORCHESTRATION PROOF WAS SKIPPED -- treating as failure")
+        fails.extend(skipped)
     print("\nALL PHRASE-ARM FALSIFIERS PASS" if not fails else "\nFAILURES: " + ", ".join(fails))
     return 1 if fails else 0
 
@@ -1234,7 +1246,7 @@ def finalize_manifest(outdir, manifest, status, note=""):
 
 if __name__=="__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        sys.exit(_selftest())
+        sys.exit(_selftest("--require-orchestration" in sys.argv))
 
     # Recorded in the seal as a CLASS, not swallowed as a flag: a dirty build produces
     # artifact-tied diagnostics and can never produce a reproducible-source measurement.
