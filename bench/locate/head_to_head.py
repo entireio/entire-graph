@@ -514,6 +514,61 @@ def _selftest():
     return 1 if fails else 0
 
 
+
+def write_receipts(outdir, cid, q, name, fp, lo, hi, admitted, arms):
+    """One directory entry per ATTEMPT, written before the admission gate.
+
+    A summary cannot be re-scored and this scorer has now been wrong six times, so the raw
+    bytes are the record; and an attempt that FAILED is the one most worth inspecting, which
+    is exactly the one the previous version threw away by writing receipts after the drop.
+
+    Nothing written here is final. The run manifest decides that: until it says VALID, every
+    receipt on disk belongs to a run that may yet be voided, and a crash leaves them that way.
+    """
+    for arm, cost, loc, dec, ok, raw, meta in arms:
+        base = os.path.join(outdir, cid + "." + arm)
+        with open(base + ".raw", "wb") as fh:
+            fh.write(raw or b"")
+        if meta.get("evidence") is not None:
+            # what was actually SCORED, which for the phrase arm is the windows it read and
+            # was absent from the record entirely
+            with open(base + ".scored", "wb") as fh:
+                fh.write(meta["evidence"])
+        with open(base + ".json", "w") as fh:
+            json.dump({"case_id": cid, "arm": arm, "ok": ok, "cost_bytes": cost,
+                       "locator": loc, "declaration": dec,
+                       "argv": meta.get("argv"), "returncode": meta.get("rc"),
+                       "stderr": meta.get("stderr"),
+                       "oracle": meta.get("oracle", False)}, fh, indent=1)
+    with open(os.path.join(outdir, cid + ".txt"), "w") as fh:
+        fh.write(f"case_id: {cid}\nquery: {q!r}\ntarget: {name} {fp}:{lo}-{hi}\n"
+                 f"admitted: {admitted}   (a failed comparable arm excludes the case; "
+                 f"it is never scored as a miss)\n"
+                 f"run_status: see run-manifest.json -- PROVISIONAL until that says VALID\n")
+        for arm, cost, loc, dec, ok, _, meta in arms:
+            tag = "   CAPABILITY CONTROL: given the target name; not a comparator" if arm == "oracle" else ""
+            fh.write(f"{arm:7s} ok={ok} bytes {cost}  locator {loc}  declaration {dec}{tag}\n")
+
+
+def finalize_manifest(outdir, manifest, status, note=""):
+    """Atomically stamp the run VALID or VOID.
+
+    Receipts were previously written with the word PROVISIONAL and nothing ever replaced it,
+    so a completed run and a run killed halfway were indistinguishable on disk -- and the
+    reader had no way to tell which. The rename is atomic so a crash mid-write cannot leave a
+    half-written manifest claiming VALID; a run that never reached this call stays provisional,
+    which is to say invalid.
+    """
+    if not outdir:
+        return
+    manifest["run_status"] = status
+    manifest["note"] = note
+    manifest["admitted_cases"] = sum(1 for c in manifest["cases"] if c["admitted"])
+    tmp = os.path.join(outdir, ".run-manifest.json.tmp")
+    with open(tmp, "w") as fh:
+        json.dump(manifest, fh, indent=1)
+    os.replace(tmp, os.path.join(outdir, "run-manifest.json"))
+
 if __name__=="__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--test":
         sys.exit(_selftest())
@@ -564,7 +619,12 @@ if __name__=="__main__":
     # 1.37 MB, single-handedly setting the mean. That is a property of the NAME, not of grep
     # or of the repository, and a mean lets one such case decide the headline. Both are
     # printed; the median is the one to quote.
-    tg=tp=to=0; k=0; dropped=0
+    tg=tp=to=0; k=0; dropped=0; attempt=0
+    ovalid=0; ona=0          # the oracle's OWN validity, tracked apart from the comparison
+    manifest={"schema":1,"repo":repo,"rev":rev0,"dirty":bool(dirty0),"content_sha256":cont0,
+              "binary":binary,"binary_sha256":bsha,
+              "script_sha256":hashlib.sha256(open(os.path.abspath(__file__),"rb").read()).hexdigest(),
+              "budget":budget,"requested_cases":n,"run_status":"PROVISIONAL","cases":[]}
     gvals=[]; pvals=[]; ovals=[]; svals=[]
     gL=gD=pL=pD=oL=oD=sL=sD=0
     for q,name,fp,s_lo,s_hi in cases:
@@ -578,51 +638,47 @@ if __name__=="__main__":
         # where only the oracle failed was DROPPED FROM EVERY ARM, letting a non-comparable
         # control decide which cases the real comparison is computed over.
         # It stays as an explicitly labelled capability ceiling and nothing else.
-        if not (gok and pok and sok):
+        attempt += 1
+        admitted = gok and pok and sok
+        # THE CASE ID IS THE ATTEMPT, not the admission. Numbering by admitted cases meant a
+        # failure had no id at all, so the receipts on disk could not be lined up against the
+        # attempts that produced them.
+        cid = "%03d-%s-%s" % (attempt, re.sub(r"\W+","_",name)[:48],
+                              re.sub(r"\W+","_",os.path.basename(fp))[:32])
+        if outdir:
+            # EVERY ATTEMPT, WRITTEN BEFORE THE GATE. Receipts used to be written after the
+            # drop, so a failed arm -- the case most worth inspecting -- left no argv, no exit
+            # code, no stderr and no raw bytes behind. A benchmark that records only its
+            # successes cannot be audited for the reason it dropped something.
+            write_receipts(outdir, cid, q, name, fp, s_lo, s_hi, admitted,
+                           (("graph",g,g_l,g_d,gok,g_raw,g_m), ("grep",pr,p_l,p_d,pok,p_raw,p_m),
+                            ("phrase",sc,s_l,s_d,sok,s_raw,s_m), ("oracle",oc,o_l,o_d,ook,o_raw,o_m)))
+        manifest["cases"].append({"case_id":cid,"symbol":name,"file":fp,"span":[s_lo,s_hi],
+                                  "admitted":admitted,
+                                  "arm_ok":{"graph":gok,"grep":pok,"phrase":sok,"oracle":ook}})
+        if not admitted:
             dropped+=1      # a failed comparable arm excludes the case, never scores as a miss
             continue
-        k+=1; tg+=g; tp+=pr; to+=oc
-        gL+=g_l; gD+=g_d; pL+=p_l; pD+=p_d; oL+=o_l; oD+=o_d
-        gvals.append(g); pvals.append(pr); ovals.append(oc); svals.append(sc)
+        k+=1; tg+=g; tp+=pr
+        gL+=g_l; gD+=g_d; pL+=p_l; pD+=p_d
+        gvals.append(g); pvals.append(pr); svals.append(sc)
         sL+=s_l; sD+=s_d
-        if outdir:
-            # RAW per-arm stdout plus full provenance. A summary cannot be re-scored, and this
-            # scorer has now been wrong six times; only the original bytes allow re-derivation
-            # without re-running a cohort.
-            #
-            # The case id is UNIQUE per case, not the symbol name: a repository contains many
-            # symbols with the same name, and keying on the name silently overwrote one
-            # homonym's receipts with another's -- so the file on disk described a different
-            # case than the row it was filed under.
-            cid = "%03d-%s-%s" % (k, re.sub(r"\W+","_",name)[:48],
-                                  re.sub(r"\W+","_",os.path.basename(fp))[:32])
-            base=os.path.join(outdir,cid)
-            for arm,blob,m in (("graph",g_raw,g_m),("grep",p_raw,p_m),
-                               ("phrase",s_raw,s_m),("oracle",o_raw,o_m)):
-                with open(base+"."+arm+".raw","wb") as rf: rf.write(blob or b"")
-                # Everything scored, not only what rg printed: the phrase arm scores the
-                # windows it reads, and those bytes were absent from the record entirely.
-                if m.get("evidence") is not None:
-                    with open(base+"."+arm+".scored","wb") as rf: rf.write(m["evidence"])
-                with open(base+"."+arm+".json","w") as jf:
-                    json.dump({"argv": m.get("argv"), "returncode": m.get("rc"),
-                               "stderr": m.get("stderr"), "oracle": m.get("oracle", False)},
-                              jf, indent=1)
-            with open(base+".txt","w") as fh:
-                fh.write(f"case_id: {cid}\nquery: {q!r}\n"
-                         f"target: {name} {fp}:{s_lo}-{s_hi}\n"
-                         f"run_status: PROVISIONAL until the whole run exits 0\n"
-                         f"graph  bytes {g}  locator {g_l}  declaration {g_d}\n"
-                         f"grep   bytes {pr} locator {p_l}  declaration {p_d}\n"
-                         f"phrase bytes {sc} locator {s_l}  declaration {s_d}\n"
-                         f"oracle bytes {oc} locator {o_l}  declaration {o_d}"
-                         f"   (CAPABILITY CONTROL: given the target name; not a comparator)\n")
+        # The oracle is outside the comparison, so its own failures must not be folded in as
+        # zeroes. Counting a failed oracle run as a miss made the capability ceiling look
+        # lower than it is -- the same "a failure is not a miss" rule the comparable arms get.
+        if ook:
+            ovalid+=1; to+=oc; oL+=o_l; oD+=o_d; ovals.append(oc)
+        else:
+            ona+=1
+
     rev1,dirty1,cont1=state()
     if (rev0,dirty0,cont0)!=(rev1,dirty1,cont1):
+        finalize_manifest(outdir, manifest, "VOID", "source state changed during the run")
         # Exit non-zero. Printing "void" and then printing the table anyway is how a voided
         # run gets quoted later by someone reading only the numbers.
         raise SystemExit("SOURCE STATE CHANGED DURING THE RUN -- results void, refusing to report")
     if not k:
+        finalize_manifest(outdir, manifest, "VOID", "no scorable cases")
         print("no scorable cases"); sys.exit(1)
     def med(a):
         """True median. The first version returned a[len(a)//2], which on an even-length list
@@ -636,11 +692,23 @@ if __name__=="__main__":
     print(f"{'graph (prose)':24s} {med(gvals):10,.0f} {gL:6d}/{k} {gD:10d}/{k}")
     print(f"{'grep (prose)':24s} {med(pvals):10,.0f} {pL:6d}/{k} {pD:10d}/{k}")
     print(f"{'grep doc-phrase+read':24s} {med(svals):10,.0f} {sL:6d}/{k} {sD:10d}/{k}")
-    print(f"{'grep (oracle: name)':24s} {med(ovals):10,.0f} {oL:6d}/{k} {oD:10d}/{k}")
     print("  locator = pointed at the right file+span.  declaration = showed the decl line.")
-    print("  Both computed identically for every arm; medians, because grep is heavy-tailed.")
+    print("  Computed identically for the three arms above, which receive byte-identical")
+    print("  canonical query text and derive their search from it alone.")
+    # BELOW THE LINE, AND OUT OF THE DENOMINATOR. The oracle is handed the target's NAME. It is
+    # not a same-input comparator and putting it in the same block invited exactly the reading
+    # the rest of this file exists to prevent.
+    print(f"\n{'-- capability ceiling, NOT a comparator (given the target name) --':60s}")
+    print(f"{'grep (oracle: name)':24s} {med(ovals):10,.0f} {oL:6d}/{ovalid} {oD:10d}/{ovalid}")
+    print(f"  its own denominator is {ovalid}, not {k}: {ona} oracle run(s) failed and are N/A.")
+    print(f"  A failed oracle run is not an oracle miss, the same rule the other arms get.")
     print(f"\nscored {k}, dropped {dropped} (arm failure, not scored as miss)")
     print(f"state before/after: {rev0} dirty={dirty0}  ->  {rev1} dirty={dirty1}")
-    if outdir: print(f"per-case receipts: {outdir}")
+    if outdir: print(f"per-case receipts: {outdir}  (run-manifest.json carries the verdict)")
     me=os.path.abspath(__file__)
     print(f"script sha256 {hashlib.sha256(open(me,'rb').read()).hexdigest()}")
+    # LAST THING THE RUN DOES. Everything above is already on disk as PROVISIONAL; this is what
+    # makes the receipts quotable, and a run that dies before here stays provisional -- which
+    # reads as invalid, deliberately.
+    finalize_manifest(outdir, manifest, "VALID",
+                      f"scored {k}, dropped {dropped}, oracle valid {ovalid} n/a {ona}")
