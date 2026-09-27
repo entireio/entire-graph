@@ -623,6 +623,23 @@ def _selftest():
     ck(not os.path.exists(os.path.join(rd, ".run-manifest.json.tmp")),
        "the atomic write leaves no partial manifest behind")
 
+    # CROSS-RUN, which is the case a single-run test cannot reach: a second run must not write
+    # into a directory that already carries a verdict, or a crash mid-rerun leaves the OLD
+    # manifest certifying a mixture of two runs' bytes.
+    before = {f: open(os.path.join(rd, f), "rb").read() for f in sorted(os.listdir(rd))}
+    refused = False
+    try:
+        claim_outdir(rd)
+    except SystemExit:
+        refused = True
+    ck(refused, "a rerun into a directory holding a verdict is refused")
+    after = {f: open(os.path.join(rd, f), "rb").read() for f in sorted(os.listdir(rd))}
+    ck(before == after, "...and the refusal touched none of the existing receipt bytes",
+       f"{len(before)} -> {len(after)} files")
+    fresh = os.path.join(_tf.mkdtemp(prefix="rcpt-"), "new")
+    claim_outdir(fresh)
+    ck(os.path.isdir(fresh), "a fresh directory is created and claimed")
+
     print("\nALL PHRASE-ARM FALSIFIERS PASS" if not fails else "\nFAILURES: " + ", ".join(fails))
     return 1 if fails else 0
 
@@ -680,6 +697,35 @@ def record_attempt(outdir, cid, q, name, fp, lo, hi, arms):
         write_receipts(outdir, cid, q, name, fp, lo, hi,
                        all(a[4] for a in arms if a[0] != "oracle"), arms)
     return all(a[4] for a in arms if a[0] != "oracle")
+
+
+def claim_outdir(outdir):
+    """Take an EXCLUSIVE, empty output directory, or refuse without touching anything.
+
+    `os.makedirs(outdir, exist_ok=True)` let a second run reuse a directory that already held a
+    VALID manifest. The rerun would overwrite case 001's receipts and then crash, and the
+    earlier manifest -- still saying VALID -- would be left certifying a mixture of two runs'
+    bytes. The verdict file is the whole point of the receipt lifecycle, so a stale one
+    vouching for spliced evidence is worse than having none.
+
+    Refusal happens BEFORE any write, so a rejected rerun leaves the existing evidence exactly
+    as it found it.
+    """
+    if not outdir:
+        return
+    try:
+        os.makedirs(outdir)
+        return
+    except FileExistsError:
+        pass
+    existing = os.listdir(outdir)
+    if existing:
+        raise SystemExit(
+            f"output directory {outdir} is not empty ({len(existing)} entries; "
+            f"manifest present: {os.path.exists(os.path.join(outdir, 'run-manifest.json'))}).\n"
+            f"Refusing to write into it: a partial rerun would splice this run's receipts into "
+            f"the previous run's, under the previous run's verdict. Nothing was modified. "
+            f"Use a new directory.")
 
 
 def finalize_manifest(outdir, manifest, status, note=""):
@@ -743,7 +789,7 @@ if __name__=="__main__":
         raise SystemExit(f"fixture {repo} is DIRTY; a frozen fixture must be clean\n{dirty0}")
     bsha=hashlib.sha256(open(binary,"rb").read()).hexdigest()
     cases=build_cases(binary,repo,n)
-    if outdir: os.makedirs(outdir,exist_ok=True)
+    claim_outdir(outdir)
     print(f"repo {repo}\nrev {rev0} dirty={'YES' if dirty0 else 'no'}")
     print(f"binary {binary}\nbinary sha256 {bsha}\nbudget {budget}  cases {len(cases)}\n")
     # MEANS ARE NOT REPORTABLE HERE and medians are. The grep arms are heavy-tailed: one

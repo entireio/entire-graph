@@ -214,7 +214,13 @@ REDIRECT = re.compile(r"(?P<fd>\d*)(?P<op>>>|>&|>)")
 
 
 def stdout_reaches_the_record(masked):
-    """Could the bytes in the transcript have come from this command's stdout?"""
+    """Could the bytes in the transcript have come from this command's stdout?
+
+    EVERY redirect is inspected. The first version returned True the moment it saw a
+    stderr-only redirect, so `2>&1 >/dev/null` -- stderr duplicated to the terminal, then
+    stdout thrown away -- was accepted, and marker-shaped STDERR then scored as a graph render.
+    Order matters in a shell and an early return cannot see it.
+    """
     if "|" in masked or re.search(r"\btee\b", masked):
         return False
     if "&>" in masked:
@@ -222,14 +228,17 @@ def stdout_reaches_the_record(masked):
     for m in REDIRECT.finditer(masked):
         fd, op = m.group("fd"), m.group("op")
         if op == ">&":
-            # 2>&1 leaves stdout alone; 1>&2 and a bare >& do not.
-            return False if fd in ("", "1") else True
+            if fd in ("", "1"):
+                return False          # stdout duplicated somewhere else
+            if fd != "2":
+                return False          # an fd we do not model: refuse rather than guess
+            continue                  # 2>&1 moves stderr; stdout is still in play -- keep going
         if fd in ("", "1"):
-            return False
+            return False              # stdout redirected away
         if fd != "2":
-            return False          # an fd we do not model: refuse rather than guess
+            return False
+        # 2> / 2>> touch stderr only. Keep scanning: a later redirect may still take stdout.
     return True
-
 
 def flag_value(argv, name):
     for i, a in enumerate(argv):
@@ -458,6 +467,24 @@ def _tmpjsonl(line):
         fh.write('{"type":"x","tool_use":1,"tool_result":1}\n' + line + "\n")
     return p
 
+def _tier_for_command(cmd, body):
+    """Classify one real transcript event end to end.
+
+    Peer review asked for CLASSIFICATION, not a helper returning a boolean: a predicate can be
+    right while the tier it feeds is wrong, and that gap is where marker-shaped stderr became a
+    graph render.
+    """
+    import tempfile
+    d = tempfile.mkdtemp(prefix="rq-")
+    with open(os.path.join(d, "t.jsonl"), "w") as fh:
+        fh.write(json.dumps({"message": {"content": [
+            {"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": cmd}}]}}) + "\n")
+        fh.write(json.dumps({"message": {"content": [
+            {"type": "tool_result", "tool_use_id": "u1", "content": [{"text": body}]}]}}) + "\n")
+    tiers, _, _ = qualify(d)
+    return next(iter(tiers), None)
+
+
 def _tier_for_identity():
     """Classify one clean invocation whose response carries a real commit and tree."""
     import tempfile
@@ -635,6 +662,12 @@ def tests():
         ("entire graph query --repo . 9>/dev/null", False),   # unmodelled fd: refuse
         ("entire graph query --repo . 2>/dev/null", True),    # stderr only
         ("entire graph query --repo . 2>&1", True),
+        # ORDER MATTERS, and an early return cannot see it. Both of these end with stdout
+        # discarded; the first was accepted because the stderr redirect came first.
+        ("entire graph query --repo . 2>&1 >/dev/null", False),
+        ("entire graph query --repo . >/dev/null 2>&1", False),
+        ("entire graph query --repo . 2>>err.log 1>/dev/null", False),
+        ("entire graph query --repo . 2>>err.log", True),
     ):
         check("redirect grammar: " + cmd.split("--repo . ")[1], output_is_attributable(cmd), want)
     check("a one-character tree is not an identity",
@@ -652,6 +685,18 @@ def tests():
           output_is_attributable(
               "entire graph query --repo /r >/dev/null; printf '1. a/b.go:1 F [complete] s=21.9'"),
           False)
+    # END-TO-END CLASSIFICATION for both redirect orders. A marker-shaped payload is the hard
+    # case: it looks exactly like a graph render, so only attribution can reject it.
+    marked = "1. a/b.go:1 F [complete] s=21.9\n2. c/d.go:2 G s=18.5\n"
+    check("stdout discarded after a stderr dup is not a render",
+          _tier_for_command("entire graph query --repo /r --query x 2>&1 >/dev/null", marked),
+          "unattributable-output")
+    check("stdout discarded before a stderr dup is not a render",
+          _tier_for_command("entire graph query --repo /r --query x >/dev/null 2>&1", marked),
+          "unattributable-output")
+    check("a plain invocation with stderr merged IS a render",
+          _tier_for_command("entire graph query --repo /r --query x 2>&1", marked),
+          "frozen-render")
     check("a top-level JSON list does not crash", tool_events(_tmpjsonl("[1,2,3]")), [])
     check("a string Bash input does not crash", _qualify_str_input(), True)
     print("  ALL PASS" if ok else "  FAILURES ABOVE")
