@@ -266,6 +266,11 @@ def payload_has_structure(body):
     #     1. internal/sem/provider.go:18911-18925 walkWorktreeFilesAfterGitFailure [complete] s=21.9 [focus:18911]
     # Only `query` emits ranked text at all; impact and neighbors produce no ranks, so this
     # tightening costs those verbs nothing.
+    # SHAPE, NOT ATTRIBUTION. These marks say the text looks like something the renderer
+    # produces; they do not say the renderer produced it, and `printf` can emit them just as
+    # easily as it emitted bare ranks. Attribution is a separate and independent guard
+    # (output_is_attributable), and a marker-bearing payload from a redirected or compound
+    # command is still refused -- there is a fixture for exactly that below.
     marked = bool(re.search(r"\bs=\d", body) or "[complete]" in body or "[focus:" in body
                   or re.search(r"^(Coverage|Index|Completeness):", body, re.M))
     if good >= 2 and marked:
@@ -368,9 +373,15 @@ def qualify(root):
                 # A CANDIDATE, not a certification, and the previous version promoted it
                 # straight to the top tier while its own docstring said it must not.
                 # Exact replay additionally needs the binary identity, the build, the working
-                # directory, the full option set and the source's clean status -- none of
-                # which a transcript records. So full-execution is not zero here, it is
-                # UNKNOWN, and nothing in a transcript can raise it.
+                # directory, the full option set and the source's clean status.
+                #
+                # CAREFUL WITH THE NEXT SENTENCE. THIS PARSER does not establish those, so
+                # full-execution is UNKNOWN here -- which is NOT the claim that a transcript
+                # could never carry them. I made exactly that categorical mistake once already
+                # ("exact replay is unreachable by construction"), and the peer bundle of raw
+                # response plus receipt plus build metadata disproves the stronger version
+                # again: a harness that records those bindings would qualify. The limit is
+                # this classifier and the records it has been shown, not the medium.
                 tiers["source-identity-candidate"] += 1
             elif payload_has_structure(body):
                 tiers["frozen-render"] += 1
@@ -567,6 +578,12 @@ def tests():
     # found, with no test standing against its return.
     check("identity is a candidate, never a certification", _tier_for_identity(),
           "source-identity-candidate")
+    # Markers must not buy attribution: a printf that MIMICS the renderer, in the same
+    # redirected compound command, is still refused.
+    check("marker-shaped printf in a compound command is still unattributable",
+          output_is_attributable(
+              "entire graph query --repo /r >/dev/null; printf '1. a/b.go:1 F [complete] s=21.9'"),
+          False)
     check("a top-level JSON list does not crash", tool_events(_tmpjsonl("[1,2,3]")), [])
     check("a string Bash input does not crash", _qualify_str_input(), True)
     print("  ALL PASS" if ok else "  FAILURES ABOVE")

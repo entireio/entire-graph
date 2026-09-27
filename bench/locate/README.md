@@ -69,9 +69,15 @@ no binary to name.
 **What the replay classifier will never tell you.** It reports `source-identity-candidate` when
 a recorded response carries a real `commit` and `tree`, and that is a candidate for exact
 replay, not a certification of one. Exact replay also needs the binary's identity, its build,
-the working directory, the full option set and the source's clean status — a transcript records
-none of them, so `full-execution` here is **unknown, not zero**. An earlier version promoted the
-candidate straight to the top tier while its own docstring said it must not.
+the working directory, the full option set and the source's clean status. **This classifier
+does not establish those, so `full-execution` is unknown, not zero.**
+
+That is deliberately narrower than it first read here. "A transcript records none of them" is a
+claim about the medium, and it is false — a harness that captured the raw response alongside a
+receipt and build metadata would qualify, and one exists. The limit is this parser and the
+records it has been shown. An earlier claim in this directory that exact replay was
+"unreachable by construction" died the same way, and the fix for it reintroduced the same shape
+of error one layer along.
 
 It also refuses to attribute output it cannot place. `entire graph query … >/dev/null; printf
 '1. a/b.go:1 F'` was scored as a clean graph render; the graph's bytes went to /dev/null and
