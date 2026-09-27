@@ -30,10 +30,12 @@ Knowing a file or symbol's location permits direct source inspection for that
 location; it NEVER exempts relationship questions from Graph or historical
 questions from Brain. Small edits, follow-ups, read-only reconnaissance, specs,
 and reviews are subject to the same rules for the enabled products.
-Do not re-read files or retrieved records that Graph or Brain already answered for.
+Do not re-read files or retrieved records merely to repeat an answer from the same
+unchanged source view.
 A follow-up read MUST address a specific missing fact, stale result, heuristic
-relationship, or source the payload did not carry. A result marked [complete] IS
-that source, so it is not one of those cases. Repeating
+relationship, or source the payload did not carry. A [complete] result already supplies
+its displayed body for the observed source view; the marker does not remove the need
+to check a stale result or required source outside that body. Repeating
 an answered question in source is not verification.
 ` + verificationGuide + `
 Do not silently substitute source inspection, text search, or recollection for
@@ -64,7 +66,7 @@ preflight because a file is known or a grep looks easier.
 
 Start needed code discovery with:
 
-    entire graph query --repo . --profile full --head --query "<task>"
+    entire graph query --repo . --profile full --head --format agent --query "<task>"
 
 Code relationships — callers, callees, dependents, implementors, type consumers,
 routes, and blast radius — MUST be answered with Graph first, ALWAYS, even when
