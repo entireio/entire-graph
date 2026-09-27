@@ -29,6 +29,8 @@ func TestAMentionedRunnerIsNotAnInvokedRunner(t *testing.T) {
 		// and consuming it there accepted this as an invocation of jest.
 		"env run jest",
 		"cross-env run jest",
+		// `env` does not take npx's flags; an unmodelled form stays refused rather than guessed
+		"env --silent jest",
 	} {
 		if cmd, ok := searchVerifyNodeRunnerFromScript(script); ok {
 			t.Errorf("script %q names no runner but produced VERIFY %q", script, cmd)
@@ -61,6 +63,13 @@ func TestAnInvokedRunnerIsStillFound(t *testing.T) {
 		"echo v1#rc2 && jest":  "npx jest",
 		// ...while a real comment still ends the statement, and the next line still runs
 		"echo building # noise\njest": "npx jest",
+		// An ESCAPED space is part of the word, so this hash is still mid-word and literal.
+		// Reading the last RAW byte called it a word start and swallowed the rest of the line.
+		`echo release\ #1; jest`: "npx jest",
+		// npx carries options of its own; it is not an environment wrapper.
+		"npx --silent jest":     "npx jest",
+		"npx -y jest":           "npx jest",
+		"npx --no-install jest": "npx jest",
 	} {
 		got, ok := searchVerifyNodeRunnerFromScript(script)
 		if !ok || got != want {
