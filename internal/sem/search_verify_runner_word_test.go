@@ -15,6 +15,16 @@ func TestAMentionedRunnerIsNotAnInvokedRunner(t *testing.T) {
 		"echo skipping jest for now && exit 0",  // a script saying it is NOT running jest
 		"eslint --rule no-jest-globals .",       // a lint rule name
 		"cp fixtures/vitest.config.ts .",        // a config file being copied
+		// Peer review: separators inside a COMMENT or a QUOTED string began statements the
+		// shell never runs, and each of these produced a bare "jest" statement.
+		"echo ok # disabled; jest",
+		"echo 'disabled; jest; still disabled'",
+		"echo \"off; jest\"",
+		// `run` only means something after a package manager; a bare one invokes nothing named.
+		"run jest",
+		"-s jest",
+		// an unterminated quote is a form we do not model, so it must fail closed
+		"echo 'unterminated && jest",
 	} {
 		if cmd, ok := searchVerifyNodeRunnerFromScript(script); ok {
 			t.Errorf("script %q names no runner but produced VERIFY %q", script, cmd)
@@ -79,6 +89,13 @@ func TestPytestIsDetectedFromASectionNotAMention(t *testing.T) {
 		{"a real setup.cfg section", "setup.cfg", "[tool:pytest]\ntestpaths = tests\n", true},
 		{"a real pyproject section", "pyproject.toml", "[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n", true},
 		{"a real tox pytest section", "tox.ini", "[pytest]\ntestpaths = tests\n", true},
+		// Peer review: a COMMENTED heading is something a config carries while using another
+		// runner, and substring matching accepted every one of them.
+		{"a commented ini heading", "pytest.ini", "# [pytest]\n", false},
+		{"a semicolon-commented heading", "setup.cfg", "; [tool:pytest]\n", false},
+		{"a commented toml heading", "pyproject.toml", "# [tool.pytest.ini_options]\n", false},
+		{"a heading pytest does not read", "pyproject.toml", "[tool.pytest_asyncio]\nx = 1\n", false},
+		{"a heading with trailing space", "pytest.ini", "  [pytest]  \ntestpaths = tests\n", true},
 	} {
 		evidence := searchVerifyTestEvidenceWithout(map[string]string{"/r/" + tc.file: tc.content})
 		got := deriveSearchVerifySuitePytest("/r", &evidence)
