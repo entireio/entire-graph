@@ -25,6 +25,10 @@ func TestAMentionedRunnerIsNotAnInvokedRunner(t *testing.T) {
 		"-s jest",
 		// an unterminated quote is a form we do not model, so it must fail closed
 		"echo 'unterminated && jest",
+		// `run` belongs to a package MANAGER. After `env` it is just a command called run,
+		// and consuming it there accepted this as an invocation of jest.
+		"env run jest",
+		"cross-env run jest",
 	} {
 		if cmd, ok := searchVerifyNodeRunnerFromScript(script); ok {
 			t.Errorf("script %q names no runner but produced VERIFY %q", script, cmd)
@@ -47,6 +51,16 @@ func TestAnInvokedRunnerIsStillFound(t *testing.T) {
 		"vitest run":                       "npx vitest run",
 		"tsc --noEmit && vitest run --cov": "npx vitest run",
 		"mocha 'test/**/*.spec.js'":        "npx mocha",
+		// quiet flags belong to a package manager, with or without a subcommand
+		"npm run -s jest":        "npx jest",
+		"yarn -s jest":           "npx jest",
+		"pnpm -s jest":           "npx jest",
+		"npm exec --silent jest": "npx jest",
+		// a hash INSIDE a word is literal; a comment opens only at the start of a word
+		"echo release#1; jest": "npx jest",
+		"echo v1#rc2 && jest":  "npx jest",
+		// ...while a real comment still ends the statement, and the next line still runs
+		"echo building # noise\njest": "npx jest",
 	} {
 		got, ok := searchVerifyNodeRunnerFromScript(script)
 		if !ok || got != want {
@@ -96,6 +110,12 @@ func TestPytestIsDetectedFromASectionNotAMention(t *testing.T) {
 		{"a commented toml heading", "pyproject.toml", "# [tool.pytest.ini_options]\n", false},
 		{"a heading pytest does not read", "pyproject.toml", "[tool.pytest_asyncio]\nx = 1\n", false},
 		{"a heading with trailing space", "pytest.ini", "  [pytest]  \ntestpaths = tests\n", true},
+		// BOTH headings pytest documents for pyproject.toml: the native TOML form added in
+		// pytest 9.0, and the INI-style form from 6.0. Narrowing to the second alone regressed
+		// every valid pytest 9 configuration.
+		{"the pytest 9 native heading", "pyproject.toml", "[tool.pytest]\nx = 1\n", true},
+		{"the 6.0 ini_options heading", "pyproject.toml", "[tool.pytest.ini_options]\nx = 1\n", true},
+		{"a commented pytest 9 heading", "pyproject.toml", "# [tool.pytest]\n", false},
 	} {
 		evidence := searchVerifyTestEvidenceWithout(map[string]string{"/r/" + tc.file: tc.content})
 		got := deriveSearchVerifySuitePytest("/r", &evidence)
