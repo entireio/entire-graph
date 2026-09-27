@@ -2541,18 +2541,15 @@ func searchVerifyNodeRunnerFromManifest(parsed searchVerifyNodeManifest) (string
 //
 // Both then qualified as a jest invocation. Deliberately not a shell parser: an unterminated
 // quote returns false and the caller fails closed.
-func searchVerifyAtWordStart(sofar string) bool {
-	if sofar == "" {
-		return true
-	}
-	last := sofar[len(sofar)-1]
-	return last == ' ' || last == '\t'
-}
-
 func searchVerifyShellStatements(script string) ([]string, bool) {
 	var statements []string
 	var current strings.Builder
 	var quote rune
+	// Whether we are INSIDE a word. Tracked as state rather than read off the last raw byte,
+	// because an ESCAPED space is part of the word: in `release\ #1` the hash sits mid-word and
+	// is literal, while the byte before it is a space. Reading that byte called it a word start
+	// and swallowed the rest of the line as a comment.
+	inWord := false
 	flush := func() {
 		if trimmed := strings.TrimSpace(current.String()); trimmed != "" {
 			statements = append(statements, trimmed)
@@ -2571,13 +2568,16 @@ func searchVerifyShellStatements(script string) ([]string, bool) {
 		case char == '\'' || char == '"' || char == '`':
 			quote = char
 			current.WriteRune(char)
+			inWord = true
 		case char == '\\':
+			// The backslash and what it escapes are both word content, whitespace included.
 			current.WriteRune(char)
 			if index+1 < len(runes) {
 				index++
 				current.WriteRune(runes[index])
 			}
-		case char == '#' && searchVerifyAtWordStart(current.String()):
+			inWord = true
+		case char == '#' && !inWord:
 			// A shell comment opens only at the START OF A WORD. `echo release#1; jest` has a
 			// literal hash inside a word, and treating it as a comment swallowed a real command.
 			for index < len(runes) && runes[index] != '\n' {
@@ -2586,8 +2586,10 @@ func searchVerifyShellStatements(script string) ([]string, bool) {
 			flush()
 		case char == '&' || char == '|' || char == ';' || char == '\n':
 			flush()
+			inWord = false
 		default:
 			current.WriteRune(char)
+			inWord = char != ' ' && char != '\t'
 		}
 	}
 	if quote != 0 {
@@ -2648,8 +2650,21 @@ func searchVerifyScriptInvokesRunner(script, runner string) bool {
 					index++
 				}
 				continue
-			case "npx", "cross-env", "dotenv", "env":
-				// A plain wrapper: it prefixes a command and takes no subcommand of its own.
+			case "npx":
+				// npx has options of its own -- moving it in with the environment wrappers
+				// newly rejected `npx --silent jest`, which had worked. Its flags are consumed
+				// here and nowhere else; `env --silent` is not the same thing and stays
+				// unmodelled.
+				index++
+				for index < len(fields) && (fields[index] == "--silent" || fields[index] == "-s" ||
+					fields[index] == "-y" || fields[index] == "--yes" ||
+					fields[index] == "-q" || fields[index] == "--quiet" ||
+					fields[index] == "--no-install") {
+					index++
+				}
+				continue
+			case "cross-env", "dotenv", "env":
+				// An environment wrapper: it prefixes a command and takes no options we model.
 				index++
 				continue
 			}
