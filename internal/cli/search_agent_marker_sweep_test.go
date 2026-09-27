@@ -160,29 +160,34 @@ func TestTheRealSearchPathStillMarksAGenuinelyCompleteSymbol(t *testing.T) {
 		t.Skipf("ranking did not surface the small callable; nothing to assert:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, completeMarker) {
-		// KNOWN GAP, found by this sweep on 2026-09-26 and deliberately not failed here.
+		// KNOWN GAP, producer-side, and an ATTEMPTED FIX WAS REVERTED -- read this before
+		// trying the obvious one again.
 		//
-		// The rendered body IS the whole callable -- doc comment, signature, single
-		// statement, closing brace, lines 2-6 of a 6-line file -- and it carries no
-		// complete-symbol signal, so no marker. This is the exact mirror of the
-		// false-positive bug peer review caught: that one promised completeness for a
-		// clipped unit, this one withholds it from a body that genuinely is complete.
+		// The snippet here provably covers its symbol (bounds 2-6 contain symbol 4-6) and
+		// carries no complete-symbol, because the signal is only assigned along the
+		// enclosure-widening path. Marking it from bounds after the allocator LOOKS correct
+		// and fails three ways, all measured:
 		//
-		// It matters for the same reason and in the same direction: an agent re-reads a
-		// file it was already handed in full. It also explains why only ~12.8% of results
-		// in a real corpus carried complete-symbol at all -- the promise is rare because
-		// it is only assigned along the enclosure-widening path, not because whole bodies
-		// are rare.
+		//   1. It adds ~15 bytes of signal string per result AFTER the byte budget is
+		//      closed, so SearchResponse.Validate trips: "context exceeds byte budget:
+		//      6008 > 6000". This is precisely the post-allocator growth class of issue
+		//      #208, and the same reason assignSearchSections was moved ahead of the
+		//      fitter by #207.
+		//   2. complete-symbol is LOAD-BEARING for span merging
+		//      (search_enclosure.go:862) and callee-hop demotion
+		//      (search_callee.go:447,475). Adding it late changed which same-file regions
+		//      merged, breaking TestSearchRepositoryPreservesDistinctRegionsInOneFile and
+		//      TestSearchRepositoryExpandsSemanticNeighbor.
+		//   3. Moving the pass BEFORE the fitter to price the bytes does not work either:
+		//      the fitter is what shrinks snippets, so a mark made ahead of it can be
+		//      falsified by the very next pass. The durable fix is for the fitter to REMOVE
+		//      complete-symbol when it truncates, which is a producer contract change and
+		//      belongs with that package's owner.
 		//
-		// Not failed and not fixed here on purpose: the assignment lives in the producer
-		// (internal/sem/search_enclosure.go, planSearchEnclosures -> widenSearchResultToEnclosure),
-		// which is outside this branch's claimed ownership, and widening the signal is a
-		// contract change that needs the producer's owner. Reported over the peer channel.
-		//
-		// UN-SKIP CONDITION: delete this branch and restore the hard assertion the moment
-		// the producer assigns complete-symbol to a result whose snippet already covers
-		// its whole symbol. If that lands and this stays skipped, the coverage is lost.
-		t.Skipf("KNOWN GAP (producer, not renderer): a whole callable rendered without %s.\n"+
-			"Un-skip when the producer marks already-complete snippets.\n%s", completeMarker, rendered)
+		// UN-SKIP CONDITION: restore the hard assertion when the producer assigns
+		// complete-symbol to already-complete snippets AND the fitter drops it on
+		// truncation. Reported over the peer channel with the failing test names.
+		t.Skipf("KNOWN GAP (producer): a whole callable rendered without %s; bounds-based fix reverted, see comment.\n%s",
+			completeMarker, rendered)
 	}
 }
