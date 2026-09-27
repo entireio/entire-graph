@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Seal a run's identity BEFORE its first query, and refuse to start if anything is missing.
+"""A PREFLIGHT. It does not seal a run, and must never be described as doing so.
+
+Peer review's point, and it is correct: a tool that checks a path and then hands control to
+another process has bound nothing. The directory it approved is created by someone else, the
+selected queries are chosen by someone else, and the manifest is written by someone else. THE
+EVALUATOR OWNS THE SEAL -- head_to_head.py creates the output directory, writes SEAL.json after
+selection and before the first arm, and carries the seal's hash in its final manifest.
+
+What this is good for: checking a binary and a set of fixtures BEFORE committing to a run, so a
+dirty build or a dirty fixture is discovered in a second rather than after an hour of queries.
+Its output is a report, not a seal.
+
+Original docstring follows.
+
+Seal a run's identity BEFORE its first query, and refuse to start if anything is missing.
 
 Written after a run went out with two protocol gaps that nobody could close afterwards: no
 record of the selected query list, and no build/source identity for the binary. Both were
