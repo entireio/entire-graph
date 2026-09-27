@@ -61,6 +61,35 @@ def DEFN(name):
     )
 
 
+def doc_comment_lines(path, start_line, language="Go"):
+    """The doc comment as its PHYSICAL LINES, un-joined.
+
+    doc_comment() space-joins the lines, and peer review showed why that silently breaks the
+    strongest baseline: a phrase built from the joined text can straddle a newline, so `rg -F`
+    searches for a string that occurs in NO file. The old phrase arm did exactly that, and its
+    20/100 coverage was partly an artifact of searching for text that cannot exist.
+    """
+    try: lines = open(path, errors="ignore").read().splitlines()
+    except OSError: return []
+    out, i = [], start_line - 2
+    while i >= 0 and lines[i].strip().startswith("//"):
+        out.append(lines[i].strip().lstrip("/").strip()); i -= 1
+    if out:
+        return list(reversed(out))
+    if language in ("TypeScript", "JavaScript", "TSX"):
+        j = start_line - 2
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+        if j >= 0 and lines[j].strip().endswith("*/"):
+            block = []
+            while j >= 0:
+                t = lines[j].strip()
+                block.append(t.lstrip("/*").rstrip("*/").lstrip("*").strip())
+                if t.startswith("/**"): break
+                j -= 1
+            return [w for w in reversed(block) if w and not w.startswith("@")]
+    return []
+
 def doc_comment(path, start_line, language="Go"):
     """Author-written description immediately above a declaration.
 
@@ -109,14 +138,16 @@ def build_cases(binary, repo, want, seed=7):
         if d.get("kind") not in ("function","method","class"): continue
         name=d.get("name") or ""
         if len(name)<6: continue
-        doc=doc_comment(os.path.join(repo,d["file_path"]), d["start_line"], lang)
+        src_path=os.path.join(repo,d["file_path"])
+        doc=doc_comment(src_path, d["start_line"], lang)
+        dlines=doc_comment_lines(src_path, d["start_line"], lang)
         if len(WORD.findall(doc))<10: continue
         q=re.sub(re.escape(name)," ",doc,flags=re.I)
         for part in re.findall(r'[A-Z]?[a-z]{3,}',name):
             q=re.sub(r'\b'+re.escape(part)+r'\b'," ",q,flags=re.I)
         q=" ".join(q.split())
         if len(WORD.findall(q))<8: continue
-        out.append((q[:240],name,d["file_path"],int(d.get("start_line") or 0),int(d.get("end_line") or 0),doc))
+        out.append((q[:240],name,d["file_path"],int(d.get("start_line") or 0),int(d.get("end_line") or 0),dlines))
     random.Random(seed).shuffle(cases:=out)
     return cases[:want]
 
@@ -188,59 +219,87 @@ def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False):
             declaration = True
     return locator, declaration
 
-def phrase_arm(repo, doc, name, target_file, lo, hi, follow=12):
-    """THE STRONG GREP BASELINE. Search the author's description, then read what follows it.
+def strip_name(text, name):
+    """Blank `name` and its case-split parts, marking each removal so callers can tell where
+    the text is still CONTIGUOUS. The graph is asked with a name-stripped query; giving the
+    grep baseline the original doc hands it the answer, which is the arm-asymmetric-input
+    failure this whole benchmark exists to avoid."""
+    t = re.sub(re.escape(name), "\x00", text, flags=re.I)
+    for part in re.findall(r'[A-Z]?[a-z]{3,}', name):
+        t = re.sub(r'\b' + re.escape(part) + r'\b', "\x00", t, flags=re.I)
+    return t
 
-    Added after peer review destroyed the previous framing. The old arms OR-ed the longest
-    words and never tried the obvious move: the description IS IN THE FILE, immediately above
-    the declaration. Grep a phrase from it, read the next few lines, and the identifier is
-    there. Beating an OR-of-longest-words was presented as proof that a lexical search could
-    not bridge description to identifier; it proved only that a weak baseline is weak.
+def phrase_for(dlines, name, min_words=3):
+    """The longest run of consecutive words that (a) survives name-stripping and (b) lies
+    within ONE physical comment line -- therefore occurs verbatim in the file.
 
-    Given the author's real comment this found the declaration 6/20 on a fixture where the
-    graph found 4/20 -- it beat the tool. Any honest comparison has to carry it.
+    Both conditions were missing before. The arm dropped words shorter than four characters
+    and space-joined the survivors, so `rg -F "decides whether request retried"` went looking
+    for a string no file contains."""
+    best = ""
+    for line in dlines:
+        for seg in strip_name(line, name).split("\x00"):
+            seg = seg.strip()
+            # Interior whitespace must be preserved exactly: the segment is quoted to rg as a
+            # fixed string and has to match the file byte for byte.
+            if len(seg.split()) >= min_words and len(seg) > len(best):
+                best = seg
+    return best
 
-    Cost includes the bounded follow-up read, because the arm really performs it.
+def phrase_arm(repo, dlines, name, target_file, lo, hi, follow=12):
+    """THE STRONG GREP BASELINE. Search the author's own description, then read what follows.
+
+    Added after peer review destroyed the previous framing: the description IS IN THE FILE,
+    immediately above the declaration, so grep a phrase from it and read on. Beating an
+    OR-of-longest-words had been presented as proof that lexical search cannot bridge
+    description to identifier; it proved only that a weak baseline is weak.
+
+    REBUILT after a second review found three defects that all flattered the graph:
+
+      1. It was handed the UNSTRIPPED doc, which usually contains the target name, while the
+         graph got a name-stripped query. Different inputs -- the exact asymmetry this
+         benchmark's fairness rule forbids. It now gets the same stripped text.
+      2. Its phrase was non-adjacent words joined by spaces, across a space-joined multi-line
+         comment. As a fixed string that matches nothing. See phrase_for.
+      3. It scored itself, and set locator and declaration from ONE condition, so the two
+         columns could never differ. I then read that forced equality off the results table
+         and published it as a mechanism ("its weakness is coverage, not precision"). It was a
+         property of this function. It now returns evidence and score() judges it, exactly as
+         for every other arm -- which is what makes the shared-scoring claim true.
     """
-    words = [w for w in (doc or "").split() if len(w) > 3][:6]
-    if len(words) < 3:
+    phrase = phrase_for(dlines, name)
+    if not phrase:
         return 0, False, False, True, b""
-    phrase = " ".join(words[:4])
     p = subprocess.run(["rg", "-n", "--no-heading", "-F", "-g", "!node_modules", phrase, repo],
                        capture_output=True, timeout=300)
-    # rg exits 1 for "no matches", which is a real empty result. Anything ABOVE that is a
-    # broken run -- and anything BELOW zero is a signal death (SIGKILL is -9), which the
-    # original `> 1` guard let through as a valid run with empty output, scoring a killed
-    # process as a legitimate miss. A timeout or OOM would have silently become evidence.
+    # rg exits 1 for "no matches", a real empty result. Above that is a broken run; BELOW zero
+    # is signal death (SIGKILL is -9), which the original `> 1` guard admitted as a valid run
+    # with empty output -- scoring a killed process as a legitimate miss.
     if p.returncode < 0 or p.returncode > 1:
         return 0, False, False, False, b""
     cost = len(p.stdout)
-    d = DEFN(name)
-    tgt = os.path.normpath(target_file)
-    loc = dec = False
+    # Reconstruct what a reader actually sees -- the hit line plus the next `follow` lines --
+    # as path:line:text, so the SHARED scorer can judge it under the same span binding as
+    # every other arm. Bytes are counted as bytes; the previous version added len() of decoded
+    # str to len() of bytes and called the sum a byte count.
+    seen = []
     for ln in p.stdout.decode("utf8", "replace").splitlines():
         parts = ln.split(":", 2)
-        if len(parts) < 3:
-            continue
+        if len(parts) < 3: continue
         path, num = parts[0], parts[1]
         rel = os.path.relpath(path, repo) if os.path.isabs(path) else path
+        try: start = int(num)
+        except ValueError: continue
         try:
-            start = int(num)
-        except ValueError:
-            continue
-        try:
-            src = open(os.path.join(repo, rel), errors="ignore").read().splitlines()
+            with open(os.path.join(repo, rel), errors="ignore") as fh:
+                src = fh.read().splitlines()
         except OSError:
             continue
-        window = src[start - 1:start - 1 + follow]
-        cost += sum(len(l) + 1 for l in window)
-        if os.path.normpath(rel) != tgt:
-            continue
-        if lo and lo <= start <= hi:
-            loc = True
-        for w in window:
-            if d.search(w):
-                return cost, True, True, True, p.stdout
+        for off, body in enumerate(src[start - 1:start - 1 + follow]):
+            cost += len(body.encode("utf8")) + 1
+            seen.append(f"{rel}:{start + off}:{body}")
+    ev = "\n".join(seen).encode("utf8")
+    loc, dec = score(ev, repo, name, target_file, lo, hi)
     return cost, loc, dec, True, p.stdout
 
 def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
@@ -276,7 +335,80 @@ def graph_arm(binary,repo,query,name,target_file,budget,tgt_lo=0,tgt_hi=0):
     loc, dec = score(out, repo, name, target_file, tgt_lo, tgt_hi, ranked_only=True)
     return len(out), loc, dec, True, out
 
+
+# ---------------------------------------------------------------------------
+# SYNTHETIC FALSIFIERS for the phrase arm. Each targets one defect peer review
+# found, and each FAILS on the code as it stood before this commit. Run: --test
+# ---------------------------------------------------------------------------
+def _mkrepo(files):
+    import tempfile
+    d = tempfile.mkdtemp(prefix="pharm-")
+    for rel, body in files.items():
+        fp = os.path.join(d, rel)
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        with open(fp, "w") as fh: fh.write(body)
+    return d
+
+def _selftest():
+    fails = []
+    def ck(cond, label, detail=""):
+        print(("  ok   " if cond else "  FAIL ") + label + (("  <- " + detail) if detail and not cond else ""))
+        if not cond: fails.append(label)
+
+    # 1. CONTIGUITY. The phrase must occur verbatim inside ONE physical line. The old arm
+    #    dropped words under four characters and space-joined the rest, so it searched for a
+    #    string present in no file.
+    dl = ["ApplyRetryBudget decides whether a request may be", "retried after a transient failure."]
+    ph = phrase_for(dl, "ApplyRetryBudget")
+    ck(any(ph in l for l in dl) and ph, "phrase is a verbatim substring of one comment line", repr(ph))
+    old = " ".join([w for w in (" ".join(dl)).split() if len(w) > 3][:4])
+    ck(not any(old in l for l in dl), "the OLD construction was indeed unmatchable", repr(old))
+
+    # 2. NO ORACLE. The phrase must not carry the target name or its case-split parts; the
+    #    graph is asked with those stripped.
+    ck("Retry" not in ph and "Budget" not in ph and "Apply" not in ph,
+       "phrase carries no part of the target name", repr(ph))
+
+    # 3. THE TAUTOLOGY. locator and declaration came from one condition, so they could never
+    #    differ -- and I read that forced equality off the table as a mechanism. Here the
+    #    phrase sits far above the declaration, so a 12-line window locates without ever
+    #    showing it.
+    far = "package p\n" + "// decides whether a request may be\n" + ("//\n" * 40) + \
+          "// tail\nfunc ApplyRetryBudget() bool { return true }\n"
+    r = _mkrepo({"a.go": far})
+    n = far[:far.index("func ApplyRetryBudget")].count("\n") + 1
+    c, l, d, ok, _ = phrase_arm(r, ["decides whether a request may be"], "ApplyRetryBudget", "a.go", 2, n)
+    ck(ok and l and not d, "locator TRUE and declaration FALSE is now reachable", f"loc={l} dec={d}")
+
+    # 4. SPAN BINDING. A same-name declaration in the right file but outside the registered
+    #    span was credited as a declaration hit.
+    two = "package p\n// decides whether a request may be\nfunc ApplyRetryBudget() bool { return true }\n" \
+          + ("\n" * 30) + "func ApplyRetryBudget2() bool { return false }\n"
+    r2 = _mkrepo({"b.go": two})
+    _, l2, d2, ok2, _ = phrase_arm(r2, ["decides whether a request may be"], "ApplyRetryBudget", "b.go", 34, 40)
+    ck(ok2 and not d2, "declaration outside the registered span is refused", f"dec={d2}")
+
+    # 5. BYTES, not characters. The old cost added len() of a decoded str to len() of bytes.
+    uni = "package p\n// decides whether a request may be\nfunc ApplyRetryBudget() bool { return \"\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\" != \"\" }\n"
+    r3 = _mkrepo({"c.go": uni})
+    c3, _, _, _, _ = phrase_arm(r3, ["decides whether a request may be"], "ApplyRetryBudget", "c.go", 3, 3)
+    plain = uni.replace("\u00e9", "x")
+    r4 = _mkrepo({"c.go": plain})
+    c4, _, _, _, _ = phrase_arm(r4, ["decides whether a request may be"], "ApplyRetryBudget", "c.go", 3, 3)
+    ck(c3 > c4, "multi-byte source costs more than its ASCII twin", f"{c3} vs {c4}")
+
+    # 6. SHARED SCORING. The footer claimed every arm is scored identically while this arm
+    #    scored itself. Prove the call actually routes through score().
+    import inspect
+    ck("score(" in inspect.getsource(phrase_arm), "phrase arm delegates to the shared scorer")
+
+    print(("\nALL PHRASE-ARM FALSIFIERS PASS" if not fails else "\nFAILURES: " + ", ".join(fails)))
+    return 1 if fails else 0
+
 if __name__=="__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        sys.exit(_selftest())
+
     binary,repo,n,budget=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4])
     outdir=sys.argv[5] if len(sys.argv)>5 else None
     def state():
@@ -319,11 +451,11 @@ if __name__=="__main__":
     tg=tp=to=0; k=0; dropped=0
     gvals=[]; pvals=[]; ovals=[]; svals=[]
     gL=gD=pL=pD=oL=oD=sL=sD=0
-    for q,name,fp,s_lo,s_hi,doc in cases:
+    for q,name,fp,s_lo,s_hi,dlines in cases:
         g,g_l,g_d,gok,g_raw=graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi)
         pr,p_l,p_d,pok,p_raw=grep_arm(repo,q,name,fp,False,s_lo,s_hi)
         oc,o_l,o_d,ook,o_raw=grep_arm(repo,q,name,fp,True,s_lo,s_hi)
-        sc,s_l,s_d,sok,s_raw=phrase_arm(repo,doc,name,fp,s_lo,s_hi)
+        sc,s_l,s_d,sok,s_raw=phrase_arm(repo,dlines,name,fp,s_lo,s_hi)
         if not (gok and pok and ook and sok):
             dropped+=1      # a failed arm is excluded, never scored as a miss
             continue
