@@ -239,7 +239,13 @@ if __name__=="__main__":
     if not k:
         print("no scorable cases"); sys.exit(1)
     def med(a):
-        a=sorted(a); return a[len(a)//2] if a else 0
+        """True median. The first version returned a[len(a)//2], which on an even-length list
+        is the UPPER of the two middle values -- with n=20 per fixture that is the 11th, not
+        the median, and every figure it produced was slightly high. Peer review caught it as
+        'upper-middle, not median'."""
+        if not a: return 0
+        a = sorted(a); n = len(a)
+        return a[n//2] if n % 2 else (a[n//2 - 1] + a[n//2]) / 2
     print(f"{'arm':24s} {'median B':>10s} {'locator':>9s} {'declaration':>13s}")
     print(f"{'graph (prose)':24s} {med(gvals):10,.0f} {gL:6d}/{k} {gD:10d}/{k}")
     print(f"{'grep (prose)':24s} {med(pvals):10,.0f} {pL:6d}/{k} {pD:10d}/{k}")
