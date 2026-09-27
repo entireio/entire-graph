@@ -819,6 +819,16 @@ if __name__=="__main__":
     bsha=hashlib.sha256(open(binary,"rb").read()).hexdigest()
     cases=build_cases(binary,repo,n)
     claim_outdir(outdir)
+    if outdir:
+        # THE SELECTED LIST, FIXED BEFORE THE FIRST QUERY. A run went out without this and the
+        # list had to be reconstructed from its own receipts afterwards -- which records what
+        # ran but cannot show that the set was chosen before the measurement rather than after
+        # it. Written here, between selection and the first arm, it can.
+        with open(os.path.join(outdir, "selected-queries.json"), "w") as fh:
+            json.dump({"note": "selected before the first query; the population is frozen here",
+                       "repo": repo, "rev": rev0, "budget": budget, "requested": n,
+                       "cases": [{"symbol": c[1], "file": c[2], "span": [c[3], c[4]],
+                                  "query": c[0]} for c in cases]}, fh, indent=1)
     print(f"repo {repo}\nrev {rev0} dirty={'YES' if dirty0 else 'no'}")
     print(f"binary {binary}\nbinary sha256 {bsha}\nbudget {budget}  cases {len(cases)}\n")
     # MEANS ARE NOT REPORTABLE HERE and medians are. The grep arms are heavy-tailed: one
