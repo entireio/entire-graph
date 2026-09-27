@@ -67,10 +67,11 @@ python3 bench/locate/budget_falsifier.py <binary> /tmp/fx 20 4096 24576
 The three fixture benchmarks print the fixture revision, its dirty state, the binary's sha256
 and their own script sha256, so a result ties back to exactly what produced it.
 
-**Receipts and the run verdict.** The output directory must be **new and empty** — a run
-refuses to write into one that already holds evidence, before touching anything, because a
-partial rerun would splice its receipts into the previous run's under the previous run's
-verdict. With such a directory, `head_to_head.py` writes a receipt
+**Receipts and the run verdict.** The output directory path **must not exist** — a run creates
+it, and refuses any directory that is already there, *including an empty one*, before touching
+anything. Emptiness is a property of the instant you looked: two runs starting together both
+find an empty directory, both proceed, and their receipts interleave under a single verdict.
+Only a directory a run creates is exclusively its own. With such a directory, `head_to_head.py` writes a receipt
 for **every attempt, before the admission gate** — argv, exit code, stderr, raw stdout and the
 bytes actually scored, per arm. Failed attempts are the ones most worth inspecting and used to
 leave nothing behind at all. Those receipts mean nothing on their own: `run-manifest.json`
@@ -170,6 +171,16 @@ Kept because the withdrawals are more useful than the survivors:
   Every reduction came from a defect in these scripts rather than from new data: an OR-ed
   metric, a weak baseline, body text credited to the wrong result, and finally a baseline
   searching for strings that cannot occur.
+
+**A median is not a total.** Quote the median *and* the mean and total together, with the
+failure denominator beside them: they are different estimands and a median payload win is not a
+token saving. The median is the right headline only because grep's cost is heavy-tailed enough
+that one common symbol name sets the mean; that is a reason to show both, not a licence to show
+one.
+
+**"Transcripts are never admissible for a rate"** was too broad. The limitation belongs to *this*
+unqualified historical corpus and *this* parser — independently verified receipts can carry valid
+rate evidence, and the receipts this directory now writes are the shape that would.
 
 Every one of those was found by running something rather than reasoning about it. Treat a
 mechanism story from this directory as a hypothesis until a fixture kills it.
