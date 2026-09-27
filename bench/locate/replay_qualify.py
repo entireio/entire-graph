@@ -40,23 +40,36 @@ def _mask_shell(command):
     Peer review defeated the quote-only version with `# entire graph query` inside a comment
     and with `\;` escaped separators. Length is preserved so offsets stay valid.
     """
-    out, quote, esc = [], None, False
-    for ch in command or "":
-        if esc:
-            out.append(" "); esc = False; continue
-        if ch == "\\" and not quote:
-            out.append(" "); esc = True; continue
+    cmd = command or ""
+    out, quote, k = [], None, 0
+    while k < len(cmd):
+        ch = cmd[k]
         if quote:
-            out.append(" " if ch != quote else ch)
-            if ch == quote: quote = None
+            out.append(ch if ch == quote else " ")
+            if ch == quote:
+                quote = None
+            k += 1
+            continue
+        if ch == "\\":
+            # an escaped character is literal text, never a separator
+            out.append("  " if k + 1 < len(cmd) else " ")
+            k += 2
             continue
         if ch == "#":
-            out.append(" " * (len(command) - len(out)))
-            break
+            # A shell comment ends at the NEWLINE. The first repair blanked everything to the
+            # end of the string, so `# note\nentire graph query ...` lost a command the shell
+            # really runs -- a false negative introduced by the fix for a false positive.
+            # It also appended spaces without advancing the read cursor, which desynchronised
+            # the mask from the source and silently corrupted every later offset.
+            nl = cmd.find("\n", k)
+            if nl < 0:
+                out.append(" " * (len(cmd) - k)); break
+            out.append(" " * (nl - k)); k = nl
+            continue
         if ch in "'\"":
-            quote = ch; out.append(ch); continue
-        out.append(ch)
-    return "".join(out).ljust(len(command or ""))
+            quote = ch; out.append(ch); k += 1; continue
+        out.append(ch); k += 1
+    return "".join(out).ljust(len(cmd))[:len(cmd)]
 
 
 def _mask_quoted(command):
@@ -107,12 +120,24 @@ def argv_of(stage):
 
 
 def graph_invocation(command):
-    """(verb, argv) when a stage really invokes the graph, else None. Fixture: echo case."""
+    """(verb, argv) when a stage really invokes the graph, else None.
+
+    Returns None for an event whose execution or output the transcript cannot settle. Peer
+    review's guidance, and it is the right one: REJECT the ambiguous event rather than invent
+    an execution model for it. A transcript records the command text and the combined result,
+    never which stage produced which bytes or whether a guarded stage ran at all.
+    """
     for stage in stages(command):
         argv = argv_of(stage)
         i = 0
         while i < len(argv) and ("=" in argv[i] and not argv[i].startswith("-")):
             i += 1  # leading VAR=value assignments
+        # `env` and `env FOO=1` wrap the real command; the head was being read as `env` and
+        # the invocation missed entirely.
+        while i < len(argv) and os.path.basename(argv[i]) == "env":
+            i += 1
+            while i < len(argv) and ("=" in argv[i] and not argv[i].startswith("-")):
+                i += 1
         if i >= len(argv):
             continue
         head = os.path.basename(argv[i])
@@ -126,6 +151,35 @@ def graph_invocation(command):
         if rest and rest[0] in VERBS:
             return rest[0], rest
     return None
+
+
+def output_is_attributable(command):
+    """Can the recorded result be credited to the graph stage at all?
+
+    It could not, and this was the most persistent defect in the classifier: the whole Bash
+    result was handed to whichever stage was detected first. Two counterexamples from review,
+    both of which scored as clean graph renders:
+
+        entire graph query ... >/dev/null; printf '1. a/b.go:1 F\n2. c/d.go:2 G'
+
+    -- the graph's output was DISCARDED and printf produced every byte that was scored. And
+    any multi-stage pipeline at all, where the tail transforms what the graph emitted.
+
+    So attribution now requires exactly one statement whose stdout goes nowhere else.
+    """
+    masked = _mask_shell(command or "")
+    # CONDITIONAL EXECUTION. `false && entire graph query ...` never runs, and nothing in the
+    # record says whether the guard passed. A first repair refused such commands outright,
+    # which also threw away `cd /r && entire graph impact` -- a real invocation, in one of the
+    # commonest shapes there is. The uncertainty is about WHETHER IT RAN and what produced the
+    # bytes, so it belongs here, in attribution, and the event lands in the unknown tier
+    # instead of being deleted or credited.
+    if "&&" in masked or "||" in masked:
+        return False
+    if len([x for x in stages(command) if x.strip()]) != 1:
+        return False
+    # A redirect or a pipe means the bytes in the record came from somewhere else.
+    return not re.search(r"(?<![0-9<>])>|\||\btee\b", masked)
 
 
 def flag_value(argv, name):
@@ -168,7 +222,11 @@ def recorded_source_identity(argv, body=""):
     if not isinstance(d, dict):
         return False
     commit, tree = d.get("commit"), d.get("tree")
-    return bool(commit and tree and HEX40.match(str(commit)))
+    # BOTH must be real object names. The first repair validated only `commit` and accepted
+    # any truthy `tree`, so a fabricated `tree: "b"` qualified. Checking one half of a pair
+    # and trusting the other is how the original always-false bug got replaced by a
+    # false positive.
+    return bool(HEX40.match(str(commit or "")) and HEX40.match(str(tree or "")))
 
 
 def payload_has_structure(body):
@@ -184,7 +242,10 @@ def payload_has_structure(body):
     """
     if not body:
         return False
-    if "[truncated" in body or "... (truncated" in body or "output truncated" in body:
+    low = body.lower()
+    # Case-insensitive: the harness emits "[Output truncated]" capitalised, which walked
+    # straight past the lowercase-only test.
+    if "[truncated" in low or "(truncated" in low or "output truncated" in low:
         return False
     hits = [m for m in RANK.finditer(body)]
     good = 0
@@ -207,7 +268,14 @@ def payload_has_structure(body):
         rs = d.get("results") if isinstance(d, dict) else None
         if not isinstance(rs, list) or not rs or not isinstance(rs[0], dict):
             return False
-        return bool(rs[0].get("file_path")) and rs[0].get("start_line") is not None
+        r0 = rs[0]
+        # file_path + start_line is a POINTER, not a payload. Re-rendering needs what the
+        # renderer consumes; a two-field stub is indistinguishable from something hand-written
+        # and was accepted as a re-renderable artifact.
+        if not (r0.get("file_path") and r0.get("start_line") is not None):
+            return False
+        return any(r0.get(k) not in (None, "", [], {}) for k in
+                   ("snippet", "body", "symbol_name", "end_line", "signals", "score"))
     return False
 
 
@@ -224,6 +292,8 @@ def tool_events(path):
             d = json.loads(line)
         except Exception:
             continue
+        if not isinstance(d, dict):
+            continue                      # a top-level JSON list reached .get and crashed
         msg = d.get("message")
         if not isinstance(msg, dict):
             continue
@@ -265,15 +335,32 @@ def qualify(root):
             if uid in seen_ids:
                 continue
             seen_ids.add(uid)
-            inv = graph_invocation(str((b.get("input") or {}).get("command", "")))
+            binp = b.get("input")
+            if not isinstance(binp, dict):
+                continue                  # a string-valued Bash input reached .get and crashed
+            cmdtext = str(binp.get("command", ""))
+            inv = graph_invocation(cmdtext)
             if not inv:
                 continue
             _, argv = inv
             rblock = res.get(uid, {})
             # An errored result is not an artifact: it records a failure, not a payload.
             body = "" if rblock.get("is_error") else result_text(rblock)
+            if not output_is_attributable(cmdtext):
+                # The command ran, but the transcript cannot say which stage produced the
+                # recorded bytes. Unknown is the honest tier; crediting the graph is how
+                # printf-shaped text became a graph render.
+                tiers["unattributable-output"] += 1
+                reasons["result cannot be attributed to the graph stage"] += 1
+                continue
             if recorded_source_identity(argv, body):
-                tiers["full-execution"] += 1
+                # A CANDIDATE, not a certification, and the previous version promoted it
+                # straight to the top tier while its own docstring said it must not.
+                # Exact replay additionally needs the binary identity, the build, the working
+                # directory, the full option set and the source's clean status -- none of
+                # which a transcript records. So full-execution is not zero here, it is
+                # UNKNOWN, and nothing in a transcript can raise it.
+                tiers["source-identity-candidate"] += 1
             elif payload_has_structure(body):
                 tiers["frozen-render"] += 1
             else:
@@ -290,6 +377,27 @@ def qualify(root):
                 reasons["--repo absent (cwd-inherited; tree not recoverable)"] += 1
     return tiers, reasons, len(files)
 
+
+
+def _tmpjsonl(line):
+    import tempfile
+    d = tempfile.mkdtemp(prefix="rq-")
+    p = os.path.join(d, "t.jsonl")
+    with open(p, "w") as fh:
+        fh.write('{"type":"x","tool_use":1,"tool_result":1}\n' + line + "\n")
+    return p
+
+def _qualify_str_input():
+    """A Bash block whose `input` is a bare string reached .get and raised."""
+    import tempfile
+    d = tempfile.mkdtemp(prefix="rq-")
+    with open(os.path.join(d, "t.jsonl"), "w") as fh:
+        fh.write(json.dumps({"message": {"content": [
+            {"type": "tool_use", "id": "u1", "name": "Bash", "input": "entire graph query --repo ."}]}}) + "\n")
+    try:
+        qualify(d); return True
+    except Exception:
+        return False
 
 def tests():
     """Retained fixtures, including the two RED cases peer review supplied."""
@@ -320,8 +428,10 @@ def tests():
     # unreachable by construction rather than merely unobserved.
     check("phantom --rev does not count",
           recorded_source_identity(argv_of("entire graph query --rev " + "a" * 40)), False)
+    # CORRECTED. This asserted that a one-character tree is an identity, which is precisely
+    # the false positive found later: only `commit` was validated and any truthy `tree` passed.
     check("json commit+tree IS an identity",
-          recorded_source_identity([], '{"commit":"'+"a"*40+'","tree":"b"}'), True)
+          recorded_source_identity([], '{"commit":"'+"a"*40+'","tree":"'+"b"*40+'"}'), True)
     check("json without commit is not",
           recorded_source_identity([], '{"tree":"b"}'), False)
     check("--head alone is not an identity",
@@ -331,8 +441,11 @@ def tests():
     # Superseded: a results array whose entries carry no file_path/start_line is rank-SHAPED,
     # not re-renderable. The stricter `real json accepted` / `bare rank json refused` pair below
     # replaces this, and the two directly contradicted until this one was corrected.
-    check("json envelope with real fields is",
-          payload_has_structure('{"results":[{"rank":1,"file_path":"a.go","start_line":1}]}'), True)
+    # CORRECTED. "real fields" meant file_path + start_line, a pointer rather than a payload;
+    # the shape below is what the binary actually emits (see go-role-a0c-head-baseline.raw.json).
+    check("json envelope with real fields is", payload_has_structure(
+        '{"results":[{"rank":1,"file_path":"a.go","start_line":1,"end_line":4,'
+        '"symbol_name":"F","snippet":"func F() {}"}]}'), True)
     check("empty json envelope is not", payload_has_structure('{"results":[]}'), False)
     # END-TO-END, because the first version's fixtures only ever called the small helpers and
     # never qualify/tool_events/result_text -- so a corpus-level regression could not fail it.
@@ -375,8 +488,44 @@ def tests():
     check("truncated payload refused",
           payload_has_structure("1. a/b.go:1 F\n2. c/d.go:2 G\n[truncated]"), False)
     check("bare rank json refused", payload_has_structure('{"results":[{"rank":1}]}'), False)
-    check("real json accepted",
-          payload_has_structure('{"results":[{"rank":1,"file_path":"a.go","start_line":3}]}'), True)
+    # CORRECTED, not relaxed. This fixture used to assert that
+    #   {"results":[{"rank":1,"file_path":"a.go","start_line":3}]}
+    # is a "real" payload. It is a POINTER -- three fields, indistinguishable from something
+    # typed by hand -- and calling it real is what let thin JSON qualify as a re-renderable
+    # artifact. The authorized capture go-role-a0c-head-baseline.raw.json shows what the
+    # binary actually emits per result: 18 fields including snippet, symbol_name, end_line,
+    # score and signals. The fixture now uses that shape, and the thin one is a falsifier.
+    check("real json accepted", payload_has_structure(
+        '{"results":[{"rank":1,"file_path":"a.go","start_line":3,"end_line":9,'
+        '"symbol_name":"F","snippet":"func F() {}","score":21.9,"signals":["complete-symbol"]}]}'), True)
+    check("a file_path+start_line pointer is not a payload",
+          payload_has_structure('{"results":[{"rank":1,"file_path":"a.go","start_line":3}]}'), False)
+    check("capitalised truncation is refused",
+          payload_has_structure("1. a/b.go:1 F\n2. c/d.go:2 G\n[Output truncated]"), False)
+    # `false && ...` NAMES an invocation -- the text is right there -- but whether the shell
+    # reached it is unknowable from a transcript. So it is detected and then refused
+    # attribution, rather than being counted as a clean render or silently dropped.
+    check("false && still names an invocation",
+          (graph_invocation("false && entire graph query --repo /synthetic") or ("",))[0], "query")
+    check("false && is not attributable",
+          output_is_attributable("false && entire graph query --repo /synthetic"), False)
+    check("cd && graph is a real invocation",
+          (graph_invocation("cd /r && entire graph impact --symbol X") or ("",))[0], "impact")
+    check("env wrapper still names an invocation",
+          (graph_invocation("env FOO=1 entire graph query --repo .") or (None,))[0], "query")
+    check("a comment line does not hide the next command",
+          (graph_invocation("# note\nentire graph query --repo .") or (None,))[0], "query")
+    check("redirected graph output is not attributable",
+          output_is_attributable("entire graph query --repo . >/dev/null; printf '1. a/b.go:1 F'"), False)
+    check("a lone invocation is attributable",
+          output_is_attributable("entire graph query --repo ."), True)
+    check("a piped invocation is not", output_is_attributable("entire graph query --repo . | head"), False)
+    check("a one-character tree is not an identity",
+          recorded_source_identity([], '{"commit":"' + "a"*40 + '","tree":"b"}'), False)
+    check("two real object names are",
+          recorded_source_identity([], '{"commit":"' + "a"*40 + '","tree":"' + "b"*40 + '"}'), True)
+    check("a top-level JSON list does not crash", tool_events(_tmpjsonl("[1,2,3]")), [])
+    check("a string Bash input does not crash", _qualify_str_input(), True)
     print("  ALL PASS" if ok else "  FAILURES ABOVE")
     return ok
 

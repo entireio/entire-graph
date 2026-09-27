@@ -3,15 +3,20 @@
 Four deterministic, offline, zero-cost benchmarks for the question the tool exists to answer:
 **what does it cost to find code, and does the graph beat grep at it?**
 
-Nothing here calls a model or a paid API. Everything runs the real binary against a frozen
-repository and is re-runnable by anyone against a pinned script hash.
+Nothing here calls a model or a paid API.
+
+**Three of the four run the real binary against a frozen repository.** `replay_qualify.py` does
+not: it is a static classifier over recorded transcripts, it executes no binary and freezes no
+repository, and it prints its own parser hash and corpus diagnostics rather than a fixture
+revision or a binary hash. Grouping it with the other three overstated it, and that grouping is
+the reason a transcript-derived rate was once quoted as if a frozen fixture had produced it.
 
 | script | question |
 |---|---|
 | `head_to_head.py` | cost to locate a known target: graph vs grep vs grep-with-the-name |
 | `doccomment_bench.py` | does an author's own prose find the symbol it describes? |
 | `budget_falsifier.py` | which target does a smaller `--max-context-bytes` *lose*? |
-| `replay_qualify.py` | how many recorded calls can be replayed at all, and at what fidelity? |
+| `replay_qualify.py` | of recorded calls, which could even be replayed, and which cannot be judged? (static; runs nothing) |
 
 ## Why these exist, and what they are not
 
@@ -48,14 +53,28 @@ agent would have read instead — and needs a randomized A/B.
 ## Usage
 
 ```sh
-python3 bench/locate/replay_qualify.py --test          # self-test, 14 fixtures
+python3 bench/locate/replay_qualify.py --test          # self-test, 46 fixtures
 git worktree add --detach /tmp/fx <rev>                # frozen fixture
 python3 bench/locate/head_to_head.py <binary> /tmp/fx 20 4096 /tmp/receipts
 python3 bench/locate/budget_falsifier.py <binary> /tmp/fx 20 4096 24576
 ```
 
-Each prints the fixture revision, dirty state, binary sha256 and its own script sha256, so a
-result can be tied to exactly what produced it.
+The three fixture benchmarks print the fixture revision, its dirty state, the binary's sha256
+and their own script sha256, so a result ties back to exactly what produced it.
+`replay_qualify.py` prints its parser sha256 and corpus diagnostics only — it has no fixture and
+no binary to name.
+
+**What the replay classifier will never tell you.** It reports `source-identity-candidate` when
+a recorded response carries a real `commit` and `tree`, and that is a candidate for exact
+replay, not a certification of one. Exact replay also needs the binary's identity, its build,
+the working directory, the full option set and the source's clean status — a transcript records
+none of them, so `full-execution` here is **unknown, not zero**. An earlier version promoted the
+candidate straight to the top tier while its own docstring said it must not.
+
+It also refuses to attribute output it cannot place. `entire graph query … >/dev/null; printf
+'1. a/b.go:1 F'` was scored as a clean graph render; the graph's bytes went to /dev/null and
+`printf` produced everything measured. Redirected, piped, multi-statement and `&&`-guarded
+commands are now reported as unattributable rather than credited.
 
 ## Status of what they have measured
 
