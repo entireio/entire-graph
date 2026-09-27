@@ -59,3 +59,31 @@ func TestADeclaredDependencyIsNotOverriddenByAMention(t *testing.T) {
 			cmd, source)
 	}
 }
+
+// The same class in the Python derivation: setup.cfg and pyproject.toml are general manifests,
+// and the word "pytest" appears in them for reasons that are not configuration.
+func TestPytestIsDetectedFromASectionNotAMention(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		label, file, content string
+		want                 bool
+	}{
+		{"a description mentioning pytest", "pyproject.toml",
+			"[project]\nname = \"x\"\ndescription = \"a plugin for pytest users\"\n", false},
+		{"a comment saying they LEFT pytest", "pyproject.toml",
+			"[project]\nname = \"x\"\n# migrated off pytest in 2024; we use unittest\n", false},
+		{"a metadata keyword", "setup.cfg", "[metadata]\nname = x\nkeywords = pytest, testing\n", false},
+		{"a dep of a unittest tox env", "tox.ini",
+			"[tox]\nenvlist = py311\n[testenv]\ncommands = python -m unittest discover\ndeps = pytest-cov\n", false},
+		{"a real pytest.ini", "pytest.ini", "[pytest]\ntestpaths = tests\n", true},
+		{"a real setup.cfg section", "setup.cfg", "[tool:pytest]\ntestpaths = tests\n", true},
+		{"a real pyproject section", "pyproject.toml", "[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n", true},
+		{"a real tox pytest section", "tox.ini", "[pytest]\ntestpaths = tests\n", true},
+	} {
+		evidence := searchVerifyTestEvidenceWithout(map[string]string{"/r/" + tc.file: tc.content})
+		got := deriveSearchVerifySuitePytest("/r", &evidence)
+		if (got != nil) != tc.want {
+			t.Errorf("%s (%s): got %v, want detected=%v", tc.label, tc.file, got, tc.want)
+		}
+	}
+}
