@@ -179,7 +179,11 @@ def phrase_arm(repo, doc, name, target_file, lo, hi, follow=12):
     phrase = " ".join(words[:4])
     p = subprocess.run(["rg", "-n", "--no-heading", "-F", "-g", "!node_modules", phrase, repo],
                        capture_output=True, timeout=300)
-    if p.returncode > 1:
+    # rg exits 1 for "no matches", which is a real empty result. Anything ABOVE that is a
+    # broken run -- and anything BELOW zero is a signal death (SIGKILL is -9), which the
+    # original `> 1` guard let through as a valid run with empty output, scoring a killed
+    # process as a legitimate miss. A timeout or OOM would have silently become evidence.
+    if p.returncode < 0 or p.returncode > 1:
         return 0, False, False, False
     cost = len(p.stdout)
     d = DEFN(name)
@@ -219,7 +223,11 @@ def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
     p=subprocess.run(["rg","-n","--no-heading","-g","!node_modules",term,repo],capture_output=True,timeout=300)
     # rg exits 1 for "no matches", which is a real empty result, not a failure. Anything
     # above that is a broken run and the case is dropped rather than counted as a miss.
-    if p.returncode > 1:
+    # rg exits 1 for "no matches", which is a real empty result. Anything ABOVE that is a
+    # broken run -- and anything BELOW zero is a signal death (SIGKILL is -9), which the
+    # original `> 1` guard let through as a valid run with empty output, scoring a killed
+    # process as a legitimate miss. A timeout or OOM would have silently become evidence.
+    if p.returncode < 0 or p.returncode > 1:
         return 0, False, False, False
     out=p.stdout
     loc, dec = score(out, repo, name, target_file, tgt_lo, tgt_hi)
@@ -232,6 +240,7 @@ def graph_arm(binary,repo,query,name,target_file,budget,tgt_lo=0,tgt_hi=0):
     p=subprocess.run([binary,"query","--repo",repo,"--query",query,"--format","agent",
                       "--max-context-bytes",str(budget),"--no-cache"],
                      capture_output=True,timeout=900)
+    # != 0 already covers signal death here (negative codes), unlike the grep guards above.
     if p.returncode != 0:
         return 0, False, False, False
     out=p.stdout
