@@ -1465,6 +1465,31 @@ const completeMarker = "[complete]"
 // Rejecting unit-elided is redundant against today's producer, which never pairs it with
 // complete-symbol. It is kept because the failure is silent and reaches users: if the two ever do
 // co-occur, the safe reading is the pessimistic one.
+// renderedBodyIsTransformed reports whether terminal-safe escaping will rewrite this body on
+// the way out, which makes the no-follow-up promise false even when the RANGE is whole.
+//
+// Found by a peer reviewer, not by me, on a body holding a DEL byte: the structural range was
+// the entire symbol and [complete] was printed, while the rendered text carried a literal
+// backslash-x7f where the source has 0x7f. An agent that trusts the marker and reuses those
+// bytes has changed the program. Structural completeness and byte fidelity are two different
+// promises and the marker was only ever checking the first.
+//
+// The escaping STAYS -- emitting raw control bytes to a terminal is the thing termsafe exists
+// to prevent, and a correctness marker must not be fixed by weakening a security boundary.
+// Withholding the promise is the right direction: the agent reads the file, which is exactly
+// what it would have done without the marker.
+//
+// This is the same rule the VERIFY deriver already applies, for the same reason -- termsafe's
+// own EscapesLine doc records that a command "must be runnable exactly as printed and so must
+// not be emitted at all when display would rewrite it". A body promised as reusable is under
+// that identical obligation. termsafe.Bytes is the right probe rather than EscapesLine: a
+// snippet is rendered through keepLayout, where a body's own line structure is legitimate and
+// is deliberately NOT escaped, so the line-mode predicate would withhold the marker on
+// ordinary multi-line source.
+func renderedBodyIsTransformed(body string) bool {
+	return string(termsafe.Bytes([]byte(body))) != body
+}
+
 func searchResultNeedsNoFollowUpRead(result sem.SearchResult) bool {
 	complete := false
 	for _, signal := range result.Signals {
@@ -2422,7 +2447,7 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 	// no marker, which costs ~40 bytes and tells the truth. Dropping to a locator is not a
 	// loss here: an abbreviated complete symbol was never going to remove the read that
 	// justifies its cost.
-	if searchResultNeedsNoFollowUpRead(result) {
+	if searchResultNeedsNoFollowUpRead(result) && !renderedBodyIsTransformed(result.Snippet) {
 		text := strings.Join(lines, "\n")
 		startLine, endLine := snippetStart, snippetStart+len(lines)-1
 		for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag, scored, completeMarker) {

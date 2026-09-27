@@ -2,9 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 // PRODUCER-TO-RENDERER SWEEP.
@@ -72,30 +75,75 @@ func TestMarkerTruthfulnessThroughTheRealSearchPath(t *testing.T) {
 			if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, args); err != nil {
 				t.Fatalf("flags=%v budget=%d: %v", flags, budget, err)
 			}
-			rendered := out.String()
-			if !strings.Contains(rendered, completeMarker) {
-				continue // nothing promised, nothing to verify
-			}
-
-			// A marker was printed. The huge callable cannot be rendered whole at any of
-			// these budgets, so if its symbol is the one carrying the marker the promise
-			// is false. Detect by the closing brace of the 520-branch body: a whole
-			// rendering necessarily ends with `return false` then `}`.
-			for _, line := range strings.Split(rendered, "\n") {
-				if !strings.Contains(line, completeMarker) || !strings.Contains(line, "ApplyRetryBudget") {
-					continue
-				}
-				if !strings.Contains(rendered, "\treturn false\n}") {
-					t.Errorf("flags=%v budget=%d: ApplyRetryBudget marked %s but its body is not whole\n%s",
-						flags, budget, completeMarker, rendered)
+			// HARD FALSIFIER, tightened after peer review. The first version grepped the
+			// WHOLE output for a closing brace, so a truncated middle with an intact tail --
+			// or an unrelated sibling symbol -- passed it. That is not a falsifier, it is a
+			// coincidence detector.
+			//
+			// ApplyRetryBudget is 520 branches, far past searchFullUnitMaxLines (400). The
+			// safety cap can NEVER return it whole at any budget here, so the promise is
+			// false unconditionally: assert the marker never appears on ITS OWN header line,
+			// rather than reasoning about what the body contains.
+			for _, line := range strings.Split(out.String(), "\n") {
+				if strings.Contains(line, "ApplyRetryBudget") && strings.Contains(line, completeMarker) {
+					t.Errorf("flags=%v budget=%d: a callable the safety cap cannot return whole was marked %s\n  %s",
+						flags, budget, completeMarker, strings.TrimSpace(line))
 				}
 			}
 		}
 	}
 }
 
-// The other half, and the reason the sweep above is not vacuous: the marker must still be
-// emitted for a symbol that genuinely is whole. Without this, deleting the feature would
+// Marker ABSENCE proves nothing on its own -- a renderer that never marks anything passes
+// the sweep above trivially. This positively establishes, through the public JSON surface,
+// that the clipped shape the sweep targets is actually produced by the fixture.
+func TestTheHugeFixtureActuallyProducesAClippedForcedUnit(t *testing.T) {
+	t.Parallel()
+	repo := hugeUnitRepo(t)
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
+		"query", "--repo", repo, "--query", "retry budget decides whether a request may be retried",
+		"--format", "json", "--full-unit-top", "1", "--no-cache",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		Results []struct {
+			SymbolName string   `json:"symbol_name"`
+			Signals    []string `json:"signals"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, r := range resp.Results {
+		if r.SymbolName != "ApplyRetryBudget" {
+			continue
+		}
+		var full, elided, complete bool
+		for _, s := range r.Signals {
+			switch s {
+			case sem.FullUnitSignal:
+				full = true
+			case sem.FullUnitElidedSignal:
+				elided = true
+			case sem.CompleteSymbolSignal:
+				complete = true
+			}
+		}
+		if !full || !elided {
+			t.Errorf("fixture did not produce a clipped forced unit: signals=%v -- the sweep is testing a shape that does not occur", r.Signals)
+		}
+		if complete {
+			t.Errorf("producer marked a clipped unit complete-symbol: signals=%v", r.Signals)
+		}
+		return
+	}
+	t.Fatal("ApplyRetryBudget not returned under --full-unit-top 1; the sweep fixture is not exercising the forced path")
+}
+
+// The other half, and the reason the sweep is not vacuous: the marker must still be emitted
+// for a symbol that genuinely is whole. Without this, deleting the feature entirely would
 // pass every falsifier in this file.
 func TestTheRealSearchPathStillMarksAGenuinelyCompleteSymbol(t *testing.T) {
 	t.Parallel()
