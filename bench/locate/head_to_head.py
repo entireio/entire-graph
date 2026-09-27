@@ -142,12 +142,18 @@ def build_cases(binary, repo, want, seed=7):
         doc=doc_comment(src_path, d["start_line"], lang)
         dlines=doc_comment_lines(src_path, d["start_line"], lang)
         if len(WORD.findall(doc))<10: continue
-        q=re.sub(re.escape(name)," ",doc,flags=re.I)
-        for part in re.findall(r'[A-Z]?[a-z]{3,}',name):
-            q=re.sub(r'\b'+re.escape(part)+r'\b'," ",q,flags=re.I)
-        q=" ".join(q.split())
+        # THE CANONICAL QUERY. One byte-identical string handed to every arm.
+        #
+        # Peer ruling, after this benchmark was caught giving the grep baseline the original
+        # doc while the graph got a stripped one: every evaluated arm receives IDENTICAL
+        # stripped bytes, and an arm may derive its search FROM THOSE BYTES ONLY -- never from
+        # the original doc, the target name, its span, or a hit. Line breaks are preserved
+        # because a lexical arm needs to know where contiguous source text ends, and they are
+        # preserved IDENTICALLY for everyone rather than handed to one arm as side knowledge.
+        q = "\n".join(strip_name(l, name).replace("\x00", " ").rstrip() for l in dlines)
+        q = "\n".join(l for l in (x.strip() for x in q.splitlines()) if l)[:240]
         if len(WORD.findall(q))<8: continue
-        out.append((q[:240],name,d["file_path"],int(d.get("start_line") or 0),int(d.get("end_line") or 0),dlines))
+        out.append((q,name,d["file_path"],int(d.get("start_line") or 0),int(d.get("end_line") or 0)))
     random.Random(seed).shuffle(cases:=out)
     return cases[:want]
 
@@ -229,24 +235,28 @@ def strip_name(text, name):
         t = re.sub(r'\b' + re.escape(part) + r'\b', "\x00", t, flags=re.I)
     return t
 
-def phrase_for(dlines, name, min_words=3):
-    """The longest run of consecutive words that (a) survives name-stripping and (b) lies
-    within ONE physical comment line -- therefore occurs verbatim in the file.
+def phrase_for(q, min_words=3):
+    """The longest run of consecutive words inside ONE LINE OF THE CANONICAL QUERY.
 
-    Both conditions were missing before. The arm dropped words shorter than four characters
-    and space-joined the survivors, so `rg -F "decides whether request retried"` went looking
-    for a string no file contains."""
+    Derived from q alone -- the same bytes every other arm receives -- which is what makes
+    this a fair baseline rather than a second channel into the source. Because q's lines are
+    the doc comment's physical lines with the name blanked, a surviving run within one of them
+    is still verbatim source text, so `rg -F` can match it.
+
+    Two defects this replaces: the arm dropped words shorter than four characters and joined
+    the survivors with spaces, across a comment whose lines had ALREADY been space-joined, so
+    it searched for a fixed string occurring in no file; and it read those lines from the
+    original doc, which the graph never sees."""
     best = ""
-    for line in dlines:
-        for seg in strip_name(line, name).split("\x00"):
-            seg = seg.strip()
-            # Interior whitespace must be preserved exactly: the segment is quoted to rg as a
-            # fixed string and has to match the file byte for byte.
+    for line in q.splitlines():
+        for seg in (x.strip() for x in line.split("  ")):
+            # A run of blanks is where the name was removed, so text either side of it is not
+            # contiguous in the file. Interior single spaces must survive byte-exact.
             if len(seg.split()) >= min_words and len(seg) > len(best):
                 best = seg
     return best
 
-def phrase_arm(repo, dlines, name, target_file, lo, hi, follow=12):
+def phrase_arm(repo, q, name, target_file, lo, hi, follow=12):
     """THE STRONG GREP BASELINE. Search the author's own description, then read what follows.
 
     Added after peer review destroyed the previous framing: the description IS IN THE FILE,
@@ -258,7 +268,8 @@ def phrase_arm(repo, dlines, name, target_file, lo, hi, follow=12):
 
       1. It was handed the UNSTRIPPED doc, which usually contains the target name, while the
          graph got a name-stripped query. Different inputs -- the exact asymmetry this
-         benchmark's fairness rule forbids. It now gets the same stripped text.
+         benchmark's fairness rule forbids. It now receives the byte-identical canonical q,
+         and derives its phrase from that alone.
       2. Its phrase was non-adjacent words joined by spaces, across a space-joined multi-line
          comment. As a fixed string that matches nothing. See phrase_for.
       3. It scored itself, and set locator and declaration from ONE condition, so the two
@@ -267,7 +278,7 @@ def phrase_arm(repo, dlines, name, target_file, lo, hi, follow=12):
          property of this function. It now returns evidence and score() judges it, exactly as
          for every other arm -- which is what makes the shared-scoring claim true.
     """
-    phrase = phrase_for(dlines, name)
+    phrase = phrase_for(q)
     if not phrase:
         return 0, False, False, True, b""
     p = subprocess.run(["rg", "-n", "--no-heading", "-F", "-g", "!node_modules", phrase, repo],
@@ -349,61 +360,77 @@ def _mkrepo(files):
         with open(fp, "w") as fh: fh.write(body)
     return d
 
+def _canonical_q(dlines, name):
+    """Exactly what build_cases produces, so the tests exercise the real query bytes."""
+    q = "\n".join(strip_name(l, name).replace("\x00", " ").rstrip() for l in dlines)
+    return "\n".join(l for l in (x.strip() for x in q.splitlines()) if l)[:240]
+
 def _selftest():
     fails = []
     def ck(cond, label, detail=""):
         print(("  ok   " if cond else "  FAIL ") + label + (("  <- " + detail) if detail and not cond else ""))
         if not cond: fails.append(label)
 
-    # 1. CONTIGUITY. The phrase must occur verbatim inside ONE physical line. The old arm
-    #    dropped words under four characters and space-joined the rest, so it searched for a
-    #    string present in no file.
     dl = ["ApplyRetryBudget decides whether a request may be", "retried after a transient failure."]
-    ph = phrase_for(dl, "ApplyRetryBudget")
-    ck(any(ph in l for l in dl) and ph, "phrase is a verbatim substring of one comment line", repr(ph))
+    q = _canonical_q(dl, "ApplyRetryBudget")
+
+    # 0. EQUAL INPUTS. The ruling this instrument broke: every arm gets the same bytes and may
+    #    derive its search from those bytes only. phrase_for's signature is the structural
+    #    proof -- it cannot reach the name, the doc, the span or a hit, because it is not
+    #    given them.
+    import inspect
+    ck(list(inspect.signature(phrase_for).parameters) == ["q", "min_words"],
+       "the phrase arm can see only the canonical query", str(inspect.signature(phrase_for)))
+    ck(name_absent := not any(p_.lower() in q.lower() for p_ in ("apply", "retry", "budget")),
+       "the canonical query carries no part of the target name", repr(q))
+
+    # 1. CONTIGUITY. The phrase must occur verbatim in a source line. The old arm dropped words
+    #    under four characters and space-joined the rest, so it searched for a string in no file.
+    ph = phrase_for(q)
+    ck(ph and any(ph in l for l in dl), "phrase is a verbatim substring of one source line", repr(ph))
     old = " ".join([w for w in (" ".join(dl)).split() if len(w) > 3][:4])
     ck(not any(old in l for l in dl), "the OLD construction was indeed unmatchable", repr(old))
 
-    # 2. NO ORACLE. The phrase must not carry the target name or its case-split parts; the
-    #    graph is asked with those stripped.
-    ck("Retry" not in ph and "Budget" not in ph and "Apply" not in ph,
-       "phrase carries no part of the target name", repr(ph))
-
-    # 3. THE TAUTOLOGY. locator and declaration came from one condition, so they could never
-    #    differ -- and I read that forced equality off the table as a mechanism. Here the
-    #    phrase sits far above the declaration, so a 12-line window locates without ever
-    #    showing it.
-    far = "package p\n" + "// decides whether a request may be\n" + ("//\n" * 40) + \
+    # 2. THE TAUTOLOGY. locator and declaration came from one condition, so they could never
+    #    differ -- and I read that forced equality off the table and published it as the
+    #    mechanism. Here the phrase sits far above the declaration, so a bounded window
+    #    locates without ever showing it.
+    far = "package p\n// decides whether a request may be\n" + ("//\n" * 40) + \
           "// tail\nfunc ApplyRetryBudget() bool { return true }\n"
     r = _mkrepo({"a.go": far})
     n = far[:far.index("func ApplyRetryBudget")].count("\n") + 1
-    c, l, d, ok, _ = phrase_arm(r, ["decides whether a request may be"], "ApplyRetryBudget", "a.go", 2, n)
+    _, l, d, ok, _ = phrase_arm(r, _canonical_q(["decides whether a request may be"], "ApplyRetryBudget"),
+                                "ApplyRetryBudget", "a.go", 2, n)
     ck(ok and l and not d, "locator TRUE and declaration FALSE is now reachable", f"loc={l} dec={d}")
 
-    # 4. SPAN BINDING. A same-name declaration in the right file but outside the registered
-    #    span was credited as a declaration hit.
+    # 3. SPAN BINDING. A same-name declaration in the right file but outside the registered
+    #    span was credited.
     two = "package p\n// decides whether a request may be\nfunc ApplyRetryBudget() bool { return true }\n" \
           + ("\n" * 30) + "func ApplyRetryBudget2() bool { return false }\n"
     r2 = _mkrepo({"b.go": two})
-    _, l2, d2, ok2, _ = phrase_arm(r2, ["decides whether a request may be"], "ApplyRetryBudget", "b.go", 34, 40)
+    _, _, d2, ok2, _ = phrase_arm(r2, _canonical_q(["decides whether a request may be"], "ApplyRetryBudget"),
+                                  "ApplyRetryBudget", "b.go", 34, 40)
     ck(ok2 and not d2, "declaration outside the registered span is refused", f"dec={d2}")
 
-    # 5. BYTES, not characters. The old cost added len() of a decoded str to len() of bytes.
-    uni = "package p\n// decides whether a request may be\nfunc ApplyRetryBudget() bool { return \"\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\" != \"\" }\n"
-    r3 = _mkrepo({"c.go": uni})
-    c3, _, _, _, _ = phrase_arm(r3, ["decides whether a request may be"], "ApplyRetryBudget", "c.go", 3, 3)
-    plain = uni.replace("\u00e9", "x")
-    r4 = _mkrepo({"c.go": plain})
-    c4, _, _, _, _ = phrase_arm(r4, ["decides whether a request may be"], "ApplyRetryBudget", "c.go", 3, 3)
+    # 4. BYTES, not characters. The old cost added len() of a decoded str to len() of bytes.
+    acc = "package p\n// decides whether a request may be\nfunc ApplyRetryBudget() bool { return \"" + ("\u00e9" * 10) + "\" != \"\" }\n"
+    qq = _canonical_q(["decides whether a request may be"], "ApplyRetryBudget")
+    c3, _, _, _, _ = phrase_arm(_mkrepo({"c.go": acc}), qq, "ApplyRetryBudget", "c.go", 3, 3)
+    c4, _, _, _, _ = phrase_arm(_mkrepo({"c.go": acc.replace("\u00e9", "x")}), qq, "ApplyRetryBudget", "c.go", 3, 3)
     ck(c3 > c4, "multi-byte source costs more than its ASCII twin", f"{c3} vs {c4}")
 
-    # 6. SHARED SCORING. The footer claimed every arm is scored identically while this arm
-    #    scored itself. Prove the call actually routes through score().
-    import inspect
+    # 5. SHARED SCORING. The footer claimed identical scoring while this arm scored itself.
     ck("score(" in inspect.getsource(phrase_arm), "phrase arm delegates to the shared scorer")
 
-    print(("\nALL PHRASE-ARM FALSIFIERS PASS" if not fails else "\nFAILURES: " + ", ".join(fails)))
+    # 6. A removed name BREAKS contiguity rather than being silently bridged: text either side
+    #    of the hole is not adjacent in the file, and joining it would recreate defect 1.
+    mid = _canonical_q(["the ApplyRetryBudget helper decides whether a request may be retried"], "ApplyRetryBudget")
+    pm = phrase_for(mid)
+    ck("the" not in pm.split(), "text across a stripped name is not joined into one phrase", repr(pm))
+
+    print("\nALL PHRASE-ARM FALSIFIERS PASS" if not fails else "\nFAILURES: " + ", ".join(fails))
     return 1 if fails else 0
+
 
 if __name__=="__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--test":
@@ -451,11 +478,11 @@ if __name__=="__main__":
     tg=tp=to=0; k=0; dropped=0
     gvals=[]; pvals=[]; ovals=[]; svals=[]
     gL=gD=pL=pD=oL=oD=sL=sD=0
-    for q,name,fp,s_lo,s_hi,dlines in cases:
+    for q,name,fp,s_lo,s_hi in cases:
         g,g_l,g_d,gok,g_raw=graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi)
         pr,p_l,p_d,pok,p_raw=grep_arm(repo,q,name,fp,False,s_lo,s_hi)
         oc,o_l,o_d,ook,o_raw=grep_arm(repo,q,name,fp,True,s_lo,s_hi)
-        sc,s_l,s_d,sok,s_raw=phrase_arm(repo,dlines,name,fp,s_lo,s_hi)
+        sc,s_l,s_d,sok,s_raw=phrase_arm(repo,q,name,fp,s_lo,s_hi)
         if not (gok and pok and ook and sok):
             dropped+=1      # a failed arm is excluded, never scored as a miss
             continue
