@@ -31,20 +31,47 @@ import json, glob, os, re, sys, shlex, hashlib, collections
 RANK = re.compile(r'^\s*\d+\.\s+\S+?:\d+', re.M)
 HEX40 = re.compile(r'^[0-9a-f]{40}$')
 VERBS = {"query", "search", "neighbors", "impact", "def", "explain"}
-# flags that bind a call to a specific tree; --head means "committed tree", which is an
-# identity only if the transcript ALSO records which commit that was.
-REV_FLAGS = {"--rev", "--revision", "--commit", "--at"}
 SPLIT = re.compile(r'\|\||&&|[|;&\n]')
+
+
+def _mask_quoted(command):
+    """Blank out quoted spans so separators INSIDE them cannot create a fake statement.
+
+    Peer review fixture: `echo 'graph search; entire graph query --repo .'` split on the
+    quoted semicolon and the tail became an "invocation". Length is preserved so offsets
+    stay valid for the caller.
+    """
+    out, quote = [], None
+    for ch in command or "":
+        if quote:
+            out.append(" " if ch != quote else ch)
+            if ch == quote: quote = None
+        elif ch in "'\"":
+            quote = ch; out.append(ch)
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def stages(command):
     """Leading stage of each statement -- the only position a real invocation occupies."""
     out = []
-    for part in SPLIT.split(command or ""):
+    masked = _mask_quoted(command or "")
+    for lo, hi in _spans(masked):
+        part = (command or "")[lo:hi]
         part = part.strip()
         if part:
             out.append(part)
     return out
+
+
+def _spans(masked):
+    """Statement boundaries computed on the MASKED text, applied to the original."""
+    spans, start = [], 0
+    for m in SPLIT.finditer(masked):
+        spans.append((start, m.start())); start = m.end()
+    spans.append((start, len(masked)))
+    return spans
 
 
 def argv_of(stage):
@@ -86,19 +113,45 @@ def flag_value(argv, name):
 
 
 def recorded_source_identity(argv):
-    """A revision BOUND to the tree by a flag. Not any 40-hex in the line. Fixture: query case."""
-    for f in REV_FLAGS:
-        v = flag_value(argv, f)
-        if v and HEX40.match(v.strip()):
-            return True
+    """Can this recorded call be re-run against the tree it originally saw? No -- ever.
+
+    The first version looked for --rev/--revision/--commit/--at. Peer review pointed out that
+    NONE OF THOSE FLAGS EXIST, and the binary confirms it: each is rejected with "query does
+    not accept --rev". A command carrying one never ran, so treating it as evidence of a bound
+    revision was doubly wrong.
+
+    The only tree selector the CLI has is --head, and it says "the committed tree" without
+    recording WHICH commit that was. So a transcript cannot carry a source identity at all,
+    and full-execution replay is unreachable BY CONSTRUCTION rather than merely absent from
+    this corpus. That is the stronger and more useful statement: it will not be fixed by
+    collecting more transcripts, only by the CLI recording the resolved revision in its output.
+    """
     return False
 
 
 def payload_has_structure(body):
-    """Several ranked entries or a JSON envelope. One rank-shaped line is not an artifact."""
+    """Is this a graph payload we could re-render, or merely rank-SHAPED text?
+
+    Peer review defeated the first version with `printf '1. a.go:1\n2. b.go:2'` and with
+    `{"results":[{"rank":1}]}` -- both passed a check that only counted shapes. A payload we
+    can re-render has to carry the fields a renderer consumes, so:
+      text  >=2 ranked entries that each name a plausible source path AND a line number
+      json  a results array whose first entry carries file_path and a line
+    An explicitly truncated payload is refused outright: it is not the artifact the call
+    produced, so re-rendering it compares against something that never existed.
+    """
     if not body:
         return False
-    if len(RANK.findall(body)) >= 2:
+    if "[truncated" in body or "... (truncated" in body or "output truncated" in body:
+        return False
+    hits = [m for m in RANK.finditer(body)]
+    good = 0
+    for m in hits:
+        line = body[m.start():body.find("\n", m.end()) if body.find("\n", m.end()) > 0 else len(body)]
+        path = line.split(".", 1)[1].strip().split(":")[0] if "." in line else ""
+        if "/" in path or "." in os.path.basename(path or ""):
+            good += 1
+    if good >= 2:
         return True
     stripped = body.lstrip()
     if stripped.startswith("{"):
@@ -106,7 +159,10 @@ def payload_has_structure(body):
             d = json.loads(stripped)
         except Exception:
             return False
-        return isinstance(d, dict) and isinstance(d.get("results"), list) and bool(d["results"])
+        rs = d.get("results") if isinstance(d, dict) else None
+        if not isinstance(rs, list) or not rs or not isinstance(rs[0], dict):
+            return False
+        return bool(rs[0].get("file_path")) and rs[0].get("start_line") is not None
     return False
 
 
@@ -164,7 +220,9 @@ def qualify(root):
             if not inv:
                 continue
             _, argv = inv
-            body = result_text(res.get(uid, {}))
+            rblock = res.get(uid, {})
+            # An errored result is not an artifact: it records a failure, not a payload.
+            body = "" if rblock.get("is_error") else result_text(rblock)
             if recorded_source_identity(argv):
                 tiers["full-execution"] += 1
             elif payload_has_structure(body):
@@ -207,12 +265,54 @@ def tests():
           recorded_source_identity(argv_of("entire graph query --query " + "a" * 40)), False)
     check("40hex in query text is not a revision",
           recorded_source_identity(argv_of("entire graph query --query " + "0" * 40)), False)
-    check("bound revision counts",
-          recorded_source_identity(argv_of("entire graph query --rev " + "a" * 40)), True)
+    # Superseded, and the correction is the finding: --rev/--revision/--commit/--at DO NOT
+    # EXIST. The binary rejects each with "query does not accept --rev", so a command carrying
+    # one never ran. No CLI flag binds a call to a revision, which makes full-execution replay
+    # unreachable by construction rather than merely unobserved.
+    check("phantom --rev does not count",
+          recorded_source_identity(argv_of("entire graph query --rev " + "a" * 40)), False)
+    check("--head alone is not an identity",
+          recorded_source_identity(argv_of("entire graph query --head --repo .")), False)
     check("one rank line is not an artifact", payload_has_structure("1. a.go:1 foo s=1"), False)
     check("two rank lines are", payload_has_structure("1. a.go:1 foo\n2. b.go:2 bar"), True)
-    check("json envelope is", payload_has_structure('{"results":[{"rank":1}]}'), True)
+    # Superseded: a results array whose entries carry no file_path/start_line is rank-SHAPED,
+    # not re-renderable. The stricter `real json accepted` / `bare rank json refused` pair below
+    # replaces this, and the two directly contradicted until this one was corrected.
+    check("json envelope with real fields is",
+          payload_has_structure('{"results":[{"rank":1,"file_path":"a.go","start_line":1}]}'), True)
     check("empty json envelope is not", payload_has_structure('{"results":[]}'), False)
+    # END-TO-END, because the first version's fixtures only ever called the small helpers and
+    # never qualify/tool_events/result_text -- so a corpus-level regression could not fail it.
+    import tempfile, json as _j
+    with tempfile.TemporaryDirectory() as td:
+        proj = os.path.join(td, "proj"); os.makedirs(proj)
+        def rec(t, **kw):
+            return _j.dumps({"message": {"content": [dict(type=t, **kw)]}})
+        rows = [
+            rec("tool_use", id="u1", name="Bash", input={"command": "echo 'graph query'"}),
+            rec("tool_use", id="u2", name="Bash", input={"command": "entire graph query --repo ."}),
+            rec("tool_result", tool_use_id="u2",
+                content="1. a/b.go:10 Foo s=1\n2. c/d.go:20 Bar s=2\n"),
+            rec("tool_use", id="u3", name="Bash", input={"command": "entire graph query --repo ."}),
+            rec("tool_result", tool_use_id="u3", is_error=True, content="boom"),
+            '{"message": {"content": "not-a-list"}}',
+            "{ malformed",
+        ]
+        open(os.path.join(proj, "s.jsonl"), "w").write("\n".join(rows))
+        tiers, _, nfiles = qualify(td)
+        check("e2e: files discovered", nfiles, 1)
+        check("e2e: echo excluded, 2 real calls", sum(tiers.values()), 2)
+        check("e2e: frozen-render", tiers["frozen-render"], 1)
+        check("e2e: errored result not frozen", tiers["neither"], 1)
+        check("e2e: full-execution unreachable", tiers["full-execution"], 0)
+        check("result_text on list content",
+              result_text({"content": [{"text": "x"}, {"text": "y"}]}), "x y")
+    check("printf ranks refused", payload_has_structure("1. one\n2. two"), False)
+    check("truncated payload refused",
+          payload_has_structure("1. a/b.go:1 F\n2. c/d.go:2 G\n[truncated]"), False)
+    check("bare rank json refused", payload_has_structure('{"results":[{"rank":1}]}'), False)
+    check("real json accepted",
+          payload_has_structure('{"results":[{"rank":1,"file_path":"a.go","start_line":3}]}'), True)
     print("  ALL PASS" if ok else "  FAILURES ABOVE")
     return ok
 
