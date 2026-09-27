@@ -34,6 +34,31 @@ VERBS = {"query", "search", "neighbors", "impact", "def", "explain"}
 SPLIT = re.compile(r'\|\||&&|[|;&\n]')
 
 
+def _mask_shell(command):
+    r"""Blank quoted spans, escaped characters and trailing comments.
+
+    Peer review defeated the quote-only version with `# entire graph query` inside a comment
+    and with `\;` escaped separators. Length is preserved so offsets stay valid.
+    """
+    out, quote, esc = [], None, False
+    for ch in command or "":
+        if esc:
+            out.append(" "); esc = False; continue
+        if ch == "\\" and not quote:
+            out.append(" "); esc = True; continue
+        if quote:
+            out.append(" " if ch != quote else ch)
+            if ch == quote: quote = None
+            continue
+        if ch == "#":
+            out.append(" " * (len(command) - len(out)))
+            break
+        if ch in "'\"":
+            quote = ch; out.append(ch); continue
+        out.append(ch)
+    return "".join(out).ljust(len(command or ""))
+
+
 def _mask_quoted(command):
     """Blank out quoted spans so separators INSIDE them cannot create a fake statement.
 
@@ -56,7 +81,7 @@ def _mask_quoted(command):
 def stages(command):
     """Leading stage of each statement -- the only position a real invocation occupies."""
     out = []
-    masked = _mask_quoted(command or "")
+    masked = _mask_shell(command or "")
     for lo, hi in _spans(masked):
         part = (command or "")[lo:hi]
         part = part.strip()
@@ -166,7 +191,10 @@ def payload_has_structure(body):
     for m in hits:
         line = body[m.start():body.find("\n", m.end()) if body.find("\n", m.end()) > 0 else len(body)]
         path = line.split(".", 1)[1].strip().split(":")[0] if "." in line else ""
-        if "/" in path or "." in os.path.basename(path or ""):
+        base = os.path.basename(path or "")
+        # a real source path has a directory or an extension; `1. one` and `printf`-shaped
+        # text have neither, and peer review passed both through the old check
+        if ("/" in path and "." in base) or re.match(r"^[\w.-]+\.[A-Za-z]{1,5}$", base):
             good += 1
     if good >= 2:
         return True
@@ -209,11 +237,15 @@ def tool_events(path):
 
 
 def result_text(block):
+    if not isinstance(block, dict):
+        return ""
     con = block.get("content")
     if isinstance(con, str):
         return con
     if isinstance(con, list):
-        return " ".join(x.get("text", "") for x in con if isinstance(x, dict))
+        # join with newline, not space: space-joined blocks merge adjacent rank lines into
+        # one and the ranked-entry count silently halves
+        return "\n".join(str(x.get("text", "")) for x in con if isinstance(x, dict))
     return ""
 
 
@@ -326,9 +358,20 @@ def tests():
         check("e2e: frozen-render", tiers["frozen-render"], 1)
         check("e2e: errored result not frozen", tiers["neither"], 1)
         check("e2e: full-execution unreachable", tiers["full-execution"], 0)
+        # Corrected, not extended: this asserted a SPACE join, which merges adjacent rank
+        # lines into one and silently halves the ranked-entry count that frozen-render
+        # depends on. The fixture was pinning the defect.
         check("result_text on list content",
-              result_text({"content": [{"text": "x"}, {"text": "y"}]}), "x y")
+              result_text({"content": [{"text": "x"}, {"text": "y"}]}), "x\ny")
     check("printf ranks refused", payload_has_structure("1. one\n2. two"), False)
+    check("shell comment is not an invocation",
+          graph_invocation("# entire graph query --repo ."), None)
+    check("escaped separator makes no statement",
+          graph_invocation("echo a\\; entire graph query --repo ."), None)
+    check("malformed block does not crash", result_text("not-a-dict"), "")
+    check("list content joins on newline",
+          result_text({"content": [{"text": "1. a/b.go:1 F"}, {"text": "2. c/d.go:2 G"}]}).count("\n"), 1)
+    check("bare words are not source paths", payload_has_structure("1. alpha\n2. beta"), False)
     check("truncated payload refused",
           payload_has_structure("1. a/b.go:1 F\n2. c/d.go:2 G\n[truncated]"), False)
     check("bare rank json refused", payload_has_structure('{"results":[{"rank":1}]}'), False)
