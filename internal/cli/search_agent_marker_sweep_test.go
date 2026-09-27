@@ -96,6 +96,66 @@ func TestMarkerTruthfulnessThroughTheRealSearchPath(t *testing.T) {
 	}
 }
 
+func TestAlreadyCompleteProducerEmitsExactCertifiedBody(t *testing.T) {
+	t.Parallel()
+	repo := hugeUnitRepo(t)
+	content, err := os.ReadFile(filepath.Join(repo, "small/retry.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBody := strings.Join(strings.Split(string(content), "\n")[1:6], "\n")
+	for _, budget := range []int{4096, 8192, 24576} {
+		t.Run(fmt.Sprint(budget), func(t *testing.T) {
+			query := []string{"query", "--repo", repo, "--query", "reports whether the retry budget is spent", "--no-cache", "--max-context-bytes", fmt.Sprint(budget)}
+			var jsonOut bytes.Buffer
+			if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &jsonOut}, append(query, "--format", "json")); err != nil {
+				t.Fatal(err)
+			}
+			var response sem.SearchResponse
+			if err := json.Unmarshal(jsonOut.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, result := range response.Results {
+				if result.FilePath != "small/retry.go" || result.SymbolName != "RetryBudgetExhausted" {
+					continue
+				}
+				found = true
+				if result.SymbolID == "" || result.Kind != "function" || result.SymbolStartLine != 4 || result.SymbolEndLine != 6 || result.SnippetStartLine != 2 || result.SnippetEndLine != 6 || result.Snippet != wantBody {
+					t.Fatalf("target identity, bounds or exact source changed: %+v", result)
+				}
+				if !searchResultNeedsNoFollowUpRead(result) {
+					t.Fatalf("whole target is not certified: %v", result.Signals)
+				}
+			}
+			if !found {
+				t.Fatal("whole target not returned")
+			}
+			if response.Stats.CompleteSymbols != 1 {
+				t.Fatalf("complete-symbol count=%d, want exactly the small callable", response.Stats.CompleteSymbols)
+			}
+			var out bytes.Buffer
+			if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, append(query, "--format", "agent")); err != nil {
+				t.Fatal(err)
+			}
+			if out.Len() > budget {
+				t.Fatalf("agent bytes=%d exceed budget=%d", out.Len(), budget)
+			}
+			// Require the marker and the exact body on THIS target's block, not an
+			// unrelated complete result somewhere else in the payload.
+			markedTarget := false
+			for _, line := range strings.Split(out.String(), "\n") {
+				if strings.Contains(line, "small/retry.go:2-6 RetryBudgetExhausted ") && strings.Contains(line, completeMarker) && strings.Contains(out.String(), line+"\n"+wantBody+"\n") {
+					markedTarget = true
+				}
+			}
+			if !markedTarget {
+				t.Fatalf("target's complete body/marker missing:\n%s", out.String())
+			}
+		})
+	}
+}
+
 // Marker ABSENCE proves nothing on its own -- a renderer that never marks anything passes
 // the sweep above trivially. This positively establishes, through the public JSON surface,
 // that the clipped shape the sweep targets is actually produced by the fixture.
@@ -191,66 +251,6 @@ func TestTheRealSearchPathStillMarksAGenuinelyCompleteSymbol(t *testing.T) {
 		// truncation. Reported over the peer channel with the failing test names.
 		t.Skipf("KNOWN GAP (producer): a whole callable rendered without %s; bounds-based fix reverted, see comment.\n%s",
 			completeMarker, rendered)
-	}
-}
-
-func TestAlreadyCompleteProducerEmitsExactCertifiedBody(t *testing.T) {
-	t.Parallel()
-	repo := hugeUnitRepo(t)
-	content, err := os.ReadFile(filepath.Join(repo, "small/retry.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantBody := strings.Join(strings.Split(string(content), "\n")[1:6], "\n")
-	for _, budget := range []int{4096, 8192, 24576} {
-		t.Run(fmt.Sprint(budget), func(t *testing.T) {
-			query := []string{"query", "--repo", repo, "--query", "reports whether the retry budget is spent", "--no-cache", "--max-context-bytes", fmt.Sprint(budget)}
-			var jsonOut bytes.Buffer
-			if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &jsonOut}, append(query, "--format", "json")); err != nil {
-				t.Fatal(err)
-			}
-			var response sem.SearchResponse
-			if err := json.Unmarshal(jsonOut.Bytes(), &response); err != nil {
-				t.Fatal(err)
-			}
-			found := false
-			for _, result := range response.Results {
-				if result.FilePath != "small/retry.go" || result.SymbolName != "RetryBudgetExhausted" {
-					continue
-				}
-				found = true
-				if result.SymbolID == "" || result.Kind != "function" || result.SymbolStartLine != 4 || result.SymbolEndLine != 6 || result.SnippetStartLine != 2 || result.SnippetEndLine != 6 || result.Snippet != wantBody {
-					t.Fatalf("target identity, bounds or exact source changed: %+v", result)
-				}
-				if !searchResultNeedsNoFollowUpRead(result) {
-					t.Fatalf("whole target is not certified: %v", result.Signals)
-				}
-			}
-			if !found {
-				t.Fatal("whole target not returned")
-			}
-			if response.Stats.CompleteSymbols != 1 {
-				t.Fatalf("complete-symbol count=%d, want exactly the small callable", response.Stats.CompleteSymbols)
-			}
-			var out bytes.Buffer
-			if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, append(query, "--format", "agent")); err != nil {
-				t.Fatal(err)
-			}
-			if out.Len() > budget {
-				t.Fatalf("agent bytes=%d exceed budget=%d", out.Len(), budget)
-			}
-			// Require the marker and the exact body on THIS target's block, not an
-			// unrelated complete result somewhere else in the payload.
-			markedTarget := false
-			for _, line := range strings.Split(out.String(), "\n") {
-				if strings.Contains(line, "small/retry.go:2-6 RetryBudgetExhausted ") && strings.Contains(line, completeMarker) && strings.Contains(out.String(), line+"\n"+wantBody+"\n") {
-					markedTarget = true
-				}
-			}
-			if !markedTarget {
-				t.Fatalf("target's complete body/marker missing:\n%s", out.String())
-			}
-		})
 	}
 }
 
