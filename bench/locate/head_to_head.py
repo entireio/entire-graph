@@ -799,6 +799,14 @@ def _selftest():
         ("6. internal/sem/target.go:40 loadCache s=9 resolve",    False, "the name in trailing metadata"),
         ("7. internal/sem/target.go:40 resolveRule s=9",          False, "a longer name sharing the prefix"),
         ("8. internal/sem/target.go:40 m.resolve s=9",            True,  "the target rendered as a method"),
+        # RANGED HEADERS. A fix-induced regression: tightening identity to the first field after
+        # the location exposed a parser that stopped at the range START, so `39-40 resolve` left
+        # `-40` as that field and the correct symbol was rejected in BOTH consumers.
+        ("9. internal/sem/target.go:39-40 resolve s=8 [focus:40]", True,  "ranged, bare name"),
+        ("10. internal/sem/target.go:39-40 m.resolve s=8",         True,  "ranged, qualified"),
+        ("11. internal/sem/target.go:39-40 loadCache s=9 resolve", False, "ranged, trailing mention"),
+        ("12. internal/sem/other.go:39-40 resolve s=8",            False, "ranged, wrong file"),
+        ("13. internal/sem/target.go:39-40 resolveRule s=9",       False, "ranged, longer name"),
     ):
         tf = "internal/resolve/target.go" if "internal/resolve" in line else "internal/sem/target.go"
         ck(_dcb.ranked_hit(line, "resolve", tf, "/r") is want, "sibling hit predicate: " + label)
@@ -816,6 +824,11 @@ def _selftest():
     ck(_bfz.ranked_hit("1. internal/sem/target.go:40 loadCache s=9 [focus:40]",
                        "resolve", "internal/sem/target.go", "/r") is False,
        "budget_falsifier's predicate refuses a caller in the right file")
+    # A RANGED case through the second consumer's binding too -- the regression hit both, so
+    # both have to be shown clear of it.
+    ck(_bfz.ranked_hit("1. internal/sem/target.go:39-40 resolve s=8.0 [focus:40]",
+                       "resolve", "internal/sem/target.go", "/r") is True,
+       "budget_falsifier's predicate accepts a RANGED header")
 
     # 13-16. THE RECEIPT VERDICT. Peer review's point was that receipts said PROVISIONAL
     #        forever and nothing finalised them, so a completed run and one killed halfway

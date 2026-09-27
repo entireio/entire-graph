@@ -18,7 +18,12 @@ Deterministic, free, read-only. Fixture revision is printed and must be clean.
 """
 import subprocess, sys, os, re, json, random, hashlib, collections
 
-RANK = re.compile(r'^\s*(\d+)\.\s+(\S+?):(\d+)')
+# The optional range END is consumed here, before the symbol token. Without it a real ranged
+# header `1. target.go:39-40 resolve s=8.0` left `-40` as the first field after the match, and
+# the identity check -- which is right to look at exactly that field -- rejected the correct
+# symbol in BOTH consumers. A fix-induced regression: tightening the identity check exposed a
+# parser that had always stopped early, because nothing downstream had cared until now.
+RANK = re.compile(r'^\s*(\d+)\.\s+(\S+?):(\d+)(?:-(\d+))?')
 WORD = re.compile(r'[A-Za-z]{3,}')
 
 def doc_comment(path, start_line):
