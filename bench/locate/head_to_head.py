@@ -29,7 +29,11 @@ Read-only. Fixture revision printed; must be clean.
 """
 import subprocess, sys, os, re, json, random, hashlib
 
-RANK = re.compile(r'^\s*(\d+)\.\s+(\S+?):(\d+)')
+# The END of a ranked header's range is captured, not just its start. A header reading
+# `file.go:142-143` was read as line 142 alone, so a target beginning at 143 scored a MISS even
+# though the rendered range contains it and the focus line is 143 -- found by an independent
+# receipt audit, one case in twenty.
+RANK = re.compile(r'^\s*(\d+)\.\s+(\S+?):(\d+)(?:-(\d+))?')
 WORD = re.compile(r'[A-Za-z]{3,}')
 
 STOP = set("""the and for that with this from into when what which whether such been were are
@@ -252,7 +256,11 @@ def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False, decl_te
             m = RANK.match(ln)
             if m:
                 ok, line = in_target(m.group(2), m.group(3))
-                current_is_target = ok and (not lo or lo <= line <= hi)
+                end = int(m.group(4)) if m.group(4) else line
+                # A RANGE OVERLAPS A SPAN; a start point does not. Testing only the start meant
+                # a header whose rendered range covers the target still scored a miss whenever
+                # the range began one line above it -- a doc comment, an annotation, a brace.
+                current_is_target = ok and (not lo or (line <= hi and end >= lo))
                 if current_is_target:
                     locator = True
                 # A HEADER IS NOT A DECLARATION. The header names the symbol, so for a target
@@ -611,6 +619,18 @@ def _selftest():
     ck(dok, "a phrase starting with a dash does not fail the arm", f"rc={dmeta.get('rc')}")
     ck("--" in dmeta.get("argv", []), "the pattern is passed after an option terminator")
     ck(dloc and ddec, "...and it still finds the declaration", f"loc={dloc} dec={ddec}")
+
+    # RANGE OVERLAP, with the negatives that keep it from becoming "anything nearby counts".
+    for header, want, label in (
+        (b"1. a.go:142-143 Sym s=9 [focus:143]\n", True,  "a range that starts one line before the span"),
+        (b"1. a.go:143 Sym s=9\n",                 True,  "a bare start line inside the span"),
+        (b"1. a.go:100-110 Sym s=9\n",             False, "a range entirely before the span"),
+        (b"1. a.go:130-142 Sym s=9\n",             False, "an adjacent function ending one line short"),
+        (b"1. a.go:160-170 Sym s=9\n",             False, "a range entirely after the span"),
+        (b"1. b.go:142-143 Sym s=9\n",             False, "the right range in the WRONG FILE"),
+    ):
+        gl, _ = score(header, "/repo", "Sym", "a.go", 143, 150, ranked_only=True)
+        ck(gl is want, "rank range: " + label, f"loc={gl}")
 
     # THE SIBLING BENCHMARKS' HIT PREDICATE, tested here because this is the suite the mutation
     # sweep runs. doccomment_bench and budget_falsifier matched the symbol name against the
