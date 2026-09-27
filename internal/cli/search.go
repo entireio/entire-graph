@@ -1443,7 +1443,8 @@ const completeMarker = "[complete]"
 // body diet) and wrong for "may the agent skip the file". Marking a window complete
 // would send the agent away holding a fragment it believes is whole, which is worse
 // than not marking anything at all.
-// It accepts complete-symbol ONLY, and rejects an elided unit outright.
+// searchResultNeedsNoFollowUpRead reports whether a result may be rendered with the
+// no-follow-up promise. It accepts complete-symbol ONLY, and rejects an elided unit outright.
 //
 // An earlier revision of this function also accepted full-unit, on the strength of
 // search_enclosure.go:779-781 ("full-unit and complete-symbol both assert that the reader is
