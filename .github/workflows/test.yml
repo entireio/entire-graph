@@ -320,6 +320,11 @@ jobs:
   # No windows-latest: the script targets /bin/sh.
   statusline:
     strategy:
+      # Without this, one platform's failure CANCELS the other, and a cancelled job is
+      # reported as a failure -- so a single flake on ubuntu presents as both platforms
+      # failing, which reads like a real cross-platform regression. It cost a full
+      # investigation of an innocent PR. Let both platforms finish and report.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
