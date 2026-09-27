@@ -1607,10 +1607,13 @@ func deriveSearchVerifySuiteComposer(dir string, evidence *searchVerifyEvidence)
 // searchVerifyPytestSections are the headings pytest itself reads configuration from, per file.
 // A bare mention of the word anywhere else in these files is not configuration.
 var searchVerifyPytestSections = map[string][]string{
-	"pytest.ini":     {"[pytest]"},
-	"tox.ini":        {"[pytest]"},
-	"setup.cfg":      {"[tool:pytest]"},
-	"pyproject.toml": {"[tool.pytest.ini_options]"},
+	"pytest.ini": {"[pytest]"},
+	"tox.ini":    {"[pytest]"},
+	"setup.cfg":  {"[tool:pytest]"},
+	// Both, per pytest's own documentation: [tool.pytest] is the native TOML form supported
+	// since pytest 9.0, [tool.pytest.ini_options] the INI-style form since 6.0. Narrowing to the
+	// second alone regressed every valid pytest 9 configuration.
+	"pyproject.toml": {"[tool.pytest]", "[tool.pytest.ini_options]"},
 }
 
 // searchVerifyHasSection reports whether `content` declares `heading` as a real, uncommented
@@ -2538,6 +2541,14 @@ func searchVerifyNodeRunnerFromManifest(parsed searchVerifyNodeManifest) (string
 //
 // Both then qualified as a jest invocation. Deliberately not a shell parser: an unterminated
 // quote returns false and the caller fails closed.
+func searchVerifyAtWordStart(sofar string) bool {
+	if sofar == "" {
+		return true
+	}
+	last := sofar[len(sofar)-1]
+	return last == ' ' || last == '\t'
+}
+
 func searchVerifyShellStatements(script string) ([]string, bool) {
 	var statements []string
 	var current strings.Builder
@@ -2566,7 +2577,9 @@ func searchVerifyShellStatements(script string) ([]string, bool) {
 				index++
 				current.WriteRune(runes[index])
 			}
-		case char == '#':
+		case char == '#' && searchVerifyAtWordStart(current.String()):
+			// A shell comment opens only at the START OF A WORD. `echo release#1; jest` has a
+			// literal hash inside a word, and treating it as a comment swallowed a real command.
 			for index < len(runes) && runes[index] != '\n' {
 				index++
 			}
@@ -2623,21 +2636,21 @@ func searchVerifyScriptInvokesRunner(script, runner string) bool {
 				continue
 			}
 			switch field {
-			case "npx", "pnpm", "yarn", "bun", "cross-env", "dotenv", "env":
-				index++
-				// `run`, `exec` and the quiet flags mean something only AFTER a manager. A bare
-				// `run jest` names no invoker, and skipping those words context-free accepted
-				// it as a jest invocation.
-				for index < len(fields) && (fields[index] == "run" || fields[index] == "exec" ||
-					fields[index] == "-s" || fields[index] == "--silent") {
-					index++
-				}
-				continue
-			case "npm":
+			case "npm", "yarn", "pnpm", "bun":
+				// A package MANAGER. Only these take `run`/`exec` and the quiet flags: after
+				// `env`, a bare `run` is just a command named run, and consuming it there
+				// accepted `env run jest` as an invocation of jest.
 				index++
 				if index < len(fields) && (fields[index] == "run" || fields[index] == "exec") {
 					index++
 				}
+				for index < len(fields) && (fields[index] == "-s" || fields[index] == "--silent") {
+					index++
+				}
+				continue
+			case "npx", "cross-env", "dotenv", "env":
+				// A plain wrapper: it prefixes a command and takes no subcommand of its own.
+				index++
 				continue
 			}
 			break
