@@ -845,6 +845,9 @@ def _selftest(require_orchestration=False):
             # GATE 2. mtimes cannot show this: record_attempt runs after all four arms, so a
             # seal written between the arms and the receipt still predates every receipt. The
             # evaluator checks the seal on disk AT ARM ENTRY and records what it saw.
+            # ...and the verdict must DEPEND on it, not merely record it.
+            ck(_man["run_status"] == "VALID",
+               "ORDER: a run whose seal was present at arm entry is VALID")
             ck(_man.get("seal_present_at_first_arm") is True,
                "ORDER: the sealed population was on disk, with the right hash, AT ARM ENTRY",
                str(_man.get("seal_present_at_first_arm")))
@@ -1002,19 +1005,48 @@ def _selftest(require_orchestration=False):
     if require_orchestration and skipped:
         print("REQUIRED ORCHESTRATION PROOF WAS SKIPPED -- treating as failure")
         fails.extend(skipped)
-    # THE SUITE MUST NOT LEAK. Each --test used to leave its fixtures behind, and the seal
-    # cases BUILD A GO BINARY into a fresh directory every pass; one session left 15,946
-    # directories and 1.1 GB in TMPDIR. Nothing failed, which is exactly why it went unnoticed
-    # for a whole night of running this suite dozens of times.
-    import tempfile as _tfx
-    _root = _tfx.gettempdir()
-    _mine_before = len([d for d in os.listdir(_root) if d.startswith(("pharm-", "rcpt-", "seal-",
-                        "note-", "order-", "g3-", "g4-", "mal-"))])
+    # THE SUITE MUST NOT LEAK ITS OWN FIXTURES. Each --test used to leave them behind, and the
+    # seal cases BUILD A GO BINARY into a fresh directory every pass; one session left 15,946
+    # directories and 1.1 GB in TMPDIR with nothing ever failing.
+    #
+    # The assertion is about THIS PROCESS, not about TMPDIR. A first version counted every
+    # directory in the shared temp root carrying one of these prefixes, so leftovers from any
+    # other run -- a concurrent sweep, an earlier session, a manual experiment -- failed a suite
+    # that had cleaned up perfectly. A guard that fails on someone else's mess is a guard people
+    # learn to ignore.
+    _tracked = list(_TEMPDIRS)
     _removed = _cleanup_tempdirs()
-    _mine_after = len([d for d in os.listdir(_root) if d.startswith(("pharm-", "rcpt-", "seal-",
-                       "note-", "order-", "g3-", "g4-", "mal-"))])
-    ck(_mine_after == 0, "the suite leaves no temp directories behind",
-       f"{_mine_after} left of {_mine_before}; removed {_removed}")
+    _survivors = [d for d in _tracked if os.path.exists(d)]
+    ck(not _survivors, "the suite removes every temp directory it created",
+       f"{len(_survivors)} of {len(_tracked)} survived; removed {_removed}")
+    # ...and the REPORTED count must be the real one. Asserting only the survivors leaves the
+    # number beside them free to lie, which is how "25 left of 25; removed 25" happened.
+    ck(_removed == len(_tracked) - len(_survivors),
+       "...and reports the number it actually removed",
+       f"reported {_removed}, really removed {len(_tracked) - len(_survivors)}")
+
+    # A REMOVAL THAT FAILS MUST NOT BE COUNTED. With cleanup working every directory goes, so
+    # counting attempts and counting successes agree and neither test can tell them apart. This
+    # forces a genuine failure: a child inside a read-only parent cannot be unlinked.
+    _ro = _mkdtemp(prefix="pharm-ro-")
+    _stuck = os.path.join(_ro, "stuck")
+    os.makedirs(_stuck, exist_ok=True)
+    os.chmod(_ro, 0o500)
+    try:
+        _TEMPDIRS.append(_stuck)
+        _n = _cleanup_tempdirs()
+        ck(os.path.exists(_stuck), "the fixture really is unremovable")
+        ck(_n == 0, "a removal that FAILED is not counted as done", f"reported {_n}")
+    finally:
+        os.chmod(_ro, 0o700)
+        import shutil as _sh
+        _sh.rmtree(_ro, ignore_errors=True)
+
+    for _obs, _want in ((True, "VALID"), (False, "VOID"), (None, "VOID")):
+        ck(run_verdict(_obs)[0] == _want,
+           f"a seal observation of {_obs!r} at arm entry gives {_want}")
+    ck("frozen before it was measured" in run_verdict(False)[1],
+       "...and a VOID says why")
     print("\nALL PHRASE-ARM FALSIFIERS PASS" if not fails else "\nFAILURES: " + ", ".join(fails))
     return 1 if fails else 0
 
@@ -1226,6 +1258,20 @@ def settle_attempt(outdir, cid, q, name, fp, lo, hi, arms, ostate):
     return admitted
 
 
+def run_verdict(seal_observed_at_arm_entry):
+    """VALID only if the seal was actually observed on disk at arm entry.
+
+    A value, not a branch buried in the main block: recording the observation and then stamping
+    VALID anyway is a manifest contradicting itself, and the branch that prevents it was
+    unreachable from any test until it became a function.
+    """
+    if seal_observed_at_arm_entry is True:
+        return "VALID", ""
+    return "VOID", (f"seal not observed on disk at arm entry "
+                    f"(saw {seal_observed_at_arm_entry!r}); the population cannot be shown to "
+                    f"have been frozen before it was measured")
+
+
 def new_manifest(seal_sha, repo, rev, dirty, content_sha, binary, bsha, script_sha, budget, want):
     """The run manifest, with the seal it ran under named in it.
 
@@ -1347,6 +1393,19 @@ if __name__=="__main__":
     if dirty0:
         raise SystemExit(f"fixture {repo} is DIRTY; a frozen fixture must be clean\n{dirty0}")
     bsha=hashlib.sha256(open(binary,"rb").read()).hexdigest()
+    # IDENTITY FIRST, THEN SELECTION. The check sat after build_cases, so a binary that would be
+    # refused had already chosen the population -- and on a dirty or unidentifiable build, the
+    # selection is exactly as unreproducible as the measurement would have been.
+    _early = binary_build_identity(binary)
+    if not _early["known"]:
+        raise SystemExit(f"REFUSING TO START: cannot establish the binary's build identity "
+                         f"({_early['reason']}). An unknown build is not a clean one.")
+    if _early["vcs_modified"] and not diagnostic_dirty:
+        raise SystemExit(
+            f"REFUSING TO START: {binary} was built from a DIRTY tree "
+            f"(revision {_early['vcs_revision']}); its source cannot be reproduced, so neither "
+            f"the selection nor the measurement can be. Pass --diagnostic-dirty-build to record "
+            f"it explicitly as artifact-tied development diagnostics.")
     cases=build_cases(binary,repo,n)
     claim_outdir(outdir)
     # ONE OWNER. This process created the directory, it is the only one that knows the selected
@@ -1464,5 +1523,13 @@ if __name__=="__main__":
     # makes the receipts quotable, and a run that dies before here stays provisional -- which
     # reads as invalid, deliberately.
     manifest["seal_present_at_first_arm"] = seal_seen["at_first_arm"]
+    # A FALSE OBSERVATION MUST VOID THE RUN. Recording that the seal was absent at arm entry and
+    # then stamping VALID is a manifest contradicting itself: the verdict is exactly the claim
+    # that the population was frozen before it was measured. Recorded-and-ignored is how a
+    # warning becomes a number somebody quotes.
+    _verdict, _why = run_verdict(seal_seen["at_first_arm"]) if outdir else ("VALID", "")
+    if _verdict != "VALID":
+        finalize_manifest(outdir, manifest, _verdict, _why)
+        raise SystemExit("SEAL WAS NOT PRESENT AT ARM ENTRY -- run voided, results not reported")
     finalize_manifest(outdir, manifest, "VALID",
                       f"scored {k}, dropped {dropped}, oracle valid {ostate['valid']} n/a {ostate['na']} of {attempt} attempts")
