@@ -74,6 +74,94 @@ def seal_refusal(build, fixtures, outdir_exists, allow_dirty):
     return None
 
 
+def _git(path, *args):
+    subprocess.run(["git", "-C", path] + list(args), capture_output=True, check=False)
+
+
+def _temp_repo(dirty=False):
+    """A real git repository, optionally with an uncommitted change."""
+    import tempfile
+    d = tempfile.mkdtemp(prefix="seal-fx-")
+    _git(d, "init", "-q")
+    with open(os.path.join(d, "a.txt"), "w") as fh:
+        fh.write("one\n")
+    _git(d, "add", "-A")
+    _git(d, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x")
+    if dirty:
+        with open(os.path.join(d, "a.txt"), "w") as fh:
+            fh.write("two\n")
+    return d
+
+
+def _temp_go_binary(dirty):
+    """A REAL Go binary carrying real vcs stamps, built clean or from a dirty tree.
+
+    Peer review's point: testing the extracted predicate does not show the CLI wires it up.
+    So these drive the actual entrypoint against actual build stamps.
+    """
+    import tempfile
+    d = tempfile.mkdtemp(prefix="seal-bin-")
+    with open(os.path.join(d, "go.mod"), "w") as fh:
+        fh.write("module sealprobe\n\ngo 1.24\n")
+    with open(os.path.join(d, "main.go"), "w") as fh:
+        fh.write("package main\n\nfunc main() {}\n")
+    _git(d, "init", "-q")
+    _git(d, "add", "-A")
+    _git(d, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x")
+    if dirty:
+        with open(os.path.join(d, "main.go"), "w") as fh:
+            fh.write("package main\n\nfunc main() { _ = 1 }\n")
+    out = os.path.join(d, "probe")
+    build = subprocess.run(["go", "build", "-o", out, "."], cwd=d, capture_output=True)
+    return out if build.returncode == 0 else None
+
+
+def _cli(*args):
+    """Run seal_run.py as the production entrypoint."""
+    return subprocess.run([sys.executable, os.path.abspath(__file__)] + list(args),
+                          capture_output=True, text=True, timeout=600)
+
+
+def _e2e(ck):
+    """The PRODUCTION PATH, not the predicate: real repos, real build stamps, real exit codes."""
+    import json as _j, tempfile
+    clean_fx, dirty_fx = _temp_repo(), _temp_repo(dirty=True)
+    fresh = lambda: os.path.join(tempfile.mkdtemp(prefix="seal-out-"), "new")
+
+    for label, dirty, expect_refusal in (("a clean build is sealed", False, False),
+                                         ("a dirty build is refused", True, True)):
+        binary = _temp_go_binary(dirty)
+        if binary is None:
+            print(f"  skip  {label} (no working Go toolchain)")
+            continue
+        r = _cli(binary, fresh(), clean_fx)
+        refused = r.returncode != 0 and "REFUSING TO START" in (r.stdout + r.stderr)
+        ck(refused is expect_refusal, "CLI: " + label, f"rc={r.returncode} {r.stderr.strip()[:70]}")
+        if not expect_refusal and not refused:
+            seal = _j.loads(r.stdout)
+            ck(seal["binary"]["build_source_reproducible"] is True,
+               "CLI: a clean seal records reproducible source")
+            ck(seal["fixtures"][0]["rev"] and seal["fixtures"][0]["clean"],
+               "CLI: the seal carries the fixture's real revision")
+        if expect_refusal:
+            r2 = _cli("--allow-dirty-build", binary, fresh(), clean_fx)
+            ok = r2.returncode == 0 and _j.loads(r2.stdout)["binary"]["recorded_as_artifact_tied_only"]
+            ck(bool(ok), "CLI: --allow-dirty-build seals and records the limitation")
+
+    binary = _temp_go_binary(False)
+    if binary:
+        r = _cli(binary, fresh(), dirty_fx)
+        ck("must be clean" in (r.stdout + r.stderr), "CLI: a dirty fixture is refused")
+        r = _cli("--allow-dirty-build", binary, fresh(), dirty_fx)
+        ck("must be clean" in (r.stdout + r.stderr),
+           "CLI: ...and --allow-dirty-build does not excuse it")
+        out = fresh(); os.makedirs(out)
+        before = sorted(os.listdir(out))
+        r = _cli(binary, out, clean_fx)
+        ck("output directory" in (r.stdout + r.stderr), "CLI: an existing directory is refused")
+        ck(sorted(os.listdir(out)) == before, "CLI: ...and the refusal wrote nothing into it")
+
+
 def _selftest():
     clean = {"vcs_modified": False, "vcs_revision": "a" * 40}
     dirty = {"vcs_modified": True, "vcs_revision": "b" * 40}
@@ -104,6 +192,9 @@ def _selftest():
     print(("  ok   " if okorder else "  FAIL ") + "the outdir check runs before any other")
     if not okorder:
         fails.append("ordering")
+    _e2e(lambda cond, label, detail="": (
+        print(("  ok   " if cond else "  FAIL ") + label + (("  <- " + detail) if detail and not cond else "")),
+        None if cond else fails.append(label)))
     print("\nALL SEAL REFUSALS HELD" if not fails else "\nFAILURES: " + ", ".join(fails))
     return 1 if fails else 0
 
