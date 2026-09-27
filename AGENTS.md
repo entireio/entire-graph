@@ -148,22 +148,23 @@ entire graph stats --repo . [--since 30d|7d|all] [--format text|json] [--session
 Local, read-only report over the coding-agent session transcripts already on disk
 (`~/.claude/projects/<path-slug>/*.jsonl`; `--sessions-dir` overrides the lookup). Reports graph
 calls per verb vs. exploration calls (`Read` whole-file / `Read` line-range / `Grep` / `Glob` /
-shell `grep|find|cat|head|tail|sed|awk`), the bytes each path pulled into context, billed session
-tokens read from transcript `usage`, a graph-first rate (share of sessions whose first locate-ish
-tool call was a graph call), and an **estimated** token saving.
+shell `grep|find|cat|head|tail|sed|awk`), observed result bytes, session tokens reported by transcript
+`usage`, and a signed **1:1 context model**, explicitly not measured savings.
 
 A shell call counts as exploration only when the LEADING stage of one of its pipelines runs a
 locate tool: `grep -rn foo . | head` does, `go test ./... 2>&1 | tail -40` does not, and a write
 (`cat > file`, a here-document, `tee`, `sed -i`) never does. `entire sem edges|symbols` counts as a
 graph call, like `entire graph <verb>`.
 
-The savings model is an explicit assumption printed next to the number: each
-`query`/`search`/`neighbors`/`impact` call is credited with the ONE exploration call it displaced,
-priced from the same session's own measured per-call bytes (exploration bytes/call minus graph
-bytes/call, at 4 bytes = 1 token). It is not a measured counterfactual. The headline
-`estimated_savings_est_tokens` sums only the sessions that came out above 0, which discards the
-losses and biases it upward; `estimated_savings_est_tokens_unfloored` is the same sum with the
-loss-making sessions kept in, and can be negative. Quote both. No network, no writes.
+The model assumes each observed `query`/`search`/`neighbors`/`impact` result replaces ONE
+exploration result, priced using that session's average exploration bytes/result, then subtracts
+graph result bytes. The 1:1 substitution is unvalidated; bytes/4 is only a rough token estimate.
+Queries, output truncation and task quality are not controlled, so this does not establish causal
+savings. Human output uses `estimated_savings_est_tokens_unfloored`, including negative sessions,
+and `sessions_with_savings_comparison` distinguishes an available zero from no comparison.
+Legacy positive-only savings, percentage and graph-first JSON fields remain for compatibility;
+they are not human-facing evidence of savings or behavior. No network; local parse-cache writes
+can be disabled with `--no-cache`.
 `--transcript <path>` narrows
 the whole report to one session (that transcript plus its `<session>/subagents/*.jsonl`), which is
 what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status line badge.

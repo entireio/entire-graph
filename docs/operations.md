@@ -159,11 +159,21 @@ back to the per-user cache directory.
 
 ## Reports and the status line
 
-`entire graph stats --repo .` prints one line — the estimated tokens the graph
-saved — from local session transcripts. `--verbose` restores the full report
-(graph vs exploration usage per verb and kind, billed tokens, the measured
-per-call costs, and the model's assumption); `--format json` is a machine
-contract and is unaffected by `--verbose`.
+`entire graph stats --repo .` prints a signed **1:1 context model** from local
+session transcripts, not measured savings. It assumes each observed graph locate
+result replaces one exploration result at that session's average result size,
+subtracts graph bytes, retains negative sessions, and roughly converts bytes/4
+to estimated tokens. A positive value is a modeled reduction; a negative value
+is a modeled increase. This does not control task quality, query equivalence or
+output truncation and cannot establish causal or billed-token savings.
+
+The comparison is `unavailable` unless a session has both result types; an
+available zero can also be cancellation between positive and negative sessions.
+`--verbose` includes observed usage, transcript-reported tokens, comparison
+population and assumptions. `--format json` remains additive and independent
+of `--verbose`: human output uses `estimated_savings_est_tokens_unfloored` and
+`sessions_with_savings_comparison`. Legacy positive-only savings, percentage and
+graph-first fields are retained for compatibility, not endorsed as evidence.
 
 `--since` prunes transcripts by file mtime before parsing them, and unchanged
 transcripts are memoised under the cache directory keyed on file identity plus
@@ -171,7 +181,10 @@ the binary's own identity, so repeat runs do not re-parse gigabytes of session
 log. `--no-cache` forces a full re-parse; `--cache-dir` relocates the memo.
 
 `scripts/entire-graph-statusline.sh` renders the single-session variant as a
-Claude Code status line.
+Claude Code status line: `1:1 model +N tok`, `-N tok`, `0 tok`, or `unavailable`.
+It does not fall back to positive-only estimates from older binaries. Detail
+mode adds observed counts and estimated exploration tokens, not a savings
+percentage or an inferred graph-first behavior claim.
 
 ## Release archives
 
