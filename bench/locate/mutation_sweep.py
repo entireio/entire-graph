@@ -39,6 +39,21 @@ MUT = [
    '        return True or any(r0.get(k) not in (None, "", [], {}) for k in'),
   (R, "replay: promote identity to full-execution",
    '                tiers["source-identity-candidate"] += 1', '                tiers["full-execution"] += 1'),
+  (H, "receipts: write only admitted attempts",
+   '    if outdir:\n        write_receipts(outdir, cid, q, name, fp, lo, hi,',
+   '    if outdir and all(a[4] for a in arms if a[0] != "oracle"):\n        write_receipts(outdir, cid, q, name, fp, lo, hi,'),
+  (H, "receipts: let an oracle failure exclude the case",
+   '    return all(a[4] for a in arms if a[0] != "oracle")\n\n\ndef finalize_manifest',
+   '    return all(a[4] for a in arms)\n\n\ndef finalize_manifest'),
+  (H, "manifest: never stamp a verdict",
+   "    manifest[\"run_status\"] = status", "    manifest[\"run_status\"] = \"PROVISIONAL\""),
+  # DROPPED, and the reason is a property worth recording rather than a gap: removing "1"
+  # from the stdout-redirect rule changes nothing, because the fail-closed unmodelled-fd
+  # branch below it already refuses fd 1. A design where deleting a specific rule cannot open
+  # a hole is working as intended, and a sweep that reported this as UNHELD would be
+  # manufacturing work.
+  (R, "replay: let the splitter break 2>&1",
+   "    masked = _neutralise_redirect_amps(masked)\n", "\n"),
   (R, "replay: case-sensitive truncation again",
    '    low = body.lower()', '    low = body'),
 ]
