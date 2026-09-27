@@ -803,6 +803,15 @@ def _selftest_body(require_orchestration=False):
        "a run with no output directory is refused before it starts", _nr.stderr.strip()[:70])
     ck(_nr.returncode != 0, "...and it exits non-zero")
 
+    # The caveat must be IN THE OUTPUT, not only in a report. A number printed without it gets
+    # quoted without it.
+    _capsrc = inspect.getsource(sys.modules[__name__])
+    ck("BYTES ARE NOT COMPARABLE ACROSS ARMS" in _capsrc,
+       "the results table warns that only the graph is capped")
+    ck(_capsrc.count("--max-context-bytes") >= 1 and "budget" not in
+       inspect.signature(grep_arm).parameters,
+       "...and that warning is true: grep_arm still takes no budget")
+
     # PRODUCTION ORCHESTRATION, observed through the artifacts a real run leaves. Peer review's
     # outstanding question, and the right one: a correct record_attempt or tally_oracle does not
     # prove the LOOP calls them before the admission gate. Stub arms cannot reach this loop -- it
@@ -1558,6 +1567,18 @@ if __name__=="__main__":
     print(f"{'graph (prose)':24s} {med(gvals):10,.0f} {gL:6d}/{k} {gD:10d}/{k}")
     print(f"{'grep (prose)':24s} {med(pvals):10,.0f} {pL:6d}/{k} {pD:10d}/{k}")
     print(f"{'grep doc-phrase+read':24s} {med(svals):10,.0f} {sL:6d}/{k} {sD:10d}/{k}")
+    # THE COST COLUMN IS BUDGET-CONDITIONAL, and the output has to say so. Only the graph runs
+    # under --max-context-bytes; the grep arms are charged whatever they emit, uncapped. So the
+    # byte ratio is a capped tool against an uncapped one with the operator holding the cap --
+    # lower the budget and it improves without the tool changing. The bounded-cost PROPERTY is
+    # real; the RATIO is not a measure of relative efficiency, and a caveat that lives only in a
+    # report is a caveat nobody reads beside the number.
+    print(f"\n  !! BYTES ARE NOT COMPARABLE ACROSS ARMS: only the graph is capped, at {budget} B.")
+    print( "     The grep arms are charged their full output. Lowering the budget improves the")
+    print( "     ratio without changing the tool. Quote the graph's bound, never the ratio.")
+    print( "     (The lexical arm is also charged a bounded read after EVERY hit, while the")
+    print( "      graph is charged one rendered payload -- a second asymmetry in the same")
+    print( "      direction.)\n")
     print("  locator = pointed at the right file+span.  declaration = showed the decl line.")
     print("  Computed identically for the three arms above, which receive byte-identical")
     print("  canonical query text and derive their search from it alone.")
