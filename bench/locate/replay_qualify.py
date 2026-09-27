@@ -4,14 +4,25 @@
 Answers ONE question before any replay-savings number is quoted: of the graph locate calls
 recorded in agent transcripts, how many can be replayed, and at what fidelity?
 
-  full-execution : re-runnable end to end. Requires a RECORDED SOURCE IDENTITY -- a revision
-                   that describes the tree the call ran against. A 40-hex appearing anywhere
-                   in the command line does not qualify; it must be bound to the repo by a
-                   flag that selects the tree.
+  source-identity-candidate
+                   the recorded RESPONSE carries a real commit AND tree, so the call is a
+                   CANDIDATE for exact replay. Not a certification: the binary, its build, the
+                   working directory, the option set and the source's clean status are all
+                   unqualified here.
   frozen-render  : the recorded RESPONSE can be re-rendered to compare payload/coverage.
-                   Requires a payload with STRUCTURE -- several ranked entries, or a JSON
-                   envelope -- not one rank-shaped line, which any echo can produce.
+                   Requires a payload with STRUCTURE -- several ranked entries carrying the
+                   renderer's own marks, or a JSON envelope with real per-result fields --
+                   not rank-shaped text, which any printf can produce.
+  unattributable-output
+                   a graph call is present but the transcript cannot say which stage produced
+                   the recorded bytes: stdout redirected away, piped, teed, multi-statement,
+                   or guarded by && / ||.
   neither        : replayable at neither fidelity.
+  full-execution : NOT ASSESSED. This parser establishes none of the bindings exact replay
+                   needs, so the tier is reported as UNKNOWN rather than zero. That is a
+                   statement about this classifier and the records it has been shown, NOT
+                   about transcripts as a medium -- a harness recording the raw response
+                   alongside a receipt and build metadata would qualify, and one exists.
 
 Tiers are reported separately and never summed.
 

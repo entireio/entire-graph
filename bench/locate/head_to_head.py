@@ -224,7 +224,16 @@ def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False, decl_te
         decl_text = declaration_source_line(repo, target_file, name, lo, hi)
 
     def shows_declaration(text):
-        return bool(decl_text) and decl_text in text
+        # EQUALITY, after the framing is stripped -- not containment. `decl_text in text`
+        # accepted the exact source line PLUS anything appended to it, so
+        #     func TargetAlpha() {} AND SOME FABRICATION
+        # scored a declaration. Containment was a weaker check wearing the name of a stronger
+        # one, which is the third time that exact substitution has appeared in this file.
+        #
+        # Body lines render as raw source with their original indentation and no gutter, and
+        # the grep path has already split the path:line framing off, so both arrive as a bare
+        # source line and .strip() is the whole of the normalisation needed.
+        return bool(decl_text) and text.strip() == decl_text
 
     def in_target(path, num):
         if os.path.isabs(path):
@@ -571,6 +580,10 @@ def _selftest():
         ("whole",      b"1. src/right.go:20-30 X\nfunc TargetAlpha() {}\n",        True),
         ("clipped",    b"1. src/right.go:20-30 X\nfunc TargetAlpha(\n",            False),
         ("fabricated", b"1. src/right.go:20-30 X\nfunc TargetAlpha() FICTION\n",   False),
+        # the exact source line with anything appended is not the source line
+        ("suffixed",   b"1. src/right.go:20-30 X\nfunc TargetAlpha() {} AND FABRICATION\n", False),
+        ("prefixed",   b"1. src/right.go:20-30 X\nFAKE func TargetAlpha() {}\n",       False),
+        ("indented",   b"1. src/right.go:20-30 X\n\tfunc TargetAlpha() {}\n",           True),
     ):
         _, dd = score(rendered, gorepo, "TargetAlpha", "src/right.go", 20, 30, ranked_only=True)
         ck(dd is want, f"declaration from source, not regex: {label}", f"dec={dd}")
@@ -639,6 +652,21 @@ def _selftest():
     fresh = os.path.join(_tf.mkdtemp(prefix="rcpt-"), "new")
     claim_outdir(fresh)
     ck(os.path.isdir(fresh), "a fresh directory is created and claimed")
+    # An EMPTY existing directory is refused too: two runs would both find it empty, both
+    # proceed, and interleave their receipts under one verdict.
+    empty = _tf.mkdtemp(prefix="rcpt-empty-")
+    refused_empty = False
+    try:
+        claim_outdir(empty)
+    except SystemExit:
+        refused_empty = True
+    ck(refused_empty, "an existing EMPTY directory is refused as well")
+    refused_twice = False
+    try:
+        claim_outdir(fresh)
+    except SystemExit:
+        refused_twice = True
+    ck(refused_twice, "a second run cannot claim the directory the first created")
 
     print("\nALL PHRASE-ARM FALSIFIERS PASS" if not fails else "\nFAILURES: " + ", ".join(fails))
     return 1 if fails else 0
@@ -718,14 +746,15 @@ def claim_outdir(outdir):
         return
     except FileExistsError:
         pass
-    existing = os.listdir(outdir)
-    if existing:
-        raise SystemExit(
-            f"output directory {outdir} is not empty ({len(existing)} entries; "
-            f"manifest present: {os.path.exists(os.path.join(outdir, 'run-manifest.json'))}).\n"
-            f"Refusing to write into it: a partial rerun would splice this run's receipts into "
-            f"the previous run's, under the previous run's verdict. Nothing was modified. "
-            f"Use a new directory.")
+    # ONLY A SUCCESSFUL EXCLUSIVE CREATE OWNS THE DIRECTORY. Accepting an existing EMPTY one
+    # looked harmless and is not: two runs starting together both find it empty, both proceed,
+    # and their receipts interleave under whichever manifest is written last. Emptiness is a
+    # property of the instant you looked, not a claim on the directory.
+    raise SystemExit(
+        f"output directory {outdir} already exists.\n"
+        f"Refusing it, empty or not: only a directory this run creates is exclusively owned, "
+        f"and two runs that both accept an existing one will splice their receipts together "
+        f"under a single verdict. Nothing was modified. Use a path that does not exist yet.")
 
 
 def finalize_manifest(outdir, manifest, status, note=""):
