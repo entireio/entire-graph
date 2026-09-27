@@ -63,6 +63,14 @@ python3 bench/locate/budget_falsifier.py <binary> /tmp/fx 20 4096 24576
 
 The three fixture benchmarks print the fixture revision, its dirty state, the binary's sha256
 and their own script sha256, so a result ties back to exactly what produced it.
+
+**Receipts and the run verdict.** With an output directory, `head_to_head.py` writes a receipt
+for **every attempt, before the admission gate** — argv, exit code, stderr, raw stdout and the
+bytes actually scored, per arm. Failed attempts are the ones most worth inspecting and used to
+leave nothing behind at all. Those receipts mean nothing on their own: `run-manifest.json`
+carries the verdict, written atomically at the very end as `VALID`, or as `VOID` if the fixture
+moved under the run. **A run that dies partway leaves receipts and no manifest, and that reads
+as invalid** — which is the point. Do not quote a directory whose manifest does not say VALID.
 `replay_qualify.py` prints its parser sha256 and corpus diagnostics only — it has no fixture and
 no binary to name.
 
@@ -111,6 +119,13 @@ is built on:
 > Every evaluated arm receives **byte-identical canonical query text**, and may derive its
 > search **from those bytes alone** — never from the original doc comment, the target's name,
 > its span, or knowledge of a hit.
+
+**The oracle arm is the one exception, and it is therefore not an evaluated arm.** It greps the
+target's name, which nothing else is given. It is reported below a separator as a capability
+ceiling, with its own denominator, and it sits outside every comparison — including the gate
+that decides which cases are scored at all. It was once inside that gate, which meant a case
+where *only* the oracle failed was dropped from every arm: a non-comparable control deciding
+what the real comparison ran on.
 
 The canonical query is the doc comment with the target's name and its case-split parts blanked,
 **with the physical line breaks kept**. The breaks are there because a lexical arm has to know

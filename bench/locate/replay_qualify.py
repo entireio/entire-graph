@@ -103,8 +103,26 @@ def stages(command):
     return out
 
 
+def _neutralise_redirect_amps(masked):
+    """Blunt the `&` inside a redirect so the statement splitter cannot see a separator there.
+
+    `entire graph query --repo . 2>&1` was being split into TWO statements -- `... 2>` and `1`
+    -- because SPLIT treats a bare `&` as a separator. One of the commonest invocation shapes
+    there is was therefore read as a compound command and refused attribution outright.
+    Length-preserving, like every other mask here, so offsets stay valid.
+    """
+    out = list(masked)
+    for i, ch in enumerate(out):
+        if ch != "&":
+            continue
+        if (i > 0 and out[i - 1] == ">") or (i + 1 < len(out) and out[i + 1] == ">"):
+            out[i] = "@"
+    return "".join(out)
+
+
 def _spans(masked):
     """Statement boundaries computed on the MASKED text, applied to the original."""
+    masked = _neutralise_redirect_amps(masked)
     spans, start = [], 0
     for m in SPLIT.finditer(masked):
         spans.append((start, m.start())); start = m.end()
@@ -178,8 +196,39 @@ def output_is_attributable(command):
         return False
     if len([x for x in stages(command) if x.strip()]) != 1:
         return False
-    # A redirect or a pipe means the bytes in the record came from somewhere else.
-    return not re.search(r"(?<![0-9<>])>|\||\btee\b", masked)
+    return stdout_reaches_the_record(masked)
+
+
+# An EXPLICIT, deliberately small redirect grammar. Everything it does not recognise is treated
+# as discarding stdout, so an unfamiliar shape costs a case rather than inventing one.
+#
+#   >  >>  1>  1>>   stdout goes elsewhere -- the record did not come from this command
+#   2>  2>>          stderr only; stdout still reaches the record
+#   &>  >&  1>&      both streams away
+#   n>  for any other n   unknown fd, refused rather than guessed
+#
+# The previous version was one regex, `(?<![0-9<>])>`, whose lookbehind was there to skip a file
+# descriptor digit -- and skipped the one descriptor that matters. `1>/dev/null` and `1>>out`
+# discard stdout and were both read as clean, so a discarded graph call scored as a render.
+REDIRECT = re.compile(r"(?P<fd>\d*)(?P<op>>>|>&|>)")
+
+
+def stdout_reaches_the_record(masked):
+    """Could the bytes in the transcript have come from this command's stdout?"""
+    if "|" in masked or re.search(r"\btee\b", masked):
+        return False
+    if "&>" in masked:
+        return False
+    for m in REDIRECT.finditer(masked):
+        fd, op = m.group("fd"), m.group("op")
+        if op == ">&":
+            # 2>&1 leaves stdout alone; 1>&2 and a bare >& do not.
+            return False if fd in ("", "1") else True
+        if fd in ("", "1"):
+            return False
+        if fd != "2":
+            return False          # an fd we do not model: refuse rather than guess
+    return True
 
 
 def flag_value(argv, name):
@@ -513,7 +562,11 @@ def tests():
         check("e2e: echo excluded, 2 real calls", sum(tiers.values()), 2)
         check("e2e: frozen-render", tiers["frozen-render"], 1)
         check("e2e: errored result not frozen", tiers["neither"], 1)
-        check("e2e: full-execution unreachable", tiers["full-execution"], 0)
+        # RENAMED, not relaxed: "unreachable" was the categorical claim that turned out to be
+        # false. The parser simply does not assess this tier, which is a different statement.
+        check("e2e: full-execution never assessed", tiers["full-execution"], 0)
+        check("e2e: identity lands in the candidate tier instead",
+              _tier_for_identity(), "source-identity-candidate")
         # Corrected, not extended: this asserted a SPACE join, which merges adjacent rank
         # lines into one and silently halves the ranked-entry count that frozen-render
         # depends on. The fixture was pinning the defect.
@@ -569,6 +622,21 @@ def tests():
     check("a lone invocation is attributable",
           output_is_attributable("entire graph query --repo ."), True)
     check("a piped invocation is not", output_is_attributable("entire graph query --repo . | head"), False)
+    # THE EXPLICIT REDIRECT GRAMMAR. `1>` and `1>>` discard stdout exactly as a bare `>` does,
+    # and the old lookbehind skipped them because it was written to skip a file-descriptor
+    # digit -- so it skipped the only descriptor that mattered.
+    for cmd, want in (
+        ("entire graph query --repo . >/dev/null", False),
+        ("entire graph query --repo . >>log", False),
+        ("entire graph query --repo . 1>/dev/null", False),
+        ("entire graph query --repo . 1>>out.txt", False),
+        ("entire graph query --repo . 1>&2", False),
+        ("entire graph query --repo . &>/dev/null", False),
+        ("entire graph query --repo . 9>/dev/null", False),   # unmodelled fd: refuse
+        ("entire graph query --repo . 2>/dev/null", True),    # stderr only
+        ("entire graph query --repo . 2>&1", True),
+    ):
+        check("redirect grammar: " + cmd.split("--repo . ")[1], output_is_attributable(cmd), want)
     check("a one-character tree is not an identity",
           recorded_source_identity([], '{"commit":"' + "a"*40 + '","tree":"b"}'), False)
     check("two real object names are",
@@ -599,9 +667,22 @@ if __name__ == "__main__":
     print(f"corpus root : {root}")
     print(f"transcripts : {nfiles} (recursive; subagents included)")
     print(f"locate calls: {total}\n")
-    print("TIERS (never summed):")
-    for k in ("full-execution", "frozen-render", "neither"):
-        print(f"  {k:16s} {tiers[k]:6d}  {100*tiers[k]/max(total,1):5.1f}%")
+    # EVERY TIER THE CLASSIFIER CAN ASSIGN, and the denominator they are shares of.
+    # The old loop printed a fixed three, so `source-identity-candidate` and
+    # `unattributable-output` -- the two tiers added precisely because the earlier ones were
+    # wrong -- were computed and then never shown, and the percentages were shares of a
+    # denominator that silently excluded them.
+    print("TIERS (never summed; percentages are of the locate-call total above):")
+    for k in ("source-identity-candidate", "frozen-render", "unattributable-output", "neither"):
+        print(f"  {k:26s} {tiers[k]:6d}  {100*tiers[k]/max(total,1):5.1f}%")
+    for k in sorted(set(tiers) - {"source-identity-candidate", "frozen-render",
+                                  "unattributable-output", "neither"}):
+        print(f"  {k:26s} {tiers[k]:6d}  {100*tiers[k]/max(total,1):5.1f}%   (unexpected tier)")
+    # NOT ZERO. Printing `full-execution 0` reads as a measured absence, and it is not one:
+    # this parser cannot establish the binary, build, working directory, option set or clean
+    # status a full replay needs, so the honest value is that it was never assessed.
+    print(f"  {'full-execution':26s} {'UNKNOWN':>6s}         not assessed by this parser; "
+          f"see source-identity-candidate")
     print("\nWHY (counts overlap; diagnostic only):")
     for k, v in reasons.most_common():
         print(f"  {v:6d}  {k}")
