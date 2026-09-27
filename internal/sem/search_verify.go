@@ -1604,12 +1604,36 @@ func deriveSearchVerifySuiteComposer(dir string, evidence *searchVerifyEvidence)
 	return nil
 }
 
+// searchVerifyPytestSections are the headings pytest itself reads configuration from, per file.
+// A bare mention of the word anywhere else in these files is not configuration.
+var searchVerifyPytestSections = map[string][]string{
+	"pytest.ini":     {"[pytest]"},
+	"tox.ini":        {"[pytest]"},
+	"setup.cfg":      {"[tool:pytest]"},
+	"pyproject.toml": {"[tool.pytest"},
+}
+
 func deriveSearchVerifySuitePytest(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	for _, name := range searchVerifyPytestConfigs {
 		candidate := searchVerifyJoin(dir, name)
 		content, ok := evidence.file(candidate)
-		if ok && strings.Contains(content, "pytest") {
-			return searchVerifySuiteCommand(dir, "python -m pytest", candidate+" pytest config")
+		if !ok {
+			continue
+		}
+		// A SECTION, not a mention. `strings.Contains(content, "pytest")` fired on a keyword in
+		// setup.cfg metadata, on a project description reading "a plugin for pytest users", and
+		// on the comment "migrated off pytest in 2024; we use unittest" -- which says the
+		// opposite of what it was read to mean. setup.cfg and pyproject.toml are general
+		// manifests; the word appears in them for many reasons that are not configuration.
+		//
+		// Milder than the jest case, because pytest runs unittest suites, so a wrong detection
+		// often still works. Not always: where pytest is merely named and not installed, the
+		// derived VERIFY fails with "No module named pytest", and the agent is told to treat a
+		// failure as its own code's fault.
+		for _, section := range searchVerifyPytestSections[name] {
+			if strings.Contains(content, section) {
+				return searchVerifySuiteCommand(dir, "python -m pytest", candidate+" pytest config")
+			}
 		}
 	}
 	return nil
