@@ -111,7 +111,7 @@ def build_cases(binary, repo, want, seed=7):
             q=re.sub(r'\b'+re.escape(part)+r'\b'," ",q,flags=re.I)
         q=" ".join(q.split())
         if len(WORD.findall(q))<8: continue
-        out.append((q[:240],name,d["file_path"],int(d.get("start_line") or 0),int(d.get("end_line") or 0)))
+        out.append((q[:240],name,d["file_path"],int(d.get("start_line") or 0),int(d.get("end_line") or 0),doc))
     random.Random(seed).shuffle(cases:=out)
     return cases[:want]
 
@@ -157,6 +157,58 @@ def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False):
         if not lo or (lo <= line <= hi): locator = True
         if d.search(ln): declaration = True
     return locator, declaration
+
+
+def phrase_arm(repo, doc, name, target_file, lo, hi, follow=12):
+    """THE STRONG GREP BASELINE. Search the author's description, then read what follows it.
+
+    Added after peer review destroyed the previous framing. The old arms OR-ed the longest
+    words and never tried the obvious move: the description IS IN THE FILE, immediately above
+    the declaration. Grep a phrase from it, read the next few lines, and the identifier is
+    there. Beating an OR-of-longest-words was presented as proof that a lexical search could
+    not bridge description to identifier; it proved only that a weak baseline is weak.
+
+    Given the author's real comment this found the declaration 6/20 on a fixture where the
+    graph found 4/20 -- it beat the tool. Any honest comparison has to carry it.
+
+    Cost includes the bounded follow-up read, because the arm really performs it.
+    """
+    words = [w for w in (doc or "").split() if len(w) > 3][:6]
+    if len(words) < 3:
+        return 0, False, False, True
+    phrase = " ".join(words[:4])
+    p = subprocess.run(["rg", "-n", "--no-heading", "-F", "-g", "!node_modules", phrase, repo],
+                       capture_output=True, timeout=300)
+    if p.returncode > 1:
+        return 0, False, False, False
+    cost = len(p.stdout)
+    d = DEFN(name)
+    tgt = os.path.normpath(target_file)
+    loc = dec = False
+    for ln in p.stdout.decode("utf8", "replace").splitlines():
+        parts = ln.split(":", 2)
+        if len(parts) < 3:
+            continue
+        path, num = parts[0], parts[1]
+        rel = os.path.relpath(path, repo) if os.path.isabs(path) else path
+        try:
+            start = int(num)
+        except ValueError:
+            continue
+        try:
+            src = open(os.path.join(repo, rel), errors="ignore").read().splitlines()
+        except OSError:
+            continue
+        window = src[start - 1:start - 1 + follow]
+        cost += sum(len(l) + 1 for l in window)
+        if os.path.normpath(rel) != tgt:
+            continue
+        if lo and lo <= start <= hi:
+            loc = True
+        for w in window:
+            if d.search(w):
+                return cost, True, True, True
+    return cost, loc, dec, True
 
 def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
     """Returns (bytes_in_context, located, ok). ok=False means the ARM FAILED and the case
@@ -214,18 +266,20 @@ if __name__=="__main__":
     # or of the repository, and a mean lets one such case decide the headline. Both are
     # printed; the median is the one to quote.
     tg=tp=to=0; k=0; dropped=0
-    gvals=[]; pvals=[]; ovals=[]
-    gL=gD=pL=pD=oL=oD=0
-    for q,name,fp,s_lo,s_hi in cases:
+    gvals=[]; pvals=[]; ovals=[]; svals=[]
+    gL=gD=pL=pD=oL=oD=sL=sD=0
+    for q,name,fp,s_lo,s_hi,doc in cases:
         g,g_l,g_d,gok=graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi)
         pr,p_l,p_d,pok=grep_arm(repo,q,name,fp,False,s_lo,s_hi)
         oc,o_l,o_d,ook=grep_arm(repo,q,name,fp,True,s_lo,s_hi)
-        if not (gok and pok and ook):
+        sc,s_l,s_d,sok=phrase_arm(repo,doc,name,fp,s_lo,s_hi)
+        if not (gok and pok and ook and sok):
             dropped+=1      # a failed arm is excluded, never scored as a miss
             continue
         k+=1; tg+=g; tp+=pr; to+=oc
         gL+=g_l; gD+=g_d; pL+=p_l; pD+=p_d; oL+=o_l; oD+=o_d
-        gvals.append(g); pvals.append(pr); ovals.append(oc)
+        gvals.append(g); pvals.append(pr); ovals.append(oc); svals.append(sc)
+        sL+=s_l; sD+=s_d
         if outdir:
             with open(os.path.join(outdir,re.sub(r"\W+","_",name)[:80]+".txt"),"w") as fh:
                 fh.write(f"query: {q}\ntarget: {name} {fp}:{s_lo}-{s_hi}\n"
@@ -249,6 +303,7 @@ if __name__=="__main__":
     print(f"{'arm':24s} {'median B':>10s} {'locator':>9s} {'declaration':>13s}")
     print(f"{'graph (prose)':24s} {med(gvals):10,.0f} {gL:6d}/{k} {gD:10d}/{k}")
     print(f"{'grep (prose)':24s} {med(pvals):10,.0f} {pL:6d}/{k} {pD:10d}/{k}")
+    print(f"{'grep doc-phrase+read':24s} {med(svals):10,.0f} {sL:6d}/{k} {sD:10d}/{k}")
     print(f"{'grep (oracle: name)':24s} {med(ovals):10,.0f} {oL:6d}/{k} {oD:10d}/{k}")
     print("  locator = pointed at the right file+span.  declaration = showed the decl line.")
     print("  Both computed identically for every arm; medians, because grep is heavy-tailed.")
