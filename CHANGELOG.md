@@ -29,6 +29,7 @@ auto-generated notes on
 
 ### Fixed
 
+- Certified already-whole search bodies against their exact source without changing the selected JSON spans, and preserved unmarked source excerpts when an agent response cannot fit the complete body and its marker.
 - Preserved validated nested repository boundaries in working-tree fallback scans, avoiding duplicate source and search results from untracked nested clones, linked worktrees, and submodules while retaining outer-repository tracked source.
 - Classified ambiguous same-file nearest-declaration call guesses as `name_only` with reduced confidence, preserving the ambiguity through C++ out-of-line mapping. This corrects false certainty, not semantic overload selection; fast-profile and argument-forwarding filters now omit these uncertain edges.
 - Fixed seven wrong-answer defects in the provider and type scanners and stopped bare type names resolving across language boundaries.
