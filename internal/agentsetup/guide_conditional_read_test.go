@@ -5,67 +5,107 @@ import (
 	"testing"
 )
 
-// The pre-edit read is what makes a Graph call additive rather than substitutive, and
-// it used to be mandated unconditionally in every guide and both modes. Measured
-// consequence, already committed in this repository: the tool makes +19.6% MORE Read
-// calls than the no-tool baseline while total tool calls fall 14.5%
-// (internal/sem/search_span_merge.go:20-23, n=55 paired). "Bodies removed greps and
-// added reads."
-//
-// These guard the exception that fixes it. They are deliberately paired with
-// TestNormalGuideStaysDirective, which guards the opposite failure: that file explains
-// why permissive wording is fatal here, and the exception below must not become a way
-// back to it.
-func TestEveryGuideMakesThePreEditReadConditionalOnCompleteness(t *testing.T) {
-	t.Parallel()
-
-	// Every guide, both modes. verificationGuide is shared by all six renderings, so a
-	// change that reaches only the normal Graph guide has missed five of them.
-	guides := map[string]string{
-		"GraphGuide":      GraphGuide,
-		"CombinedGuide":   CombinedGuide,
-		"BrainGuide":      BrainGuide(),
-		"strict Graph":    guideFor(map[string]bool{"graph": true}, ModeStrict),
-		"strict Combined": guideFor(map[string]bool{"graph": true, "brain": true}, ModeStrict),
-		"strict Brain":    guideFor(map[string]bool{"brain": true}, ModeStrict),
+// These tests check the rendered instruction artifacts, not consuming-agent behavior
+// or savings. A missing shared paragraph or a contradictory strict-mode instruction
+// must be caught in every product/mode combination. Discovery obligations have their
+// own guards in guide_directive_test.go and strict_test.go.
+func conditionalReadGuides() map[string]string {
+	guides := make(map[string]string)
+	for _, mode := range []Mode{ModeNormal, ModeStrict} {
+		for name, active := range map[string]map[string]bool{
+			"Graph":    {"graph": true},
+			"Brain":    {"brain": true},
+			"Combined": {"graph": true, "brain": true},
+		} {
+			guides[string(mode)+" "+name] = strings.Join(strings.Fields(guideFor(active, mode)), " ")
+		}
 	}
-	for name, guide := range guides {
-		if !strings.Contains(guide, "[complete]") {
-			t.Errorf("%s never mentions the [complete] marker, so the agent re-reads a body it was just handed", name)
-		}
-		// An unmarked body is a fragment and must still be read. Without this half the
-		// exception reads as "skip the read", which is the opposite failure.
-		if !strings.Contains(guide, "An unmarked body is a fragment") {
-			t.Errorf("%s dropped the rule that an unmarked body must still be read", name)
-		}
+	return guides
+}
+
+func TestEveryGuideScopesCompletenessToObservedSource(t *testing.T) {
+	t.Parallel()
+	for name, guide := range conditionalReadGuides() {
+		t.Run(name, func(t *testing.T) {
+			for _, required := range []string{
+				"[complete] certifies a structurally whole displayed body",
+				"unchanged by rendering, for the source view observed by that query",
+				"does not certify dependencies, later source freshness, or task resolution",
+				"Do not reread the same unchanged span merely to duplicate it",
+			} {
+				if !strings.Contains(guide, required) {
+					t.Errorf("rendered guide missing observed-source boundary %q", required)
+				}
+			}
+		})
 	}
 }
 
-// Strict mode LOOKED like it already banned the redundant read -- "Do not re-read files
-// or retrieved records that Graph or Brain already answered for" -- and then exempted
-// "the focused source inspection required before editing" in the very next sentence,
-// which is precisely the read in question. The ban was therefore inert.
-func TestStrictModeDoesNotExemptTheOneReadItIsMeantToStop(t *testing.T) {
+func TestEveryGuideKeepsUnmarkedSourceUncertified(t *testing.T) {
 	t.Parallel()
-
-	const carveOut = "or the focused source inspection required before editing"
-	strictCombined := guideFor(map[string]bool{"graph": true, "brain": true}, ModeStrict)
-	if strings.Contains(strictCombined, carveOut) {
-		t.Errorf("strict mode reinstated the carve-out %q, which exempts the exact read the rule exists to stop", carveOut)
-	}
-	if !strings.Contains(strictCombined, "A result marked [complete] IS") {
-		t.Error("strict mode no longer says a [complete] result is itself the source, so the re-read ban stays inert")
+	for name, guide := range conditionalReadGuides() {
+		t.Run(name, func(t *testing.T) {
+			for _, required := range []string{
+				"An unmarked result is not certified",
+				"a partial window or a whole body whose marker did not fit",
+				"Retrieve only the specific additional span, surrounding context, caller, contract, or second site required for the task",
+			} {
+				if !strings.Contains(guide, required) {
+					t.Errorf("rendered guide missing targeted-read instruction %q", required)
+				}
+			}
+			if strings.Contains(guide, "An unmarked body is a fragment") {
+				t.Error("rendered guide incorrectly treats absent certification as proof of a fragment")
+			}
+		})
 	}
 }
 
-// The exception must key on something the TOOL printed, never on the agent's own
-// assessment. guide.go's header records why: on 2026-09-14 the normal guide gained
-// three self-assessed exits and graph use collapsed to 0.34% of locate calls, because
-// "sufficiency is self-assessed, and it assesses as true nearly always."
-func TestTheReadExceptionIsNotSelfAssessed(t *testing.T) {
+func TestEveryGuideRefreshesPossiblyChangedSource(t *testing.T) {
 	t.Parallel()
+	for name, guide := range conditionalReadGuides() {
+		t.Run(name, func(t *testing.T) {
+			for _, required := range []string{
+				"edits, formatting, generation, checkout, or another writer",
+				"verify that current span before reusing remembered output",
+				"A --head result does not cover working-tree changes absent from that snapshot",
+			} {
+				if !strings.Contains(guide, required) {
+					t.Errorf("rendered guide missing source-change boundary %q", required)
+				}
+			}
+			if strings.Contains(guide, "never to re-confirm what it already showed you") {
+				t.Error("rendered guide forbids refreshing potentially stale source")
+			}
+		})
+	}
+}
 
-	for name, guide := range map[string]string{"GraphGuide": GraphGuide, "CombinedGuide": CombinedGuide} {
+func TestStrictCompletenessDoesNotExemptStaleOrMissingSource(t *testing.T) {
+	t.Parallel()
+	for name, guide := range conditionalReadGuides() {
+		if !strings.HasPrefix(name, string(ModeStrict)+" ") {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(guide, "the marker does not remove the need to check a stale result or required source outside that body") {
+				t.Error("strict guide does not preserve stale and missing-source follow-up for marked bodies")
+			}
+			for _, forbidden := range []string{
+				"or the focused source inspection required before editing",
+				"A result marked [complete] IS that source, so it is not one of those cases",
+			} {
+				if strings.Contains(guide, forbidden) {
+					t.Errorf("strict guide retained unsafe unconditional read policy %q", forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestConditionalReadsDoNotOfferADiscoveryOptOut(t *testing.T) {
+	t.Parallel()
+	for name, guide := range conditionalReadGuides() {
 		for _, selfAssessed := range []string{
 			"if you already understand",
 			"when the result is sufficient",
@@ -74,8 +114,21 @@ func TestTheReadExceptionIsNotSelfAssessed(t *testing.T) {
 			"if you judge",
 		} {
 			if strings.Contains(strings.ToLower(guide), selfAssessed) {
-				t.Errorf("%s makes the read exception self-assessed via %q; it must key on the printed [complete] marker", name, selfAssessed)
+				t.Errorf("%s offers a general self-assessed opt-out via %q", name, selfAssessed)
 			}
+		}
+	}
+}
+
+func TestStrictGraphDiscoveryRequestsTheMarkedAgentFormat(t *testing.T) {
+	t.Parallel()
+	const command = `entire graph query --repo . --profile full --head --format agent --query "<task>"`
+	for name, guide := range conditionalReadGuides() {
+		if name != "strict Graph" && name != "strict Combined" {
+			continue
+		}
+		if !strings.Contains(guide, command) {
+			t.Errorf("%s must request the agent format that carries [complete] while retaining --head", name)
 		}
 	}
 }
