@@ -1448,13 +1448,34 @@ const completeMarker = "[complete]"
 // body diet) and wrong for "may the agent skip the file". Marking a window complete
 // would send the agent away holding a fragment it believes is whole, which is worse
 // than not marking anything at all.
+// It accepts complete-symbol ONLY, and rejects an elided unit outright.
+//
+// An earlier revision of this function also accepted full-unit, on the strength of
+// search_enclosure.go:779-781 ("full-unit and complete-symbol both assert that the reader is
+// looking at the whole unit"). That sentence describes the unclipped case. The producer at
+// search_enclosure.go:792-803 emits full-unit AND unit-elided, and deliberately WITHHOLDS
+// complete-symbol, for a forced unit the safety cap clipped -- "for the same reason a window
+// does". search_editability_test.go:274-292 pins it.
+//
+// So full-unit alone stamped [complete] onto a fragment, and the conditional-read guidance then
+// told the agent not to open the file: it would have edited against source it believed was whole.
+// Caught in peer review, not by the tests here, which were formatter-level and could not see a
+// producer contract. The producer-driven case is now covered.
+//
+// Rejecting unit-elided is redundant against today's producer, which never pairs it with
+// complete-symbol. It is kept because the failure is silent and reaches users: if the two ever do
+// co-occur, the safe reading is the pessimistic one.
 func searchResultNeedsNoFollowUpRead(result sem.SearchResult) bool {
+	complete := false
 	for _, signal := range result.Signals {
-		if signal == sem.CompleteSymbolSignal || signal == sem.FullUnitSignal {
-			return true
+		switch signal {
+		case sem.FullUnitElidedSignal:
+			return false
+		case sem.CompleteSymbolSignal:
+			complete = true
 		}
 	}
-	return false
+	return complete
 }
 
 // orderAgentSearchResults groups a payload for `--format agent`: candidate fix sites, then the
