@@ -686,6 +686,54 @@ def _selftest():
     ck("vcs_modified" not in binary_build_identity(_nb),
        "an unknown build carries no vcs_modified at all")
 
+    # PRODUCTION ORCHESTRATION, observed through the artifacts a real run leaves. Peer review's
+    # outstanding question, and the right one: a correct record_attempt or tally_oracle does not
+    # prove the LOOP calls them before the admission gate. Stub arms cannot reach this loop -- it
+    # lives in __main__ -- but the ordering is observable from what lands on disk and when.
+    _egbin = os.environ.get("ENTIRE_GRAPH_BIN") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "entire-graph")
+    if not os.path.exists(_egbin):
+        print("  skip  production-ordering cases (set ENTIRE_GRAPH_BIN to run them)")
+    else:
+        # The doc comments must clear build_cases' own filters -- at least eight words survive
+        # after the name is stripped -- or the run yields NO cases and every ordering assertion
+        # below passes over an empty list. The first draft did exactly that: all five were green
+        # and a deliberate seal-after-the-arms mutation did not move them.
+        _ofx = _mkrepo({"p/a.go": "package p\n\n"
+                        "// RetryBudgetForAttempt reports the ceiling of further work permitted\n"
+                        "// for one request, so a caller can decide whether another try is wise.\n"
+                        "func RetryBudgetForAttempt(attempt int) int { return attempt + 1 }\n\n"
+                        "// DrainPendingWork empties the queue that the scheduler has filled and\n"
+                        "// returns how many items were removed before the queue became empty.\n"
+                        "func DrainPendingWork(n int) int { return n }\n"})
+        for _a in (["init", "-q"], ["add", "-A"],
+                   ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"]):
+            _spa.run(["git", "-C", _ofx] + _a, capture_output=True)
+        _oout = os.path.join(_tfa.mkdtemp(prefix="order-"), "out")
+        _rr = _spa.run([sys.executable, os.path.abspath(__file__), "--diagnostic-dirty-build",
+                        _egbin, _ofx, "2", "4096", _oout], capture_output=True, text=True, timeout=1800)
+        if not os.path.exists(os.path.join(_oout, "run-manifest.json")):
+            print(f"  skip  production-ordering cases (run produced no manifest: {_rr.stderr.strip()[:70]})")
+        else:
+            _man = json.load(open(os.path.join(_oout, "run-manifest.json")))
+            _sealp = os.path.join(_oout, "SEAL.json")
+            _rcpts = [f for f in os.listdir(_oout) if f.endswith(".txt")]
+            # NON-VACUITY FIRST. Every assertion below quantifies over the receipts, so an
+            # empty run makes all of them true.
+            ck(len(_rcpts) > 0, "ORDER: the run produced receipts to reason about",
+               f"{len(_rcpts)} receipts; the fixture yielded no cases")
+            ck(os.path.exists(_sealp), "ORDER: the seal exists")
+            ck(all(os.path.getmtime(_sealp) <= os.path.getmtime(os.path.join(_oout, f))
+                   for f in _rcpts),
+               "ORDER: the seal was written before every receipt")
+            ck(_man["seal_sha256"] == hashlib.sha256(open(_sealp, "rb").read()).hexdigest(),
+               "ORDER: the manifest binds the seal on disk")
+            ck(len(_rcpts) == len(_man["cases"]),
+               "ORDER: one receipt per ATTEMPT recorded in the manifest",
+               f"{len(_rcpts)} receipts vs {len(_man['cases'])} attempts")
+            ck(len(json.load(open(_sealp))["selected_queries"]) == len(_man["cases"]),
+               "ORDER: the seal's population is the population that ran")
+
     # RANGE OVERLAP, with the negatives that keep it from becoming "anything nearby counts".
     for header, want, label in (
         (b"1. a.go:142-143 Sym s=9 [focus:143]\n", True,  "a range that starts one line before the span"),
@@ -1112,11 +1160,17 @@ if __name__=="__main__":
                           file_sha256(os.path.abspath(__file__)), budget, n)
     gvals=[]; pvals=[]; ovals=[]; svals=[]
     gL=gD=pL=pD=oL=oD=sL=sD=0
+    def real_arms(q,name,fp,s_lo,s_hi):
+        return (("graph",)  + graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi),
+                ("grep",)   + grep_arm(repo,q,name,fp,False,s_lo,s_hi),
+                ("phrase",) + phrase_arm(repo,q,name,fp,s_lo,s_hi),
+                ("oracle",) + grep_arm(repo,q,name,fp,True,s_lo,s_hi))
     for q,name,fp,s_lo,s_hi in cases:
-        g,g_l,g_d,gok,g_raw,g_m=graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi)
-        pr,p_l,p_d,pok,p_raw,p_m=grep_arm(repo,q,name,fp,False,s_lo,s_hi)
-        oc,o_l,o_d,ook,o_raw,o_m=grep_arm(repo,q,name,fp,True,s_lo,s_hi)
-        sc,s_l,s_d,sok,s_raw,s_m=phrase_arm(repo,q,name,fp,s_lo,s_hi)
+        _armed = {a[0]: a[1:] for a in real_arms(q,name,fp,s_lo,s_hi)}
+        g,g_l,g_d,gok,g_raw,g_m = _armed["graph"]
+        pr,p_l,p_d,pok,p_raw,p_m = _armed["grep"]
+        oc,o_l,o_d,ook,o_raw,o_m = _armed["oracle"]
+        sc,s_l,s_d,sok,s_raw,s_m = _armed["phrase"]
         # THE ORACLE IS NOT AN ARM. It is handed the target's NAME, which no other arm gets,
         # so it is not a same-input comparator and cannot sit in a comparative denominator.
         # It was also inside the shared success gate, which is worse than cosmetic: a case
