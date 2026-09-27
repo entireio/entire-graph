@@ -2430,27 +2430,14 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 		return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget)
 	}
 
-	// A result that promises no follow-up read is BINARY: the whole symbol, or a locator.
-	// CompleteSymbolSignal's exported contract says a result carrying it "must never be
-	// abbreviated on the way out" (search_enclosure.go:342-344), and the span loop below
-	// abbreviates: it walks the body down line by line until some prefix fits. On a
-	// promise-carrying result that is the worst of both worlds -- the bytes are spent AND
-	// the agent still opens the file -- and it turns a truthful marker into a false one,
-	// because the header would then vouch for a body that is missing its tail.
-	//
-	// So: offer the complete body once. If it does not fit, fall through to a locator with
-	// no marker, which costs ~40 bytes and tells the truth. Dropping to a locator is not a
-	// loss here: an abbreviated complete symbol was never going to remove the read that
-	// justifies its cost.
+	// Prefer the unchanged whole body with its completeness marker. If that cannot fit,
+	// retain source through the ordinary balanced-span loop below, without certification.
 	if searchResultNeedsNoFollowUpRead(result) && !renderedBodyIsTransformed(result.Snippet) {
 		text := strings.Join(lines, "\n")
 		startLine, endLine := snippetStart, snippetStart+len(lines)-1
 		for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag, scored, completeMarker) {
-			// The minimal rung drops the marker, so it must not be used to seat a body:
-			// measured at a 200-byte cap it printed the whole symbol under `budget.go:10 *`,
-			// handing the agent a complete answer with nothing saying so -- which buys the
-			// bytes and none of the saved read. Body present implies marker present; if only
-			// the marker-less rung fits, this is a locator instead.
+			// This pass only considers marked headers. The unmarked fallback below may
+			// use the minimal header for either a whole body or a smaller source window.
 			if !strings.Contains(header, completeMarker) {
 				break
 			}
@@ -2459,7 +2446,6 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 				return candidate
 			}
 		}
-		return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget)
 	}
 
 	// Prefer the widest balanced span containing the focus line. The location
@@ -2480,8 +2466,7 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 			right := left + span - 1
 			text := strings.Join(lines[left:right+1], "\n")
 			startLine, endLine := snippetStart+left, snippetStart+right
-			// No marker: this loop only runs for results that made no no-follow-up promise,
-			// and it is also the loop that abbreviates, so nothing it emits could honour one.
+			// This loop may abbreviate even certified input, so never carry its marker.
 			for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag, scored, "") {
 				candidate := []byte(header + text + "\n")
 				if budget <= 0 || len(candidate) <= budget {
@@ -2516,11 +2501,8 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 // empty otherwise. It rides the two roomier variants beside `tag`; the minimal rung
 // drops it along with rank and name.
 //
-// That makes the minimal rung unusable for seating a complete body, and the caller
-// enforces it rather than this function: agentSearchPrimaryBlock stops at the first
-// marker-less rung and emits a locator instead. Measured before that guard existed, a
-// 200-byte cap printed the whole symbol under `budget.go:10 *` -- a complete answer
-// with nothing saying it was complete, which costs the bytes and saves no read.
+// agentSearchPrimaryBlock first tries marked headers with the whole unchanged body.
+// Its separate unmarked source pass may use every rung, including the minimal one.
 func agentSearchLocationHeaders(rank int, path string, start, end, focus int, name, tag, scored, complete string) []string {
 	location := fmt.Sprintf("%d. %s:%d", rank, path, start)
 	if end != start {
@@ -2553,9 +2535,8 @@ func agentSearchLocationHeaders(rank int, path string, start, end, focus int, na
 }
 
 // A locator carries no body, so it never carries completeMarker: the marker vouches for
-// source printed beneath it, and there is none here. This is the landing place for a
-// complete symbol that could not fit its budget, which is exactly the case where
-// claiming completeness would be worst.
+// source printed beneath it, and there is none here. Use a locator only after no
+// source-bearing candidate fits the budget.
 func fitAgentSearchLocation(rank int, path string, focus int, name, tag, scored string, budget int) []byte {
 	for _, header := range agentSearchLocationHeaders(rank, path, focus, focus, focus, name, tag, scored, "") {
 		if budget <= 0 || len(header) <= budget {
