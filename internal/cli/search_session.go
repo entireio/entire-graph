@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // The search echo: one real search per task. The second and later search of the same task returns
@@ -248,7 +249,8 @@ func (s *searchSession) load() (searchSessionState, error) {
 // the echo replays the answer the ranking gave the original question, not the last rephrasing of
 // it. Counting is separate from storing bytes so a response that is too large or whose policy
 // changed mid-search cannot leave a rejected old payload stuck on disk. forceReplace is set when a
-// matching state failed its path-policy check. Persisting is best-effort for the same reason echo is
+// matching state failed its path-policy check or cannot fit the current agent byte budget.
+// Persisting is best-effort for the same reason echo is
 // — a session file that cannot be written costs the cap, not the search.
 func (s *searchSession) record(
 	query string,
@@ -312,6 +314,17 @@ func (s *searchSession) record(
 	if err := os.Rename(tmp.Name(), s.path); err != nil {
 		os.Remove(tmp.Name())
 	}
+}
+
+// searchReplayFitsByteBudget measures the entire terminal-safe replay, including attribution.
+// Count emitted bytes, not source bytes: persisted input can expand during control escaping.
+// An incompatible opaque response must be replaced, never truncated through source markers.
+func searchReplayFitsByteBudget(state searchSessionState, asked string, budget int) bool {
+	if budget <= 0 {
+		return true
+	}
+	payload := []byte(searchEchoHeader(asked, state.Query) + state.Payload)
+	return len(termsafe.Bytes(payload)) <= budget
 }
 
 // searchEchoHeader is the one line that precedes a replayed payload. It names both questions — the

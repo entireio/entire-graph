@@ -204,6 +204,11 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 			if searchFormatSupportsReplay(flags.Format) {
 				state, ok = session.echo(scope)
 			}
+			if ok && flags.Format == "agent" && !searchReplayFitsByteBudget(state, flags.Query, flags.MaxContextBytes) {
+				// The stored response is opaque: clipping it could cut through a complete
+				// body or remove its attribution. Run and record a fresh bounded response.
+				ok = false
+			}
 			if !ok && state.Payload != "" {
 				forceSessionReplace = true
 			}
