@@ -95,8 +95,11 @@ of error one layer along.
 
 It also refuses to attribute output it cannot place. `entire graph query … >/dev/null; printf
 '1. a/b.go:1 F'` was scored as a clean graph render; the graph's bytes went to /dev/null and
-`printf` produced everything measured. Redirected, piped, multi-statement and `&&`-guarded
-commands are now reported as unattributable rather than credited.
+`printf` produced everything measured. Commands whose **stdout is redirected away**, plus piped, teed, multi-statement and
+`&&`-guarded ones, are reported as unattributable rather than credited. A stderr-only redirect
+is not one of them: `2>&1` and `2>>err.log` leave stdout reaching the record and stay
+attributable. Order is respected — `2>&1 >/dev/null` moves stderr and *then* discards stdout,
+so it is refused.
 
 ## Status of what they have measured
 
