@@ -803,14 +803,17 @@ def _selftest_body(require_orchestration=False):
        "a run with no output directory is refused before it starts", _nr.stderr.strip()[:70])
     ck(_nr.returncode != 0, "...and it exits non-zero")
 
-    # The caveat must be IN THE OUTPUT, not only in a report. A number printed without it gets
-    # quoted without it.
-    _capsrc = inspect.getsource(sys.modules[__name__])
-    ck("BYTES ARE NOT COMPARABLE ACROSS ARMS" in _capsrc,
-       "the results table warns that only the graph is capped")
-    ck(_capsrc.count("--max-context-bytes") >= 1 and "budget" not in
-       inspect.signature(grep_arm).parameters,
-       "...and that warning is true: grep_arm still takes no budget")
+    _cav = budget_caveat(4096).lower()
+    ck("not comparable" in _cav and "4096" in _cav,
+       "the byte column carries a non-comparability warning naming the budget")
+    ck("budget" not in inspect.signature(grep_arm).parameters,
+       "...and the warning is TRUE: grep_arm still takes no budget")
+
+    # The caveat must be IN THE PRINTED OUTPUT. My first version grepped this module's SOURCE
+    # for the warning text -- and the assertion line itself contains that text, so the guard
+    # satisfied itself: deleting the real warning left one occurrence, its own, and the test
+    # stayed green. A test that can be satisfied by its own body is the purest form of the
+    # defect this whole file keeps finding. Asserted against a real run's stdout instead.
 
     # PRODUCTION ORCHESTRATION, observed through the artifacts a real run leaves. Peer review's
     # outstanding question, and the right one: a correct record_attempt or tally_oracle does not
@@ -1303,6 +1306,27 @@ def settle_attempt(outdir, cid, q, name, fp, lo, hi, arms, ostate):
     return admitted
 
 
+def budget_caveat(budget):
+    """The warning that must sit beside the byte column, as a VALUE.
+
+    It was inlined prints, and the test grepped this module's source for its text -- but the
+    assertion line contained that same text, so the guard satisfied itself: deleting the real
+    warning left one occurrence, its own, and the suite stayed green. A test satisfiable by its
+    own body is the purest form of the defect this file keeps finding. Returning a string makes
+    the check a runtime value, which cannot be faked by the checker.
+
+    The content: only the graph runs under --max-context-bytes; the grep arms are charged their
+    full output. The byte ratio is therefore a capped tool against an uncapped one with the
+    operator holding the cap, and lowering the budget improves it without changing the tool.
+    """
+    return (f"\n  !! BYTES ARE NOT COMPARABLE ACROSS ARMS: only the graph is capped, at "
+            f"{budget} B.\n"
+            f"     The grep arms are charged their full output. Lowering the budget improves\n"
+            f"     the ratio without changing the tool. Quote the graph's bound, never the ratio.\n"
+            f"     The lexical arm is also charged a bounded read after EVERY hit, while the\n"
+            f"     graph is charged one rendered payload -- a second asymmetry the same way.\n")
+
+
 def run_verdict(seal_observed_at_arm_entry):
     """VALID only if the seal was actually observed on disk at arm entry.
 
@@ -1567,18 +1591,7 @@ if __name__=="__main__":
     print(f"{'graph (prose)':24s} {med(gvals):10,.0f} {gL:6d}/{k} {gD:10d}/{k}")
     print(f"{'grep (prose)':24s} {med(pvals):10,.0f} {pL:6d}/{k} {pD:10d}/{k}")
     print(f"{'grep doc-phrase+read':24s} {med(svals):10,.0f} {sL:6d}/{k} {sD:10d}/{k}")
-    # THE COST COLUMN IS BUDGET-CONDITIONAL, and the output has to say so. Only the graph runs
-    # under --max-context-bytes; the grep arms are charged whatever they emit, uncapped. So the
-    # byte ratio is a capped tool against an uncapped one with the operator holding the cap --
-    # lower the budget and it improves without the tool changing. The bounded-cost PROPERTY is
-    # real; the RATIO is not a measure of relative efficiency, and a caveat that lives only in a
-    # report is a caveat nobody reads beside the number.
-    print(f"\n  !! BYTES ARE NOT COMPARABLE ACROSS ARMS: only the graph is capped, at {budget} B.")
-    print( "     The grep arms are charged their full output. Lowering the budget improves the")
-    print( "     ratio without changing the tool. Quote the graph's bound, never the ratio.")
-    print( "     (The lexical arm is also charged a bounded read after EVERY hit, while the")
-    print( "      graph is charged one rendered payload -- a second asymmetry in the same")
-    print( "      direction.)\n")
+    print(budget_caveat(budget))
     print("  locator = pointed at the right file+span.  declaration = showed the decl line.")
     print("  Computed identically for the three arms above, which receive byte-identical")
     print("  canonical query text and derive their search from it alone.")

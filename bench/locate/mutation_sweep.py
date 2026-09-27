@@ -60,7 +60,7 @@ MUT = [
   (H, "tests: report attempted removals as completed ones",
    "        if not os.path.exists(d):\n            gone += 1", "        if True:\n            gone += 1"),
   (H, "output: drop the budget-asymmetry caveat",
-   'print(f"\\n  !! BYTES ARE NOT COMPARABLE ACROSS ARMS', 'print(f"\\n  !! bytes'),
+   '    return (f"\\n  !! BYTES ARE NOT COMPARABLE', '    return ""\n    return (f"\\n  !! BYTES ARE NOT COMPARABLE'),
   (H, "build: a garbled vcs.modified reads as clean",
    '    if kv["vcs.modified"] not in ("true", "false"):', '    if kv["vcs.modified"] in ("",):'),
   (H, "oracle: tally below the admission gate again",
