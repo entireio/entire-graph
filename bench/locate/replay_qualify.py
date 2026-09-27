@@ -112,21 +112,38 @@ def flag_value(argv, name):
     return None
 
 
-def recorded_source_identity(argv):
-    """Can this recorded call be re-run against the tree it originally saw? No -- ever.
+def recorded_source_identity(argv, body=""):
+    """Does this recorded call carry the identity of the tree it ran against?
 
-    The first version looked for --rev/--revision/--commit/--at. Peer review pointed out that
-    NONE OF THOSE FLAGS EXIST, and the binary confirms it: each is rejected with "query does
-    not accept --rev". A command carrying one never ran, so treating it as evidence of a bound
-    revision was doubly wrong.
+    TWICE WRONG BEFORE THIS. First it looked for --rev/--revision/--commit/--at, none of which
+    exist -- the binary rejects each, so a command carrying one never ran. Then it was
+    hardcoded False on the reasoning that no CLI flag binds a revision, and "exact replay is
+    unreachable by construction" was reported as a finding.
 
-    The only tree selector the CLI has is --head, and it says "the committed tree" without
-    recording WHICH commit that was. So a transcript cannot carry a source identity at all,
-    and full-execution replay is unreachable BY CONSTRUCTION rather than merely absent from
-    this corpus. That is the stronger and more useful statement: it will not be fixed by
-    collecting more transcripts, only by the CLI recording the resolved revision in its output.
+    That was wrong too, and peer review caught it with output rather than argument: the JSON
+    payload ALREADY EMITS commit and tree. Verified directly --
+        commit db90c908f928565d...  tree fb0c6dfb62bbc9a0...
+    So the identity was never in the argv, it was in the RESULT, and I had been auditing the
+    wrong half of the record. Absence of a flag is not absence of provenance.
+
+    Still NOT sufficient for full-execution replay on its own: the binary version, the option
+    set and the working directory remain unqualified, and a text/agent-format call carries no
+    envelope at all. So this reports the identity as PRESENT and the tier stays conservative
+    until the rest is qualified -- a candidate, not a certification.
     """
-    return False
+    if not body:
+        return False
+    stripped = body.lstrip()
+    if not stripped.startswith("{"):
+        return False
+    try:
+        d = json.loads(stripped)
+    except Exception:
+        return False
+    if not isinstance(d, dict):
+        return False
+    commit, tree = d.get("commit"), d.get("tree")
+    return bool(commit and tree and HEX40.match(str(commit)))
 
 
 def payload_has_structure(body):
@@ -223,7 +240,7 @@ def qualify(root):
             rblock = res.get(uid, {})
             # An errored result is not an artifact: it records a failure, not a payload.
             body = "" if rblock.get("is_error") else result_text(rblock)
-            if recorded_source_identity(argv):
+            if recorded_source_identity(argv, body):
                 tiers["full-execution"] += 1
             elif payload_has_structure(body):
                 tiers["frozen-render"] += 1
@@ -235,7 +252,7 @@ def qualify(root):
                     reasons["result carries no ranked payload (transformed or non-ranking output)"] += 1
                 else:
                     reasons["ranked payload too thin to re-render"] += 1
-            if not recorded_source_identity(argv):
+            if not recorded_source_identity(argv, body):
                 reasons["no source revision bound to the tree"] += 1
             if not flag_value(argv, "--repo"):
                 reasons["--repo absent (cwd-inherited; tree not recoverable)"] += 1
@@ -271,6 +288,10 @@ def tests():
     # unreachable by construction rather than merely unobserved.
     check("phantom --rev does not count",
           recorded_source_identity(argv_of("entire graph query --rev " + "a" * 40)), False)
+    check("json commit+tree IS an identity",
+          recorded_source_identity([], '{"commit":"'+"a"*40+'","tree":"b"}'), True)
+    check("json without commit is not",
+          recorded_source_identity([], '{"tree":"b"}'), False)
     check("--head alone is not an identity",
           recorded_source_identity(argv_of("entire graph query --head --repo .")), False)
     check("one rank line is not an artifact", payload_has_structure("1. a.go:1 foo s=1"), False)

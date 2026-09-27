@@ -292,8 +292,10 @@ if __name__=="__main__":
         if outdir:
             with open(os.path.join(outdir,re.sub(r"\W+","_",name)[:80]+".txt"),"w") as fh:
                 fh.write(f"query: {q}\ntarget: {name} {fp}:{s_lo}-{s_hi}\n"
-                         f"graph bytes {g} located {gl}\ngrep bytes {pr} located {pl}\n"
-                         f"oracle bytes {oc} located {ol}\n")
+                         f"graph  bytes {g}  locator {g_l}  declaration {g_d}\n"
+                         f"grep   bytes {pr} locator {p_l}  declaration {p_d}\n"
+                         f"phrase bytes {sc} locator {s_l}  declaration {s_d}\n"
+                         f"oracle bytes {oc} locator {o_l}  declaration {o_d}\n")
     rev1,dirty1=state()
     if (rev0,dirty0)!=(rev1,dirty1):
         # Exit non-zero. Printing "void" and then printing the table anyway is how a voided
