@@ -90,8 +90,13 @@ def doc_comment(path, start_line, language="Go"):
     return ""
 
 def build_cases(binary, repo, want, seed=7):
-    raw = subprocess.run([binary,"symbols","--repo",repo,"--format","ndjson"],
-                         capture_output=True,text=True,timeout=1800).stdout
+    sp = subprocess.run([binary,"symbols","--repo",repo,"--format","ndjson"],
+                        capture_output=True,text=True,timeout=1800)
+    # A failed or signal-killed `symbols` still prints what it managed. Building the case list
+    # from a truncated stream silently samples whatever happened to be emitted first.
+    if sp.returncode != 0:
+        raise SystemExit(f"symbols failed in {repo} (exit {sp.returncode}); refusing partial cases")
+    raw = sp.stdout
     out=[]
     for line in raw.splitlines():
         try: d=json.loads(line)
@@ -199,7 +204,7 @@ def phrase_arm(repo, doc, name, target_file, lo, hi, follow=12):
     """
     words = [w for w in (doc or "").split() if len(w) > 3][:6]
     if len(words) < 3:
-        return 0, False, False, True
+        return 0, False, False, True, b""
     phrase = " ".join(words[:4])
     p = subprocess.run(["rg", "-n", "--no-heading", "-F", "-g", "!node_modules", phrase, repo],
                        capture_output=True, timeout=300)
@@ -208,7 +213,7 @@ def phrase_arm(repo, doc, name, target_file, lo, hi, follow=12):
     # original `> 1` guard let through as a valid run with empty output, scoring a killed
     # process as a legitimate miss. A timeout or OOM would have silently become evidence.
     if p.returncode < 0 or p.returncode > 1:
-        return 0, False, False, False
+        return 0, False, False, False, b""
     cost = len(p.stdout)
     d = DEFN(name)
     tgt = os.path.normpath(target_file)
@@ -235,15 +240,15 @@ def phrase_arm(repo, doc, name, target_file, lo, hi, follow=12):
             loc = True
         for w in window:
             if d.search(w):
-                return cost, True, True, True
-    return cost, loc, dec, True
+                return cost, True, True, True, p.stdout
+    return cost, loc, dec, True, p.stdout
 
 def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
     """Returns (bytes_in_context, located, ok). ok=False means the ARM FAILED and the case
     must be excluded, never scored as a retrieval miss (peer-review note 2)."""
     term = name if oracle else max((w for w in WORD.findall(query) if w.lower() not in STOP),
                                    key=len, default="")
-    if not term: return 0, False, False, False
+    if not term: return 0, False, False, False, b""
     p=subprocess.run(["rg","-n","--no-heading","-g","!node_modules",term,repo],capture_output=True,timeout=300)
     # rg exits 1 for "no matches", which is a real empty result, not a failure. Anything
     # above that is a broken run and the case is dropped rather than counted as a miss.
@@ -252,10 +257,10 @@ def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
     # original `> 1` guard let through as a valid run with empty output, scoring a killed
     # process as a legitimate miss. A timeout or OOM would have silently become evidence.
     if p.returncode < 0 or p.returncode > 1:
-        return 0, False, False, False
+        return 0, False, False, False, b""
     out=p.stdout
     loc, dec = score(out, repo, name, target_file, tgt_lo, tgt_hi)
-    return len(out), loc, dec, True
+    return len(out), loc, dec, True, out
 
 def graph_arm(binary,repo,query,name,target_file,budget,tgt_lo=0,tgt_hi=0):
     """Returns (bytes_in_context, located, ok). `located` is DISPLAYED-SYMBOL-NAME recall OR
@@ -266,10 +271,10 @@ def graph_arm(binary,repo,query,name,target_file,budget,tgt_lo=0,tgt_hi=0):
                      capture_output=True,timeout=900)
     # != 0 already covers signal death here (negative codes), unlike the grep guards above.
     if p.returncode != 0:
-        return 0, False, False, False
+        return 0, False, False, False, b""
     out=p.stdout
     loc, dec = score(out, repo, name, target_file, tgt_lo, tgt_hi, ranked_only=True)
-    return len(out), loc, dec, True
+    return len(out), loc, dec, True, out
 
 if __name__=="__main__":
     binary,repo,n,budget=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4])
@@ -286,8 +291,21 @@ if __name__=="__main__":
         d = subprocess.run(["git","-C",repo,"status","--porcelain"],capture_output=True,text=True)
         if r.returncode != 0 or d.returncode != 0:
             raise SystemExit(f"git failed in {repo}: cannot establish fixture state; refusing to score")
-        return r.stdout.strip(), d.stdout.strip()   # full porcelain, not a bool
-    rev0,dirty0=state()
+        # Porcelain names WHICH paths are dirty, never what is in them -- so a tree edited
+        # mid-run compares equal to itself as long as the same files stay dirty. Hash the
+        # content of every dirty path so an edit during the run is actually visible.
+        dirty = d.stdout.strip()
+        dig = hashlib.sha256()
+        for line in dirty.splitlines():
+            rel = line[3:].strip().strip('"')
+            dig.update(rel.encode())
+            try:
+                with open(os.path.join(repo, rel), "rb") as fh:
+                    dig.update(fh.read())
+            except OSError:
+                dig.update(b"<unreadable>")
+        return r.stdout.strip(), dirty, dig.hexdigest()
+    rev0,dirty0,cont0=state()
     bsha=hashlib.sha256(open(binary,"rb").read()).hexdigest()
     cases=build_cases(binary,repo,n)
     if outdir: os.makedirs(outdir,exist_ok=True)
@@ -302,10 +320,10 @@ if __name__=="__main__":
     gvals=[]; pvals=[]; ovals=[]; svals=[]
     gL=gD=pL=pD=oL=oD=sL=sD=0
     for q,name,fp,s_lo,s_hi,doc in cases:
-        g,g_l,g_d,gok=graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi)
-        pr,p_l,p_d,pok=grep_arm(repo,q,name,fp,False,s_lo,s_hi)
-        oc,o_l,o_d,ook=grep_arm(repo,q,name,fp,True,s_lo,s_hi)
-        sc,s_l,s_d,sok=phrase_arm(repo,doc,name,fp,s_lo,s_hi)
+        g,g_l,g_d,gok,g_raw=graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi)
+        pr,p_l,p_d,pok,p_raw=grep_arm(repo,q,name,fp,False,s_lo,s_hi)
+        oc,o_l,o_d,ook,o_raw=grep_arm(repo,q,name,fp,True,s_lo,s_hi)
+        sc,s_l,s_d,sok,s_raw=phrase_arm(repo,doc,name,fp,s_lo,s_hi)
         if not (gok and pok and ook and sok):
             dropped+=1      # a failed arm is excluded, never scored as a miss
             continue
@@ -314,14 +332,19 @@ if __name__=="__main__":
         gvals.append(g); pvals.append(pr); ovals.append(oc); svals.append(sc)
         sL+=s_l; sD+=s_d
         if outdir:
-            with open(os.path.join(outdir,re.sub(r"\W+","_",name)[:80]+".txt"),"w") as fh:
+            # RAW stdout per arm. A summary cannot be re-scored, and this scorer has been
+            # wrong five times; only the original bytes allow re-derivation without re-running.
+            base=os.path.join(outdir,re.sub(r"\W+","_",name)[:80])
+            for arm,blob in (("graph",g_raw),("grep",p_raw),("phrase",s_raw),("oracle",o_raw)):
+                with open(base+"."+arm+".raw","wb") as rf: rf.write(blob or b"")
+            with open(base+".txt","w") as fh:
                 fh.write(f"query: {q}\ntarget: {name} {fp}:{s_lo}-{s_hi}\n"
                          f"graph  bytes {g}  locator {g_l}  declaration {g_d}\n"
                          f"grep   bytes {pr} locator {p_l}  declaration {p_d}\n"
                          f"phrase bytes {sc} locator {s_l}  declaration {s_d}\n"
                          f"oracle bytes {oc} locator {o_l}  declaration {o_d}\n")
-    rev1,dirty1=state()
-    if (rev0,dirty0)!=(rev1,dirty1):
+    rev1,dirty1,cont1=state()
+    if (rev0,dirty0,cont0)!=(rev1,dirty1,cont1):
         # Exit non-zero. Printing "void" and then printing the table anyway is how a voided
         # run gets quoted later by someone reading only the numbers.
         raise SystemExit("SOURCE STATE CHANGED DURING THE RUN -- results void, refusing to report")

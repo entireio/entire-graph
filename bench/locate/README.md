@@ -59,11 +59,36 @@ result can be tied to exactly what produced it.
 
 ## Status of what they have measured
 
-On prose queries the graph locates the target far more often than a single grep, at a
-comparable or smaller median payload. That direction has replicated across five frozen
-fixtures and two languages. Absolute ratios move a great deal with sampling and should be
-read from a current run rather than quoted from here.
+Current, n=100 over five frozen fixtures (Go and TypeScript), against the strongest
+baseline available — grep the author's own doc comment, then read the following lines:
 
-A scaling story — that grep cost grows with repository size — was measured and **refuted**:
-median grep cost is not monotonic in repository size and tracks how common the symbol name
-is instead.
+| metric | graph | doc-phrase grep |
+|---|---:|---:|
+| **locator** — pointed at the right file and span | **64/100** | 20/100 |
+| **declaration** — showed the declaration itself | 16/100 | **20/100** |
+
+**The graph wins locator 3.2×. It loses declaration.** Both numbers are current as of the
+scorer in this directory; quote them from a fresh run, not from here.
+
+The mechanism is coverage, not precision. The doc-phrase arm scores locator == declaration on
+every fixture — when its phrase matches, the declaration is in the next twelve lines
+essentially always — and it matches in 20 of 100 cases. The graph fires in 64 and completes
+16. Those are different products.
+
+## Claims these benchmarks have already destroyed
+
+Kept because the withdrawals are more useful than the survivors:
+
+- **"grep cost scales with repository size."** Refuted — median grep cost is not monotonic in
+  repo size across five fixtures. It tracks how common the symbol name is.
+- **"A lexical search structurally cannot bridge a description to an identifier."** Refuted —
+  the description is in the file, above the declaration. The doc-phrase arm was added because
+  of this and beats the graph on one fixture.
+- **"Exact replay is unreachable by construction."** Refuted — the query JSON already carries
+  `commit` and `tree`. The identity was in the result, not the argv.
+- **A 24× declaration gap**, then 10.7×, then 1.6×, now 0.80×. Each reduction came from a
+  defect in these scripts, not from new data: an OR-ed metric, a weak baseline, and body text
+  credited to the wrong result.
+
+Every one of those was found by running something rather than reasoning about it. Treat a
+mechanism story from this directory as a hypothesis until a fixture kills it.
