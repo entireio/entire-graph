@@ -755,6 +755,30 @@ def _tests_body():
     check("a top-level JSON list does not crash", tool_events(_tmpjsonl("[1,2,3]")), [])
     check("a string Bash input does not crash", _qualify_str_input(), True)
     _removed = _cleanup_tempdirs()
+    # THE CLI MAPPING, not the wrapper's number. This suite's entrypoint is
+    # `sys.exit(0 if tests() else 1)`, so a wrapper returning 1 on residue -- truthy -- exits 0
+    # and a detected leak passes. Asserting the return value cannot see that; only the exit code
+    # can. A subprocess forces residue and runs the real expression.
+    import subprocess as _sp, sys as _sys, textwrap as _tw
+    _driver = _tw.dedent("""
+        import os, sys, importlib.util as ilu
+        spec = ilu.spec_from_file_location("rqx", sys.argv[1])
+        m = ilu.module_from_spec(spec); spec.loader.exec_module(m)
+        ro = m._mkdtemp(prefix="rq-exit-")
+        stuck = os.path.join(ro, "stuck"); os.makedirs(stuck, exist_ok=True)
+        os.chmod(ro, 0o500); m._TEMPDIRS.append(stuck)
+        m._tests_body = lambda: True          # a suite that otherwise passes
+        try:
+            rc = 0 if m.tests() else 1        # the entrypoint's own expression
+        finally:
+            os.chmod(ro, 0o700)
+            import shutil; shutil.rmtree(ro, ignore_errors=True)
+        sys.exit(rc)
+    """)
+    _r = _sp.run([_sys.executable, "-c", _driver, os.path.abspath(__file__)],
+                 capture_output=True, text=True, timeout=300)
+    check("residue makes the ENTRYPOINT exit non-zero", _r.returncode, 1)
+
     print("  ALL PASS" if ok else "  FAILURES ABOVE")
     return ok
 
