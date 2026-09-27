@@ -448,12 +448,20 @@ def _mkdtemp(prefix):
 
 
 def _cleanup_tempdirs():
+    """Remove the tracked directories and report how many ACTUALLY went.
+
+    The first version returned len(_TEMPDIRS) whether or not anything was removed, so a broken
+    cleanup reported "removed 25" beside 25 survivors. A count of what was attempted, presented
+    as a count of what was done, is the same defect this whole directory keeps turning up.
+    """
     import shutil
+    gone = 0
     for d in _TEMPDIRS:
         shutil.rmtree(d, ignore_errors=True)
-    n = len(_TEMPDIRS)
+        if not os.path.exists(d):
+            gone += 1
     _TEMPDIRS.clear()
-    return n
+    return gone
 
 
 def _mkrepo(files):
