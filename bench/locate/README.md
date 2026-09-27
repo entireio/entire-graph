@@ -53,7 +53,7 @@ agent would have read instead — and needs a randomized A/B.
 ## Usage
 
 ```sh
-python3 bench/locate/replay_qualify.py --test          # self-test, 46 fixtures
+python3 bench/locate/replay_qualify.py --test          # self-test, 48 fixtures
 git worktree add --detach /tmp/fx <rev>                # frozen fixture
 python3 bench/locate/head_to_head.py <binary> /tmp/fx 20 4096 /tmp/receipts
 python3 bench/locate/budget_falsifier.py <binary> /tmp/fx 20 4096 24576

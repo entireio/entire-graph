@@ -257,7 +257,18 @@ def payload_has_structure(body):
         # text have neither, and peer review passed both through the old check
         if ("/" in path and "." in base) or re.match(r"^[\w.-]+\.[A-Za-z]{1,5}$", base):
             good += 1
-    if good >= 2:
+    # Two plausible path:line ranks are not enough: peer review's
+    #     printf '1. a/b.go:1 F\n2. c/d.go:2 G'
+    # satisfies that and was never produced by the graph. Real ranked output carries the
+    # renderer's own marks -- a score, a completeness signal, a focus line, or the header the
+    # command prints above the ranks. Checked against the authorized capture, where every
+    # ranked line reads like
+    #     1. internal/sem/provider.go:18911-18925 walkWorktreeFilesAfterGitFailure [complete] s=21.9 [focus:18911]
+    # Only `query` emits ranked text at all; impact and neighbors produce no ranks, so this
+    # tightening costs those verbs nothing.
+    marked = bool(re.search(r"\bs=\d", body) or "[complete]" in body or "[focus:" in body
+                  or re.search(r"^(Coverage|Index|Completeness):", body, re.M))
+    if good >= 2 and marked:
         return True
     stripped = body.lstrip()
     if stripped.startswith("{"):
@@ -437,7 +448,13 @@ def tests():
     check("--head alone is not an identity",
           recorded_source_identity(argv_of("entire graph query --head --repo .")), False)
     check("one rank line is not an artifact", payload_has_structure("1. a.go:1 foo s=1"), False)
-    check("two rank lines are", payload_has_structure("1. a.go:1 foo\n2. b.go:2 bar"), True)
+    # CORRECTED. Two bare rank lines are rank-SHAPED; `printf '1. a/b.go:1 F\n2. c/d.go:2 G'`
+    # produces exactly this and the graph did not. Real ranked output carries the renderer's
+    # own marks, so the fixture now uses them and the bare form is a falsifier.
+    check("two rank lines are", payload_has_structure(
+        "1. a.go:1 foo [complete] s=21.9\n2. b.go:2 bar s=18.5"), True)
+    check("rank-shaped printf output is not a graph payload",
+          payload_has_structure("1. a/b.go:1 F\n2. c/d.go:2 G\n"), False)
     # Superseded: a results array whose entries carry no file_path/start_line is rank-SHAPED,
     # not re-renderable. The stricter `real json accepted` / `bare rank json refused` pair below
     # replaces this, and the two directly contradicted until this one was corrected.
