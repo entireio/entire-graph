@@ -29,6 +29,7 @@ auto-generated notes on
 
 ### Fixed
 
+- Preserved validated nested repository boundaries in working-tree fallback scans, avoiding duplicate source and search results from untracked nested clones, linked worktrees, and submodules while retaining outer-repository tracked source.
 - Classified ambiguous same-file nearest-declaration call guesses as `name_only` with reduced confidence, preserving the ambiguity through C++ out-of-line mapping. This corrects false certainty, not semantic overload selection; fast-profile and argument-forwarding filters now omit these uncertain edges.
 - Fixed seven wrong-answer defects in the provider and type scanners and stopped bare type names resolving across language boundaries.
 - Fixed language-scanner defect classes across C, C++, F#, and Julia, including declarator-based function naming, data-member and in-class method extraction, module-path and qualifier resolution, a forward-pipe precision bug, and bare-call scoping, and declared the type and data-flow relations all ten supported languages actually emit.
