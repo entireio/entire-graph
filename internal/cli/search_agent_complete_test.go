@@ -165,3 +165,43 @@ func TestAClippedForcedUnitIsNeverMarkedComplete(t *testing.T) {
 		t.Errorf("a clipped forced unit was rendered as [complete]:\n%s", rendered)
 	}
 }
+
+// TRANSFORMED BODY. Found by a peer reviewer on a real fixture: a body containing a DEL
+// byte (0x7f) inside a Go raw string literal rendered with [complete] while terminal-safe
+// escaping had rewritten that byte to a literal backslash-x7f. The structural range was the
+// whole symbol; the bytes were not the source bytes. An agent trusting the marker and
+// reusing them has silently changed the program.
+//
+// Two promises hide in one marker -- the range is whole, AND what you are reading is what is
+// on disk -- and only the first was ever checked. The escaping is correct and stays; the
+// marker is what must yield.
+func TestATransformedBodyIsNeverMarkedComplete(t *testing.T) {
+	t.Parallel()
+	const del = "func ControlLiteralBody() string {\n\treturn `A\x7fB`\n}\n"
+	if !renderedBodyIsTransformed(del) {
+		t.Fatal("fixture no longer trips terminal-safe escaping; pick a byte that does, or this test proves nothing")
+	}
+	var out bytes.Buffer
+	if err := writeAgentSearch(&out, completeSymbolResponse(del, sem.CompleteSymbolSignal), 4096); err != nil {
+		t.Fatal(err)
+	}
+	if rendered := out.String(); strings.Contains(rendered, completeMarker) {
+		t.Errorf("a body rewritten by terminal-safe escaping was marked %s; byte-exact reuse is false:\n%q",
+			completeMarker, rendered)
+	}
+
+	// The control: an ordinary multi-line body must STILL be marked. termsafe renders snippets
+	// through keepLayout, where a body's own newlines are its structure and are deliberately not
+	// escaped -- so a line-mode predicate here would withhold the marker from every normal
+	// result and quietly delete the feature.
+	if renderedBodyIsTransformed(completeBody) {
+		t.Fatal("ordinary multi-line source reported as transformed; the probe is using the wrong layout")
+	}
+	var ok bytes.Buffer
+	if err := writeAgentSearch(&ok, completeSymbolResponse(completeBody, sem.CompleteSymbolSignal), 4096); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ok.String(), completeMarker) {
+		t.Errorf("ordinary complete body lost its marker:\n%s", ok.String())
+	}
+}
