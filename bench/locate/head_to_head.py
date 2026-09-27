@@ -150,7 +150,13 @@ def build_cases(binary, repo, want, seed=7):
         # the original doc, the target name, its span, or a hit. Line breaks are preserved
         # because a lexical arm needs to know where contiguous source text ends, and they are
         # preserved IDENTICALLY for everyone rather than handed to one arm as side knowledge.
-        q = "\n".join(strip_name(l, name).replace("\x00", " ").rstrip() for l in dlines)
+        # The hole a removed name leaves is a real discontinuity in the source text, so it
+        # becomes a LINE BREAK rather than whitespace. The previous version blanked it to a
+        # space and asked the lexical arm to infer the gap from a run of two spaces -- which
+        # fails the moment the name touches punctuation: `the (ApplyRetryBudget) helper`
+        # became `the ( ) helper`, single-spaced, and the arm searched the source for a
+        # string that is not in it. Every arm sees the same breaks.
+        q = "\n".join(strip_name(l, name).replace("\x00", "\n").rstrip() for l in dlines)
         q = "\n".join(l for l in (x.strip() for x in q.splitlines()) if l)[:240]
         if len(WORD.findall(q))<8: continue
         out.append((q,name,d["file_path"],int(d.get("start_line") or 0),int(d.get("end_line") or 0)))
@@ -204,8 +210,11 @@ def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False):
                 current_is_target = ok and (not lo or lo <= line <= hi)
                 if current_is_target:
                     locator = True
-                    if d.search(ln):
-                        declaration = True
+                # A HEADER IS NOT A DECLARATION. The header names the symbol, so for a target
+                # called TargetAlpha the line `1. a.go:1-5 TargetAlpha [complete] s=1` matched
+                # DEFN and earned a declaration credit with no source body rendered at all --
+                # exactly the locator/declaration conflation the split metric exists to
+                # prevent. Only body lines beneath a target header can establish it.
                 continue
             # body text: only creditable when the header above it was the target
             if current_is_target and d.search(ln):
@@ -249,11 +258,12 @@ def phrase_for(q, min_words=3):
     original doc, which the graph never sees."""
     best = ""
     for line in q.splitlines():
-        for seg in (x.strip() for x in line.split("  ")):
-            # A run of blanks is where the name was removed, so text either side of it is not
-            # contiguous in the file. Interior single spaces must survive byte-exact.
-            if len(seg.split()) >= min_words and len(seg) > len(best):
-                best = seg
+        seg = line.strip()
+        # Every line of q is contiguous source text by construction: comment line breaks and
+        # name removals are both encoded as breaks, so no heuristic is needed to find the
+        # discontinuities -- which is what the two-space version got wrong around punctuation.
+        if len(seg.split()) >= min_words and len(seg) > len(best):
+            best = seg
     return best
 
 def phrase_arm(repo, q, name, target_file, lo, hi, follow=12):
@@ -280,16 +290,18 @@ def phrase_arm(repo, q, name, target_file, lo, hi, follow=12):
     """
     phrase = phrase_for(q)
     if not phrase:
-        return 0, False, False, True, b""
+        return 0, False, False, True, b"", {"argv": [], "rc": None, "stderr": "no phrase in q"}
     p = subprocess.run(["rg", "-n", "--no-heading", "-F", "-g", "!node_modules", phrase, repo],
                        capture_output=True, timeout=300)
     # rg exits 1 for "no matches", a real empty result. Above that is a broken run; BELOW zero
     # is signal death (SIGKILL is -9), which the original `> 1` guard admitted as a valid run
     # with empty output -- scoring a killed process as a legitimate miss.
+    meta = {"argv": ["rg","-n","--no-heading","-F","-g","!node_modules",phrase,repo],
+            "rc": p.returncode, "stderr": p.stderr.decode("utf8","replace")[:4000]}
     if p.returncode < 0 or p.returncode > 1:
-        return 0, False, False, False, b""
+        return 0, False, False, False, b"", meta
     cost = len(p.stdout)
-    # Reconstruct what a reader actually sees -- the hit line plus the next `follow` lines --
+    # Reconstruct exactly what a reader receives -- the hit line plus the next `follow` lines --
     # as path:line:text, so the SHARED scorer can judge it under the same span binding as
     # every other arm. Bytes are counted as bytes; the previous version added len() of decoded
     # str to len() of bytes and called the sum a byte count.
@@ -307,18 +319,22 @@ def phrase_arm(repo, q, name, target_file, lo, hi, follow=12):
         except OSError:
             continue
         for off, body in enumerate(src[start - 1:start - 1 + follow]):
-            cost += len(body.encode("utf8")) + 1
             seen.append(f"{rel}:{start + off}:{body}")
+    # Charge what a reader actually receives, framing included. Counting only the raw source
+    # bytes under-charged this arm by the `path:line:` prefix on every line it reads -- and
+    # that prefix is part of the payload, not an artefact of the harness.
     ev = "\n".join(seen).encode("utf8")
+    cost += len(ev)
     loc, dec = score(ev, repo, name, target_file, lo, hi)
-    return cost, loc, dec, True, p.stdout
+    meta["evidence"] = ev
+    return cost, loc, dec, True, p.stdout, meta
 
 def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
     """Returns (bytes_in_context, located, ok). ok=False means the ARM FAILED and the case
     must be excluded, never scored as a retrieval miss (peer-review note 2)."""
     term = name if oracle else max((w for w in WORD.findall(query) if w.lower() not in STOP),
                                    key=len, default="")
-    if not term: return 0, False, False, False, b""
+    if not term: return 0, False, False, False, b"", {"argv": [], "rc": None, "stderr": "no term"}
     p=subprocess.run(["rg","-n","--no-heading","-g","!node_modules",term,repo],capture_output=True,timeout=300)
     # rg exits 1 for "no matches", which is a real empty result, not a failure. Anything
     # above that is a broken run and the case is dropped rather than counted as a miss.
@@ -326,11 +342,14 @@ def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
     # broken run -- and anything BELOW zero is a signal death (SIGKILL is -9), which the
     # original `> 1` guard let through as a valid run with empty output, scoring a killed
     # process as a legitimate miss. A timeout or OOM would have silently become evidence.
+    meta = {"argv": ["rg","-n","--no-heading","-g","!node_modules",term,repo],
+            "rc": p.returncode, "stderr": p.stderr.decode("utf8","replace")[:4000],
+            "oracle": bool(oracle)}
     if p.returncode < 0 or p.returncode > 1:
-        return 0, False, False, False, b""
+        return 0, False, False, False, b"", meta
     out=p.stdout
     loc, dec = score(out, repo, name, target_file, tgt_lo, tgt_hi)
-    return len(out), loc, dec, True, out
+    return len(out), loc, dec, True, out, meta
 
 def graph_arm(binary,repo,query,name,target_file,budget,tgt_lo=0,tgt_hi=0):
     """Returns (bytes_in_context, located, ok). `located` is DISPLAYED-SYMBOL-NAME recall OR
@@ -339,12 +358,15 @@ def graph_arm(binary,repo,query,name,target_file,budget,tgt_lo=0,tgt_hi=0):
     p=subprocess.run([binary,"query","--repo",repo,"--query",query,"--format","agent",
                       "--max-context-bytes",str(budget),"--no-cache"],
                      capture_output=True,timeout=900)
+    meta = {"argv": [binary,"query","--repo",repo,"--query",query,"--format","agent",
+                     "--max-context-bytes",str(budget),"--no-cache"],
+            "rc": p.returncode, "stderr": p.stderr.decode("utf8","replace")[:4000]}
     # != 0 already covers signal death here (negative codes), unlike the grep guards above.
     if p.returncode != 0:
-        return 0, False, False, False, b""
+        return 0, False, False, False, b"", meta
     out=p.stdout
     loc, dec = score(out, repo, name, target_file, tgt_lo, tgt_hi, ranked_only=True)
-    return len(out), loc, dec, True, out
+    return len(out), loc, dec, True, out, meta
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +384,7 @@ def _mkrepo(files):
 
 def _canonical_q(dlines, name):
     """Exactly what build_cases produces, so the tests exercise the real query bytes."""
-    q = "\n".join(strip_name(l, name).replace("\x00", " ").rstrip() for l in dlines)
+    q = "\n".join(strip_name(l, name).replace("\x00", "\n").rstrip() for l in dlines)
     return "\n".join(l for l in (x.strip() for x in q.splitlines()) if l)[:240]
 
 def _selftest():
@@ -399,7 +421,7 @@ def _selftest():
           "// tail\nfunc ApplyRetryBudget() bool { return true }\n"
     r = _mkrepo({"a.go": far})
     n = far[:far.index("func ApplyRetryBudget")].count("\n") + 1
-    _, l, d, ok, _ = phrase_arm(r, _canonical_q(["decides whether a request may be"], "ApplyRetryBudget"),
+    _, l, d, ok, _, _ = phrase_arm(r, _canonical_q(["decides whether a request may be"], "ApplyRetryBudget"),
                                 "ApplyRetryBudget", "a.go", 2, n)
     ck(ok and l and not d, "locator TRUE and declaration FALSE is now reachable", f"loc={l} dec={d}")
 
@@ -408,15 +430,15 @@ def _selftest():
     two = "package p\n// decides whether a request may be\nfunc ApplyRetryBudget() bool { return true }\n" \
           + ("\n" * 30) + "func ApplyRetryBudget2() bool { return false }\n"
     r2 = _mkrepo({"b.go": two})
-    _, _, d2, ok2, _ = phrase_arm(r2, _canonical_q(["decides whether a request may be"], "ApplyRetryBudget"),
+    _, _, d2, ok2, _, _ = phrase_arm(r2, _canonical_q(["decides whether a request may be"], "ApplyRetryBudget"),
                                   "ApplyRetryBudget", "b.go", 34, 40)
     ck(ok2 and not d2, "declaration outside the registered span is refused", f"dec={d2}")
 
     # 4. BYTES, not characters. The old cost added len() of a decoded str to len() of bytes.
     acc = "package p\n// decides whether a request may be\nfunc ApplyRetryBudget() bool { return \"" + ("\u00e9" * 10) + "\" != \"\" }\n"
     qq = _canonical_q(["decides whether a request may be"], "ApplyRetryBudget")
-    c3, _, _, _, _ = phrase_arm(_mkrepo({"c.go": acc}), qq, "ApplyRetryBudget", "c.go", 3, 3)
-    c4, _, _, _, _ = phrase_arm(_mkrepo({"c.go": acc.replace("\u00e9", "x")}), qq, "ApplyRetryBudget", "c.go", 3, 3)
+    c3, _, _, _, _, _ = phrase_arm(_mkrepo({"c.go": acc}), qq, "ApplyRetryBudget", "c.go", 3, 3)
+    c4, _, _, _, _, _ = phrase_arm(_mkrepo({"c.go": acc.replace("\u00e9", "x")}), qq, "ApplyRetryBudget", "c.go", 3, 3)
     ck(c3 > c4, "multi-byte source costs more than its ASCII twin", f"{c3} vs {c4}")
 
     # 5. SHARED SCORING. The footer claimed identical scoring while this arm scored itself.
@@ -427,6 +449,23 @@ def _selftest():
     mid = _canonical_q(["the ApplyRetryBudget helper decides whether a request may be retried"], "ApplyRetryBudget")
     pm = phrase_for(mid)
     ck("the" not in pm.split(), "text across a stripped name is not joined into one phrase", repr(pm))
+
+    # 7. PUNCTUATION ADJACENT TO THE NAME. The gap was inferred from a run of two spaces, which
+    #    a bracketed name defeats: `the (ApplyRetryBudget) helper` blanks to `the ( ) helper`,
+    #    single-spaced, and the arm then searched for a string not present in any file.
+    src_line = "the (ApplyRetryBudget) helper decides whether a request may be retried"
+    pp = phrase_for(_canonical_q([src_line], "ApplyRetryBudget"))
+    ck(pp and pp in src_line, "a phrase beside a bracketed name still occurs in the source", repr(pp))
+
+    # 8. EVERY candidate line of the canonical query is real source text, not just the longest.
+    multi = _canonical_q(["the (ApplyRetryBudget) helper decides whether a request may be",
+                          "retried after ApplyRetryBudget observes a transient failure."],
+                         "ApplyRetryBudget")
+    bad = [l.strip() for l in multi.splitlines()
+           if l.strip() and l.strip() not in
+           "the (ApplyRetryBudget) helper decides whether a request may be "
+           "retried after ApplyRetryBudget observes a transient failure."]
+    ck(not bad, "every line of the canonical query is contiguous source text", repr(bad))
 
     print("\nALL PHRASE-ARM FALSIFIERS PASS" if not fails else "\nFAILURES: " + ", ".join(fails))
     return 1 if fails else 0
@@ -465,6 +504,13 @@ if __name__=="__main__":
                 dig.update(b"<unreadable>")
         return r.stdout.strip(), dirty, dig.hexdigest()
     rev0,dirty0,cont0=state()
+    # REFUSE A DIRTY FIXTURE. The content hash catches a tracked file edited mid-run, but it
+    # is built from `status --porcelain`, which reports an untracked DIRECTORY as one entry
+    # and says nothing about the files inside it, and renders a rename as a single path pair.
+    # Rather than grow a second, subtler reimplementation of git's own state tracking, refuse
+    # to measure anything but a clean tree -- which is what a frozen fixture is supposed to be.
+    if dirty0:
+        raise SystemExit(f"fixture {repo} is DIRTY; a frozen fixture must be clean\n{dirty0}")
     bsha=hashlib.sha256(open(binary,"rb").read()).hexdigest()
     cases=build_cases(binary,repo,n)
     if outdir: os.makedirs(outdir,exist_ok=True)
@@ -479,29 +525,55 @@ if __name__=="__main__":
     gvals=[]; pvals=[]; ovals=[]; svals=[]
     gL=gD=pL=pD=oL=oD=sL=sD=0
     for q,name,fp,s_lo,s_hi in cases:
-        g,g_l,g_d,gok,g_raw=graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi)
-        pr,p_l,p_d,pok,p_raw=grep_arm(repo,q,name,fp,False,s_lo,s_hi)
-        oc,o_l,o_d,ook,o_raw=grep_arm(repo,q,name,fp,True,s_lo,s_hi)
-        sc,s_l,s_d,sok,s_raw=phrase_arm(repo,q,name,fp,s_lo,s_hi)
-        if not (gok and pok and ook and sok):
-            dropped+=1      # a failed arm is excluded, never scored as a miss
+        g,g_l,g_d,gok,g_raw,g_m=graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi)
+        pr,p_l,p_d,pok,p_raw,p_m=grep_arm(repo,q,name,fp,False,s_lo,s_hi)
+        oc,o_l,o_d,ook,o_raw,o_m=grep_arm(repo,q,name,fp,True,s_lo,s_hi)
+        sc,s_l,s_d,sok,s_raw,s_m=phrase_arm(repo,q,name,fp,s_lo,s_hi)
+        # THE ORACLE IS NOT AN ARM. It is handed the target's NAME, which no other arm gets,
+        # so it is not a same-input comparator and cannot sit in a comparative denominator.
+        # It was also inside the shared success gate, which is worse than cosmetic: a case
+        # where only the oracle failed was DROPPED FROM EVERY ARM, letting a non-comparable
+        # control decide which cases the real comparison is computed over.
+        # It stays as an explicitly labelled capability ceiling and nothing else.
+        if not (gok and pok and sok):
+            dropped+=1      # a failed comparable arm excludes the case, never scores as a miss
             continue
         k+=1; tg+=g; tp+=pr; to+=oc
         gL+=g_l; gD+=g_d; pL+=p_l; pD+=p_d; oL+=o_l; oD+=o_d
         gvals.append(g); pvals.append(pr); ovals.append(oc); svals.append(sc)
         sL+=s_l; sD+=s_d
         if outdir:
-            # RAW stdout per arm. A summary cannot be re-scored, and this scorer has been
-            # wrong five times; only the original bytes allow re-derivation without re-running.
-            base=os.path.join(outdir,re.sub(r"\W+","_",name)[:80])
-            for arm,blob in (("graph",g_raw),("grep",p_raw),("phrase",s_raw),("oracle",o_raw)):
+            # RAW per-arm stdout plus full provenance. A summary cannot be re-scored, and this
+            # scorer has now been wrong six times; only the original bytes allow re-derivation
+            # without re-running a cohort.
+            #
+            # The case id is UNIQUE per case, not the symbol name: a repository contains many
+            # symbols with the same name, and keying on the name silently overwrote one
+            # homonym's receipts with another's -- so the file on disk described a different
+            # case than the row it was filed under.
+            cid = "%03d-%s-%s" % (k, re.sub(r"\W+","_",name)[:48],
+                                  re.sub(r"\W+","_",os.path.basename(fp))[:32])
+            base=os.path.join(outdir,cid)
+            for arm,blob,m in (("graph",g_raw,g_m),("grep",p_raw,p_m),
+                               ("phrase",s_raw,s_m),("oracle",o_raw,o_m)):
                 with open(base+"."+arm+".raw","wb") as rf: rf.write(blob or b"")
+                # Everything scored, not only what rg printed: the phrase arm scores the
+                # windows it reads, and those bytes were absent from the record entirely.
+                if m.get("evidence") is not None:
+                    with open(base+"."+arm+".scored","wb") as rf: rf.write(m["evidence"])
+                with open(base+"."+arm+".json","w") as jf:
+                    json.dump({"argv": m.get("argv"), "returncode": m.get("rc"),
+                               "stderr": m.get("stderr"), "oracle": m.get("oracle", False)},
+                              jf, indent=1)
             with open(base+".txt","w") as fh:
-                fh.write(f"query: {q}\ntarget: {name} {fp}:{s_lo}-{s_hi}\n"
+                fh.write(f"case_id: {cid}\nquery: {q!r}\n"
+                         f"target: {name} {fp}:{s_lo}-{s_hi}\n"
+                         f"run_status: PROVISIONAL until the whole run exits 0\n"
                          f"graph  bytes {g}  locator {g_l}  declaration {g_d}\n"
                          f"grep   bytes {pr} locator {p_l}  declaration {p_d}\n"
                          f"phrase bytes {sc} locator {s_l}  declaration {s_d}\n"
-                         f"oracle bytes {oc} locator {o_l}  declaration {o_d}\n")
+                         f"oracle bytes {oc} locator {o_l}  declaration {o_d}"
+                         f"   (CAPABILITY CONTROL: given the target name; not a comparator)\n")
     rev1,dirty1,cont1=state()
     if (rev0,dirty0,cont0)!=(rev1,dirty1,cont1):
         # Exit non-zero. Printing "void" and then printing the table anyway is how a voided
