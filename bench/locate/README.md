@@ -75,6 +75,26 @@ ways at once, each of which flattered the graph:
   columns could not take different values.
 
 All three are fixed and each has a synthetic falsifier in `--test` that fails on the old code.
+
+## The equal-input rule
+
+Settled with the reviewer after the third of those defects, and now the rule this directory
+is built on:
+
+> Every evaluated arm receives **byte-identical canonical query text**, and may derive its
+> search **from those bytes alone** — never from the original doc comment, the target's name,
+> its span, or knowledge of a hit.
+
+The canonical query is the doc comment with the target's name and its case-split parts blanked,
+**with the physical line breaks kept**. The breaks are there because a lexical arm has to know
+where contiguous source text ends, and they are given to *everyone* rather than to one arm as
+side knowledge. A first repair got this wrong in a subtler way than the original bug: it read
+the line structure straight off the source file, which is still a second channel the graph has
+no access to.
+
+Keeping the breaks was verified to be neutral for the graph rather than assumed — the same
+query with and without them returns a byte-identical ranking, the same five symbols at the same
+scores.
 The corrected instrument has not been run at cohort scale, and it is the run, not the repair,
 that decides what is true. Rerun it yourself and read the number off your own output.
 
