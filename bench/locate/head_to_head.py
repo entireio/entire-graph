@@ -467,6 +467,49 @@ def _selftest():
            "retried after ApplyRetryBudget observes a transient failure."]
     ck(not bad, "every line of the canonical query is contiguous source text", repr(bad))
 
+    # 9-12. GUARDS A MUTATION SWEEP FOUND UNHELD. Each of these repairs shipped with no test
+    #       at all -- including the ranked-header one, which peer review had just caught. A
+    #       fix nothing can falsify is a fix on trust.
+    # These are the reviewer's EXACT byte strings, not paraphrases of them. My own first
+    # attempt at the header case used `1. src/right.go:20-30 TargetAlpha [complete] s=21.9`,
+    # which DEFN cannot match at all -- so the test passed while the guard it was written for
+    # stayed unheld, and the mutation sweep is the only reason I noticed.
+    hdr = b"1. src/right.ts:20 function TargetAlpha\n"
+    hl, hd = score(hdr, "/repo", "TargetAlpha", "src/right.ts", 20, 30, ranked_only=True)
+    ck(not hd, "a ranked header alone is not a declaration", f"dec={hd}")
+    ck(hl, "...but it is still a locator", f"loc={hl}")
+
+    # body text under someone ELSE's header must not be credited to the target
+    other = b"1. src/wrong.go:10 WrongSymbol\nfunc TargetAlpha() {}\n"
+    _, od = score(other, "/repo", "TargetAlpha", "src/right.go", 20, 30, ranked_only=True)
+    ck(not od, "a body under a non-target header is not credited", f"dec={od}")
+
+    # a declaration in the right file but outside the registered span, via the grep path
+    outside = b"/repo/src/right.go:90:func TargetAlpha() {}\n"
+    ol, od2 = score(outside, "/repo", "TargetAlpha", "src/right.go", 20, 30)
+    ck(not ol and not od2, "a hit outside the span is neither locator nor declaration",
+       f"loc={ol} dec={od2}")
+
+    # ...and the SAME declaration inside the span must still count, or the guard above is
+    # just a blanket refusal wearing a span check
+    inl, ind = score(b"/repo/src/right.go:25:func TargetAlpha() {}\n",
+                     "/repo", "TargetAlpha", "src/right.go", 20, 30)
+    ck(inl and ind, "the same declaration inside the span does count", f"loc={inl} dec={ind}")
+
+    # the reviewer's prefixed-TypeScript case, which the path prefix used to hide
+    tl, td = score(b"/repo/src/right.ts:20:    public TargetAlpha(): void {}\n",
+                   "/repo", "TargetAlpha", "src/right.ts", 20, 30)
+    ck(tl and td, "a TypeScript method behind a path prefix is found", f"loc={tl} dec={td}")
+
+    # signal death: a killed arm is an excluded case, never a retrieval miss
+    class _Killed:
+        returncode, stdout, stderr = -9, b"", b""
+    import unittest.mock as _m
+    with _m.patch.object(subprocess, "run", lambda *a, **k: _Killed()):
+        _, _, _, kok, _, _ = phrase_arm("/repo", "decides whether a request may be",
+                                        "ApplyRetryBudget", "a.go", 1, 9)
+    ck(not kok, "a signal-killed arm reports failure, not a miss", f"ok={kok}")
+
     print("\nALL PHRASE-ARM FALSIFIERS PASS" if not fails else "\nFAILURES: " + ", ".join(fails))
     return 1 if fails else 0
 

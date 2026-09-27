@@ -398,6 +398,21 @@ def _tmpjsonl(line):
         fh.write('{"type":"x","tool_use":1,"tool_result":1}\n' + line + "\n")
     return p
 
+def _tier_for_identity():
+    """Classify one clean invocation whose response carries a real commit and tree."""
+    import tempfile
+    d = tempfile.mkdtemp(prefix="rq-")
+    body = json.dumps({"commit": "a" * 40, "tree": "b" * 40, "results": []})
+    with open(os.path.join(d, "t.jsonl"), "w") as fh:
+        fh.write(json.dumps({"message": {"content": [
+            {"type": "tool_use", "id": "u1", "name": "Bash",
+             "input": {"command": "entire graph query --repo /r --query x"}}]}}) + "\n")
+        fh.write(json.dumps({"message": {"content": [
+            {"type": "tool_result", "tool_use_id": "u1",
+             "content": [{"text": body}]}]}}) + "\n")
+    tiers, _, _ = qualify(d)
+    return next(iter(tiers), None)
+
 def _qualify_str_input():
     """A Bash block whose `input` is a bare string reached .get and raised."""
     import tempfile
@@ -517,8 +532,14 @@ def tests():
         '"symbol_name":"F","snippet":"func F() {}","score":21.9,"signals":["complete-symbol"]}]}'), True)
     check("a file_path+start_line pointer is not a payload",
           payload_has_structure('{"results":[{"rank":1,"file_path":"a.go","start_line":3}]}'), False)
-    check("capitalised truncation is refused",
-          payload_has_structure("1. a/b.go:1 F\n2. c/d.go:2 G\n[Output truncated]"), False)
+    # CONFOUNDED BEFORE THIS. The payload carried no graph markers either, so it was refused
+    # for the wrong reason and the mutation sweep showed the truncation guard was unheld:
+    # reverting to a case-sensitive match left the suite green. The payload now carries
+    # markers, so truncation is the ONLY thing that can reject it.
+    check("capitalised truncation is refused", payload_has_structure(
+        "1. a/b.go:1 F [complete] s=21.9\n2. c/d.go:2 G s=18.5\n[Output truncated]"), False)
+    check("the same payload without the truncation marker is accepted", payload_has_structure(
+        "1. a/b.go:1 F [complete] s=21.9\n2. c/d.go:2 G s=18.5\n"), True)
     # `false && ...` NAMES an invocation -- the text is right there -- but whether the shell
     # reached it is unknowable from a transcript. So it is detected and then refused
     # attribution, rather than being counted as a clean render or silently dropped.
@@ -541,6 +562,11 @@ def tests():
           recorded_source_identity([], '{"commit":"' + "a"*40 + '","tree":"b"}'), False)
     check("two real object names are",
           recorded_source_identity([], '{"commit":"' + "a"*40 + '","tree":"' + "b"*40 + '"}'), True)
+    # THE TIER ITSELF, which nothing asserted: the sweep showed that promoting identity
+    # straight back to full-execution left the suite green -- the exact defect peer review
+    # found, with no test standing against its return.
+    check("identity is a candidate, never a certification", _tier_for_identity(),
+          "source-identity-candidate")
     check("a top-level JSON list does not crash", tool_events(_tmpjsonl("[1,2,3]")), [])
     check("a string Bash input does not crash", _qualify_str_input(), True)
     print("  ALL PASS" if ok else "  FAILURES ABOVE")
