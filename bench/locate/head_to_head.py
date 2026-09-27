@@ -121,43 +121,67 @@ def fsize(repo,rel):
 
 
 def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False):
-    """Two metrics, computed IDENTICALLY for every arm. Returns (locator, declaration).
+    r"""Two metrics, computed IDENTICALLY for every arm. Returns (locator, declaration).
 
-    locator      the arm pointed at the right place: a line it emitted names the target's
-                 file, and (when the arm reports one) a line number inside the target's span.
-    declaration  the arm's own output CONTAINS the declaration, per DEFN.
+    locator      the arm named the target's file at a line inside the target's span
+    declaration  the arm's output contains the target's declaration, IN THE TARGET'S FILE,
+                 and inside its span
 
-    These were previously OR-ed into one `located`, and asymmetrically: the graph arm could
-    win on a span hit while the grep arm had to show a declaration line. That handed the
-    graph the easier test and peer review was right to refuse the resulting number. They are
-    now separate columns and neither arm gets a shortcut the other does not.
-
-    `ranked_only` restricts locator scoring to numbered ranking headers, which is what the
-    graph emits; grep emits `path:line:text` and is scored on every line.
+    Three defects peer review found in the previous version, all of which inflated
+    `declaration`:
+      * body text was scanned for a declaration without checking WHICH result it belonged
+        to, so a declaration inside another file's rendered body scored a hit. Body lines
+        are now attributed to the header above them.
+      * in the grep path the declaration check was not gated on the span at all, so a
+        same-named declaration elsewhere in the right file counted.
+      * DEFN was applied to whole `path:line:text` lines, and its start-anchored TypeScript
+        patterns (`^\s*private async m(`) can never match once a path prefix is present.
+        The text is now split off before matching.
     """
     tgt = os.path.normpath(target_file)
     locator = declaration = False
     d = DEFN(name)
+
+    def in_target(path, num):
+        if os.path.isabs(path):
+            path = os.path.relpath(path, repo)
+        if os.path.normpath(path) != tgt:
+            return False, 0
+        try:
+            line = int(num)
+        except ValueError:
+            return True, 0
+        return True, line
+
+    current_is_target = False          # which result the following body lines belong to
     for ln in out_bytes.decode("utf8", "replace").splitlines():
         if ranked_only:
             m = RANK.match(ln)
-            if not m:
-                if d.search(ln):
-                    declaration = True      # body text under a header
+            if m:
+                ok, line = in_target(m.group(2), m.group(3))
+                current_is_target = ok and (not lo or lo <= line <= hi)
+                if current_is_target:
+                    locator = True
+                    if d.search(ln):
+                        declaration = True
                 continue
-            path, num = m.group(2), m.group(3)
-        else:
-            parts = ln.split(":", 2)
-            if len(parts) < 3: continue
-            path, num = parts[0], parts[1]
-        if os.path.isabs(path): path = os.path.relpath(path, repo)
-        if os.path.normpath(path) != tgt: continue
-        try: line = int(num)
-        except ValueError: line = 0
-        if not lo or (lo <= line <= hi): locator = True
-        if d.search(ln): declaration = True
+            # body text: only creditable when the header above it was the target
+            if current_is_target and d.search(ln):
+                declaration = True
+            continue
+        parts = ln.split(":", 2)
+        if len(parts) < 3:
+            continue
+        path, num, text = parts[0], parts[1], parts[2]
+        ok, line = in_target(path, num)
+        if not ok:
+            continue
+        if lo and not (lo <= line <= hi):
+            continue                    # outside the target's span: neither metric
+        locator = True
+        if d.search(text):              # match the TEXT, never the path-prefixed line
+            declaration = True
     return locator, declaration
-
 
 def phrase_arm(repo, doc, name, target_file, lo, hi, follow=12):
     """THE STRONG GREP BASELINE. Search the author's description, then read what follows it.
