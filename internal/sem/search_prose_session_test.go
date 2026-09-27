@@ -613,7 +613,9 @@ func %sDelivery() {}
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "4e88510273830fef30a7aeb44845893c24e723fdf53dfd68f879c44a6f1dbf35")
+	// Removing only two newly justified complete-symbol signals independently
+	// recovered the full previous JSON digest; source and order are unchanged.
+	assertSearchResultGolden(t, response.Results, "e9210f8962e96fc00a4141dfb3cd01d16bd3afc5a3e75aadb8c2dcd7a4a33647")
 	identities := make([][3]any, len(response.Results))
 	for index, result := range response.Results {
 		if len(result.Passages) != 0 {
@@ -773,7 +775,9 @@ func Worker%d() {}
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "e9733475f04142cfe8fd78b823651105cd55eac581d38430c1b92424aa4a2a5b")
+	// Removing only two newly justified complete-symbol signals independently
+	// recovered the full previous JSON digest; source and order are unchanged.
+	assertSearchResultGolden(t, response.Results, "76f2907c82b6d8a21d2b1936094e8e647dfeb1142132ec846cae5eee8d0b5d2e")
 	for _, result := range response.Results {
 		if containsString(result.Signals, "retrieval_mode=prose-parent") {
 			t.Fatalf("two-thirds prose corpus activated prose-parent mode: %#v", response.Results)
