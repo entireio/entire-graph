@@ -455,12 +455,20 @@ def _cleanup_tempdirs():
     as a count of what was done, is the same defect this whole directory keeps turning up.
     """
     import shutil
-    gone = 0
+    gone, stuck = 0, []
     for d in _TEMPDIRS:
         shutil.rmtree(d, ignore_errors=True)
-        if not os.path.exists(d):
+        if os.path.exists(d):
+            # A PATH THAT DID NOT GO STAYS TRACKED. Clearing the list unconditionally meant a
+            # failed removal ERASED ITS OWN EVIDENCE: the body cleaned up, the survivor
+            # remained on disk, the record of it was dropped, and the wrapper's survivor check
+            # saw an empty list and reported success. A leak that deletes the proof of itself
+            # is worse than one that does not, and it took forcing a real unremovable path
+            # through the actual entrypoint to see it.
+            stuck.append(d)
+        else:
             gone += 1
-    _TEMPDIRS.clear()
+    _TEMPDIRS[:] = stuck
     return gone
 
 

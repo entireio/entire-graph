@@ -57,6 +57,8 @@ MUT = [
   (H, "tests: stop cleaning up temp directories",
    "    for d in _TEMPDIRS:\n        shutil.rmtree(d, ignore_errors=True)\n        if not os.path.exists(d):",
    "    for d in []:\n        shutil.rmtree(d, ignore_errors=True)\n        if not os.path.exists(d):"),
+  (H, "cleanup: forget a path that failed to be removed",
+   "    _TEMPDIRS[:] = stuck", "    _TEMPDIRS[:] = []"),
   (H, "tests: report attempted removals as completed ones",
    "        if not os.path.exists(d):\n            gone += 1", "        if True:\n            gone += 1"),
   (H, "output: drop the budget-asymmetry caveat",

@@ -492,12 +492,20 @@ def _cleanup_tempdirs():
     as a count of what was done, is the same defect this whole directory keeps turning up.
     """
     import shutil
-    gone = 0
+    gone, stuck = 0, []
     for d in _TEMPDIRS:
         shutil.rmtree(d, ignore_errors=True)
-        if not os.path.exists(d):
+        if os.path.exists(d):
+            # A PATH THAT DID NOT GO STAYS TRACKED. Clearing the list unconditionally meant a
+            # failed removal ERASED ITS OWN EVIDENCE: the body cleaned up, the survivor
+            # remained on disk, the record of it was dropped, and the wrapper's survivor check
+            # saw an empty list and reported success. A leak that deletes the proof of itself
+            # is worse than one that does not, and it took forcing a real unremovable path
+            # through the actual entrypoint to see it.
+            stuck.append(d)
+        else:
             gone += 1
-    _TEMPDIRS.clear()
+    _TEMPDIRS[:] = stuck
     return gone
 
 
@@ -553,6 +561,47 @@ def _qualify_str_input():
         qualify(d); return True
     except Exception:
         return False
+
+def _entrypoint_residue_guard(check):
+    # THE ACTUAL ENTRYPOINT, not a copy of its exit expression. A driver that reimplements
+    # `0 if tests() else 1` tests the driver; the defect lives between this module's return
+    # value and the real __main__ line. RQ_FORCE_RESIDUE drives the real script into the state.
+    #
+    # And a bare exit 1 is not enough -- a crash, an import error or a syntax error all give 1
+    # and would satisfy a naive check. The run must also REACH THE END, which the residue line
+    # proves, so the exit code is read together with a completion sentinel.
+    # THE CHILD MUST NOT RUN THIS GUARD. The first version had the guard spawn --test, whose
+    # child ran the guard, which spawned --test: a recursive fork bomb that hung for ten
+    # minutes before I killed it. The forcing variable doubles as the marker that we ARE the
+    # child.
+    import subprocess as _sp, sys as _sys
+    _env = dict(os.environ, RQ_FORCE_RESIDUE="1")
+    _r = _sp.run([_sys.executable, os.path.abspath(__file__), "--test"],
+                 capture_output=True, text=True, timeout=600, env=_env)
+    _out = _r.stdout + _r.stderr
+    check("forced residue: the real entrypoint exits non-zero", _r.returncode, 1)
+    check("forced residue: ...and the run completed rather than crashed",
+          "owned temp path(s) behind" in _out, True)
+    check("forced residue: ...and the body itself still passed",
+          "ALL PASS" in _out or "FAILURES ABOVE" in _out, True)
+
+
+def _force_residue_for_testing():
+    """Create an unremovable owned path when asked by the environment.
+
+    Exists so the guard below can execute the ACTUAL entrypoint rather than a copy of its exit
+    expression. Reimplementing `0 if tests() else 1` in a driver tests the driver; the defect
+    being guarded lives in the relationship between this module's return value and the real
+    __main__ line, and only running that line can see it.
+    """
+    if os.environ.get("RQ_FORCE_RESIDUE") != "1":
+        return
+    ro = _mkdtemp(prefix="rq-forced-")
+    stuck = os.path.join(ro, "stuck")
+    os.makedirs(stuck, exist_ok=True)
+    os.chmod(ro, 0o500)
+    _TEMPDIRS.append(stuck)
+
 
 def _finish_tempdirs():
     """Remove everything allocated and return the OWNED paths that survived.
@@ -755,29 +804,12 @@ def _tests_body():
     check("a top-level JSON list does not crash", tool_events(_tmpjsonl("[1,2,3]")), [])
     check("a string Bash input does not crash", _qualify_str_input(), True)
     _removed = _cleanup_tempdirs()
-    # THE CLI MAPPING, not the wrapper's number. This suite's entrypoint is
-    # `sys.exit(0 if tests() else 1)`, so a wrapper returning 1 on residue -- truthy -- exits 0
-    # and a detected leak passes. Asserting the return value cannot see that; only the exit code
-    # can. A subprocess forces residue and runs the real expression.
-    import subprocess as _sp, sys as _sys, textwrap as _tw
-    _driver = _tw.dedent("""
-        import os, sys, importlib.util as ilu
-        spec = ilu.spec_from_file_location("rqx", sys.argv[1])
-        m = ilu.module_from_spec(spec); spec.loader.exec_module(m)
-        ro = m._mkdtemp(prefix="rq-exit-")
-        stuck = os.path.join(ro, "stuck"); os.makedirs(stuck, exist_ok=True)
-        os.chmod(ro, 0o500); m._TEMPDIRS.append(stuck)
-        m._tests_body = lambda: True          # a suite that otherwise passes
-        try:
-            rc = 0 if m.tests() else 1        # the entrypoint's own expression
-        finally:
-            os.chmod(ro, 0o700)
-            import shutil; shutil.rmtree(ro, ignore_errors=True)
-        sys.exit(rc)
-    """)
-    _r = _sp.run([_sys.executable, "-c", _driver, os.path.abspath(__file__)],
-                 capture_output=True, text=True, timeout=300)
-    check("residue makes the ENTRYPOINT exit non-zero", _r.returncode, 1)
+    if os.environ.get("RQ_FORCE_RESIDUE") == "1":
+        print("  ..    entrypoint guard skipped in the forced child (it is the subject)")
+    else:
+        _entrypoint_residue_guard(check)
+
+
 
     print("  ALL PASS" if ok else "  FAILURES ABOVE")
     return ok
@@ -794,6 +826,7 @@ def tests():
     # The wrapper first returned 1 on residue, which is TRUTHY, so a detected leak would have
     # exited 0 and passed. A cleanup guard that reports the leak and then reports success is
     # worse than no guard: it prints a FAIL line and still goes green.
+    _force_residue_for_testing()
     raised = None
     try:
         ok = _tests_body()
