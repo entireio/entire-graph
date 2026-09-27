@@ -190,9 +190,18 @@ if __name__=="__main__":
     binary,repo,n,budget=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4])
     outdir=sys.argv[5] if len(sys.argv)>5 else None
     def state():
-        rev=subprocess.run(["git","-C",repo,"rev-parse","HEAD"],capture_output=True,text=True).stdout.strip()
-        dirty=subprocess.run(["git","-C",repo,"status","--porcelain"],capture_output=True,text=True).stdout.strip()
-        return rev, bool(dirty)
+        """Exact fixture state. Three things the first version got wrong, all peer-reviewed:
+
+        it reduced the worktree to bool(dirty), so a tree dirty in DIFFERENT ways before and
+        after compared equal; it ignored git's exit status, so a failed command produced an
+        empty string that compared equal to a clean tree; and a detected change only printed
+        a warning while the run carried on and reported numbers anyway.
+        """
+        r = subprocess.run(["git","-C",repo,"rev-parse","HEAD"],capture_output=True,text=True)
+        d = subprocess.run(["git","-C",repo,"status","--porcelain"],capture_output=True,text=True)
+        if r.returncode != 0 or d.returncode != 0:
+            raise SystemExit(f"git failed in {repo}: cannot establish fixture state; refusing to score")
+        return r.stdout.strip(), d.stdout.strip()   # full porcelain, not a bool
     rev0,dirty0=state()
     bsha=hashlib.sha256(open(binary,"rb").read()).hexdigest()
     cases=build_cases(binary,repo,n)
@@ -224,7 +233,9 @@ if __name__=="__main__":
                          f"oracle bytes {oc} located {ol}\n")
     rev1,dirty1=state()
     if (rev0,dirty0)!=(rev1,dirty1):
-        print("!! SOURCE STATE CHANGED DURING THE RUN -- results void\n")
+        # Exit non-zero. Printing "void" and then printing the table anyway is how a voided
+        # run gets quoted later by someone reading only the numbers.
+        raise SystemExit("SOURCE STATE CHANGED DURING THE RUN -- results void, refusing to report")
     if not k:
         print("no scorable cases"); sys.exit(1)
     def med(a):
