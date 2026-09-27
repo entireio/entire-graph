@@ -12,90 +12,6 @@ import (
 	"github.com/entireio/entire-graph/internal/sem"
 )
 
-// PRODUCER-TO-RENDERER SWEEP.
-//
-// The [complete] marker bug that peer review caught was invisible to every test in
-// search_agent_complete_test.go, and the reason is structural rather than an oversight:
-// those tests build sem.SearchResult literals by hand, so they assert what the renderer
-// does with a signal set the TEST chose. They can never notice that the real producer
-// emits a signal set nobody anticipated -- which is exactly what happened. The producer
-// emits full-unit + unit-elided with NO complete-symbol for a forced unit the safety cap
-// clipped (internal/sem/search_enclosure.go:792-803), and a predicate that accepted
-// full-unit alone stamped a completeness promise onto a fragment.
-//
-// So this file asserts the same invariant through the PUBLIC PRODUCTION PATH: a real
-// repository, a real index, the real allocator, the real renderer. No new exports and no
-// reach into unexported sem helpers, which is what keeps it honest -- if the producer's
-// signal contract ever changes, this notices and the hand-built fixtures do not.
-//
-// THE INVARIANT, at every budget and every flag combination below:
-//
-//	[complete] appears  =>  the rendered body is the WHOLE symbol.
-//
-// Stated as its falsifier: a clipped or windowed body rendered under a [complete] marker
-// at ANY budget fails this test.
-
-// hugeUnitRepo writes a callable far past searchFullUnitMaxLines (400), so --full-unit-top
-// forces a unit the safety cap must clip. That is the shape that produced the bug, and a
-// smaller fixture cannot reach it.
-func hugeUnitRepo(t *testing.T) string {
-	t.Helper()
-	repo := t.TempDir()
-	var body strings.Builder
-	body.WriteString("package huge\n\n// ApplyRetryBudget decides whether a request may be retried.\nfunc ApplyRetryBudget(attempt int, budget int) bool {\n")
-	for i := 0; i < 520; i++ {
-		body.WriteString(fmt.Sprintf("\tif attempt == %d && budget > %d {\n\t\treturn true\n\t}\n", i, i))
-	}
-	body.WriteString("\treturn false\n}\n")
-	write(t, repo, "huge/retry.go", body.String())
-
-	// A small, genuinely complete callable so the sweep also proves the marker is not
-	// simply never emitted -- a test that only checks "no false marker" passes trivially
-	// on a renderer that lost the feature entirely.
-	write(t, repo, "small/retry.go", "package small\n\n"+
-		"// RetryBudgetExhausted reports whether the retry budget is spent.\n"+
-		"func RetryBudgetExhausted(attempt, budget int) bool {\n\treturn attempt >= budget\n}\n")
-	return repo
-}
-
-func TestMarkerTruthfulnessThroughTheRealSearchPath(t *testing.T) {
-	t.Parallel()
-	repo := hugeUnitRepo(t)
-
-	for _, flags := range [][]string{
-		{},
-		{"--full-unit-top", "1"},
-		{"--full-unit-top", "3"},
-	} {
-		for _, budget := range []int{1024, 2048, 4096, 8192, 24576} {
-			args := append([]string{
-				"query", "--repo", repo, "--query", "retry budget decides whether a request may be retried",
-				"--format", "agent", "--max-context-bytes", fmt.Sprint(budget), "--no-cache",
-			}, flags...)
-
-			var out bytes.Buffer
-			if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, args); err != nil {
-				t.Fatalf("flags=%v budget=%d: %v", flags, budget, err)
-			}
-			// HARD FALSIFIER, tightened after peer review. The first version grepped the
-			// WHOLE output for a closing brace, so a truncated middle with an intact tail --
-			// or an unrelated sibling symbol -- passed it. That is not a falsifier, it is a
-			// coincidence detector.
-			//
-			// ApplyRetryBudget is 520 branches, far past searchFullUnitMaxLines (400). The
-			// safety cap can NEVER return it whole at any budget here, so the promise is
-			// false unconditionally: assert the marker never appears on ITS OWN header line,
-			// rather than reasoning about what the body contains.
-			for _, line := range strings.Split(out.String(), "\n") {
-				if strings.Contains(line, "ApplyRetryBudget") && strings.Contains(line, completeMarker) {
-					t.Errorf("flags=%v budget=%d: a callable the safety cap cannot return whole was marked %s\n  %s",
-						flags, budget, completeMarker, strings.TrimSpace(line))
-				}
-			}
-		}
-	}
-}
-
 func TestAlreadyCompleteProducerEmitsExactCertifiedBody(t *testing.T) {
 	t.Parallel()
 	repo := hugeUnitRepo(t)
@@ -200,6 +116,90 @@ func TestAlreadyCompleteCertificationLeavesPublicNoHitResponseValid(t *testing.T
 	}
 	if err := response.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// PRODUCER-TO-RENDERER SWEEP.
+//
+// The [complete] marker bug that peer review caught was invisible to every test in
+// search_agent_complete_test.go, and the reason is structural rather than an oversight:
+// those tests build sem.SearchResult literals by hand, so they assert what the renderer
+// does with a signal set the TEST chose. They can never notice that the real producer
+// emits a signal set nobody anticipated -- which is exactly what happened. The producer
+// emits full-unit + unit-elided with NO complete-symbol for a forced unit the safety cap
+// clipped (internal/sem/search_enclosure.go:792-803), and a predicate that accepted
+// full-unit alone stamped a completeness promise onto a fragment.
+//
+// So this file asserts the same invariant through the PUBLIC PRODUCTION PATH: a real
+// repository, a real index, the real allocator, the real renderer. No new exports and no
+// reach into unexported sem helpers, which is what keeps it honest -- if the producer's
+// signal contract ever changes, this notices and the hand-built fixtures do not.
+//
+// THE INVARIANT, at every budget and every flag combination below:
+//
+//	[complete] appears  =>  the rendered body is the WHOLE symbol.
+//
+// Stated as its falsifier: a clipped or windowed body rendered under a [complete] marker
+// at ANY budget fails this test.
+
+// hugeUnitRepo writes a callable far past searchFullUnitMaxLines (400), so --full-unit-top
+// forces a unit the safety cap must clip. That is the shape that produced the bug, and a
+// smaller fixture cannot reach it.
+func hugeUnitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	var body strings.Builder
+	body.WriteString("package huge\n\n// ApplyRetryBudget decides whether a request may be retried.\nfunc ApplyRetryBudget(attempt int, budget int) bool {\n")
+	for i := 0; i < 520; i++ {
+		body.WriteString(fmt.Sprintf("\tif attempt == %d && budget > %d {\n\t\treturn true\n\t}\n", i, i))
+	}
+	body.WriteString("\treturn false\n}\n")
+	write(t, repo, "huge/retry.go", body.String())
+
+	// A small, genuinely complete callable so the sweep also proves the marker is not
+	// simply never emitted -- a test that only checks "no false marker" passes trivially
+	// on a renderer that lost the feature entirely.
+	write(t, repo, "small/retry.go", "package small\n\n"+
+		"// RetryBudgetExhausted reports whether the retry budget is spent.\n"+
+		"func RetryBudgetExhausted(attempt, budget int) bool {\n\treturn attempt >= budget\n}\n")
+	return repo
+}
+
+func TestMarkerTruthfulnessThroughTheRealSearchPath(t *testing.T) {
+	t.Parallel()
+	repo := hugeUnitRepo(t)
+
+	for _, flags := range [][]string{
+		{},
+		{"--full-unit-top", "1"},
+		{"--full-unit-top", "3"},
+	} {
+		for _, budget := range []int{1024, 2048, 4096, 8192, 24576} {
+			args := append([]string{
+				"query", "--repo", repo, "--query", "retry budget decides whether a request may be retried",
+				"--format", "agent", "--max-context-bytes", fmt.Sprint(budget), "--no-cache",
+			}, flags...)
+
+			var out bytes.Buffer
+			if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, args); err != nil {
+				t.Fatalf("flags=%v budget=%d: %v", flags, budget, err)
+			}
+			// HARD FALSIFIER, tightened after peer review. The first version grepped the
+			// WHOLE output for a closing brace, so a truncated middle with an intact tail --
+			// or an unrelated sibling symbol -- passed it. That is not a falsifier, it is a
+			// coincidence detector.
+			//
+			// ApplyRetryBudget is 520 branches, far past searchFullUnitMaxLines (400). The
+			// safety cap can NEVER return it whole at any budget here, so the promise is
+			// false unconditionally: assert the marker never appears on ITS OWN header line,
+			// rather than reasoning about what the body contains.
+			for _, line := range strings.Split(out.String(), "\n") {
+				if strings.Contains(line, "ApplyRetryBudget") && strings.Contains(line, completeMarker) {
+					t.Errorf("flags=%v budget=%d: a callable the safety cap cannot return whole was marked %s\n  %s",
+						flags, budget, completeMarker, strings.TrimSpace(line))
+				}
+			}
+		}
 	}
 }
 
