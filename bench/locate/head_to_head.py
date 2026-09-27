@@ -168,7 +168,36 @@ def fsize(repo,rel):
     except OSError: return 0
 
 
-def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False):
+def declaration_source_line(repo, target_file, name, lo, hi):
+    """The EXACT text of the target's declaration line, read from the file.
+
+    The scorer used to credit `declaration` on a REGEX match against whatever an arm rendered,
+    and never looked at the source. Three things therefore scored a declaration: a whole
+    declaration, a declaration CLIPPED mid-line (`func TargetAlpha(`), and text that was never
+    in any file at all. Only the first is a declaration a reader can act on.
+
+    That was not a symmetric error either, which is what makes it serious. rg emits whole
+    lines; the graph's snippets are truncated to fit a byte budget, so the clipped form arises
+    for ONE ARM ONLY and inflated exactly the arm this benchmark is meant to scrutinise.
+
+    It is also the same defect class that killed an entire PR of mine on the product side: a
+    bounds- or shape-check standing in for a source check. Grounding the metric in the file is
+    the fix in both places.
+    """
+    d = DEFN(name)
+    try:
+        with open(os.path.join(repo, target_file), errors="ignore") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return ""
+    for num in range(max(1, lo), min(hi, len(lines)) + 1):
+        text = lines[num - 1]
+        if d.search(text):
+            return text.strip()
+    return ""
+
+
+def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False, decl_text=None):
     r"""Two metrics, computed IDENTICALLY for every arm. Returns (locator, declaration).
 
     locator      the arm named the target's file at a line inside the target's span
@@ -189,6 +218,13 @@ def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False):
     tgt = os.path.normpath(target_file)
     locator = declaration = False
     d = DEFN(name)
+    # Read from the file unless the caller already has it. A declaration is credited only when
+    # the arm rendered the SOURCE LINE, not when it rendered something the pattern likes.
+    if decl_text is None:
+        decl_text = declaration_source_line(repo, target_file, name, lo, hi)
+
+    def shows_declaration(text):
+        return bool(decl_text) and decl_text in text
 
     def in_target(path, num):
         if os.path.isabs(path):
@@ -217,7 +253,7 @@ def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False):
                 # prevent. Only body lines beneath a target header can establish it.
                 continue
             # body text: only creditable when the header above it was the target
-            if current_is_target and d.search(ln):
+            if current_is_target and shows_declaration(ln):
                 declaration = True
             continue
         parts = ln.split(":", 2)
@@ -230,7 +266,9 @@ def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False):
         if lo and not (lo <= line <= hi):
             continue                    # outside the target's span: neither metric
         locator = True
-        if d.search(text):              # match the TEXT, never the path-prefixed line
+        # The TEXT, never the path-prefixed line -- and it must be the SOURCE declaration,
+        # not merely something DEFN likes. See declaration_source_line.
+        if shows_declaration(text):
             declaration = True
     return locator, declaration
 
@@ -479,10 +517,27 @@ def _selftest():
     ck(not hd, "a ranked header alone is not a declaration", f"dec={hd}")
     ck(hl, "...but it is still a locator", f"loc={hl}")
 
-    # body text under someone ELSE's header must not be credited to the target
+    # body text under someone ELSE's header must not be credited to the target.
+    # REAL REPO, deliberately: with a path that does not exist the source line reads empty and
+    # the check cannot fire either way, so this test went vacuous the moment the metric started
+    # reading files. The mutation sweep is what caught that it had.
+    wrongrepo = _mkrepo({"src/right.go": "package p\n" * 24 + "func TargetAlpha() {}\n",
+                         "src/wrong.go": "package p\nfunc WrongSymbol() {}\n"})
     other = b"1. src/wrong.go:10 WrongSymbol\nfunc TargetAlpha() {}\n"
-    _, od = score(other, "/repo", "TargetAlpha", "src/right.go", 20, 30, ranked_only=True)
+    _, od = score(other, wrongrepo, "TargetAlpha", "src/right.go", 20, 30, ranked_only=True)
     ck(not od, "a body under a non-target header is not credited", f"dec={od}")
+
+    # THE SPAN BOUNDS THE SOURCE READ. A second declaration of the same name earlier in the
+    # file must not become the text we accept: an arm rendering THAT line has not shown the
+    # target's declaration, it has shown a homonym's.
+    twin = _mkrepo({"src/twin.go": "package p\nfunc TargetAlpha() {}\n" + "\n" * 22
+                                   + "func TargetAlpha() int { return 1 }\n"})
+    _, twd = score(b"1. src/twin.go:20-30 X\nfunc TargetAlpha() {}\n",
+                   twin, "TargetAlpha", "src/twin.go", 20, 30, ranked_only=True)
+    ck(not twd, "an earlier homonym's declaration is not the target's", f"dec={twd}")
+    _, twd2 = score(b"1. src/twin.go:20-30 X\nfunc TargetAlpha() int { return 1 }\n",
+                    twin, "TargetAlpha", "src/twin.go", 20, 30, ranked_only=True)
+    ck(twd2, "the in-span declaration still counts", f"dec={twd2}")
 
     # a declaration in the right file but outside the registered span, via the grep path
     outside = b"/repo/src/right.go:90:func TargetAlpha() {}\n"
@@ -491,15 +546,34 @@ def _selftest():
        f"loc={ol} dec={od2}")
 
     # ...and the SAME declaration inside the span must still count, or the guard above is
-    # just a blanket refusal wearing a span check
-    inl, ind = score(b"/repo/src/right.go:25:func TargetAlpha() {}\n",
-                     "/repo", "TargetAlpha", "src/right.go", 20, 30)
+    # just a blanket refusal wearing a span check.
+    #
+    # THESE FIXTURES NOW WRITE REAL FILES, because the metric now reads them. Asserting a
+    # declaration against a repo path that does not exist tested the regex and nothing else --
+    # which is precisely the defect being fixed here, reproduced inside its own test.
+    gorepo = _mkrepo({"src/right.go": "package p\n" * 24 + "func TargetAlpha() {}\n"})
+    inl, ind = score(b"src/right.go:25:func TargetAlpha() {}\n",
+                     gorepo, "TargetAlpha", "src/right.go", 20, 30)
     ck(inl and ind, "the same declaration inside the span does count", f"loc={inl} dec={ind}")
 
     # the reviewer's prefixed-TypeScript case, which the path prefix used to hide
-    tl, td = score(b"/repo/src/right.ts:20:    public TargetAlpha(): void {}\n",
-                   "/repo", "TargetAlpha", "src/right.ts", 20, 30)
+    tsrepo = _mkrepo({"src/right.ts": "// x\n" * 19 + "    public TargetAlpha(): void {}\n"})
+    tl, td = score(b"src/right.ts:20:    public TargetAlpha(): void {}\n",
+                   tsrepo, "TargetAlpha", "src/right.ts", 20, 30)
     ck(tl and td, "a TypeScript method behind a path prefix is found", f"loc={tl} dec={td}")
+
+    # THE CLASS THAT KILLED PR287, now checked here. A regex match is not a declaration: a
+    # body clipped mid-line, and text that was never in any file, both satisfied DEFN. The
+    # error was not symmetric either -- rg emits whole lines while the graph's snippets are
+    # truncated to a byte budget, so the clipped form arose for one arm only, and inflated
+    # exactly the arm this benchmark exists to scrutinise.
+    for label, rendered, want in (
+        ("whole",      b"1. src/right.go:20-30 X\nfunc TargetAlpha() {}\n",        True),
+        ("clipped",    b"1. src/right.go:20-30 X\nfunc TargetAlpha(\n",            False),
+        ("fabricated", b"1. src/right.go:20-30 X\nfunc TargetAlpha() FICTION\n",   False),
+    ):
+        _, dd = score(rendered, gorepo, "TargetAlpha", "src/right.go", 20, 30, ranked_only=True)
+        ck(dd is want, f"declaration from source, not regex: {label}", f"dec={dd}")
 
     # signal death: a killed arm is an excluded case, never a retrieval miss
     class _Killed:
