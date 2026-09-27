@@ -658,6 +658,26 @@ def _selftest():
     ck(json.load(open(os.path.join(_nd, "001-Sym-f_go.phrase.json")))["note"] == "no phrase in q",
        "an arm that produced nothing records WHY")
 
+    # NON-EMPTY STDERR, and the two shapes that break a decode-and-cap writer. The previous
+    # version stored stderr decoded with replacement characters and truncated at 4000, so an
+    # invalid byte became indistinguishable from a real replacement character and a long tail
+    # vanished. Both were argued rather than tested, and the run that motivated the change
+    # happened to have empty stderr throughout.
+    _bad = b"warn: \xff\xfe not utf8\n" + b"x" * 9000
+    write_receipts(_nd, "002-Sym-f_go", "q", "Sym", "f.go", 1, 2, False,
+                   (("grep", 0, False, False, False, b"",
+                     {"argv": ["rg"], "rc": 2, "stderr_bytes": _bad}),))
+    _sp_path = os.path.join(_nd, "002-Sym-f_go.grep.stderr")
+    ck(os.path.exists(_sp_path), "non-empty stderr is written to its own file")
+    with open(_sp_path, "rb") as fh:
+        _got = fh.read()
+    ck(_got == _bad, "...byte for byte, invalid UTF-8 included, with no cap",
+       f"{len(_got)} bytes vs {len(_bad)}")
+    _j = json.load(open(os.path.join(_nd, "002-Sym-f_go.grep.json")))
+    ck(_j["stderr_bytes_len"] == len(_bad) and _j["stderr_file"].endswith(".stderr"),
+       "...and the receipt records its length and names the file")
+    ck(_j["stderr_not_charged"] is True, "...and says stderr is not charged to the arm")
+
     # THE SEAL, through the production evaluator rather than a predicate. Peer review's point:
     # a preflight that checks a path and hands control to another process has sealed nothing.
     import subprocess as _sp
@@ -685,6 +705,15 @@ def _selftest():
     # A missing stamp must never resolve to the reassuring answer.
     ck("vcs_modified" not in binary_build_identity(_nb),
        "an unknown build carries no vcs_modified at all")
+
+    # NO SILENTLY UNSEALED AGGREGATE. Omitting the output directory used to print the whole
+    # table with no seal, no receipts and no verdict -- output indistinguishable from a
+    # measurement. The refusal fires before any work, so this costs nothing to check.
+    _nr = _spa.run([sys.executable, os.path.abspath(__file__), "/nonexistent", "/nonexistent",
+                    "2", "4096"], capture_output=True, text=True, timeout=120)
+    ck("no output directory" in (_nr.stdout + _nr.stderr),
+       "a run with no output directory is refused before it starts", _nr.stderr.strip()[:70])
+    ck(_nr.returncode != 0, "...and it exits non-zero")
 
     # PRODUCTION ORCHESTRATION, observed through the artifacts a real run leaves. Peer review's
     # outstanding question, and the right one: a correct record_attempt or tally_oracle does not
@@ -980,9 +1009,18 @@ def binary_build_identity(binary):
     if "vcs.revision" not in kv or "vcs.modified" not in kv:
         return {"known": False, "reason": "binary carries no vcs stamps"}
     mod = re.search(r"mod\s+(\S+)\s+(\S+)", out.stdout)
+    path = re.search(r"path\s+(\S+)", out.stdout)
+    go = re.search(r":\s+(go\S+)", out.stdout)
+    # MODULE AND RAW SETTINGS, not just a revision. A label saying "reproducible source" has to
+    # name WHICH source: a bare commit hash identifies a revision in some repository, and the
+    # seal did not record which one, nor the build settings that shaped the binary.
     return {"known": True, "vcs_revision": kv["vcs.revision"], "vcs_time": kv.get("vcs.time"),
             "vcs_modified": kv["vcs.modified"] == "true",
-            "module_version": mod.group(2) if mod else None}
+            "module_path": mod.group(1) if mod else None,
+            "module_version": mod.group(2) if mod else None,
+            "main_path": path.group(1) if path else None,
+            "go": go.group(1) if go else None,
+            "build_settings": kv}
 
 
 def seal_run(outdir, binary, bsha, repo, rev, content_sha, budget, want, cases, diagnostic):
@@ -1099,9 +1137,22 @@ if __name__=="__main__":
     # artifact-tied diagnostics and can never produce a reproducible-source measurement.
     # Stripped before the positionals are read, or it would be taken for the output directory.
     diagnostic_dirty = "--diagnostic-dirty-build" in sys.argv
-    argv = [a for a in sys.argv if a != "--diagnostic-dirty-build"]
+    smoke = "--smoke-not-a-measurement" in sys.argv
+    # EVERY flag comes out before the positionals are read, or it is taken for one. The first
+    # version stripped one of the two and the other was parsed as the case count.
+    FLAGS = ("--diagnostic-dirty-build", "--smoke-not-a-measurement")
+    argv = [a for a in sys.argv if a not in FLAGS]
     binary,repo,n,budget=argv[1],argv[2],int(argv[3]),int(argv[4])
     outdir=argv[5] if len(argv)>5 else None
+    # NO SILENTLY UNSEALED AGGREGATE. Without an output directory there is no seal, no receipts
+    # and no verdict -- yet the table printed all the same and looked exactly like a measurement.
+    # An omitted directory is now an error, and the only way to run without one says so in its
+    # name and in every line it prints.
+    if not outdir and not smoke:
+        raise SystemExit(
+            "REFUSING TO START: no output directory, so nothing would be sealed and no receipts "
+            "or verdict written -- and the table would still print. Give a directory, or pass "
+            "--smoke-not-a-measurement to run unsealed and have every line say so.")
     def state():
         """Exact fixture state. Three things the first version got wrong, all peer-reviewed:
 
@@ -1145,6 +1196,9 @@ if __name__=="__main__":
     # the directory, measures, and writes its own manifest, with nothing binding the three.
     seal_sha = seal_run(outdir, binary, bsha, repo, rev0, cont0, budget, n, cases,
                         diagnostic_dirty) if outdir else None
+    if smoke and not outdir:
+        print("=== SMOKE, NOT A MEASUREMENT: unsealed, no receipts, no verdict. "
+              "Nothing printed below may be quoted. ===")
     print(f"repo {repo}\nrev {rev0} dirty={'YES' if dirty0 else 'no'}")
     print(f"binary {binary}\nbinary sha256 {bsha}\nbudget {budget}  cases {len(cases)}\n")
     # MEANS ARE NOT REPORTABLE HERE and medians are. The grep arms are heavy-tailed: one

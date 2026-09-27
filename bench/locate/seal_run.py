@@ -41,17 +41,17 @@ def sha256(path):
         return hashlib.sha256(fh.read()).hexdigest()
 
 
-def build_identity(binary):
-    out = subprocess.run(["go", "version", "-m", binary], capture_output=True, text=True).stdout
-    kv = dict(re.findall(r"build\s+(\S+)=(\S+)", out))
-    mod = re.search(r"mod\s+(\S+)\s+(\S+)", out)
-    go = re.search(r":\s+(go\S+)", out)
-    return {"go": go.group(1) if go else None,
-            "module_version": mod.group(2) if mod else None,
-            "vcs_revision": kv.get("vcs.revision"),
-            "vcs_time": kv.get("vcs.time"),
-            "vcs_modified": kv.get("vcs.modified") == "true"}
+# ONE STRICT PARSER, imported rather than kept. This file carried its own build_identity that
+# turned a failed `go version -m`, or a binary with no stamps, into vcs_modified=false and
+# therefore a CLEAN verdict. The evaluator's version was fixed and this copy was not, so the
+# preflight went on approving exactly what the evaluator would refuse.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from head_to_head import binary_build_identity
 
+
+def build_identity(binary):
+    """Strict: an unknown build stays unknown and never resolves to clean."""
+    return binary_build_identity(binary)
 
 def fixture_identity(path):
     rev = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], capture_output=True, text=True)
@@ -76,6 +76,13 @@ def seal_refusal(build, fixtures, outdir_exists, allow_dirty):
     if outdir_exists:
         return ("output directory exists; a run must create its own, so that nothing can "
                 "splice two runs' receipts under one verdict")
+    # UNKNOWN FIRST. A build whose identity could not be read has no vcs_modified to test, and
+    # `.get` on it returns None -- which is falsy, so the dirty check waved it through and the
+    # seal went on to label it reproducible. The lenient copy of the parser that lived in this
+    # file produced exactly that, while the evaluator refused the same binary.
+    if not build.get("known", False):
+        return (f"cannot establish the binary's build identity ({build.get('reason')}); "
+                f"an unknown build is not a clean one")
     if build.get("vcs_modified") and not allow_dirty:
         return (f"binary built from a DIRTY tree (revision {build.get('vcs_revision')}); the "
                 f"exact source cannot be reproduced, so no result from it can be either. Pass "
@@ -177,8 +184,9 @@ def _e2e(ck):
 
 
 def _selftest():
-    clean = {"vcs_modified": False, "vcs_revision": "a" * 40}
-    dirty = {"vcs_modified": True, "vcs_revision": "b" * 40}
+    clean = {"known": True, "vcs_modified": False, "vcs_revision": "a" * 40}
+    dirty = {"known": True, "vcs_modified": True, "vcs_revision": "b" * 40}
+    unknown = {"known": False, "reason": "binary carries no vcs stamps"}
     okfx = [{"path": "/fx", "clean": True}]
     badfx = [{"path": "/fx", "clean": False}]
     cases = [
@@ -191,6 +199,9 @@ def _selftest():
         ("a dirty fixture is refused", (clean, badfx, False, False), "must be clean"),
         ("...even with --allow-dirty-build", (clean, badfx, False, True), "must be clean"),
         ("no fixtures is refused", (clean, [], False, False), "nothing to seal"),
+        # The lenient copy of the parser made this pass as clean.
+        ("an UNKNOWN build is refused", (unknown, okfx, False, False), "unknown build is not a clean one"),
+        ("...and --allow-dirty-build does not excuse it", (unknown, okfx, False, True), "unknown build is not a clean one"),
     ]
     fails = []
     for label, args, want in cases:
