@@ -25,7 +25,10 @@ the reason a transcript-derived rate was once quoted as if a frozen fixture had 
 Every attempt in this project to derive a token-savings number from agent transcripts has
 failed, three times in one night: replay tiers over-counted 16x, a rank analysis collapsed
 from n=55 to n=8 under a stricter parser, and an aggregate hit@5 hid a target lost at rank 9.
-Fixture-executed measurement caught all three and has not itself failed.
+Fixture-executed measurement caught all three. **It has since failed repeatedly on its own
+account** — a baseline searching for strings no file contains, a declaration metric that matched
+a regex instead of the source, and three fixtures that went vacuous without the suite going red.
+Running the thing beats reasoning about it; it is not a guarantee of anything.
 
 So the rule these encode: **transcripts are admissible for diagnosis, never for a rate.**
 Rates come from executing the binary against a frozen tree.
@@ -64,7 +67,10 @@ python3 bench/locate/budget_falsifier.py <binary> /tmp/fx 20 4096 24576
 The three fixture benchmarks print the fixture revision, its dirty state, the binary's sha256
 and their own script sha256, so a result ties back to exactly what produced it.
 
-**Receipts and the run verdict.** With an output directory, `head_to_head.py` writes a receipt
+**Receipts and the run verdict.** The output directory must be **new and empty** — a run
+refuses to write into one that already holds evidence, before touching anything, because a
+partial rerun would splice its receipts into the previous run's under the previous run's
+verdict. With such a directory, `head_to_head.py` writes a receipt
 for **every attempt, before the admission gate** — argv, exit code, stderr, raw stdout and the
 bytes actually scored, per arm. Failed attempts are the ones most worth inspecting and used to
 leave nothing behind at all. Those receipts mean nothing on their own: `run-manifest.json`

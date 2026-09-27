@@ -49,8 +49,8 @@ MUT = [
    '    if outdir:\n        write_receipts(outdir, cid, q, name, fp, lo, hi,',
    '    if outdir and all(a[4] for a in arms if a[0] != "oracle"):\n        write_receipts(outdir, cid, q, name, fp, lo, hi,'),
   (H, "receipts: let an oracle failure exclude the case",
-   '    return all(a[4] for a in arms if a[0] != "oracle")\n\n\ndef finalize_manifest',
-   '    return all(a[4] for a in arms)\n\n\ndef finalize_manifest'),
+   '    if outdir:\n        write_receipts(outdir, cid, q, name, fp, lo, hi,\n                       all(a[4] for a in arms if a[0] != "oracle"), arms)\n    return all(a[4] for a in arms if a[0] != "oracle")',
+   '    if outdir:\n        write_receipts(outdir, cid, q, name, fp, lo, hi,\n                       all(a[4] for a in arms if a[0] != "oracle"), arms)\n    return all(a[4] for a in arms)'),
   (H, "manifest: never stamp a verdict",
    "    manifest[\"run_status\"] = status", "    manifest[\"run_status\"] = \"PROVISIONAL\""),
   # DROPPED, and the reason is a property worth recording rather than a gap: removing "1"
@@ -73,11 +73,16 @@ if any(v != 0 for v in base.values()):
 
 print(f"{'guard mutated':<52} {'suite':<8} verdict")
 print("-" * 78)
-unfailable = []
+unfailable, stale = [], []
 for f, label, a, b in MUT:
     src = open(f).read()
     if a not in src:
-        print(f"{label:<52} {'--':<8} ANCHOR MISSING"); unfailable.append(label); continue
+        # A MISSING ANCHOR IS NOT A FINDING, it is the sweep silently no longer testing this
+        # guard. It has happened twice, both times because a predicate was renamed, and both
+        # times it presented as "guard not held" -- which sends you looking for a missing test
+        # that already exists. Different diagnosis, reported differently, and fatal.
+        print(f"{label:<52} {'--':<8} ANCHOR MISSING -- sweep is stale, not the code")
+        stale.append(label); continue
     open(f, "w").write(src.replace(a, b, 1))
     try:
         rc = run(f).returncode
@@ -87,6 +92,11 @@ for f, label, a, b in MUT:
     print(f"{label:<52} {'RED' if ok else 'green':<8} {'caught' if ok else 'UNFAILABLE <<<'}")
     if not ok: unfailable.append(label)
 print("-" * 78)
-print(f"{len(MUT)-len(unfailable)}/{len(MUT)} guards are actually held by a test")
+print(f"{len(MUT)-len(unfailable)-len(stale)}/{len(MUT)} guards are actually held by a test")
 if unfailable:
-    print("NOT HELD:"); [print("  -", u) for u in unfailable]
+    print("NOT HELD (a real gap -- the code can break and nothing fails):")
+    [print("  -", u) for u in unfailable]
+if stale:
+    print("STALE ANCHORS (the sweep is broken, fix these before believing any row above):")
+    [print("  -", u) for u in stale]
+sys.exit(1 if (unfailable or stale) else 0)
