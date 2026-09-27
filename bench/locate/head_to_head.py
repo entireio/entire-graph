@@ -510,6 +510,45 @@ def _selftest():
                                         "ApplyRetryBudget", "a.go", 1, 9)
     ck(not kok, "a signal-killed arm reports failure, not a miss", f"ok={kok}")
 
+    # 13-16. THE RECEIPT VERDICT. Peer review's point was that receipts said PROVISIONAL
+    #        forever and nothing finalised them, so a completed run and one killed halfway
+    #        were indistinguishable on disk. These pin the lifecycle rather than the demo.
+    import tempfile as _tf, json as _j
+    rd = _tf.mkdtemp(prefix="rcpt-")
+    meta = {"argv": ["rg", "x"], "rc": 1, "stderr": "", "oracle": False}
+    write_receipts(rd, "001-Sym-f_go", "q", "Sym", "f.go", 1, 2, False,
+                   (("graph", 0, False, False, False, b"", meta),))
+    ck(os.path.exists(os.path.join(rd, "001-Sym-f_go.txt")),
+       "a FAILED attempt still leaves a receipt")
+    ck(_j.load(open(os.path.join(rd, "001-Sym-f_go.graph.json")))["returncode"] == 1,
+       "the failed arm's exit code is recorded")
+    ck(not os.path.exists(os.path.join(rd, "run-manifest.json")),
+       "receipts alone never imply a verdict")
+
+    # THE WIRING, not just the writer. The original defect was the ORDER of two call sites --
+    # gate first, write second -- so a unit test of write_receipts could never have caught it.
+    rd2 = _tf.mkdtemp(prefix="rcpt-")
+    failing = (("graph", 0, False, False, False, b"", meta),
+               ("grep", 0, False, False, True, b"", meta),
+               ("phrase", 0, False, False, True, b"", meta),
+               ("oracle", 0, False, False, True, b"", meta))
+    adm = record_attempt(rd2, "002-Sym-f_go", "q", "Sym", "f.go", 1, 2, failing)
+    ck(not adm, "a failed comparable arm refuses admission")
+    ck(os.path.exists(os.path.join(rd2, "002-Sym-f_go.txt")),
+       "...and the refused attempt is on disk anyway")
+    rd3 = _tf.mkdtemp(prefix="rcpt-")
+    oracle_only = tuple((lbl, 0, False, False, lbl != "oracle", b"", meta)
+                        for lbl in ("graph", "grep", "phrase", "oracle"))
+    ck(record_attempt(rd3, "003-Sym-f_go", "q", "Sym", "f.go", 1, 2, oracle_only),
+       "an oracle failure alone does not exclude the case")
+
+    mani = {"schema": 1, "cases": [{"case_id": "001-Sym-f_go", "admitted": False}]}
+    finalize_manifest(rd, mani, "VOID", "killed")
+    got = _j.load(open(os.path.join(rd, "run-manifest.json")))
+    ck(got["run_status"] == "VOID", "a voided run says so", got.get("run_status"))
+    ck(not os.path.exists(os.path.join(rd, ".run-manifest.json.tmp")),
+       "the atomic write leaves no partial manifest behind")
+
     print("\nALL PHRASE-ARM FALSIFIERS PASS" if not fails else "\nFAILURES: " + ", ".join(fails))
     return 1 if fails else 0
 
@@ -548,6 +587,25 @@ def write_receipts(outdir, cid, q, name, fp, lo, hi, admitted, arms):
         for arm, cost, loc, dec, ok, _, meta in arms:
             tag = "   CAPABILITY CONTROL: given the target name; not a comparator" if arm == "oracle" else ""
             fh.write(f"{arm:7s} ok={ok} bytes {cost}  locator {loc}  declaration {dec}{tag}\n")
+
+
+def record_attempt(outdir, cid, q, name, fp, lo, hi, arms):
+    """Write the attempt's receipts, then say whether the COMPARABLE arms admit it.
+
+    Recording and admitting are one function on purpose. They were two steps in the main loop
+    with the admission gate FIRST, so a dropped case -- the one most worth inspecting -- left
+    nothing on disk at all. Keeping them apart is what let that happen, and a unit test of the
+    writer alone cannot notice it: the defect was in the order of the call sites, not in either
+    of them. Anything that decides admission now has to walk past the write.
+
+    `arms` is (label, cost, locator, declaration, ok, raw, meta). The oracle is present in the
+    receipts and absent from the verdict: it is handed the target's name, so it is a capability
+    control rather than a comparator.
+    """
+    if outdir:
+        write_receipts(outdir, cid, q, name, fp, lo, hi,
+                       all(a[4] for a in arms if a[0] != "oracle"), arms)
+    return all(a[4] for a in arms if a[0] != "oracle")
 
 
 def finalize_manifest(outdir, manifest, status, note=""):
@@ -639,20 +697,15 @@ if __name__=="__main__":
         # control decide which cases the real comparison is computed over.
         # It stays as an explicitly labelled capability ceiling and nothing else.
         attempt += 1
-        admitted = gok and pok and sok
         # THE CASE ID IS THE ATTEMPT, not the admission. Numbering by admitted cases meant a
         # failure had no id at all, so the receipts on disk could not be lined up against the
         # attempts that produced them.
         cid = "%03d-%s-%s" % (attempt, re.sub(r"\W+","_",name)[:48],
                               re.sub(r"\W+","_",os.path.basename(fp))[:32])
-        if outdir:
-            # EVERY ATTEMPT, WRITTEN BEFORE THE GATE. Receipts used to be written after the
-            # drop, so a failed arm -- the case most worth inspecting -- left no argv, no exit
-            # code, no stderr and no raw bytes behind. A benchmark that records only its
-            # successes cannot be audited for the reason it dropped something.
-            write_receipts(outdir, cid, q, name, fp, s_lo, s_hi, admitted,
-                           (("graph",g,g_l,g_d,gok,g_raw,g_m), ("grep",pr,p_l,p_d,pok,p_raw,p_m),
-                            ("phrase",sc,s_l,s_d,sok,s_raw,s_m), ("oracle",oc,o_l,o_d,ook,o_raw,o_m)))
+        # RECORD, THEN ADMIT -- in that order, enforced by record_attempt doing both.
+        admitted = record_attempt(outdir, cid, q, name, fp, s_lo, s_hi,
+                                  (("graph",g,g_l,g_d,gok,g_raw,g_m), ("grep",pr,p_l,p_d,pok,p_raw,p_m),
+                                   ("phrase",sc,s_l,s_d,sok,s_raw,s_m), ("oracle",oc,o_l,o_d,ook,o_raw,o_m)))
         manifest["cases"].append({"case_id":cid,"symbol":name,"file":fp,"span":[s_lo,s_hi],
                                   "admitted":admitted,
                                   "arm_ok":{"graph":gok,"grep":pok,"phrase":sok,"oracle":ook}})
