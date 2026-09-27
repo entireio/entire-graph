@@ -32,24 +32,34 @@ import subprocess, sys, os, re, json, random, hashlib
 RANK = re.compile(r'^\s*(\d+)\.\s+(\S+?):(\d+)')
 WORD = re.compile(r'[A-Za-z]{3,}')
 
-def DEFN(name):
-    """Does this line DECLARE `name`, in any of the languages under test?
-
-    Go        func Name(  |  func (r T) Name(
-    TS/JS     function Name(  export function Name(  class Name  const Name = (  Name(...) {
-    A bare mention must not count, or the oracle scores a hit on every call site.
-    """
-    n = re.escape(name)
-    return re.compile(
-        r'(?:\bfunc\b[^/]*\b' + n + r'\b'              # Go func / method
-        r'|\b(?:function|class|interface|type)\s+' + n + r'\b'
-        r'|\b(?:const|let|var)\s+' + n + r'\s*[:=]'     # const Name = (...) =>
-        r'|^\s*(?:export\s+)?(?:async\s+)?' + n + r'\s*\\([^)]*\\)\s*[:{]'  # method shorthand
-        r')')
 STOP = set("""the and for that with this from into when what which whether such been were are
 was has have had not but its it's only also then than they them their there here does doing
 done any all can may must should would could each other some more most less use used using
 via per off out over under above below before after while during about against between""".split())
+
+
+def DEFN(name):
+    """Does this line DECLARE `name`, in any language under test?
+
+    A bare mention must not count, or the oracle scores a hit on every call site.
+
+    The TypeScript arms were extended after the oracle scored 17/20 on a TS fixture while
+    scoring 20/20 everywhere else -- a gap that looked like a finding about TypeScript and
+    was a gap in this function. The three misses were an accessor (`get timeOrigin(): number`)
+    and class methods carrying visibility or static modifiers, which the original
+    start-of-line pattern could not reach.
+    """
+    n = re.escape(name)
+    mods = r'(?:(?:public|private|protected|static|readonly|override|abstract|async)\s+)*'
+    return re.compile(
+        r'\bfunc\b[^/]*\b' + n + r'\b'                          # Go func / method
+        r'|\b(?:function|class|interface|type|enum)\s+' + n + r'\b'  # TS/JS declarations
+        r'|\b(?:const|let|var)\s+' + n + r'\s*[:=]'               # const Name = (...) =>
+        r'|\b(?:get|set)\s+' + n + r'\s*\('                       # accessor
+        r'|^\s*' + mods + n + r'\s*[(<]'                          # class method, any modifiers
+        r'|^\s*' + mods + n + r'\s*[:=]\s*(?:async\s*)?[(<]'       # property holding a function
+    )
+
 
 def doc_comment(path, start_line, language="Go"):
     """Author-written description immediately above a declaration.
@@ -109,22 +119,59 @@ def fsize(repo,rel):
     try: return os.path.getsize(os.path.join(repo,rel))
     except OSError: return 0
 
-def grep_arm(repo,query,name,target_file,oracle=False):
+
+def score(out_bytes, repo, name, target_file, lo, hi, ranked_only=False):
+    """Two metrics, computed IDENTICALLY for every arm. Returns (locator, declaration).
+
+    locator      the arm pointed at the right place: a line it emitted names the target's
+                 file, and (when the arm reports one) a line number inside the target's span.
+    declaration  the arm's own output CONTAINS the declaration, per DEFN.
+
+    These were previously OR-ed into one `located`, and asymmetrically: the graph arm could
+    win on a span hit while the grep arm had to show a declaration line. That handed the
+    graph the easier test and peer review was right to refuse the resulting number. They are
+    now separate columns and neither arm gets a shortcut the other does not.
+
+    `ranked_only` restricts locator scoring to numbered ranking headers, which is what the
+    graph emits; grep emits `path:line:text` and is scored on every line.
+    """
+    tgt = os.path.normpath(target_file)
+    locator = declaration = False
+    d = DEFN(name)
+    for ln in out_bytes.decode("utf8", "replace").splitlines():
+        if ranked_only:
+            m = RANK.match(ln)
+            if not m:
+                if d.search(ln):
+                    declaration = True      # body text under a header
+                continue
+            path, num = m.group(2), m.group(3)
+        else:
+            parts = ln.split(":", 2)
+            if len(parts) < 3: continue
+            path, num = parts[0], parts[1]
+        if os.path.isabs(path): path = os.path.relpath(path, repo)
+        if os.path.normpath(path) != tgt: continue
+        try: line = int(num)
+        except ValueError: line = 0
+        if not lo or (lo <= line <= hi): locator = True
+        if d.search(ln): declaration = True
+    return locator, declaration
+
+def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
     """Returns (bytes_in_context, located, ok). ok=False means the ARM FAILED and the case
     must be excluded, never scored as a retrieval miss (peer-review note 2)."""
     term = name if oracle else max((w for w in WORD.findall(query) if w.lower() not in STOP),
                                    key=len, default="")
-    if not term: return None
+    if not term: return 0, False, False, False
     p=subprocess.run(["rg","-n","--no-heading","-g","!node_modules",term,repo],capture_output=True,timeout=300)
     # rg exits 1 for "no matches", which is a real empty result, not a failure. Anything
     # above that is a broken run and the case is dropped rather than counted as a miss.
     if p.returncode > 1:
-        return 0, False, False
+        return 0, False, False, False
     out=p.stdout
-    for ln in out.decode("utf8","replace").splitlines():
-        if DEFN(name).search(ln):
-            return len(out), True, True
-    return len(out), False, True
+    loc, dec = score(out, repo, name, target_file, tgt_lo, tgt_hi)
+    return len(out), loc, dec, True
 
 def graph_arm(binary,repo,query,name,target_file,budget,tgt_lo=0,tgt_hi=0):
     """Returns (bytes_in_context, located, ok). `located` is DISPLAYED-SYMBOL-NAME recall OR
@@ -134,20 +181,10 @@ def graph_arm(binary,repo,query,name,target_file,budget,tgt_lo=0,tgt_hi=0):
                       "--max-context-bytes",str(budget),"--no-cache"],
                      capture_output=True,timeout=900)
     if p.returncode != 0:
-        return 0, False, False
+        return 0, False, False, False
     out=p.stdout
-    for ln in out.decode("utf8","replace").splitlines():
-        m=RANK.match(ln)
-        if not m: continue
-        if re.search(r'\b'+re.escape(name)+r'\b', ln):
-            return len(out), True, True
-        # span fallback: the target's own file, with the header's line inside the symbol range
-        if os.path.normpath(m.group(2))==os.path.normpath(target_file):
-            try: line=int(m.group(3))
-            except ValueError: continue
-            if tgt_lo and tgt_lo<=line<=tgt_hi:
-                return len(out), True, True
-    return len(out), False, True
+    loc, dec = score(out, repo, name, target_file, tgt_lo, tgt_hi, ranked_only=True)
+    return len(out), loc, dec, True
 
 if __name__=="__main__":
     binary,repo,n,budget=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4])
@@ -167,16 +204,18 @@ if __name__=="__main__":
     # 1.37 MB, single-handedly setting the mean. That is a property of the NAME, not of grep
     # or of the repository, and a mean lets one such case decide the headline. Both are
     # printed; the median is the one to quote.
-    tg=tp=to=0; lg=lp=lo=0; k=0; dropped=0
+    tg=tp=to=0; k=0; dropped=0
     gvals=[]; pvals=[]; ovals=[]
+    gL=gD=pL=pD=oL=oD=0
     for q,name,fp,s_lo,s_hi in cases:
-        g,gl,gok=graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi)
-        pr,pl,pok=grep_arm(repo,q,name,fp)
-        oc,ol,ook=grep_arm(repo,q,name,fp,oracle=True)
+        g,g_l,g_d,gok=graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi)
+        pr,p_l,p_d,pok=grep_arm(repo,q,name,fp,False,s_lo,s_hi)
+        oc,o_l,o_d,ook=grep_arm(repo,q,name,fp,True,s_lo,s_hi)
         if not (gok and pok and ook):
             dropped+=1      # a failed arm is excluded, never scored as a miss
             continue
-        k+=1; tg+=g; tp+=pr; to+=oc; lg+=gl; lp+=pl; lo+=ol
+        k+=1; tg+=g; tp+=pr; to+=oc
+        gL+=g_l; gD+=g_d; pL+=p_l; pD+=p_d; oL+=o_l; oD+=o_d
         gvals.append(g); pvals.append(pr); ovals.append(oc)
         if outdir:
             with open(os.path.join(outdir,re.sub(r"\W+","_",name)[:80]+".txt"),"w") as fh:
@@ -190,11 +229,12 @@ if __name__=="__main__":
         print("no scorable cases"); sys.exit(1)
     def med(a):
         a=sorted(a); return a[len(a)//2] if a else 0
-    print(f"{'arm':24s} {'median B':>10s} {'mean B':>12s} {'located':>10s}")
-    print(f"{'graph (prose)':24s} {med(gvals):10,.0f} {tg/k:12,.0f} {lg:6d}/{k}")
-    print(f"{'grep (prose)':24s} {med(pvals):10,.0f} {tp/k:12,.0f} {lp:6d}/{k}")
-    print(f"{'grep (oracle: name)':24s} {med(ovals):10,.0f} {to/k:12,.0f} {lo:6d}/{k}")
-    print("  quote the MEDIAN: the grep arms are heavy-tailed on common symbol names.")
+    print(f"{'arm':24s} {'median B':>10s} {'locator':>9s} {'declaration':>13s}")
+    print(f"{'graph (prose)':24s} {med(gvals):10,.0f} {gL:6d}/{k} {gD:10d}/{k}")
+    print(f"{'grep (prose)':24s} {med(pvals):10,.0f} {pL:6d}/{k} {pD:10d}/{k}")
+    print(f"{'grep (oracle: name)':24s} {med(ovals):10,.0f} {oL:6d}/{k} {oD:10d}/{k}")
+    print("  locator = pointed at the right file+span.  declaration = showed the decl line.")
+    print("  Both computed identically for every arm; medians, because grep is heavy-tailed.")
     print(f"\nscored {k}, dropped {dropped} (arm failure, not scored as miss)")
     print(f"state before/after: {rev0} dirty={dirty0}  ->  {rev1} dirty={dirty1}")
     if outdir: print(f"per-case receipts: {outdir}")
