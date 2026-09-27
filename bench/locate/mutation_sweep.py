@@ -8,6 +8,7 @@ R = os.path.join(_HERE, "replay_qualify.py")
 
 D = os.path.join(_HERE, "doccomment_bench.py")
 B = os.path.join(_HERE, "budget_falsifier.py")
+Z = os.path.join(_HERE, "seal_run.py")
 
 MUT = [
   # (file, label, find, replace)
@@ -42,6 +43,12 @@ MUT = [
    '        return True or any(r0.get(k) not in (None, "", [], {}) for k in'),
   (R, "replay: promote identity to full-execution",
    '                tiers["source-identity-candidate"] += 1', '                tiers["full-execution"] += 1'),
+  (Z, "sealer: let a dirty build through",
+   'if build.get("vcs_modified") and not allow_dirty:', 'if False and not allow_dirty:'),
+  (Z, "sealer: accept an existing output directory",
+   "    if outdir_exists:\n        return (", "    if False:\n        return ("),
+  (Z, "sealer: accept a dirty fixture",
+   'if not fixture.get("clean"):', 'if False:'),
   (H, "scorer: test only the range start again",
    "                current_is_target = ok and (not lo or (line <= hi and end >= lo))",
    "                current_is_target = ok and (not lo or lo <= line <= hi)"),
@@ -85,10 +92,10 @@ MUT = [
 def run(f):
     # doccomment_bench and budget_falsifier carry no --test of their own; their shared hit
     # predicate is guarded from head_to_head's suite, so mutations to them are checked there.
-    runner = f if f in (H, R) else H
+    runner = f if f in (H, R, Z) else H
     return subprocess.run([sys.executable, runner, "--test"], capture_output=True, text=True, timeout=1800)
 
-base = {f: run(f).returncode for f in (H, R)}
+base = {f: run(f).returncode for f in (H, R, Z)}
 if any(v != 0 for v in base.values()):
     sys.exit("baseline is not green; fix that first")
 
