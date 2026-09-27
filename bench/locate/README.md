@@ -59,21 +59,24 @@ result can be tied to exactly what produced it.
 
 ## Status of what they have measured
 
-Current, n=100 over five frozen fixtures (Go and TypeScript), against the strongest
-baseline available — grep the author's own doc comment, then read the following lines:
+**No comparative number in this directory is currently valid. Do not quote one.**
 
-| metric | graph | doc-phrase grep |
-|---|---:|---:|
-| **locator** — pointed at the right file and span | **64/100** | 20/100 |
-| **declaration** — showed the declaration itself | 16/100 | **20/100** |
+The figures that stood here — locator 64/100 vs 20/100, declaration 16/100 vs 20/100 — were
+produced against a doc-phrase baseline that peer review has since shown to be broken in three
+ways at once, each of which flattered the graph:
 
-**The graph wins locator 3.2×. It loses declaration.** Both numbers are current as of the
-scorer in this directory; quote them from a fresh run, not from here.
+- It was handed the **unstripped** doc comment, which normally contains the target's name,
+  while the graph was asked with that name removed. Different inputs to the two arms is the
+  precise asymmetry this benchmark exists to prevent, and I wrote it myself.
+- Its search string was **non-adjacent words joined by spaces**, drawn from a comment whose
+  physical lines had already been space-joined. Passed to `rg -F`, that is a fixed string
+  which occurs in no file. Its 20/100 was in part a measurement of a phrase that cannot match.
+- It **scored itself**, setting locator and declaration from a single condition, so the two
+  columns could not take different values.
 
-The mechanism is coverage, not precision. The doc-phrase arm scores locator == declaration on
-every fixture — when its phrase matches, the declaration is in the next twelve lines
-essentially always — and it matches in 20 of 100 cases. The graph fires in 64 and completes
-16. Those are different products.
+All three are fixed and each has a synthetic falsifier in `--test` that fails on the old code.
+The corrected instrument has not been run at cohort scale, and it is the run, not the repair,
+that decides what is true. Rerun it yourself and read the number off your own output.
 
 ## Claims these benchmarks have already destroyed
 
@@ -86,9 +89,13 @@ Kept because the withdrawals are more useful than the survivors:
   of this and beats the graph on one fixture.
 - **"Exact replay is unreachable by construction."** Refuted — the query JSON already carries
   `commit` and `tree`. The identity was in the result, not the argv.
-- **A 24× declaration gap**, then 10.7×, then 1.6×, now 0.80×. Each reduction came from a
-  defect in these scripts, not from new data: an OR-ed metric, a weak baseline, and body text
-  credited to the wrong result.
+- **"The doc-phrase arm's weakness is coverage, not precision."** Withdrawn. That read a
+  locator == declaration equality off the results table — an equality the arm's own `return`
+  statement forced. A property of my code, published as a property of lexical search.
+- **A 24× declaration gap**, then 10.7×, then 1.6×, then 0.80×, now withdrawn pending a rerun.
+  Every reduction came from a defect in these scripts rather than from new data: an OR-ed
+  metric, a weak baseline, body text credited to the wrong result, and finally a baseline
+  searching for strings that cannot occur.
 
 Every one of those was found by running something rather than reasoning about it. Treat a
 mechanism story from this directory as a hypothesis until a fixture kills it.
