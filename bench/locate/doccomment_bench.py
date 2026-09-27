@@ -55,6 +55,31 @@ def build_cases(binary, repo, want, seed=7):
     random.Random(seed).shuffle(cands)
     return cands[:want]
 
+def ranked_hit(line, name, target_file, repo):
+    """Is this ranked line a retrieval of `name` IN ITS OWN FILE?
+
+    Two defects this replaces, both of which inflated the graph -- the only arm these two
+    benchmarks measure:
+
+      1. The name was matched against the WHOLE ranked line, path included. A symbol called
+         `resolve` therefore scored on `1. internal/resolve/cache.go:12 loadCache`, where the
+         match is a DIRECTORY and the retrieved symbol is something else entirely.
+      2. There was no file check at all. `cases` carries the target's file and it was used only
+         for the samefile fallback -- a same-named symbol anywhere in the repository counted as
+         retrieving the target. head_to_head had the identical bug, was fixed, and the fix was
+         never carried across to these two.
+    """
+    m = RANK.match(line)
+    if not m:
+        return False
+    path, rest = m.group(2), line[m.end():]
+    if os.path.isabs(path):
+        path = os.path.relpath(path, repo)
+    if os.path.normpath(path) != os.path.normpath(target_file):
+        return False
+    return bool(re.search(r'\b' + re.escape(name) + r'\b', rest))
+
+
 def run(binary, repo, q, budget):
     p = subprocess.run([binary, "query", "--repo", repo, "--query", q, "--format", "agent",
                         "--max-context-bytes", str(budget), "--no-cache"],
@@ -77,7 +102,7 @@ if __name__ == "__main__":
         h1=h5=sf=0; tot=0
         for q, name, fp in cases:
             hits, size = run(binary, repo, q, b); tot += size
-            ranks = [r for r, _, line in hits if re.search(r'\b'+re.escape(name)+r'\b', line)]
+            ranks = [r for r, _, line in hits if ranked_hit(line, name, fp, repo)]
             if 1 in ranks: h1 += 1
             if any(r <= 5 for r in ranks): h5 += 1
             elif hits and hits[0][1] == fp: sf += 1

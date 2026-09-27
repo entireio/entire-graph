@@ -15,9 +15,34 @@ import doccomment_bench as D
 
 RANK = re.compile(r'^\s*(\d+)\.\s+(\S+?):(\d+)')
 
-def found(binary, repo, q, name, budget):
+def ranked_hit(line, name, target_file, repo):
+    """Is this ranked line a retrieval of `name` IN ITS OWN FILE?
+
+    Two defects this replaces, both of which inflated the graph -- the only arm these two
+    benchmarks measure:
+
+      1. The name was matched against the WHOLE ranked line, path included. A symbol called
+         `resolve` therefore scored on `1. internal/resolve/cache.go:12 loadCache`, where the
+         match is a DIRECTORY and the retrieved symbol is something else entirely.
+      2. There was no file check at all. `cases` carries the target's file and it was used only
+         for the samefile fallback -- a same-named symbol anywhere in the repository counted as
+         retrieving the target. head_to_head had the identical bug, was fixed, and the fix was
+         never carried across to these two.
+    """
+    m = RANK.match(line)
+    if not m:
+        return False
+    path, rest = m.group(2), line[m.end():]
+    if os.path.isabs(path):
+        path = os.path.relpath(path, repo)
+    if os.path.normpath(path) != os.path.normpath(target_file):
+        return False
+    return bool(re.search(r'\b' + re.escape(name) + r'\b', rest))
+
+
+def found(binary, repo, q, name, target_file, budget):
     hits, _ = D.run(binary, repo, q, budget)
-    ranks = [r for r, _, line in hits if re.search(r'\b'+re.escape(name)+r'\b', line)]
+    ranks = [r for r, _, line in hits if ranked_hit(line, name, target_file, repo)]
     top = hits[0][1] if hits else None
     return (min(ranks) if ranks else None), top
 
@@ -28,8 +53,8 @@ if __name__ == "__main__":
     print(f"rev {rev}  n={len(cases)}  comparing {lo} vs {hi}\n")
     lost = kept = same = 0
     for q, name, fp in cases:
-        rl, tl = found(binary, repo, q, name, lo)
-        rh, th = found(binary, repo, q, name, hi)
+        rl, tl = found(binary, repo, q, name, fp, lo)
+        rh, th = found(binary, repo, q, name, fp, hi)
         if rl == rh:
             same += 1; continue
         if rh is not None and rl is None:

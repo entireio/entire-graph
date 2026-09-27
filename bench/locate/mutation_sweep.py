@@ -6,6 +6,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 H = os.path.join(_HERE, "head_to_head.py")
 R = os.path.join(_HERE, "replay_qualify.py")
 
+D = os.path.join(_HERE, "doccomment_bench.py")
+B = os.path.join(_HERE, "budget_falsifier.py")
+
 MUT = [
   # (file, label, find, replace)
   (H, "scorer: drop the span check on grep arms",
@@ -39,6 +42,11 @@ MUT = [
    '        return True or any(r0.get(k) not in (None, "", [], {}) for k in'),
   (R, "replay: promote identity to full-execution",
    '                tiers["source-identity-candidate"] += 1', '                tiers["full-execution"] += 1'),
+  (D, "siblings: match the name against the whole ranked line again",
+   "    path, rest = m.group(2), line[m.end():]", "    path, rest = m.group(2), line"),
+  (D, "siblings: drop the target-file check again",
+   "    if os.path.normpath(path) != os.path.normpath(target_file):\n        return False",
+   "    if False:\n        return False"),
   (H, "arms: drop the rg option terminator",
    '"-g", "!node_modules", "--", phrase, repo]', '"-g", "!node_modules", phrase, repo]'),
   (H, "oracle: let a failed run count as a miss",
@@ -72,7 +80,10 @@ MUT = [
 ]
 
 def run(f):
-    return subprocess.run([sys.executable, f, "--test"], capture_output=True, text=True, timeout=1800)
+    # doccomment_bench and budget_falsifier carry no --test of their own; their shared hit
+    # predicate is guarded from head_to_head's suite, so mutations to them are checked there.
+    runner = f if f in (H, R) else H
+    return subprocess.run([sys.executable, runner, "--test"], capture_output=True, text=True, timeout=1800)
 
 base = {f: run(f).returncode for f in (H, R)}
 if any(v != 0 for v in base.values()):
