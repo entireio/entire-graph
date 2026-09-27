@@ -3888,7 +3888,12 @@ func resolveCallTargetsWithRawImport(name string, from SymbolRecord, candidates,
 	for i := range targets {
 		if definition, ok := cPlusPlusOutOfLineDefinition(targets[i].SymbolRecord, candidates); ok {
 			targets[i].SymbolRecord = definition
-			targets[i].Reason = "C++ call resolved through member declaration to out-of-line definition"
+			if targets[i].Resolution == "name_only" {
+				// Mapping a candidate declaration does not disambiguate the call.
+				targets[i].Reason += "; C++ candidate mapped through member declaration to out-of-line definition"
+			} else {
+				targets[i].Reason = "C++ call resolved through member declaration to out-of-line definition"
+			}
 			if definition.FilePath != from.FilePath {
 				targets[i].Scope = "module"
 			}
@@ -3923,16 +3928,18 @@ func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord,
 		return appendSQLDerivedDuplicateTargets(local, from, candidates)
 	}
 	if len(local) > 1 {
-		// Ambiguous bare name with multiple same-file definitions: emit the
-		// lexically nearest one (closest declaration line to the call site) rather
-		// than fanning out an edge to every candidate. A single best guess keeps
-		// recall while cutting the over-emission that dominates the false edges.
+		// Keep one candidate, nearest to the caller's declaration, rather than
+		// fanning out. Proximity does not establish the actual binding (notably
+		// for overloads), so this guess must not inherit exact-call metadata.
 		best := local[0]
 		for _, c := range local[1:] {
 			if absInt(c.StartLine-from.StartLine) < absInt(best.StartLine-from.StartLine) {
 				best = c
 			}
 		}
+		best.Confidence = minFloat(best.Confidence, 0.62)
+		best.Resolution = "name_only"
+		best.Reason = fmt.Sprintf("ambiguous same-file call: nearest candidate among %d same-name declarations", len(local))
 		return []resolvedCallTarget{best}
 	}
 

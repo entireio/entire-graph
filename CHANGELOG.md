@@ -29,6 +29,7 @@ auto-generated notes on
 
 ### Fixed
 
+- Classified ambiguous same-file nearest-declaration call guesses as `name_only` with reduced confidence, preserving the ambiguity through C++ out-of-line mapping. This corrects false certainty, not semantic overload selection; fast-profile and argument-forwarding filters now omit these uncertain edges.
 - Fixed seven wrong-answer defects in the provider and type scanners and stopped bare type names resolving across language boundaries.
 - Fixed language-scanner defect classes across C, C++, F#, and Julia, including declarator-based function naming, data-member and in-class method extraction, module-path and qualifier resolution, a forward-pipe precision bug, and bare-call scoping, and declared the type and data-flow relations all ten supported languages actually emit.
 - Fixed six defects in default-export extraction, GraphQL fragment spreads, compact snapshots, and command-table search, a nested JS/TS function-expression scoping bug, and a prose-query ranking miss in search.
