@@ -706,6 +706,48 @@ def _selftest():
     ck("vcs_modified" not in binary_build_identity(_nb),
        "an unknown build carries no vcs_modified at all")
 
+    # GATE 1. A malformed vcs.modified is UNKNOWN, not clean.
+    _mb = os.path.join(_tfa.mkdtemp(prefix="mal-"), "b")
+    with open(_mb, "w") as fh: fh.write("x")
+    ck(binary_build_identity(_mb)["known"] is False, "a non-Go file has no build identity")
+    # PRESENT BUT MALFORMED, which is the case that mattered: the stamp is there and unreadable,
+    # and `== "true"` turned every unreadable value into False, meaning CLEAN.
+    _stamps = lambda m: ("\tpath\tx/y\n\tmod\tx/y\tv0.0.1\n"
+                         "\tbuild\tvcs=git\n\tbuild\tvcs.revision=" + "a" * 40 +
+                         "\n\tbuild\tvcs.modified=" + m + "\n")
+    for _v in ("garbage", "TRUE", "1", "yes", ""):
+        _bi = build_identity_from_stamps(_stamps(_v)) if _v else build_identity_from_stamps(
+            "\tbuild\tvcs.revision=" + "a" * 40 + "\n\tbuild\tvcs.modified=\n")
+        ck(_bi["known"] is False, f"GATE1: vcs.modified={_v!r} is unknown, not clean", str(_bi))
+    ck(build_identity_from_stamps(_stamps("false"))["vcs_modified"] is False,
+       "GATE1: a literal false still reads as a clean tree")
+    ck(build_identity_from_stamps(_stamps("true"))["vcs_modified"] is True,
+       "GATE1: a literal true still reads as a dirty tree")
+
+    # GATE 3. A comparable REJECTION with a VALID oracle -- the combination nothing forced.
+    _g3 = _tfa.mkdtemp(prefix="g3-")
+    _st3 = {"valid": 0, "na": 0, "bytes": [], "loc": 0, "dec": 0}
+    _meta3 = {"argv": [], "rc": 1, "stderr_bytes": b""}
+    _arms3 = (("graph", 0, False, False, False, b"", _meta3),   # comparable arm FAILS
+              ("grep", 0, False, False, True, b"", _meta3),
+              ("phrase", 0, False, False, True, b"", _meta3),
+              ("oracle", 77, True, True, True, b"", _meta3))    # control is VALID
+    _adm3 = settle_attempt(_g3, "001-S-f_go", "q", "S", "f.go", 1, 2, _arms3, _st3)
+    ck(_adm3 is False, "GATE3: a failed comparable arm rejects the attempt")
+    ck(_st3["valid"] == 1 and _st3["bytes"] == [77] and _st3["loc"] == 1,
+       "GATE3: ...and the VALID oracle on that rejected attempt is still counted", str(_st3))
+
+    # GATE 4. The receipt's cost is the cost SUPPLIED, not inflated by stderr.
+    _g4 = _tfa.mkdtemp(prefix="g4-")
+    _big = b"e" * 9000
+    for _cid, _cost in (("001-Z-f_go", 0), ("002-Z-f_go", 1234)):
+        write_receipts(_g4, _cid, "q", "Z", "f.go", 1, 2, False,
+                       (("grep", _cost, False, False, True, b"",
+                         {"argv": [], "rc": 2, "stderr_bytes": _big}),))
+        _jj = json.load(open(os.path.join(_g4, _cid + ".grep.json")))
+        ck(_jj["cost_bytes"] == _cost,
+           f"GATE4: cost_bytes stays {_cost} with 9k of stderr beside it", str(_jj["cost_bytes"]))
+
     # NO SILENTLY UNSEALED AGGREGATE. Omitting the output directory used to print the whole
     # table with no seal, no receipts and no verdict -- output indistinguishable from a
     # measurement. The refusal fires before any work, so this costs nothing to check.
@@ -762,6 +804,12 @@ def _selftest():
                f"{len(_rcpts)} receipts vs {len(_man['cases'])} attempts")
             ck(len(json.load(open(_sealp))["selected_queries"]) == len(_man["cases"]),
                "ORDER: the seal's population is the population that ran")
+            # GATE 2. mtimes cannot show this: record_attempt runs after all four arms, so a
+            # seal written between the arms and the receipt still predates every receipt. The
+            # evaluator checks the seal on disk AT ARM ENTRY and records what it saw.
+            ck(_man.get("seal_present_at_first_arm") is True,
+               "ORDER: the sealed population was on disk, with the right hash, AT ARM ENTRY",
+               str(_man.get("seal_present_at_first_arm")))
 
     # RANGE OVERLAP, with the negatives that keep it from becoming "anything nearby counts".
     for header, want, label in (
@@ -1018,15 +1066,25 @@ def binary_build_identity(binary):
         return {"known": False, "reason": "go version -m could not be run"}
     if out.returncode != 0:
         return {"known": False, "reason": f"go version -m exited {out.returncode}"}
-    kv = dict(re.findall(r"build\s+(\S+)=(\S+)", out.stdout))
+    return build_identity_from_stamps(out.stdout)
+
+
+def build_identity_from_stamps(text):
+    """Decide build identity from `go version -m` OUTPUT. Pure, so a malformed stamp is
+    reachable from a test without manufacturing a binary that carries one.
+
+    The decision, not the subprocess, is what was wrong: `kv["vcs.modified"] == "true"` mapped
+    every other value -- a garbled one included -- to False, and False means CLEAN.
+    """
+    kv = dict(re.findall(r"build\s+(\S+)=(\S+)", text))
     if "vcs.revision" not in kv or "vcs.modified" not in kv:
         return {"known": False, "reason": "binary carries no vcs stamps"}
-    mod = re.search(r"mod\s+(\S+)\s+(\S+)", out.stdout)
-    path = re.search(r"path\s+(\S+)", out.stdout)
-    go = re.search(r":\s+(go\S+)", out.stdout)
-    # MODULE AND RAW SETTINGS, not just a revision. A label saying "reproducible source" has to
-    # name WHICH source: a bare commit hash identifies a revision in some repository, and the
-    # seal did not record which one, nor the build settings that shaped the binary.
+    if kv["vcs.modified"] not in ("true", "false"):
+        return {"known": False,
+                "reason": f"vcs.modified is {kv['vcs.modified']!r}, neither true nor false"}
+    mod = re.search(r"mod\s+(\S+)\s+(\S+)", text)
+    path = re.search(r"path\s+(\S+)", text)
+    go = re.search(r":\s+(go\S+)", text)
     return {"known": True, "vcs_revision": kv["vcs.revision"], "vcs_time": kv.get("vcs.time"),
             "vcs_modified": kv["vcs.modified"] == "true",
             "module_path": mod.group(1) if mod else None,
@@ -1034,6 +1092,23 @@ def binary_build_identity(binary):
             "main_path": path.group(1) if path else None,
             "go": go.group(1) if go else None,
             "build_settings": kv}
+
+
+def seal_present_at_arm_entry(outdir, seal_sha):
+    """Is the sealed population already on disk, with the expected hash, before the first arm?
+
+    Peer review's catch, and it is exact: receipt mtimes cannot show this. record_attempt runs
+    AFTER all four arms, so a seal written between the arms and the receipt still predates every
+    receipt and every mtime assertion still passes. The only moment that proves the population
+    was frozen before it was measured is ARM ENTRY, so that is where this is checked.
+    """
+    if not outdir:
+        return None
+    path = os.path.join(outdir, "SEAL.json")
+    if not os.path.exists(path):
+        return False
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest() == seal_sha
 
 
 def seal_run(outdir, binary, bsha, repo, rev, content_sha, budget, want, cases, diagnostic):
@@ -1078,6 +1153,21 @@ def seal_run(outdir, binary, bsha, repo, rev, content_sha, budget, want, cases, 
 def file_sha256(path):
     with open(path, "rb") as fh:
         return hashlib.sha256(fh.read()).hexdigest()
+
+
+def settle_attempt(outdir, cid, q, name, fp, lo, hi, arms, ostate):
+    """The whole post-arm transition, in one place: record, tally the control, then admit.
+
+    Peer review: nothing forced a comparable REJECTION with a VALID oracle, so no test could
+    show the tally happens before the gate. Receipt counts and population sizes say nothing
+    about it. As one function the transition is a single thing a test can drive with exactly
+    that combination.
+    """
+    admitted = record_attempt(outdir, cid, q, name, fp, lo, hi, arms)
+    by = {a[0]: a for a in arms}
+    o = by["oracle"]
+    tally_oracle(ostate, o[4], o[1], o[2], o[3])
+    return admitted
 
 
 def new_manifest(seal_sha, repo, rev, dirty, content_sha, binary, bsha, script_sha, budget, want):
@@ -1227,7 +1317,10 @@ if __name__=="__main__":
                           file_sha256(os.path.abspath(__file__)), budget, n)
     gvals=[]; pvals=[]; ovals=[]; svals=[]
     gL=gD=pL=pD=oL=oD=sL=sD=0
+    seal_seen = {"at_first_arm": None}
     def real_arms(q,name,fp,s_lo,s_hi):
+        if seal_seen["at_first_arm"] is None:
+            seal_seen["at_first_arm"] = seal_present_at_arm_entry(outdir, seal_sha)
         return (("graph",)  + graph_arm(binary,repo,q,name,fp,budget,s_lo,s_hi),
                 ("grep",)   + grep_arm(repo,q,name,fp,False,s_lo,s_hi),
                 ("phrase",) + phrase_arm(repo,q,name,fp,s_lo,s_hi),
@@ -1251,9 +1344,10 @@ if __name__=="__main__":
         cid = "%03d-%s-%s" % (attempt, re.sub(r"\W+","_",name)[:48],
                               re.sub(r"\W+","_",os.path.basename(fp))[:32])
         # RECORD, THEN ADMIT -- in that order, enforced by record_attempt doing both.
-        admitted = record_attempt(outdir, cid, q, name, fp, s_lo, s_hi,
+        admitted = settle_attempt(outdir, cid, q, name, fp, s_lo, s_hi,
                                   (("graph",g,g_l,g_d,gok,g_raw,g_m), ("grep",pr,p_l,p_d,pok,p_raw,p_m),
-                                   ("phrase",sc,s_l,s_d,sok,s_raw,s_m), ("oracle",oc,o_l,o_d,ook,o_raw,o_m)))
+                                   ("phrase",sc,s_l,s_d,sok,s_raw,s_m), ("oracle",oc,o_l,o_d,ook,o_raw,o_m)),
+                                  ostate)
         manifest["cases"].append({"case_id":cid,"symbol":name,"file":fp,"span":[s_lo,s_hi],
                                   "admitted":admitted,
                                   "arm_ok":{"graph":gok,"grep":pok,"phrase":sok,"oracle":ook}})
@@ -1262,7 +1356,6 @@ if __name__=="__main__":
         # not oracle validity -- the fx-cli audit found all 20 oracle receipts valid while the
         # manifest said 19, because one case was dropped for an unrelated arm. A control with a
         # denominator that moves when another arm fails is not independent of that arm.
-        tally_oracle(ostate, ook, oc, o_l, o_d)
         if not admitted:
             dropped+=1      # a failed comparable arm excludes the case, never scores as a miss
             continue
@@ -1314,5 +1407,6 @@ if __name__=="__main__":
     # LAST THING THE RUN DOES. Everything above is already on disk as PROVISIONAL; this is what
     # makes the receipts quotable, and a run that dies before here stays provisional -- which
     # reads as invalid, deliberately.
+    manifest["seal_present_at_first_arm"] = seal_seen["at_first_arm"]
     finalize_manifest(outdir, manifest, "VALID",
                       f"scored {k}, dropped {dropped}, oracle valid {ostate['valid']} n/a {ostate['na']} of {attempt} attempts")
