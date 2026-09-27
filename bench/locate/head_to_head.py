@@ -716,9 +716,29 @@ def _selftest():
         # only inside it, so only matching against the text AFTER the path:line prefix rejects
         # this. Without it, a directory named like the symbol scores in its own file.
         ("4. internal/resolve/target.go:40 loadCache s=7.0", False, "name only in the target's own path"),
+        # A CALLER rendered in the target's own file is not the target, and neither is the name
+        # appearing in trailing metadata -- a score, a signal word, a focus annotation.
+        ("5. internal/sem/target.go:40 loadCache s=9 [focus:40]", False, "a caller in the right file"),
+        ("6. internal/sem/target.go:40 loadCache s=9 resolve",    False, "the name in trailing metadata"),
+        ("7. internal/sem/target.go:40 resolveRule s=9",          False, "a longer name sharing the prefix"),
+        ("8. internal/sem/target.go:40 m.resolve s=9",            True,  "the target rendered as a method"),
     ):
         tf = "internal/resolve/target.go" if "internal/resolve" in line else "internal/sem/target.go"
         ck(_dcb.ranked_hit(line, "resolve", tf, "/r") is want, "sibling hit predicate: " + label)
+
+    # BOTH CONSUMERS, not just the one this test imports. budget_falsifier used to carry its own
+    # copy of the predicate, which no test called and no mutation reached -- it could have
+    # drifted silently while every guard reported green. It binds the shared one now, and this
+    # exercises ITS binding rather than assuming the import.
+    _spec_b = _ilu.spec_from_file_location("_bfz", os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "budget_falsifier.py"))
+    _bfz = _ilu.module_from_spec(_spec_b); _spec_b.loader.exec_module(_bfz)
+    ck(_bfz.ranked_hit("1. internal/sem/target.go:40 resolve s=8.0",
+                       "resolve", "internal/sem/target.go", "/r") is True,
+       "budget_falsifier's predicate accepts the target")
+    ck(_bfz.ranked_hit("1. internal/sem/target.go:40 loadCache s=9 [focus:40]",
+                       "resolve", "internal/sem/target.go", "/r") is False,
+       "budget_falsifier's predicate refuses a caller in the right file")
 
     # 13-16. THE RECEIPT VERDICT. Peer review's point was that receipts said PROVISIONAL
     #        forever and nothing finalised them, so a completed run and one killed halfway

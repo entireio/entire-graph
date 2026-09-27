@@ -56,29 +56,37 @@ def build_cases(binary, repo, want, seed=7):
     return cands[:want]
 
 def ranked_hit(line, name, target_file, repo):
-    """Is this ranked line a retrieval of `name` IN ITS OWN FILE?
+    """Is this ranked line a retrieval of `name` ITSELF, in its own file?
 
-    Two defects this replaces, both of which inflated the graph -- the only arm these two
-    benchmarks measure:
+    Three defects now, each narrower than the last, and the third is the instructive one:
 
-      1. The name was matched against the WHOLE ranked line, path included. A symbol called
-         `resolve` therefore scored on `1. internal/resolve/cache.go:12 loadCache`, where the
-         match is a DIRECTORY and the retrieved symbol is something else entirely.
-      2. There was no file check at all. `cases` carries the target's file and it was used only
-         for the samefile fallback -- a same-named symbol anywhere in the repository counted as
-         retrieving the target. head_to_head had the identical bug, was fixed, and the fix was
-         never carried across to these two.
+      1. The name was matched against the WHOLE line, path included, so a directory called
+         `resolve/` scored as retrieving a symbol called `resolve`.
+      2. There was no file check at all, so a same-named symbol anywhere counted.
+      3. Stripping the path and searching the REST was still a search. A header reads
+             1. right.go:12 loadCache s=9 [focus:40]
+         and the remainder carries a score, signal words and a focus annotation. Any of those
+         can contain the target's name -- and a CALLER rendered in the target's own file
+         credits the target. What identifies the result is the symbol token, which is the first
+         field after the location; everything after it is metadata about the hit, not the hit.
+
+    A method renders qualified (`ignoreMatcher.decide`) while the registered name is bare, so
+    the token matches on equality or as the final dotted segment. That is identity, not
+    containment: `decideRule` and `predecide` both fail it.
     """
     m = RANK.match(line)
     if not m:
         return False
-    path, rest = m.group(2), line[m.end():]
+    path = m.group(2)
     if os.path.isabs(path):
         path = os.path.relpath(path, repo)
     if os.path.normpath(path) != os.path.normpath(target_file):
         return False
-    return bool(re.search(r'\b' + re.escape(name) + r'\b', rest))
-
+    rest = line[m.end():].split()
+    if not rest:
+        return False
+    token = rest[0].strip("(),;:")
+    return token == name or token.endswith("." + name)
 
 def run(binary, repo, q, budget):
     p = subprocess.run([binary, "query", "--repo", repo, "--query", q, "--format", "agent",
