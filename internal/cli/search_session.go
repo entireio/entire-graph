@@ -58,7 +58,7 @@ type searchSession struct {
 // session written without the current schema must run a real search: its opaque payload cannot be
 // upgraded or inspected safely after the fact.
 const (
-	searchSessionReplaySchema = 2
+	searchSessionReplaySchema = 4
 	// A normal search payload is budgeted in kilobytes. Keep a generous ceiling for callers that
 	// deliberately widen it, but never let an untrusted/stale session file allocate without bound.
 	maxSearchSessionStateBytes = 8 << 20
@@ -333,31 +333,52 @@ func searchEchoHeader(asked, answered string) string {
 	return fmt.Sprintf("(one search per task: %q was not run — below is your first search %q, verbatim)\n", asked, answered)
 }
 
-// searchSessionProducer identifies the running binary for replay: its version plus the VCS revision
-// Go stamped into it, and whether that tree was modified. A version alone is not enough — every
-// development build reports the same one whatever source it was built from. Known limit: two builds
-// from DIFFERENTLY modified trees at the same revision share an identity; that is a development-only
-// case, and refusing every modified build instead would disable replay for all local builds (and make
-// its behaviour depend on whether the checkout is dirty). A binary with neither a version nor a
-// revision gets no identity, which matches nothing and answers every question for real.
-func searchSessionProducer(version string) string {
-	revision, modified := "", false
-	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, setting := range info.Settings {
-			switch setting.Key {
-			case "vcs.revision":
-				revision = setting.Value
-			case "vcs.modified":
-				modified = setting.Value == "true"
-			}
-		}
-	}
-	if version == "" && revision == "" {
+// searchSessionBuildInfo reads the running binary's build metadata. A package variable so the test
+// package can install an identifiable default (the test binary itself carries no VCS stamp).
+var searchSessionBuildInfo = debug.ReadBuildInfo
+
+// searchSessionProducerFrom identifies a binary for replay from its OWN build metadata only.
+//
+// The CLI's version string is not used: Run turns an empty version into "dev", so two unstamped
+// development binaries built from different source both reported "dev" and replayed each other's
+// output. Identity is, in order:
+//   - a VCS revision from an UNMODIFIED tree: "rev:<revision>";
+//   - otherwise a real module version (go install module@version): "mod:<version>";
+//   - otherwise none.
+//
+// A binary built from a modified tree gets none: two different modified builds of one revision are
+// indistinguishable, so such a binary answers every question for real rather than risk replaying
+// another build's output. No identity matches nothing.
+func searchSessionProducerFrom(info *debug.BuildInfo, ok bool) string {
+	if !ok || info == nil {
 		return ""
 	}
-	identity := version + "+" + revision
-	if modified {
-		identity += "+modified"
+	revision, modified := "", false
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
 	}
-	return identity
+	if revision != "" {
+		if modified {
+			return ""
+		}
+		return "rev:" + revision
+	}
+	if version := info.Main.Version; version != "" && version != "(devel)" {
+		return "mod:" + version
+	}
+	return ""
+}
+
+// sessionProducer is the replay identity of the binary serving opts.
+func (opts Options) sessionProducer() string {
+	read := searchSessionBuildInfo
+	if opts.buildInfo != nil {
+		read = opts.buildInfo
+	}
+	return searchSessionProducerFrom(read())
 }
