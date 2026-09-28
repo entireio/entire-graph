@@ -32,7 +32,10 @@ func stampedBuild(revision string, modified bool) *debug.BuildInfo {
 
 func TestSearchSessionProducerIdentityFromBuildInfo(t *testing.T) {
 	t.Parallel()
-	module := &debug.BuildInfo{Main: debug.Module{Version: "v0.5.0"}}
+	module := &debug.BuildInfo{Main: debug.Module{Path: "github.com/entireio/entire-graph", Version: "v0.5.0"}}
+	replaced := &debug.BuildInfo{Main: debug.Module{Path: "github.com/entireio/entire-graph", Version: "v0.5.0",
+		Replace: &debug.Module{Path: "../local-graph", Version: "(devel)"}}}
+	revisionOnly := &debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "abc123"}}}
 	for _, c := range []struct {
 		name string
 		info *debug.BuildInfo
@@ -41,7 +44,9 @@ func TestSearchSessionProducerIdentityFromBuildInfo(t *testing.T) {
 	}{
 		{"clean stamped revision", stampedBuild("abc123", false), true, "rev:abc123"},
 		{"modified tree refuses", stampedBuild("abc123", true), true, ""},
-		{"module install version", module, true, "mod:v0.5.0"},
+		{"module version alone refuses (tags collide across modules and forks)", module, true, ""},
+		{"local replacement refuses (same path and version, different source)", replaced, true, ""},
+		{"revision without a modified stamp refuses", revisionOnly, true, ""},
 		{"unstamped devel build refuses", stampedBuild("", false), true, ""},
 		{"no build info refuses", nil, false, ""},
 	} {
