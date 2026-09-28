@@ -47,6 +47,8 @@ func TestSearchSessionProducerIdentityFromBuildInfo(t *testing.T) {
 		{"module version alone refuses (tags collide across modules and forks)", module, true, ""},
 		{"local replacement refuses (same path and version, different source)", replaced, true, ""},
 		{"revision without a modified stamp refuses", revisionOnly, true, ""},
+		{"a modified stamp other than the literal false refuses", &debug.BuildInfo{Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "abc123"}, {Key: "vcs.modified", Value: "unknown"}}}, true, ""},
 		{"unstamped devel build refuses", stampedBuild("", false), true, ""},
 		{"no build info refuses", nil, false, ""},
 	} {

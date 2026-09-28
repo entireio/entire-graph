@@ -358,24 +358,26 @@ var searchSessionBuildInfo = debug.ReadBuildInfo
 // so unstamped development binaries all reported "dev" and replayed each other's output. A module
 // version is not used either: two modules (or forks) can share a tag, and a binary built through a
 // local `replace` keeps the same module path and version while its source — and its bytes — change.
-// A modified-tree stamp is refused before anything else: two different modified builds of one
-// revision are indistinguishable. Binaries built from a git checkout (as releases are) carry the
-// stamp; `go install module@version` binaries do not and simply never replay.
+// Anything but an explicit vcs.modified="false" is refused: two different modified builds of one
+// revision are indistinguishable. This is a source-revision identity, not a binary attestation:
+// builds of one clean revision with different flags or toolchains share it. A clean checkout
+// built by scripts/release.sh carries the stamp; `go install module@version` binaries do not and
+// never replay (a deliberate capability tradeoff).
 func searchSessionProducerFrom(info *debug.BuildInfo, ok bool) string {
 	if !ok || info == nil {
 		return ""
 	}
-	revision, modified, modifiedStamped := "", false, false
+	revision, clean := "", false
 	for _, setting := range info.Settings {
 		switch setting.Key {
 		case "vcs.revision":
 			revision = setting.Value
 		case "vcs.modified":
-			modifiedStamped = true
-			modified = setting.Value == "true"
+			// Only the literal "false" is clean: "true", an empty value, or any other text is not.
+			clean = setting.Value == "false"
 		}
 	}
-	if modified || !modifiedStamped || revision == "" {
+	if !clean || revision == "" {
 		return ""
 	}
 	return "rev:" + revision
