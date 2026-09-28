@@ -112,7 +112,7 @@ const (
 type SearchVerifyCommand struct {
 	// Command is runnable as written, from the repository root.
 	Command string `json:"command"`
-	// Targets is the test file the command runs, or the package when no covering test was found.
+	// Targets describes the test file, package, suite, or parse/build scope the command verifies.
 	Targets string `json:"targets"`
 	// DerivedFrom names the repository evidence behind the command, so a reader can judge it
 	// instead of trusting it.
@@ -140,10 +140,14 @@ type SearchVerifyCommand struct {
 // searchVerifyEvidence is the bounded view of the repository the derivation is allowed to consult.
 // It caches misses as well as hits: a manifest that is not there is probed once per path.
 type searchVerifyEvidence struct {
-	read  contentReader
+	read contentReader
+	// files is the already-discovered repository inventory, not a directory walk.
+	files []string
 	cache map[string]string
 	miss  map[string]bool
 	reads int
+	// goNative caches bounded native-package applicability across ancestor probes.
+	goNative map[string]bool
 	// lookPath resolves an executable name the way exec.LookPath does. Injected so the runner check is
 	// a pure function of its inputs in tests instead of a fact about the machine running them.
 	lookPath func(string) (string, error)
@@ -566,8 +570,8 @@ var searchVerifyDerivations = []func(string, searchVerifySubject, *searchVerifyE
 
 // deriveSearchVerifySuiteCommand is the whole-suite fallback consulted only when no narrow command
 // exists. It walks from the subject's directory towards the root exactly like the narrow derivation
-// and returns the first recognized ecosystem's canonical suite command. Unlike the narrow tier it
-// does NOT require a covering test: its whole point is the case where the payload found none.
+// and returns the first recognized ecosystem's canonical suite command. It does not require a
+// covering test; even when one exists, its manifest may not license a narrow command.
 func deriveSearchVerifySuiteCommand(subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	dir := path.Dir(subject.sourcePath)
 	if dir == "." || dir == "/" {
@@ -575,7 +579,7 @@ func deriveSearchVerifySuiteCommand(subject searchVerifySubject, evidence *searc
 	}
 	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
 		for _, derive := range searchVerifySuiteDerivations {
-			if command := derive(dir, evidence); command != nil {
+			if command := derive(dir, subject, evidence); command != nil {
 				return command
 			}
 		}
@@ -594,7 +598,7 @@ func deriveSearchVerifySuiteCommand(subject searchVerifySubject, evidence *searc
 
 // searchVerifySuiteDerivations mirrors searchVerifyDerivations, language-specific before generic, so
 // a Rust crate with a convenience Makefile still yields `cargo test`, not `make test`.
-var searchVerifySuiteDerivations = []func(string, *searchVerifyEvidence) *SearchVerifyCommand{
+var searchVerifySuiteDerivations = []func(string, searchVerifySubject, *searchVerifyEvidence) *SearchVerifyCommand{
 	deriveSearchVerifySuiteCargo,
 	deriveSearchVerifySuiteGo,
 	deriveSearchVerifySuiteMaven,
@@ -607,8 +611,8 @@ var searchVerifySuiteDerivations = []func(string, *searchVerifyEvidence) *Search
 	deriveSearchVerifySuiteMake,
 }
 
-// searchVerifySuiteCommand builds a whole-suite command, labeling both the target (no covering test
-// was found) and the derivation (whole suite) so the reader knows it is unfiltered and slow.
+// searchVerifySuiteCommand builds a whole-suite command, labeling both the target (no narrow test
+// command was derivable) and the derivation (whole suite) so the reader knows it is unfiltered and slow.
 func searchVerifySuiteCommand(dir, command, derived string) *SearchVerifyCommand {
 	return searchVerifySuiteCommandLiteral(searchVerifyRunIn(dir, command), derived)
 }
@@ -620,12 +624,12 @@ func searchVerifySuiteCommand(dir, command, derived string) *SearchVerifyCommand
 func searchVerifySuiteCommandLiteral(command, derived string) *SearchVerifyCommand {
 	return &SearchVerifyCommand{
 		Command:     command,
-		Targets:     "whole test suite (no covering test identified)",
+		Targets:     "whole test suite (no narrow test command derivable)",
 		DerivedFrom: derived + " (whole suite)",
 	}
 }
 
-func deriveSearchVerifySuiteCargo(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteCargo(dir string, _ searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	manifest := searchVerifyJoin(dir, "Cargo.toml")
 	content, ok := evidence.file(manifest)
 	if !ok || (!strings.Contains(content, "[package]") && !strings.Contains(content, "[workspace]")) {
@@ -634,7 +638,12 @@ func deriveSearchVerifySuiteCargo(dir string, evidence *searchVerifyEvidence) *S
 	return searchVerifySuiteCommand(dir, "cargo test", manifest)
 }
 
-func deriveSearchVerifySuiteGo(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteGo(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	// A mixed-language repository's Go suite verifies neither a non-Go source
+	// nor its non-Go covering test merely because they live below go.mod.
+	if !searchVerifyGoApplies(subject.sourcePath, evidence) && !searchVerifyGoApplies(subject.testPath, evidence) {
+		return nil
+	}
 	manifest := searchVerifyJoin(dir, "go.mod")
 	if !evidence.exists(manifest) {
 		return nil
@@ -642,7 +651,7 @@ func deriveSearchVerifySuiteGo(dir string, evidence *searchVerifyEvidence) *Sear
 	return searchVerifySuiteCommand(dir, "go test ./...", manifest+" module")
 }
 
-func deriveSearchVerifySuiteMaven(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteMaven(dir string, _ searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	manifest := searchVerifyJoin(dir, "pom.xml")
 	if !evidence.exists(manifest) {
 		return nil
@@ -650,7 +659,7 @@ func deriveSearchVerifySuiteMaven(dir string, evidence *searchVerifyEvidence) *S
 	return searchVerifySuiteCommandLiteral(searchVerifyMavenCommand(dir, "test", evidence), manifest)
 }
 
-func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteGradle(dir string, _ searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	manifest := ""
 	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
 		if evidence.exists(searchVerifyJoin(dir, name)) {
@@ -1155,7 +1164,7 @@ func searchVerifyScriptIdentifierByte(character byte) bool {
 		(character >= '0' && character <= '9')
 }
 
-func deriveSearchVerifySuiteNode(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteNode(dir string, _ searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	manifest := searchVerifyJoin(dir, "package.json")
 	content, ok := evidence.file(manifest)
 	if !ok {
@@ -1592,7 +1601,7 @@ func searchVerifyHasUnescapedBrace(pattern string) bool {
 	return false
 }
 
-func deriveSearchVerifySuiteComposer(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteComposer(dir string, _ searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	if !evidence.exists(searchVerifyJoin(dir, "composer.json")) {
 		return nil
 	}
@@ -1634,7 +1643,7 @@ func searchVerifyHasSection(content, heading string) bool {
 	return false
 }
 
-func deriveSearchVerifySuitePytest(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuitePytest(dir string, _ searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	for _, name := range searchVerifyPytestConfigs {
 		candidate := searchVerifyJoin(dir, name)
 		content, ok := evidence.file(candidate)
@@ -1663,7 +1672,7 @@ func deriveSearchVerifySuitePytest(dir string, evidence *searchVerifyEvidence) *
 // deriveSearchVerifySuiteRuby prefers RSpec when the tree is configured for it (`.rspec`), otherwise
 // falls to `rake test` when the Rakefile names a test task — the same order the narrow Ruby
 // derivation uses, decided by the repository's own layout.
-func deriveSearchVerifySuiteRuby(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteRuby(dir string, _ searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	hasGemfile := evidence.exists(searchVerifyJoin(dir, "Gemfile"))
 	hasRakefile := evidence.exists(searchVerifyJoin(dir, "Rakefile"))
 	if !hasGemfile && !hasRakefile {
@@ -2033,7 +2042,7 @@ var searchVerifyRakeTestTaskPattern = regexp.MustCompile(
 var searchVerifyRakeDefineTaskPattern = regexp.MustCompile(
 	`(?m)^[ \t]*(?:[A-Za-z_]\w*::)*Task\.define_task[ \t(]+(?::test\b|["']test["']|test[ \t]*:)`)
 
-func deriveSearchVerifySuiteMake(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteMake(dir string, _ searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	content, ok := evidence.file(searchVerifyJoin(dir, "Makefile"))
 	if !ok {
 		return nil
@@ -2219,6 +2228,16 @@ func searchVerifyTomlPackageName(content string) (string, bool) {
 // the covering test when there is one. The `-run` pattern is anchored: an unanchored name also runs
 // every test whose name contains it.
 func deriveSearchVerifyGo(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	// The selected covering test determines the narrow command's language. A
+	// Python integration test of Go code is not a Go package; let its own runner
+	// handle it, or let the suite tier fall back to the Go source's module.
+	targetPath := subject.testPath
+	if targetPath == "" {
+		targetPath = subject.sourcePath
+	}
+	if !searchVerifyGoApplies(targetPath, evidence) {
+		return nil
+	}
 	manifest := searchVerifyJoin(dir, "go.mod")
 	if !evidence.exists(manifest) {
 		return nil
@@ -3392,7 +3411,7 @@ func searchVerifyLaunchedTool(command, runner string) string {
 //
 // Gated on the project's own `enable_testing()` / `include(CTest)` exactly like the narrow twin — that
 // declaration is what makes `ctest` mean something here rather than a command invented for the reader.
-func deriveSearchVerifySuiteCMake(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteCMake(dir string, _ searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	manifest := searchVerifyJoin(dir, "CMakeLists.txt")
 	content, ok := evidence.file(manifest)
 	if !ok {
