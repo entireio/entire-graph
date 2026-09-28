@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"slices"
@@ -2240,9 +2241,9 @@ var agentSearchAdaptiveBudgets = []int{4 * 1024, 8 * 1024, 16 * 1024}
 // function: one extra Read turn costs far more than the payload. But the ceiling was also the
 // budget, so every call paid for bodies below rank 1 up to 24 kB — the heavy tail of graph
 // output — although agents act on rank 1 in two calls of three. Here the ceiling is only
-// reached when rank 1 needs it. On 40 recorded locate queries this cut the median payload from
-// 6,662 to 2,886 bytes with the same targets found at the same ranks, and no top-hit body shorter
-// than the 24 kB render's; 4 of the 40 needed a larger budget and got one.
+// reached when rank 1 needs it. What this does NOT protect is the body of ranks 2+: a smaller
+// budget shortens them, so a target ranked below the head can lose its full span and cost the
+// agent a follow-up read. That trade is unmeasured at session level; see PR #289.
 //
 // "Whole" is exact: the unbounded rank-1 block, header included, must appear byte for byte at a
 // line start. Its header carries the displayed line range, so a clipped body cannot match.
@@ -2368,11 +2369,6 @@ func agentSearchResultBudgets(results []sem.SearchResult, budget int) []int {
 		if weightTotal == 0 {
 			break
 		}
-		// remaining*weight can overflow int64 for a large explicit budget, so the share is
-		// taken as quotient and remainder: (q*W + r)*w/W = q*w + r*w/W. q*w <= remaining
-		// because w <= W, and r*w < W*w < 2^62 because w <= 2^30 and W < 2^31 + count: every term
-		// fits for any count below 2^31.
-		quotient, rest := int64(remaining)/weightTotal, int64(remaining)%weightTotal
 		capped := false
 		spent := 0
 		for index := range budgets {
@@ -2380,9 +2376,7 @@ func agentSearchResultBudgets(results []sem.SearchResult, budget int) []int {
 				continue
 			}
 			weight := agentSearchRankWeight(index)
-			// q*w + floor(r*w/W) <= floor(remaining*w/W) <= remaining, so the share always fits
-			// an int, 32-bit included; the clamp states that bound where the conversion happens.
-			share := int(min(quotient*weight+rest*weight/weightTotal, int64(remaining)))
+			share := agentSearchWeightedShare(remaining, weight, weightTotal)
 			if room := needs[index] - budgets[index]; share >= room {
 				share, open[index], capped = room, false, true
 			}
@@ -2411,6 +2405,18 @@ func agentSearchResultBudgets(results []sem.SearchResult, budget int) []int {
 	return budgets
 }
 
+// agentSearchWeightedShare returns floor(pool*weight/total) exactly, for 0 < weight <= total.
+//
+// pool*weight can exceed 64 bits for a large explicit budget, so the product is taken in 128 bits
+// (bits.Mul64) and divided back (bits.Div64). The quotient is at most pool because weight <= total,
+// so it fits in 64 bits — which is exactly Div64's precondition (hi < total) — and in an int,
+// 32-bit included. No bound on the number of results or on the budget is assumed.
+func agentSearchWeightedShare(pool int, weight, total int64) int {
+	hi, lo := bits.Mul64(uint64(pool), uint64(weight))
+	quotient, _ := bits.Div64(hi, lo, uint64(total))
+	return int(quotient)
+}
+
 // agentSearchRankWeight is the 1/(index+1)² share weight agentSearchResultBudgets gives the
 // result at presentation position index, floored at 1.
 //
@@ -2420,8 +2426,8 @@ func agentSearchResultBudgets(results []sem.SearchResult, budget int) []int {
 // the top-up loop hands out the whole remainder one byte per iteration. With every weight >= 1
 // each round gives every open result a share of the pool, and the sum of the floored shares falls
 // short of the pool by less than the number of open results, so the top-up is one pass at most.
-// The floor also keeps W < 2^31 + count, which preserves the overflow bound on r*w. The early
-// return is the floor for large positions, taken before position*position can overflow int64.
+// The early return is the floor for large positions, taken before position*position can
+// overflow int64.
 func agentSearchRankWeight(index int) int64 {
 	position := int64(index) + 1
 	if position > agentSearchRankWeightScale/position {

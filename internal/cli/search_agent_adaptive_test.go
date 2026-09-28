@@ -366,3 +366,24 @@ func TestAgentSearchResultBudgetsBeyondTheZeroWeightBoundary(t *testing.T) {
 		t.Fatal("split did not finish: byte-at-a-time remainder loop")
 	}
 }
+
+// The weighted share is exact floor(pool*weight/total) even where pool*weight overflows 64 bits,
+// with no bound on the number of results.
+func TestAgentSearchWeightedShareIsExactBeyond64Bits(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		pool          int
+		weight, total int64
+		want          int
+	}{
+		{math.MaxInt, 1 << 30, 1 << 30, math.MaxInt},
+		{math.MaxInt, 1, 2, math.MaxInt / 2},
+		{math.MaxInt, (1 << 30) - 1, 1 << 30, int((uint64(math.MaxInt)/(1<<30))*((1<<30)-1) + (uint64(math.MaxInt)%(1<<30))*((1<<30)-1)/(1<<30))},
+		{math.MaxInt, 1, math.MaxInt64, 1},
+		{0, 5, 7, 0},
+	} {
+		if got := agentSearchWeightedShare(c.pool, c.weight, c.total); got != c.want {
+			t.Fatalf("share(%d,%d,%d) = %d, want %d", c.pool, c.weight, c.total, got, c.want)
+		}
+	}
+}
