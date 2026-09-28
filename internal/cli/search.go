@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"slices"
@@ -35,6 +36,10 @@ import (
 // cheapest plan that delivers them (measured on a 14-repo probe: mean payload 11.8 kB, i.e.
 // half the ceiling). `--max-context-bytes` remains honored exactly, so a caller who wants the
 // old behaviour passes `--max-context-bytes 16384`.
+//
+// For `--format agent` with no explicit budget this is a CEILING, not the budget: see
+// writeAgentSearchAdaptive, which stops at the first smaller budget that already shows the top
+// hit whole, so the ceiling's protection is kept without paying for it on every call.
 const defaultSearchContextBytes = 24 * 1024
 
 // searchReferenceBlocks names the three off-by-default reference blocks. They are addressable
@@ -70,6 +75,7 @@ type searchFlags struct {
 	MaxIndexedFiles       int
 	IndexAllFiles         bool
 	MaxContextBytes       int
+	MaxContextBytesSet    bool
 	BodyHeadRanks         int
 	EnclosureContextLines int
 	HeadWindowLines       int
@@ -327,7 +333,13 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if session != nil {
 		out = io.MultiWriter(opts.Stdout, &payload)
 	}
-	if err := writeSearchResponse(out, response, flags.Format, contextBudget); err != nil {
+	write := writeSearchResponse
+	if flags.Format == "agent" && !flags.MaxContextBytesSet {
+		write = func(out io.Writer, response sem.SearchResponse, _ string, ceiling int) error {
+			return writeAgentSearchAdaptive(out, response, ceiling)
+		}
+	}
+	if err := write(out, response, flags.Format, contextBudget); err != nil {
 		return err
 	}
 	if session != nil {
@@ -2146,7 +2158,7 @@ func fitAgentSearchResults(results []sem.SearchResult, budget int) []byte {
 		// `available` is what the RESULTS themselves may spend.
 		separators := count - 1
 		for available := budget - separators; available > 0; {
-			rendered := renderAgentSearchResults(results[:count], rankedAgentSearchBudgets(count, available))
+			rendered := renderAgentSearchResults(results[:count], agentSearchResultBudgets(results[:count], available))
 			if len(rendered) == 0 {
 				break // nothing renderable this narrow; drop a result instead
 			}
@@ -2215,6 +2227,246 @@ func agentSearchEmittedQuarantinedLines(produced []string) []string {
 func agentSearchEmittedLine(line string) string {
 	escaped := termsafe.Bytes([]byte(line + "\n"))
 	return string(escaped[:len(escaped)-1])
+}
+
+// agentSearchAdaptiveBudgets are the budgets an agent-format search tries, smallest first, when
+// the caller did not choose one. See writeAgentSearchAdaptive.
+var agentSearchAdaptiveBudgets = []int{4 * 1024, 8 * 1024, 16 * 1024}
+
+// writeAgentSearchAdaptive renders an agent-format search at the smallest budget that still
+// shows the top-ranked result exactly as an unbounded render shows it, and at the ceiling when
+// none does.
+//
+// The ceiling (defaultSearchContextBytes) exists so the top hit never comes back as half a
+// function: one extra Read turn costs far more than the payload. But the ceiling was also the
+// budget, so every call paid for bodies below rank 1 up to 24 kB — the heavy tail of graph
+// output — although agents act on rank 1 in two calls of three. Here the ceiling is only
+// reached when rank 1 needs it. What this does NOT protect is the body of ranks 2+: a smaller
+// budget shortens them, so a target ranked below the head can lose its full span and cost the
+// agent a follow-up read. That trade is unmeasured at session level; see PR #289.
+//
+// "Whole" is exact: the unbounded rank-1 block, header included, must appear byte for byte at a
+// line start. Its header carries the displayed line range, so a clipped body cannot match.
+// An explicit --max-context-bytes bypasses this and is honoured exactly.
+func writeAgentSearchAdaptive(out io.Writer, response sem.SearchResponse, ceiling int) error {
+	results := orderAgentSearchResults(response.Results)
+	if ceiling <= 0 || len(results) == 0 {
+		return writeAgentSearch(out, response, ceiling)
+	}
+	heads := agentSearchProtectedHeads(results)
+	for _, budget := range agentSearchAdaptiveBudgets {
+		if budget >= ceiling {
+			break
+		}
+		var rendered bytes.Buffer
+		if err := writeAgentSearch(&rendered, response, budget); err != nil {
+			return err
+		}
+		whole := true
+		for _, head := range heads {
+			if !agentSearchPayloadCarriesBlock(rendered.Bytes(), head) {
+				whole = false
+				break
+			}
+		}
+		if whole {
+			_, err := out.Write(rendered.Bytes())
+			return err
+		}
+	}
+	return writeAgentSearch(out, response, ceiling)
+}
+
+// agentSearchProtectedHeads returns the unbounded blocks writeAgentSearchAdaptive must find whole:
+// the first block printed AND the absolute best-ranked result. They differ when section grouping
+// (orderAgentSearchResults) prints a lower-ranked primary fix site ahead of a rank-1 docs,
+// related or test hit — which keeps its rank label, so it is still "the top hit" to a reader.
+// Protecting only the first printed block let a 4 KiB render be accepted with rank 1 clipped.
+func agentSearchProtectedHeads(ordered []sem.SearchResult) [][]byte {
+	// The first printed block, plus the agentSearchProtectedRanks best-ranked results by their
+	// ABSOLUTE rank (section grouping can print a lower rank first). Protecting only rank 1 cut the
+	// bodies of ranks 2–5, where 12 of 40 locate targets sat: an evidence-loss audit of saved outputs
+	// found main showing 12 of those 13 in full and the rank-1-only render keeping one.
+	protected := map[int]bool{0: true}
+	ranked := make([]int, 0, len(ordered))
+	for index, result := range ordered {
+		if result.Rank > 0 {
+			ranked = append(ranked, index)
+		}
+	}
+	slices.SortStableFunc(ranked, func(a, b int) int { return ordered[a].Rank - ordered[b].Rank })
+	for _, index := range ranked[:min(len(ranked), agentSearchProtectedRanks)] {
+		protected[index] = true
+	}
+	heads := make([][]byte, 0, len(protected))
+	for index := range ordered {
+		if protected[index] {
+			heads = append(heads, termsafe.Bytes(agentSearchBlock(ordered[index], 0)))
+		}
+	}
+	return heads
+}
+
+// agentSearchProtectedRanks is how many best-ranked results the adaptive render keeps whole. Five
+// is where an offline follow-up-cost model over saved outputs stopped adding follow-up reads versus
+// the 24 kB render — a model that assumed oracle target spans, so this is a conservative starting
+// point to validate, not a measured optimum.
+const agentSearchProtectedRanks = 5
+
+// agentSearchPayloadCarriesBlock reports whether block appears in payload starting at a line.
+func agentSearchPayloadCarriesBlock(payload, block []byte) bool {
+	if len(block) == 0 {
+		return false
+	}
+	for offset := 0; offset < len(payload); {
+		index := bytes.Index(payload[offset:], block)
+		if index < 0 {
+			return false
+		}
+		at := offset + index
+		if at == 0 || payload[at-1] == '\n' {
+			return true
+		}
+		offset = at + 1
+	}
+	return false
+}
+
+// agentSearchResultBudgets splits a ranked block's budget so that every result keeps its
+// location and the bytes left over go to the head of the ranking.
+//
+// Each result's floor is exactly what its own rich location line costs — rank, path, line, name
+// and score — so no ranked location is dropped to pay for another result's body. What remains is
+// split by 1/rank², which gives rank 1 about 64% of it: agents act on the rank-1 result 67% of
+// the time and on ranks 1–3 89% (measured over 2,096 recorded graph calls), so bytes spent below
+// rank 3 are bytes the agent mostly does not use.
+//
+// The flat floor this replaces, min(128, budget/count), cost more than a location line does and
+// was paid by every rank. Under a tight budget it consumed the whole block, so rank 1 got the same
+// ~90 bytes as rank 14 and the rank weighting had nothing left to weight. When even the location
+// floors do not fit, the old split is kept: the fitter then sheds whole results, which is the
+// only move left.
+func agentSearchResultBudgets(results []sem.SearchResult, budget int) []int {
+	count := len(results)
+	if count == 0 {
+		return nil
+	}
+	floors := make([]int, count)
+	floorTotal := 0
+	for index, result := range results {
+		floors[index] = agentSearchLocationCost(result)
+		floorTotal += floors[index]
+	}
+	if floorTotal > budget {
+		return rankedAgentSearchBudgets(count, budget)
+	}
+	// Water-filling: each round shares what is left among the results still short of their
+	// natural (unbounded) size, by 1/(index+1)² weights; a result that reaches its natural
+	// size is capped there and its surplus goes back into the pool. Without the cap a
+	// two-line fix site kept most of a budget it could not use while a long rank-1 block was
+	// clipped. Each round either finishes or caps at least one more result, so there are at
+	// most `count` rounds.
+	budgets := append([]int(nil), floors...)
+	needs := make([]int, count)
+	for index, result := range results {
+		needs[index] = max(len(agentSearchBlock(result, 0)), floors[index])
+	}
+	remaining := budget - floorTotal
+	open := make([]bool, count)
+	for index := range open {
+		open[index] = budgets[index] < needs[index]
+	}
+	for remaining > 0 {
+		var weightTotal int64
+		for index := range open {
+			if open[index] {
+				weightTotal += agentSearchRankWeight(index)
+			}
+		}
+		if weightTotal == 0 {
+			break
+		}
+		capped := false
+		spent := 0
+		for index := range budgets {
+			if !open[index] {
+				continue
+			}
+			weight := agentSearchRankWeight(index)
+			share := agentSearchWeightedShare(remaining, weight, weightTotal)
+			if room := needs[index] - budgets[index]; share >= room {
+				share, open[index], capped = room, false, true
+			}
+			budgets[index] += share
+			spent += share
+		}
+		remaining -= spent
+		if !capped {
+			break
+		}
+	}
+	// Once every result is whole, what is left is surplus the renderer will not spend; it is
+	// credited to the head in one step so the budgets still sum to the caller's budget. Short of
+	// that, the floors of the r*w/W terms leave fewer bytes than there are open results, and
+	// they go to the open results nearest the top of the ranking.
+	if !slices.Contains(open, true) {
+		budgets[0] += remaining
+		return budgets
+	}
+	for index := 0; remaining > 0; index = (index + 1) % count {
+		if open[index] {
+			budgets[index]++
+			remaining--
+		}
+	}
+	return budgets
+}
+
+// agentSearchWeightedShare returns floor(pool*weight/total) exactly, for 0 < weight <= total.
+//
+// pool*weight can exceed 64 bits for a large explicit budget, so the product is taken in 128 bits
+// (bits.Mul64) and divided back (bits.Div64). The quotient is at most pool because weight <= total,
+// so it fits in 64 bits — which is exactly Div64's precondition (hi < total) — and in an int,
+// 32-bit included. No bound on the number of results or on the budget is assumed.
+func agentSearchWeightedShare(pool int, weight, total int64) int {
+	hi, lo := bits.Mul64(uint64(pool), uint64(weight))
+	quotient, _ := bits.Div64(hi, lo, uint64(total))
+	return int(quotient)
+}
+
+// agentSearchRankWeight is the 1/(index+1)² share weight agentSearchResultBudgets gives the
+// result at presentation position index, floored at 1.
+//
+// Without the floor the weight reaches zero at index 32768 ((1<<30)/32769² = 0), a count that
+// --top-k and --index-all-files can reach. With a large budget the positive-weight results then
+// saturate, weightTotal over the open zero-weight tail is 0, the water-filling loop stops, and
+// the top-up loop hands out the whole remainder one byte per iteration. With every weight >= 1
+// each round gives every open result a share of the pool, and the sum of the floored shares falls
+// short of the pool by less than the number of open results, so the top-up is one pass at most.
+// The early return is the floor for large positions, taken before position*position can
+// overflow int64.
+func agentSearchRankWeight(index int) int64 {
+	position := int64(index) + 1
+	if position > agentSearchRankWeightScale/position {
+		return 1
+	}
+	return max(1, agentSearchRankWeightScale/(position*position))
+}
+
+// agentSearchRankWeightScale is the common numerator for agentSearchResultBudgets' 1/rank²
+// weights; it only has to be large enough that the smallest weight in a ranking stays nonzero.
+const agentSearchRankWeightScale int64 = 1 << 30
+
+// agentSearchLocationCost is the size of a result's rich location line, the floor its block is
+// guaranteed before any rank is given body bytes.
+func agentSearchLocationCost(result sem.SearchResult) int {
+	result = searchResultOnOneLine(result)
+	focus := searchResultLocatorLine(result)
+	if focus <= 0 {
+		focus = 1
+	}
+	return len(agentSearchLocationHeaders(result.Rank, result.FilePath, focus, focus, focus,
+		searchResultDisplayName(result), agentSearchSectionTag(result), agentSearchScoreTag(result))[0])
 }
 
 func rankedAgentSearchBudgets(count, budget int) []int {
@@ -2352,22 +2604,40 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 	// Prefer the widest balanced span containing the focus line. The location
 	// in the header is rebuilt for each candidate, so it always describes the
 	// lines actually displayed rather than the original untrimmed region.
-	for span := len(lines); span > 0; span-- {
-		leftMin := focus - span + 1
-		if leftMin < 0 {
-			leftMin = 0
+	//
+	// The header tier is the OUTER loop: a block gives up body lines before it
+	// gives up its rank, name and score. With span outermost, the widest span
+	// that fit under ANY header won, so a tight budget bought one or two more
+	// body lines by printing the head result as a bare `path:line *` — the
+	// minimal header, which carries no rank, no name and no score. That is the
+	// one signal agentSearchLocationHeaders calls not optional, dropped from
+	// the result an agent is most likely to act on, to show lines it would
+	// read anyway. So the ladder is: rich header with body, compact header
+	// with body, compact header ALONE, and only then the minimal header with
+	// body — at a cap too small for a rank and a name at all, one line of
+	// source under a bare locator says more than a bare locator with none.
+	for tier := range agentSearchLocationHeaderTiers {
+		if tier == agentSearchMinimalHeaderTier {
+			if located := fitAgentSearchRankedLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget); located != nil {
+				return located
+			}
 		}
-		leftMax := focus
-		if limit := len(lines) - span; leftMax > limit {
-			leftMax = limit
-		}
-		bestBalance := len(lines) + 1
-		var best []byte
-		for left := leftMin; left <= leftMax; left++ {
-			right := left + span - 1
-			text := strings.Join(lines[left:right+1], "\n")
-			startLine, endLine := snippetStart+left, snippetStart+right
-			for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag, scored) {
+		for span := len(lines); span > 0; span-- {
+			leftMin := focus - span + 1
+			if leftMin < 0 {
+				leftMin = 0
+			}
+			leftMax := focus
+			if limit := len(lines) - span; leftMax > limit {
+				leftMax = limit
+			}
+			bestBalance := len(lines) + 1
+			var best []byte
+			for left := leftMin; left <= leftMax; left++ {
+				right := left + span - 1
+				text := strings.Join(lines[left:right+1], "\n")
+				startLine, endLine := snippetStart+left, snippetStart+right
+				header := agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag, scored)[tier]
 				candidate := []byte(header + text + "\n")
 				if budget <= 0 || len(candidate) <= budget {
 					balance := focus - left - (right - focus)
@@ -2377,12 +2647,11 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 					if best == nil || balance < bestBalance {
 						best, bestBalance = candidate, balance
 					}
-					break
 				}
 			}
-		}
-		if best != nil {
-			return best
+			if best != nil {
+				return best
+			}
 		}
 	}
 	return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget)
@@ -2397,6 +2666,24 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 // from the best of a bad lot, and its absence from this format let a query about a technology
 // absent from a repo come back as six confident-looking hits. It rides on the two roomier
 // variants at ~7 bytes each and is dropped by the minimal one along with rank and name.
+// agentSearchLocationHeaderTiers is how many variants agentSearchLocationHeaders returns;
+// agentSearchMinimalHeaderTier is the last of them, the one with no rank, name or score.
+const (
+	agentSearchLocationHeaderTiers = 3
+	agentSearchMinimalHeaderTier   = agentSearchLocationHeaderTiers - 1
+)
+
+// fitAgentSearchRankedLocation is fitAgentSearchLocation without the minimal header: a location
+// line that still carries rank, name and score, or nil when none fits.
+func fitAgentSearchRankedLocation(rank int, path string, focus int, name, tag, scored string, budget int) []byte {
+	for _, header := range agentSearchLocationHeaders(rank, path, focus, focus, focus, name, tag, scored)[:agentSearchMinimalHeaderTier] {
+		if budget <= 0 || len(header) <= budget {
+			return []byte(header)
+		}
+	}
+	return nil
+}
+
 func agentSearchLocationHeaders(rank int, path string, start, end, focus int, name, tag, scored string) []string {
 	location := fmt.Sprintf("%d. %s:%d", rank, path, start)
 	if end != start {
@@ -2623,7 +2910,7 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 			if err != nil {
 				return flags, nil, err
 			}
-			flags.MaxContextBytes, i = value, next
+			flags.MaxContextBytes, flags.MaxContextBytesSet, i = value, true, next
 		case "--worktree", "--no-network":
 			if args[i] == "--worktree" {
 				flags.Worktree = true
