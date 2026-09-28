@@ -17,8 +17,8 @@ import (
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
-// The final result cap includes covering tests and optional callee-hop entries,
-// not just the candidates selected before those blocks are assembled.
+// The normal result cap includes automatic related and covering-test entries.
+// Explicit callee-hop additions retain their separate, bounded funding contract.
 func TestSearchRepositoryFinalResultCount(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "server/handler.go", "package server\nfunc normalizePath(input string) string {\n return clean(input)\n}\nfunc clean(input string) string {\n return input\n}\n")
@@ -41,17 +41,34 @@ func TestSearchRepositoryFinalResultCount(t *testing.T) {
 				if limit <= 0 {
 					limit = 10
 				}
-				if len(response.Results) != limit {
-					t.Errorf("returned %d results for normalized TopK %d (covering=%d, related=%d, callee=%d)",
-						len(response.Results), limit, response.Stats.CoveringTests, response.Stats.RelatedSites, response.Stats.CalleeHopSites)
+				wantCallees := 0
+				if calleeHop {
+					wantCallees = 1
+				}
+				if response.Stats.CalleeHopSites != wantCallees || len(response.Results) != limit+wantCallees {
+					t.Errorf("returned %d results and %d callees for normalized TopK %d, want %d results and %d callees",
+						len(response.Results), response.Stats.CalleeHopSites, limit, limit+wantCallees, wantCallees)
+				}
+				if len(response.Results) == 0 || response.Results[0].SymbolName != "normalizePath" || response.Results[0].FilePath != "server/handler.go" {
+					t.Fatal("the ranked entry-point head was lost")
 				}
 				if response.Stats.CandidatesSelected != len(response.Results) {
 					t.Errorf("CandidatesSelected = %d, actual results = %d", response.Stats.CandidatesSelected, len(response.Results))
 				}
+				callees := 0
 				for index, result := range response.Results {
 					if result.Rank != index+1 {
 						t.Errorf("rank %d at index %d", result.Rank, index)
 					}
+					if containsString(result.Signals, searchCalleeHopSignal) {
+						callees++
+						if result.SymbolName != "clean" || result.Snippet != "func clean(input string) string {" {
+							t.Errorf("callee entry lost the helper identity or declaration: %+v", result)
+						}
+					}
+				}
+				if callees != wantCallees {
+					t.Errorf("%d callee-hop entries, want %d", callees, wantCallees)
 				}
 			})
 		}

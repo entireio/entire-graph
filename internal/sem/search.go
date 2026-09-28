@@ -1760,7 +1760,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		results, stats.CalleeHopSites = mergeSearchCalleeHopSites(
 			results, entries, anchorIndexes, options.MaxContextBytes,
 			minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines),
-			maxInt(fullUnitRanks, 1), options.TopK,
+			maxInt(fullUnitRanks, 1),
 		)
 	}
 	// Two printed bodies of one file with a small hole between them are one region as far as the

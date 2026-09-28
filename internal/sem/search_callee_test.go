@@ -1,52 +1,10 @@
 package sem
 
 import (
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 )
-
-func TestMergeSearchCalleeHopSitesResultCount(t *testing.T) {
-	for _, tc := range []struct {
-		name                string
-		topK, initial, want int
-		tightBytes          bool
-	}{
-		{name: "full pool does not displace", topK: 7, initial: 7},
-		{name: "one spare slot reduces two hops", topK: 8, initial: 7, want: 1},
-		{name: "two spare slots", topK: 9, initial: 7, want: 2},
-		{name: "TopK one", topK: 1, initial: 1},
-		{name: "spare slots still require bytes", topK: 3, initial: 1, tightBytes: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			results := contractPayload()[:tc.initial]
-			entries := []SearchResult{
-				{FilePath: "src/helper.go", StartLine: 1, EndLine: 1, SnippetStartLine: 1, SnippetEndLine: 1, Snippet: "func helper() {}", Signals: []string{searchCalleeHopSignal}},
-				{FilePath: "src/helper2.go", StartLine: 1, EndLine: 1, SnippetStartLine: 1, SnippetEndLine: 1, Snippet: "func helper2() {}", Signals: []string{searchCalleeHopSignal}},
-			}
-			budget := 0
-			if tc.tightBytes {
-				budget = serializedSearchResultBytes(results)
-			}
-			merged, count := mergeSearchCalleeHopSites(results, entries, []int{0, 0}, budget, 2, 1, tc.topK)
-			if count != tc.want || len(merged) != len(results)+tc.want || len(merged) > tc.topK {
-				t.Fatalf("hops=%d results=%d, want %d hops and at most %d results", count, len(merged), tc.want, tc.topK)
-			}
-			if !reflect.DeepEqual(merged[0], results[0]) {
-				t.Error("protected head changed")
-			}
-			if count > 0 && merged[1].FilePath != entries[0].FilePath {
-				t.Error("callee not seated immediately after its anchor")
-			}
-			for index, result := range merged {
-				if result.Rank != index+1 {
-					t.Errorf("rank %d at index %d", result.Rank, index)
-				}
-			}
-		})
-	}
-}
 
 // THE CALLEE HOP
 // ==============
@@ -420,7 +378,7 @@ func TestMergeSearchCalleeHopSitesHonoursTheFundingOrder(t *testing.T) {
 	)
 
 	plan, seated := mergeSearchCalleeHopSites(
-		results, []SearchResult{entry}, []int{0}, budget, 2, 1, len(results)+1,
+		results, []SearchResult{entry}, []int{0}, budget, 2, 1,
 	)
 	if seated != 1 {
 		t.Fatalf("seated = %d, want 1", seated)
@@ -454,7 +412,7 @@ func TestMergeSearchCalleeHopSitesHonoursTheFundingOrder(t *testing.T) {
 	// A ceiling that cannot hold the body even with the whole tail tersified seats nothing and
 	// returns the ranking untouched.
 	tight := serializedSearchResultBytes(results[0]) * 2
-	untouched, none := mergeSearchCalleeHopSites(results, []SearchResult{entry}, []int{0}, tight, 2, 1, len(results)+1)
+	untouched, none := mergeSearchCalleeHopSites(results, []SearchResult{entry}, []int{0}, tight, 2, 1)
 	if none != 0 || len(untouched) != len(results) {
 		t.Fatalf("seated = %d with %d entries under a %d-byte ceiling", none, len(untouched), tight)
 	}
