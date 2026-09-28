@@ -3,6 +3,8 @@ package sem
 import (
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -169,5 +171,73 @@ func TestPreselectionDoesNotPublishWholeCorpusIDFWhenBoundedReadSkipsFile(t *tes
 					df["needle"], files, selection.corpusFiles, test.wantDF, test.wantFiles)
 			}
 		})
+	}
+}
+
+// The four literal cases from peer review (seq 318) for the selected-path producer. N in the
+// sample fallback is the number of selected files actually inspected, never the number selected.
+func TestSearchChooseIDFStatisticsSelectedPathCases(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name                string
+		inspected, failures int
+		sampleDF, contentDF map[string]int
+		wantDF, wantN       int
+		wantExact           bool
+	}{
+		{"complete", 2, 0, map[string]int{"needle": 2}, map[string]int{"needle": 2}, 2, 2, true},
+		{"one match, one failed read", 1, 1, map[string]int{"needle": 1}, map[string]int{"needle": 1}, 1, 1, false},
+		{"one match, one NUL file", 2, 0, map[string]int{"needle": 1}, map[string]int{"needle": 1}, 1, 2, true},
+		{"match, NUL, failed read", 2, 1, map[string]int{"needle": 1}, map[string]int{"needle": 1}, 1, 2, false},
+	} {
+		df, n, exact := searchChooseIDFStatistics(searchIDFInputs{
+			sampleDF: c.sampleDF, selectedInspected: c.inspected, selectedReadFailures: c.failures,
+			selectedContentDF: c.contentDF, corpusFiles: c.inspected + c.failures, corpusFromSelected: true,
+		})
+		if df["needle"] != c.wantDF || n != c.wantN || exact != c.wantExact {
+			t.Errorf("%s: got DF%d/N%d exact=%v, want DF%d/N%d exact=%v", c.name, df["needle"], n, exact, c.wantDF, c.wantN, c.wantExact)
+		}
+	}
+}
+
+// Wiring, through SearchRepository: on the whole-tree selection an unreadable (oversized) file must
+// revoke exactness AND stay out of N. Not parallel: it sets the package-level observer.
+func TestSearchRepositoryIDFWiringOnSelectedPathsWithAnUnreadFile(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "readable.go", "package fixture\n// needle\nfunc Readable() {}\n")
+	write(t, repo, "unreadable.go", "package fixture\n// needle\nfunc Unreadable() {}\n")
+	// A file the search can list but not read. (An oversized file does not do it: the scoring
+	// reader reads whole files, so MaxParseBytes alone leaves nothing unread on this path.)
+	locked := filepath.Join(repo, "unreadable.go")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o644) })
+	if f, err := os.Open(locked); err == nil {
+		f.Close()
+		t.Skip("running with privileges that ignore file modes; cannot make an unreadable file")
+	}
+	type seen struct {
+		df    int
+		n     int
+		exact bool
+	}
+	var got []seen
+	searchIDFObserver = func(df map[string]int, n int, exact bool) { got = append(got, seen{df["needle"], n, exact}) }
+	t.Cleanup(func() { searchIDFObserver = nil })
+	response, err := SearchRepository(t.Context(), repo, "test-version", "needle", SearchOptions{
+		Worktree: true, Profile: ProfileFull, TopK: 5, MaxIndexedFiles: 10, DisableCache: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("observer calls = %d, want 1", len(got))
+	}
+	if response.Stats.FilesIndexed < 1 {
+		t.Fatalf("fixture drift: nothing indexed: %#v", response.Stats)
+	}
+	if g := got[0]; g.exact || g.n != 1 || g.df != 1 {
+		t.Fatalf("idf wiring = DF%d/N%d exact=%v, want the inspected sample DF1/N1 not exact", g.df, g.n, g.exact)
 	}
 }
