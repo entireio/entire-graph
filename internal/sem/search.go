@@ -1492,7 +1492,8 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		IndexLatencyMS:            indexLatency.Milliseconds(),
 		PreselectLatencyMS:        preselectLatency.Milliseconds(),
 	}
-	scoreSearchCandidates(candidates, q, fileDF, maxInt(1, len(selectedFiles)))
+	idfDF, idfFiles := searchCorpusIDFStatistics(fileDF, len(selectedFiles), needleIndex.termFileTotals, selection.corpusFiles)
+	scoreSearchCandidates(candidates, q, idfDF, idfFiles)
 	callerBoosts := searchGraphCallerBoosts(snapshot.Relations, symbolsByID)
 	stats.CallerBoostedCandidates += applySearchCallerBoosts(candidates, callerBoosts)
 	sortSearchCandidates(candidates)
@@ -2324,6 +2325,11 @@ type searchFileSelection struct {
 	// Git instead — a truncated posting list would let a block state a repository-wide total it
 	// cannot know.
 	termPostings *searchTermPostings
+	// corpusFiles is how many files the content pass matched the query terms against when it saw
+	// the WHOLE corpus, and zero otherwise. Together with termPostings' totals it is a repository-
+	// wide document frequency for every query term, which ranking uses for BM25 idf; see
+	// searchCorpusIDFStatistics.
+	corpusFiles int
 	// gitGrepUsable records that Git answered a grep for this repository, so the lookup may ask it
 	// again for a needle the posting lists do not cover. gitGrepTreeish is the tree that grep must
 	// run against — empty means the working tree, which is what a worktree search indexes.
@@ -2840,6 +2846,9 @@ func preselectSearchFiles(
 	selection.filesContentRead += contentReads
 	selection.preselectionBackend = "go-content"
 	selection.preselectionFilesExamined = len(scanPaths)
+	if !usedGitIndexPreselection && len(scanPaths) == len(source.paths) {
+		selection.corpusFiles = len(scanPaths)
+	}
 	if usedGitIndexPreselection {
 		selection.preselectionBackend = "git-index-grep+go-content"
 		if !progressive {
@@ -3880,6 +3889,35 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 		baseScore:  base,
 		aliases:    append([]string(nil), symbol.Aliases...),
 	}, true
+}
+
+// searchCorpusIDFStatistics chooses the document frequencies BM25 idf is computed from.
+//
+// The selected files are the ones preselection kept BECAUSE they contain the most query words, so
+// within them nearly every query word is common and its idf collapses toward zero. A word that is
+// rare in the repository — the one that actually identifies the target — then weighs no more than
+// a word every file shares, and the target's matches cannot outscore a fixed path prior. On a
+// frozen locate set, indexing every file (which makes the sample the corpus) moved 7 targets into
+// the top 3; that is the effect of the statistic, not of the extra files.
+//
+// Preselection already counts, per query term, how many files contain it, as a by-product of the
+// match it runs anyway. When that pass saw the whole corpus (corpusFiles > 0) those counts are
+// the repository-wide document frequencies, and they are used here. Otherwise — a Git-narrowed or
+// bounded pass — the sample statistics are kept, because a total over part of the corpus would be
+// a guess. The sample count is kept as a floor: the posting totals record content matches only,
+// and the sample also counts a match in the file's path.
+func searchCorpusIDFStatistics(sampleDF map[string]int, sampleFiles int, corpusDF map[string]int, corpusFiles int) (map[string]int, int) {
+	if corpusFiles <= 0 || corpusFiles < sampleFiles {
+		return sampleDF, maxInt(1, sampleFiles)
+	}
+	df := make(map[string]int, len(sampleDF))
+	for term, count := range sampleDF {
+		df[term] = count
+	}
+	for term, count := range corpusDF {
+		df[term] = maxInt(df[term], count)
+	}
+	return df, corpusFiles
 }
 
 func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF map[string]int, fileCount int) {
