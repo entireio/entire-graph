@@ -58,7 +58,7 @@ type searchSession struct {
 // session written without the current schema must run a real search: its opaque payload cannot be
 // upgraded or inspected safely after the fact.
 const (
-	searchSessionReplaySchema = 2
+	searchSessionReplaySchema = 3
 	// A normal search payload is budgeted in kilobytes. Keep a generous ceiling for callers that
 	// deliberately widen it, but never let an untrusted/stale session file allocate without bound.
 	maxSearchSessionStateBytes = 8 << 20
