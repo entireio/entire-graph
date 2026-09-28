@@ -178,7 +178,7 @@ what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status l
 Follow `.entire/agent-guide.md`, generated from repository state. Both Graph-only
 and combined instructions make the same first-action obligation: the first action on
 any task that requires finding code is ONE
-`entire graph query --repo . --profile full --query "<task>"`.
+`entire graph query --repo . --profile full --format agent --query "<task>"`.
 That holds for small edits, follow-ups, tasks that already name the file, and tasks
 where a Brain brief has already reported locations — a brief reports where code is,
 not what depends on it. Combined instructions also begin substantive orientation with
