@@ -2274,10 +2274,18 @@ func agentSearchPayloadCarriesBlock(payload, block []byte) bool {
 	if len(block) == 0 {
 		return false
 	}
-	if bytes.HasPrefix(payload, block) {
-		return true
+	for offset := 0; offset < len(payload); {
+		index := bytes.Index(payload[offset:], block)
+		if index < 0 {
+			return false
+		}
+		at := offset + index
+		if at == 0 || payload[at-1] == '\n' {
+			return true
+		}
+		offset = at + 1
 	}
-	return bytes.Contains(payload, append([]byte{'\n'}, block...))
+	return false
 }
 
 // agentSearchResultBudgets splits a ranked block's budget so that every result keeps its
