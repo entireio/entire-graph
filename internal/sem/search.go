@@ -1378,6 +1378,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// so every backend computes idf from one definition of document frequency.
 	contentDF := make(map[string]int, len(q.terms))
 	selectedReadFailures := 0
+	selectedInspected := 0
 	sparseDF := selection.sparseDF
 	if sparseDF == nil {
 		sparseDF = make(map[string]int, len(sparseQuery.terms))
@@ -1404,6 +1405,9 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			// An unread selected file is UNKNOWN, not zero: its matches would be missing from
 			// the counts while its path stays in N. See searchCorpusIDFStatistics.
 			selectedReadFailures++
+		} else {
+			// Read, NUL-containing or not: inspected, so it counts toward N.
+			selectedInspected++
 		}
 		if !ok || strings.IndexByte(content, 0) >= 0 {
 			continue
@@ -1504,14 +1508,18 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		IndexLatencyMS:            indexLatency.Milliseconds(),
 		PreselectLatencyMS:        preselectLatency.Milliseconds(),
 	}
-	corpusDF, corpusFiles := needleIndex.termFileTotals, selection.corpusFiles
-	if selection.corpusFromSelected {
-		corpusDF = contentDF
-		if selectedReadFailures > 0 {
-			corpusFiles = 0
-		}
+	idfDF, idfFiles, idfExact := searchChooseIDFStatistics(searchIDFInputs{
+		sampleDF:             fileDF,
+		selectedInspected:    selectedInspected,
+		selectedReadFailures: selectedReadFailures,
+		postingTotals:        needleIndex.termFileTotals,
+		selectedContentDF:    contentDF,
+		corpusFiles:          selection.corpusFiles,
+		corpusFromSelected:   selection.corpusFromSelected,
+	})
+	if searchIDFObserver != nil {
+		searchIDFObserver(idfDF, idfFiles, idfExact)
 	}
-	idfDF, idfFiles := searchCorpusIDFStatistics(fileDF, len(selectedFiles), corpusDF, corpusFiles)
 	scoreSearchCandidates(candidates, q, idfDF, idfFiles)
 	callerBoosts := searchGraphCallerBoosts(snapshot.Relations, symbolsByID)
 	stats.CallerBoostedCandidates += applySearchCallerBoosts(candidates, callerBoosts)
@@ -3922,6 +3930,38 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 		aliases:    append([]string(nil), symbol.Aliases...),
 	}, true
 }
+
+// searchIDFInputs is everything the idf choice depends on, gathered at one call site so the
+// choice is a value a test can read rather than an ordering of statements.
+type searchIDFInputs struct {
+	sampleDF             map[string]int // content-or-path matches over the inspected selected files
+	selectedInspected    int            // selected files actually read, NUL-containing ones included
+	selectedReadFailures int            // selected files that could not be read
+	postingTotals        map[string]int // content-pass posting totals (content matches, whole scan)
+	selectedContentDF    map[string]int // content matches over the inspected selected files
+	corpusFiles          int            // the selection's exact-corpus N, or zero
+	corpusFromSelected   bool           // the selected files contain every match
+}
+
+// searchChooseIDFStatistics returns the document frequencies, file count and whether they are
+// exact repository-wide statistics. The sample fallback's N is the number of selected files
+// actually INSPECTED — a selected file that could not be read is unknown, and counting it in N
+// while its matches are missing from DF is the defect exactness revocation exists to prevent.
+func searchChooseIDFStatistics(in searchIDFInputs) (map[string]int, int, bool) {
+	corpusDF, corpusFiles := in.postingTotals, in.corpusFiles
+	if in.corpusFromSelected {
+		corpusDF = in.selectedContentDF
+		if in.selectedReadFailures > 0 {
+			corpusFiles = 0
+		}
+	}
+	df, files := searchCorpusIDFStatistics(in.sampleDF, in.selectedInspected, corpusDF, corpusFiles)
+	return df, files, corpusFiles > 0
+}
+
+// searchIDFObserver, when set by a test, receives the idf statistics each search scored with. It
+// is the seam that lets a test check the WIRING at the call site, not only the helper.
+var searchIDFObserver func(df map[string]int, files int, exact bool)
 
 // searchCorpusIDFStatistics chooses the document frequencies BM25 idf is computed from.
 //
