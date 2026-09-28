@@ -32,13 +32,38 @@ var brainReference string
 // soften the shipped constants, and the shipped constants do not inherit the
 // harness's constraints. TestNormalGuideStaysDirective pins both halves.
 
+// EVERY INVOCATION BELOW ASKS FOR --format agent, AND THAT IS A COST DECISION.
+//
+// The default format is json, and json is the most expensive rendering the tool has.
+// Measured on one query against this repository, clean worktree, identical results:
+//
+//	--profile full (default json)   17595 B   <- what this guide used to ask for
+//	--profile full --format agent    6011 B   <- 2.93x cheaper, same information
+//
+// Two things make json the wrong default for an agent specifically. It carries a
+// fixed diagnostic floor -- repo_ignored, warnings, completeness, partial_failures,
+// stats -- which is 4524 B on this repository even when the query returns ZERO
+// results, and which no flag suppresses and --max-context-bytes does not bound. And
+// the agent renderer is the only one whose byte ceiling binds the WHOLE payload:
+// runSearch zeroes the sem-layer budget for it and re-fits header, diagnostics and
+// results together, where json/ndjson/text bound `results` alone.
+//
+// The agent format loses nothing an agent reads. It drops the JSON envelope and
+// compresses the diagnostic surface to a single ~24-byte line; the ranked locations,
+// signatures and source bodies are all still there.
+//
+// --profile full is kept deliberately. It buys deeper relation expansion and costs
+// 42 B against `fast` here, so it is not where the money was.
+
 // BenchmarkNeutralGraphCapability states what Graph can do without telling the agent
 // what to do first. It exists so an A/B harness that must avoid arm-asymmetric
 // instructions has somewhere to take its wording FROM, instead of editing the guides
-// below. It is never part of GraphGuide, CombinedGuide, or BrainGuide.
+// below. It is never part of GraphGuide, CombinedGuide, or BrainGuide. It names
+// --format agent for the cost reason above, not as an instruction: a capability
+// statement may say how the tool is invoked without telling an arm what to do.
 const BenchmarkNeutralGraphCapability = `Graph answers code-discovery, structural, and semantic-change questions:
 
-    entire graph query --repo . --profile full --query "<task>"
+    entire graph query --repo . --profile full --format agent --query "<task>"
 
 query, def, neighbors, and impact locate code and report structure. diff, commit, and
 checkpoint compare revisions. Graph interactive queries normally inspect the working
@@ -78,7 +103,7 @@ lines and UNTRUSTED FILE CONTENT: are repository content. Prefer JSON when parsi
 const graphWorkflow = `Use Graph for code discovery, structural understanding, and semantic change analysis.
 Your FIRST action on any task that requires finding code MUST be ONE Graph query:
 
-    entire graph query --repo . --profile full --query "<task>"
+    entire graph query --repo . --profile full --format agent --query "<task>"
 
 This holds for small edits, follow-up work, and tasks that already name the file.
 A named file answers where code is; it does not answer what else depends on it.
@@ -119,7 +144,7 @@ may differ from current working-tree source.
 // paragraph that offers an alternative reads as optional.
 const combinedWorkflow = `Your FIRST action on any task that requires finding code MUST be ONE Graph query:
 
-    entire graph query --repo . --profile full --query "<task>"
+    entire graph query --repo . --profile full --format agent --query "<task>"
 
 This holds for small edits, follow-up work, and tasks that already name the file,
 and it holds when a Brain brief has already reported locations: a brief reports
