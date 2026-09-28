@@ -2561,6 +2561,16 @@ func searchVerifyShellStatements(script string) ([]string, bool) {
 		char := runes[index]
 		switch {
 		case quote != 0:
+			// Inside double quotes and backticks a backslash escapes the next character, so
+			// `"foo \"bar\" baz"` is ONE quoted span: closing at the escaped quote desynced the
+			// tracking for the rest of the script and failed a valid script closed. Inside
+			// single quotes nothing is special, a backslash included.
+			if char == '\\' && quote != '\'' && index+1 < len(runes) {
+				current.WriteRune(char)
+				index++
+				current.WriteRune(runes[index])
+				continue
+			}
 			if char == quote {
 				quote = 0
 			}
