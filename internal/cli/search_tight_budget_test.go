@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 // Telemetry width must never cost the agent its line of source.
@@ -71,5 +73,35 @@ func TestAgentSearchLocatorRecognition(t *testing.T) {
 	}
 	if !agentSearchBlockCarriesSource([]byte("a.py:1 *\ndef target():\n")) {
 		t.Fatal("locator + body must count as source")
+	}
+}
+
+// A block gives up body lines before it gives up its rank, name and score.
+//
+// The budget here fits the minimal header over the WHOLE body, and the rich header over all but
+// the last line. When span was the outer loop the widest span won under any header, so the head
+// result came back as a bare `a.go:1 *` — no rank, no name, no score — to show one more line.
+func TestAgentSearchBlockKeepsIdentityBeforeBodyLines(t *testing.T) {
+	t.Parallel()
+	body := "func Resolve() {\n\tstepOne()\n\tstepTwo()\n\tstepThree()\n}\n"
+	result := sem.SearchResult{
+		Rank: 1, FilePath: "a.go", SymbolName: "Resolve", Score: 12.5,
+		StartLine: 1, EndLine: 5, SnippetStartLine: 1, FocusLine: 1, Snippet: body,
+	}
+	minimalWhole := len("a.go:1 *\n") + len(body)
+	got := string(agentSearchPrimaryBlock(result, minimalWhole))
+	if len(got) > minimalWhole {
+		t.Fatalf("block used %d bytes, budget %d: %q", len(got), minimalWhole, got)
+	}
+	if !strings.HasPrefix(got, "1. a.go:1") || !strings.Contains(got, "Resolve") || !strings.Contains(got, "s=12.5") {
+		t.Fatalf("head result lost its rank/name/score to buy body lines: %q", got)
+	}
+	if !strings.Contains(got, "func Resolve() {") {
+		t.Fatalf("head result lost its source entirely: %q", got)
+	}
+	// Non-vacuity: the minimal header over the whole body must really fit this budget, or the
+	// old ordering would not have chosen it and this test would prove nothing.
+	if minimal := "a.go:1 *\n" + body; len(minimal) > minimalWhole {
+		t.Fatalf("fixture no longer exercises the ordering: %d > %d", len(minimal), minimalWhole)
 	}
 }
