@@ -309,7 +309,7 @@ func TestMergeSearchContractContextDropsTheNoteFirst(t *testing.T) {
 
 	// No ceiling: everything is seated.
 	_, _, seated, tests, _ := mergeSearchContractContext(
-		results, searchContractContext{test: &entry, note: note, card: contractCard()}, 0,
+		results, searchContractContext{test: &entry, note: note, card: contractCard()}, 0, len(results)+1,
 	)
 	if tests != 1 || seated == nil {
 		t.Fatalf("note not seated with no ceiling forcing a choice (tests=%d)", tests)
@@ -318,7 +318,7 @@ func TestMergeSearchContractContextDropsTheNoteFirst(t *testing.T) {
 	// A ceiling that cannot fit the card and the note: the note goes before the card's entries.
 	baseline := serializedSearchResultBytes(results)
 	_, card, tight, tests, _ := mergeSearchContractContext(
-		results, searchContractContext{test: &entry, note: note, card: contractCard()}, baseline,
+		results, searchContractContext{test: &entry, note: note, card: contractCard()}, baseline, len(results)+1,
 	)
 	if tight != nil && len(card) == len(contractCard()) && tests == 1 {
 		t.Fatal("nothing yielded under a baseline ceiling: the accounting is not binding")
@@ -326,7 +326,7 @@ func TestMergeSearchContractContextDropsTheNoteFirst(t *testing.T) {
 
 	// No test means no note, whatever the budget.
 	_, _, orphan, _, _ := mergeSearchContractContext(
-		results, searchContractContext{note: note, card: contractCard()}, 0,
+		results, searchContractContext{note: note, card: contractCard()}, 0, len(results),
 	)
 	if orphan != nil {
 		t.Fatalf("note survived without the covering test it describes: %#v", orphan)
