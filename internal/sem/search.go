@@ -1377,6 +1377,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// contentDF counts CONTENT matches only — the same rule preselection's posting totals follow —
 	// so every backend computes idf from one definition of document frequency.
 	contentDF := make(map[string]int, len(q.terms))
+	selectedReadFailures := 0
 	sparseDF := selection.sparseDF
 	if sparseDF == nil {
 		sparseDF = make(map[string]int, len(sparseQuery.terms))
@@ -1399,6 +1400,11 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			return SearchResponse{}, err
 		}
 		content, ok := read(filePath)
+		if !ok {
+			// An unread selected file is UNKNOWN, not zero: its matches would be missing from
+			// the counts while its path stays in N. See searchCorpusIDFStatistics.
+			selectedReadFailures++
+		}
 		if !ok || strings.IndexByte(content, 0) >= 0 {
 			continue
 		}
@@ -1498,11 +1504,14 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		IndexLatencyMS:            indexLatency.Milliseconds(),
 		PreselectLatencyMS:        preselectLatency.Milliseconds(),
 	}
-	corpusDF := needleIndex.termFileTotals
+	corpusDF, corpusFiles := needleIndex.termFileTotals, selection.corpusFiles
 	if selection.corpusFromSelected {
 		corpusDF = contentDF
+		if selectedReadFailures > 0 {
+			corpusFiles = 0
+		}
 	}
-	idfDF, idfFiles := searchCorpusIDFStatistics(fileDF, len(selectedFiles), corpusDF, selection.corpusFiles)
+	idfDF, idfFiles := searchCorpusIDFStatistics(fileDF, len(selectedFiles), corpusDF, corpusFiles)
 	scoreSearchCandidates(candidates, q, idfDF, idfFiles)
 	callerBoosts := searchGraphCallerBoosts(snapshot.Relations, symbolsByID)
 	stats.CallerBoostedCandidates += applySearchCallerBoosts(candidates, callerBoosts)
@@ -2731,16 +2740,21 @@ func preselectSearchFiles(
 	var contentReadMu sync.Mutex
 	var matchedMu sync.Mutex
 	contentReads := 0
+	contentReadFailures := 0
 	scoreFile := func(filePath string) (searchFileCandidate, bool) {
 		if err := ctx.Err(); err != nil {
 			return searchFileCandidate{}, false
 		}
 		content, ok := source.read(filePath)
+		contentReadMu.Lock()
 		if ok {
-			contentReadMu.Lock()
 			contentReads++
-			contentReadMu.Unlock()
+		} else {
+			// Unread, oversized or failed: whether it contains a query term is UNKNOWN, so
+			// this pass can no longer give an exact repository-wide document frequency.
+			contentReadFailures++
 		}
+		contentReadMu.Unlock()
 		if !ok || strings.IndexByte(content, 0) >= 0 {
 			return searchFileCandidate{}, false
 		}
@@ -2863,7 +2877,8 @@ func preselectSearchFiles(
 	selection.filesContentRead += contentReads
 	selection.preselectionBackend = "go-content"
 	selection.preselectionFilesExamined = len(scanPaths)
-	if !usedGitIndexPreselection && len(scanPaths) == len(source.paths) {
+	// Exact only when the content pass INSPECTED every file: scheduled is not the same as read.
+	if !usedGitIndexPreselection && len(scanPaths) == len(source.paths) && contentReadFailures == 0 {
 		selection.corpusFiles = len(scanPaths)
 	}
 	if usedGitIndexPreselection {
