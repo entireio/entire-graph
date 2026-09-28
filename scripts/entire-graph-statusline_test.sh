@@ -618,8 +618,24 @@ for arg in "$@"; do
 	esac
 done
 if [ -n "$dir" ]; then key=$dir; else key=$repo; fi
-# A deterministic savings figure per resolved scope. The badge must be a function of it.
-n=$(printf '%s' "$key" | cksum | awk '{ print ($1 % 900) + 100 }')
+# A savings figure that is a function of the resolved scope, and INJECTIVELY so.
+#
+# This was `cksum % 900`, which folded the key into 900 buckets. The three fixture repos sit
+# under a fresh mktemp directory, so their keys are random, and the caller asserts all three
+# badges differ -- three random draws from 900 buckets collide about 0.33% of the time. That
+# is roughly one red job in 300 on a test whose subject has nothing to do with hashing, and it
+# reds PRs that changed no status-line code.
+#
+# The last path component is what actually varies between the three fixtures, so map it
+# directly. Distinctness is now guaranteed by construction rather than left to a hash, and the
+# property under test is unchanged: if the script resolved the launch directory instead of the
+# repository, all three would still collapse to one badge and the assertion would still fail.
+case ${key##*/} in
+repo-a) n=101 ;;
+repo-b) n=202 ;;
+repo-c) n=303 ;;
+*) n=$(printf '%s' "$key" | cksum | awk '{ print ($1 % 900) + 100 }') ;;
+esac
 printf '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":%s,"estimated_savings_pct_of_session_tokens":1}\n' "$n"
 STUB
 chmod +x "$WORK/scopestub"
