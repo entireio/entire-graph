@@ -15,6 +15,11 @@ import (
 // adaptiveFixture is a ranking whose head body is headLines long, followed by nine results each
 // carrying a body large enough that, together, they would fill any budget they were offered.
 func adaptiveFixture(headLines int) sem.SearchResponse {
+	return adaptiveFixtureWithTails(headLines, func(int) int { return 40 })
+}
+
+// adaptiveFixtureWithTails is adaptiveFixture with the body length of each rank 2..10 chosen by tail.
+func adaptiveFixtureWithTails(headLines int, tail func(rank int) int) sem.SearchResponse {
 	body := func(name string, lines int) string {
 		var b strings.Builder
 		fmt.Fprintf(&b, "func %s() {\n", name)
@@ -33,7 +38,7 @@ func adaptiveFixture(headLines int) sem.SearchResponse {
 		name := fmt.Sprintf("Tail%d", rank)
 		results = append(results, sem.SearchResult{
 			Rank: rank, FilePath: fmt.Sprintf("pkg/tail%d.go", rank), SymbolName: name, Score: float64(60 - rank),
-			StartLine: 1, EndLine: 42, SnippetStartLine: 1, FocusLine: 1, Snippet: body(name, 40),
+			StartLine: 1, EndLine: tail(rank) + 2, SnippetStartLine: 1, FocusLine: 1, Snippet: body(name, tail(rank)),
 		})
 	}
 	return sem.SearchResponse{Results: results}
@@ -52,7 +57,14 @@ func adaptiveHeadBlock(t *testing.T, response sem.SearchResponse) []byte {
 // render shows it, and far below the ceiling the tail bodies would otherwise have filled.
 func TestAgentSearchAdaptiveUsesSmallestBudgetThatKeepsHeadWhole(t *testing.T) {
 	t.Parallel()
-	response := adaptiveFixture(6)
+	// Ranks 1..agentSearchProtectedRanks are short and must be whole; ranks beyond are long and are
+	// what the smaller budget saves.
+	response := adaptiveFixtureWithTails(6, func(rank int) int {
+		if rank <= agentSearchProtectedRanks {
+			return 2
+		}
+		return 40
+	})
 	head := adaptiveHeadBlock(t, response)
 
 	var adaptive, ceiling bytes.Buffer
@@ -262,7 +274,7 @@ func TestSearchCommandExplicitBudgetBypassesAdaptive(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		var b strings.Builder
 		fmt.Fprintf(&b, "package p\n\n// refreshToken%d renews the session token.\nfunc refreshToken%d() {\n", i, i)
-		for j := 0; j < 40; j++ {
+		for j := 0; j < 20; j++ {
 			fmt.Fprintf(&b, "\tstep%02d := renewSessionToken(%d, %d)\n\t_ = step%02d\n", j, i, j, j)
 		}
 		b.WriteString("}\n")
@@ -278,13 +290,19 @@ func TestSearchCommandExplicitBudgetBypassesAdaptive(t *testing.T) {
 		}
 		return out.String()
 	}
+	// An explicit budget is honoured exactly, even below every adaptive tier; the unset render is not
+	// held to it. LIMIT: with ranks 1..agentSearchProtectedRanks protected, the adaptive render is
+	// usually the full render (lower ranks are already snippet-limited), so a command-level test
+	// cannot observe explicit-vs-adaptive dispatch; TestSearchExplicitContextBudgetIsNotAdaptive
+	// covers the flag that selects it.
+	const explicitBudget = 2048
 	adaptive := run()
-	explicit := run("--max-context-bytes", fmt.Sprint(defaultSearchContextBytes))
-	if len(adaptive) > agentSearchAdaptiveBudgets[0] {
-		t.Fatalf("unset budget was not adaptive: %d bytes", len(adaptive))
+	explicit := run("--max-context-bytes", fmt.Sprint(explicitBudget))
+	if len(explicit) > explicitBudget {
+		t.Fatalf("explicit %d-byte budget rendered %d bytes", explicitBudget, len(explicit))
 	}
-	if len(explicit) <= agentSearchAdaptiveBudgets[0] {
-		t.Fatalf("explicit %d-byte budget rendered only %d bytes; fixture does not exercise dispatch", defaultSearchContextBytes, len(explicit))
+	if len(adaptive) <= explicitBudget {
+		t.Fatalf("fixture drift: unset render is only %d bytes, so it cannot show the explicit budget was honoured", len(adaptive))
 	}
 }
 
@@ -385,5 +403,41 @@ func TestAgentSearchWeightedShareIsExactBeyond64Bits(t *testing.T) {
 		if got := agentSearchWeightedShare(c.pool, c.weight, c.total); got != c.want {
 			t.Fatalf("share(%d,%d,%d) = %d, want %d", c.pool, c.weight, c.total, got, c.want)
 		}
+	}
+}
+
+// A long body at rank 3 is inside the protected ranks: the adaptive render grows until it is whole
+// instead of settling on a budget that clips it. The rank-1-only policy cut exactly these bodies.
+func TestAgentSearchAdaptiveKeepsProtectedLowerRanksWhole(t *testing.T) {
+	t.Parallel()
+	response := adaptiveFixtureWithTails(6, func(rank int) int {
+		if rank == 3 {
+			return 150
+		}
+		return 2
+	})
+	ordered := orderAgentSearchResults(response.Results)
+	var rankThree []byte
+	for _, result := range ordered {
+		if result.Rank == 3 {
+			rankThree = termsafe.Bytes(agentSearchBlock(result, 0))
+		}
+	}
+	if len(rankThree) <= agentSearchAdaptiveBudgets[0] {
+		t.Fatalf("fixture drift: rank-3 block is only %d bytes", len(rankThree))
+	}
+	var small bytes.Buffer
+	if err := writeAgentSearch(&small, response, agentSearchAdaptiveBudgets[0]); err != nil {
+		t.Fatal(err)
+	}
+	if agentSearchPayloadCarriesBlock(small.Bytes(), rankThree) {
+		t.Fatal("smallest budget already carries rank 3 whole; test proves nothing")
+	}
+	var got bytes.Buffer
+	if err := writeAgentSearchAdaptive(&got, response, defaultSearchContextBytes); err != nil {
+		t.Fatal(err)
+	}
+	if !agentSearchPayloadCarriesBlock(got.Bytes(), rankThree) {
+		t.Fatalf("adaptive render (%d bytes) clipped protected rank 3", got.Len())
 	}
 }

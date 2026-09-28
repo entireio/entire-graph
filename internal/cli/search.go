@@ -2283,18 +2283,35 @@ func writeAgentSearchAdaptive(out io.Writer, response sem.SearchResponse, ceilin
 // related or test hit — which keeps its rank label, so it is still "the top hit" to a reader.
 // Protecting only the first printed block let a 4 KiB render be accepted with rank 1 clipped.
 func agentSearchProtectedHeads(ordered []sem.SearchResult) [][]byte {
-	best := 0
+	// The first printed block, plus the agentSearchProtectedRanks best-ranked results by their
+	// ABSOLUTE rank (section grouping can print a lower rank first). Protecting only rank 1 cut the
+	// bodies of ranks 2–5, where 12 of 40 locate targets sat: an evidence-loss audit of saved outputs
+	// found main showing 12 of those 13 in full and the rank-1-only render keeping one.
+	protected := map[int]bool{0: true}
+	ranked := make([]int, 0, len(ordered))
 	for index, result := range ordered {
-		if result.Rank > 0 && (ordered[best].Rank <= 0 || result.Rank < ordered[best].Rank) {
-			best = index
+		if result.Rank > 0 {
+			ranked = append(ranked, index)
 		}
 	}
-	heads := [][]byte{termsafe.Bytes(agentSearchBlock(ordered[0], 0))}
-	if best != 0 {
-		heads = append(heads, termsafe.Bytes(agentSearchBlock(ordered[best], 0)))
+	slices.SortStableFunc(ranked, func(a, b int) int { return ordered[a].Rank - ordered[b].Rank })
+	for _, index := range ranked[:min(len(ranked), agentSearchProtectedRanks)] {
+		protected[index] = true
+	}
+	heads := make([][]byte, 0, len(protected))
+	for index := range ordered {
+		if protected[index] {
+			heads = append(heads, termsafe.Bytes(agentSearchBlock(ordered[index], 0)))
+		}
 	}
 	return heads
 }
+
+// agentSearchProtectedRanks is how many best-ranked results the adaptive render keeps whole. Five
+// is where an offline follow-up-cost model over saved outputs stopped adding follow-up reads versus
+// the 24 kB render — a model that assumed oracle target spans, so this is a conservative starting
+// point to validate, not a measured optimum.
+const agentSearchProtectedRanks = 5
 
 // agentSearchPayloadCarriesBlock reports whether block appears in payload starting at a line.
 func agentSearchPayloadCarriesBlock(payload, block []byte) bool {
