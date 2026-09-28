@@ -1374,6 +1374,9 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 
 	fileDF := make(map[string]int, len(q.terms))
+	// contentDF counts CONTENT matches only — the same rule preselection's posting totals follow —
+	// so every backend computes idf from one definition of document frequency.
+	contentDF := make(map[string]int, len(q.terms))
 	sparseDF := selection.sparseDF
 	if sparseDF == nil {
 		sparseDF = make(map[string]int, len(sparseQuery.terms))
@@ -1405,6 +1408,9 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		for index, term := range q.terms {
 			if contentMatches[index] || pathMatches[index] {
 				fileDF[term]++
+			}
+			if contentMatches[index] {
+				contentDF[term]++
 			}
 		}
 	}
@@ -1492,7 +1498,11 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		IndexLatencyMS:            indexLatency.Milliseconds(),
 		PreselectLatencyMS:        preselectLatency.Milliseconds(),
 	}
-	idfDF, idfFiles := searchCorpusIDFStatistics(fileDF, len(selectedFiles), needleIndex.termFileTotals, selection.corpusFiles)
+	corpusDF := needleIndex.termFileTotals
+	if selection.corpusFromSelected {
+		corpusDF = contentDF
+	}
+	idfDF, idfFiles := searchCorpusIDFStatistics(fileDF, len(selectedFiles), corpusDF, selection.corpusFiles)
 	scoreSearchCandidates(candidates, q, idfDF, idfFiles)
 	callerBoosts := searchGraphCallerBoosts(snapshot.Relations, symbolsByID)
 	stats.CallerBoostedCandidates += applySearchCallerBoosts(candidates, callerBoosts)
@@ -2325,11 +2335,14 @@ type searchFileSelection struct {
 	// Git instead — a truncated posting list would let a block state a repository-wide total it
 	// cannot know.
 	termPostings *searchTermPostings
-	// corpusFiles is how many files the content pass matched the query terms against when it saw
-	// the WHOLE corpus, and zero otherwise. Together with termPostings' totals it is a repository-
-	// wide document frequency for every query term, which ranking uses for BM25 idf; see
-	// searchCorpusIDFStatistics.
-	corpusFiles int
+	// corpusFiles is the number of files in the searched tree when this selection can give an
+	// EXACT repository-wide document frequency for every query term, and zero otherwise. Where the
+	// counts come from is corpusFromSelected: false means the content pass saw every file and its
+	// posting totals are the counts; true means the selected files are a superset of every file
+	// whose content contains a query term (Git returned every match, or every file was selected), so
+	// counting over the selected files is counting over the corpus. See searchCorpusIDFStatistics.
+	corpusFiles        int
+	corpusFromSelected bool
 	// gitGrepUsable records that Git answered a grep for this repository, so the lookup may ask it
 	// again for a needle the posting lists do not cover. gitGrepTreeish is the tree that grep must
 	// run against — empty means the working tree, which is what a worktree search indexes.
@@ -2476,11 +2489,15 @@ func preselectSearchFiles(
 			// Git answered once, so it can answer again for a single needle.
 			selection.gitGrepUsable = true
 			selection.gitGrepTreeish = source.commit
+			// Git returned EVERY file containing a query term (case-insensitive fixed strings, a
+			// superset of the matcher), and this branch keeps every one of them.
+			selection.corpusFiles, selection.corpusFromSelected = len(source.paths), true
 			return selection, nil
 		}
 	}
 	if options.IndexAllFiles || len(source.paths) <= options.MaxIndexedFiles {
 		selection.files = append([]string(nil), source.paths...)
+		selection.corpusFiles, selection.corpusFromSelected = len(source.paths), true
 		return selection, nil
 	}
 	// Which terms any file matches is not known until the scan is done, so the coverage
@@ -3896,26 +3913,24 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 // The selected files are the ones preselection kept BECAUSE they contain the most query words, so
 // within them nearly every query word is common and its idf collapses toward zero. A word that is
 // rare in the repository — the one that actually identifies the target — then weighs no more than
-// a word every file shares, and the target's matches cannot outscore a fixed path prior. On a
-// frozen locate set, indexing every file (which makes the sample the corpus) moved 7 targets into
-// the top 3; that is the effect of the statistic, not of the extra files.
+// a word every file shares, and the target's matches cannot outscore a fixed path prior.
 //
-// Preselection already counts, per query term, how many files contain it, as a by-product of the
-// match it runs anyway. When that pass saw the whole corpus (corpusFiles > 0) those counts are
-// the repository-wide document frequencies, and they are used here. Otherwise — a Git-narrowed or
-// bounded pass — the sample statistics are kept, because a total over part of the corpus would be
-// a guess. The sample count is kept as a floor: the posting totals record content matches only,
-// and the sample also counts a match in the file's path.
+// When the selection can supply exact repository-wide counts (corpusFiles > 0), idf uses them:
+// document frequency is the number of text files whose CONTENT contains the term, over every file
+// in the tree. Every backend that can know this computes the same number — the content pass from
+// its posting totals, Git tree grep and whole-tree selections by counting over their selected files,
+// which contain every match — so a query scores the same whichever backend served it. A
+// Git-narrowed or bounded pass cannot know it, and keeps the sample statistics.
 func searchCorpusIDFStatistics(sampleDF map[string]int, sampleFiles int, corpusDF map[string]int, corpusFiles int) (map[string]int, int) {
-	if corpusFiles <= 0 || corpusFiles < sampleFiles {
+	if corpusFiles <= 0 {
 		return sampleDF, maxInt(1, sampleFiles)
 	}
 	df := make(map[string]int, len(sampleDF))
-	for term, count := range sampleDF {
-		df[term] = count
+	for term := range sampleDF {
+		df[term] = corpusDF[term]
 	}
 	for term, count := range corpusDF {
-		df[term] = maxInt(df[term], count)
+		df[term] = count
 	}
 	return df, corpusFiles
 }
