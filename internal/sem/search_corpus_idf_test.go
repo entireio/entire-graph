@@ -268,3 +268,14 @@ func TestSearchRepositoryIDFWiringOnSelectedPathsWithAnUnreadFile(t *testing.T) 
 		t.Fatalf("idf wiring = DF%d/N%d exact=%v, want the inspected sample DF1/N1 not exact", g.df, g.n, g.exact)
 	}
 }
+
+// A term the corpus contains but the preselected sample does not must keep its corpus count: it is
+// exactly the rare, identifying term. Copying only the sample's terms (a proposed simplification)
+// would drop it to zero.
+func TestSearchCorpusIDFStatisticsKeepsCorpusTermsMissingFromTheSample(t *testing.T) {
+	t.Parallel()
+	df, files := searchCorpusIDFStatistics(map[string]int{"common": 40}, 40, map[string]int{"common": 900, "rare": 3}, 1000)
+	if files != 1000 || df["rare"] != 3 || df["common"] != 900 {
+		t.Fatalf("df=%v files=%d, want rare=3 common=900 over 1000", df, files)
+	}
+}
