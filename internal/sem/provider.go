@@ -3888,7 +3888,12 @@ func resolveCallTargetsWithRawImport(name string, from SymbolRecord, candidates,
 	for i := range targets {
 		if definition, ok := cPlusPlusOutOfLineDefinition(targets[i].SymbolRecord, candidates); ok {
 			targets[i].SymbolRecord = definition
-			targets[i].Reason = "C++ call resolved through member declaration to out-of-line definition"
+			if targets[i].Resolution == "name_only" {
+				// Mapping a candidate declaration does not disambiguate the call.
+				targets[i].Reason += "; C++ candidate mapped through member declaration to out-of-line definition"
+			} else {
+				targets[i].Reason = "C++ call resolved through member declaration to out-of-line definition"
+			}
 			if definition.FilePath != from.FilePath {
 				targets[i].Scope = "module"
 			}
@@ -3923,16 +3928,18 @@ func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord,
 		return appendSQLDerivedDuplicateTargets(local, from, candidates)
 	}
 	if len(local) > 1 {
-		// Ambiguous bare name with multiple same-file definitions: emit the
-		// lexically nearest one (closest declaration line to the call site) rather
-		// than fanning out an edge to every candidate. A single best guess keeps
-		// recall while cutting the over-emission that dominates the false edges.
+		// Keep one candidate, nearest to the caller's declaration, rather than
+		// fanning out. Proximity does not establish the actual binding (notably
+		// for overloads), so this guess must not inherit exact-call metadata.
 		best := local[0]
 		for _, c := range local[1:] {
 			if absInt(c.StartLine-from.StartLine) < absInt(best.StartLine-from.StartLine) {
 				best = c
 			}
 		}
+		best.Confidence = minFloat(best.Confidence, 0.62)
+		best.Resolution = "name_only"
+		best.Reason = fmt.Sprintf("ambiguous same-file call: nearest candidate among %d same-name declarations", len(local))
 		return []resolvedCallTarget{best}
 	}
 
@@ -14220,6 +14227,10 @@ func readGitDirPointerFromOpened(file *os.File, observedSize int64) (string, boo
 type gitDirExcluder struct {
 	repo    string
 	targets map[string]struct{}
+	// nestedWorktrees records validated pointer owners separately from their
+	// metadata targets: only the fallback's untracked-directory decision may
+	// prune their source, never the unconditional metadata exclusion rule.
+	nestedWorktrees map[string]struct{}
 	// gitDirRoot records the special target whose git directory and worktree
 	// share the repository root. Variable Git-owned names are then recognized
 	// directly by excluded, avoiding an unbounded root ReadDir merely to find a
@@ -14782,6 +14793,7 @@ func (g *gitDirExcluder) observe(dir string) {
 		}
 	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead) != gitDirStructureAbsent:
 		g.addTarget(target)
+		g.noteNestedWorkingTree(dir)
 	}
 	switch target, ok, hidden := gitDirLinkTarget(g.repo, dir); {
 	case hidden:
@@ -14789,6 +14801,7 @@ func (g *gitDirExcluder) observe(dir string) {
 		g.noteUnreadablePointer(dir)
 	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead) != gitDirStructureAbsent:
 		g.addTarget(target)
+		g.noteNestedWorkingTree(dir)
 	}
 	if dir == "" {
 		return
@@ -14804,6 +14817,29 @@ func (g *gitDirExcluder) observe(dir string) {
 	if foldedGitDirName(g.repo, dir) {
 		g.addTarget(filepath.ToSlash(dir))
 	}
+}
+
+func (g *gitDirExcluder) noteNestedWorkingTree(dir string) {
+	if dir == "" {
+		return
+	}
+	if g.nestedWorktrees == nil {
+		g.nestedWorktrees = map[string]struct{}{}
+	}
+	g.nestedWorktrees[dir] = struct{}{}
+}
+
+// nestedWorkingTree is asked only after observe. Gitfiles and directory links
+// reuse its confined, same-volume target validation. An ordinary .git directory
+// must pass the standalone structure test; a name or bogus gitfile is not enough
+// to hide the source beside it. Do not resolve a fresh redirect here.
+func (g *gitDirExcluder) nestedWorkingTree(dir string) bool {
+	if _, ok := g.nestedWorktrees[dir]; ok {
+		return true
+	}
+	marker := filepath.Join(g.repo, filepath.FromSlash(dir), ".git")
+	info, err := lstatSameVolumePath(g.repo, marker)
+	return err == nil && info.IsDir() && !pathMayRedirect(info) && looksLikeGitDirWithBudget(marker, g.admitPointerRead)
 }
 
 // foldedGitDirName reports whether dir's last component is a differently-cased
@@ -18914,9 +18950,10 @@ func walkWorktreeFilesAfterGitFailure(
 	ignores ignoreMatcher,
 	dirTracked func(string) bool,
 	ledger *repoIgnoreLedger,
+	hasGitIndex bool,
 	cause error,
 ) ([]string, []ProviderWarning, error) {
-	paths, warnings, err := walkWorktreeFiles(ctx, repo, ignores, dirTracked, ledger)
+	paths, warnings, err := walkWorktreeFilesWithGitScope(ctx, repo, ignores, dirTracked, ledger, hasGitIndex)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -19027,7 +19064,7 @@ func worktreeSourceFilesWithLister(
 		// directory as potentially tracked so unsafe metadata cannot cause source
 		// omissions, and the warning reports the Git-only policy that is unavailable.
 		dirTracked := func(string) bool { return true }
-		return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, ledger, err)
+		return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, ledger, false, err)
 	}
 	trackedDirs, trackedErr := trackedDirSet(ctx, repo)
 	if trackedErr != nil {
@@ -19036,7 +19073,7 @@ func worktreeSourceFilesWithLister(
 		}
 		if repositoryHasGitMetadata(repo) {
 			dirTracked := func(string) bool { return true }
-			return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, ledger, trackedErr)
+			return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, ledger, false, trackedErr)
 		}
 		dirTracked := func(string) bool { return false }
 		return walkWorktreeFiles(ctx, repo, ignores, dirTracked, ledger)
@@ -19049,7 +19086,7 @@ func worktreeSourceFilesWithLister(
 		if errors.Is(err, errGitWorktreeFallbackUnsafe) {
 			return nil, nil, err
 		}
-		return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, ledger, err)
+		return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, ledger, true, err)
 	}
 	listed, err := listWorktreeFiles(ctx, repo)
 	if err != nil {
@@ -19061,7 +19098,7 @@ func worktreeSourceFilesWithLister(
 			return nil, nil, fmt.Errorf("list Git worktree paths: %w", err)
 		}
 		if repositoryHasGitMetadata(repo) {
-			return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, ledger, err)
+			return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, ledger, true, err)
 		}
 		return walkWorktreeFiles(ctx, repo, ignores, dirTracked, ledger)
 	}
@@ -19406,6 +19443,13 @@ func listingOrderKey(entry fs.DirEntry) string {
 // narrower test, and not every ignored path, is what this mode can disclose
 // honestly.
 func walkWorktreeFiles(ctx context.Context, repo string, ignores ignoreMatcher, dirTracked func(string) bool, ledger *repoIgnoreLedger) ([]string, []ProviderWarning, error) {
+	return walkWorktreeFilesWithGitScope(ctx, repo, ignores, dirTracked, ledger, false)
+}
+
+// hasGitIndex licenses preserving the outer Git repository's nested boundaries.
+// A non-Git workspace may intentionally contain multiple independent projects;
+// its dirTracked=false also drives vendor policy, not proof of outer ownership.
+func walkWorktreeFilesWithGitScope(ctx context.Context, repo string, ignores ignoreMatcher, dirTracked func(string) bool, ledger *repoIgnoreLedger, hasGitIndex bool) ([]string, []ProviderWarning, error) {
 	// Every filesystem fallback enters through here, including paths selected
 	// before Git's index listing succeeds. Require the same complete held-root
 	// safety proof so an earlier Git failure cannot bypass mount detection.
@@ -19413,7 +19457,7 @@ func walkWorktreeFiles(ctx context.Context, repo string, ignores ignoreMatcher, 
 		return nil, nil, err
 	}
 	var paths []string
-	warnings, err := visitWalkWorktreeFiles(ctx, repo, ignores, dirTracked, ledger, func(rel string) bool {
+	warnings, err := visitWalkWorktreeFiles(ctx, repo, ignores, dirTracked, ledger, hasGitIndex, func(rel string) bool {
 		paths = append(paths, rel)
 		return true
 	})
@@ -19430,9 +19474,10 @@ func visitWalkWorktreeFiles(
 	ignores ignoreMatcher,
 	dirTracked func(string) bool,
 	ledger *repoIgnoreLedger,
+	hasGitIndex bool,
 	visit func(string) bool,
 ) ([]ProviderWarning, error) {
-	return visitWalkWorktreeFilesWithRawLimit(ctx, repo, ignores, dirTracked, ledger, 0, visit)
+	return visitWalkWorktreeFilesWithRawLimit(ctx, repo, ignores, dirTracked, ledger, hasGitIndex, 0, visit)
 }
 
 var errWorktreeRawPathLimit = errors.New("filesystem worktree raw path limit exceeded")
@@ -19502,6 +19547,7 @@ func visitWalkWorktreeFilesWithRawLimit(
 	ignores ignoreMatcher,
 	dirTracked func(string) bool,
 	ledger *repoIgnoreLedger,
+	hasGitIndex bool,
 	rawPathLimit int,
 	visit func(string) bool,
 ) ([]ProviderWarning, error) {
@@ -19607,6 +19653,16 @@ func visitWalkWorktreeFilesWithRawLimit(
 				// `gitdir: ../../.dep-git` names a root-level directory that is
 				// indexed, and whose damaged HEAD puts it out of every other
 				// rule's reach. Read the directories, then stop.
+				gitDirs.observePrunedSubtree(rel)
+				frames = frames[:len(frames)-1]
+				continue
+			}
+			if hasGitIndex && rel != "" && dirTracked != nil && !dirTracked(rel) && gitDirs.nestedWorkingTree(rel) {
+				// Preflight deliberately refuses Git enumeration on nested markers.
+				// Preserve Git's source boundary on this fallback without changing
+				// the metadata guards or letting a prune conceal another pointer.
+				// Unknown-index fallbacks use dirTracked=true, conservatively keeping
+				// source that the outer repository might own below this boundary.
 				gitDirs.observePrunedSubtree(rel)
 				frames = frames[:len(frames)-1]
 				continue

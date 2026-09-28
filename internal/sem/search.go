@@ -96,6 +96,10 @@ type SearchOptions struct {
 	// mutation between a complete cache lookup and source preselection. It is
 	// deliberately unexported and nil in production.
 	afterPreindexLoad func()
+	// idfObserver is a deterministic test seam: it receives the idf statistics a search scored
+	// with, so a test can check the call-site wiring rather than only the helper. Per search, so
+	// concurrent tests cannot capture each other's calls. Unexported and nil in production.
+	idfObserver func(df map[string]int, files int, exact bool)
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -1374,6 +1378,11 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 
 	fileDF := make(map[string]int, len(q.terms))
+	// contentDF counts CONTENT matches only — the same rule preselection's posting totals follow —
+	// so every backend computes idf from one definition of document frequency.
+	contentDF := make(map[string]int, len(q.terms))
+	selectedReadFailures := 0
+	selectedInspected := 0
 	sparseDF := selection.sparseDF
 	if sparseDF == nil {
 		sparseDF = make(map[string]int, len(sparseQuery.terms))
@@ -1396,6 +1405,14 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			return SearchResponse{}, err
 		}
 		content, ok := read(filePath)
+		if !ok {
+			// An unread selected file is UNKNOWN, not zero: its matches would be missing from
+			// the counts while its path stays in N. See searchCorpusIDFStatistics.
+			selectedReadFailures++
+		} else {
+			// Read, NUL-containing or not: inspected, so it counts toward N.
+			selectedInspected++
+		}
 		if !ok || strings.IndexByte(content, 0) >= 0 {
 			continue
 		}
@@ -1405,6 +1422,9 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		for index, term := range q.terms {
 			if contentMatches[index] || pathMatches[index] {
 				fileDF[term]++
+			}
+			if contentMatches[index] {
+				contentDF[term]++
 			}
 		}
 	}
@@ -1492,7 +1512,19 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		IndexLatencyMS:            indexLatency.Milliseconds(),
 		PreselectLatencyMS:        preselectLatency.Milliseconds(),
 	}
-	scoreSearchCandidates(candidates, q, fileDF, maxInt(1, len(selectedFiles)))
+	idfDF, idfFiles, idfExact := searchChooseIDFStatistics(searchIDFInputs{
+		sampleDF:             fileDF,
+		selectedInspected:    selectedInspected,
+		selectedReadFailures: selectedReadFailures,
+		postingTotals:        needleIndex.termFileTotals,
+		selectedContentDF:    contentDF,
+		corpusFiles:          selection.corpusFiles,
+		corpusFromSelected:   selection.corpusFromSelected,
+	})
+	if options.idfObserver != nil {
+		options.idfObserver(idfDF, idfFiles, idfExact)
+	}
+	scoreSearchCandidates(candidates, q, idfDF, idfFiles)
 	callerBoosts := searchGraphCallerBoosts(snapshot.Relations, symbolsByID)
 	stats.CallerBoostedCandidates += applySearchCallerBoosts(candidates, callerBoosts)
 	sortSearchCandidates(candidates)
@@ -1915,15 +1947,24 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// Containment is resolved before promotion, not after, so the slots a duplicate was occupying
 	// are handed back to the expansion and spent on regions the payload does not already show.
 	results = dropContainedProseResults(results)
+	reserved := stats.SignatureTypeBytes
+	if len(typeCard) > 0 {
+		reserved += serializedSearchResultBytes(typeCard)
+	}
 	if !options.SingleResolution {
 		// The reference blocks are funded from the same ceiling the response is validated against,
 		// and they were priced before this pass runs, so promotion may only spend what they left.
-		reserved := stats.SignatureTypeBytes
-		if len(typeCard) > 0 {
-			reserved += serializedSearchResultBytes(typeCard)
-		}
 		results = expandProseResolution(results, options.TopK, options.MaxContextBytes, reserved)
 	}
+	// Certify already-whole bodies only after all source/identity/merge decisions.
+	// The original head's identities retain eligibility across later renumbering;
+	// a newly promoted locator must not gain source merely from this metadata.
+	var certified int
+	results, certified = certifyAlreadyCompleteSearchResults(
+		results, ranked[:minInt(bodyHeadRanks, len(ranked))], symbolsByID, read,
+		options.MaxContextBytes, reserved,
+	)
+	stats.CompleteSymbols += certified
 	stats.CandidatesSelected = len(results)
 	stats.ProsePassages, stats.ProsePassageBytes = searchPassageStats(results)
 	resultBytes = serializedSearchResultBytes(results)
@@ -2315,6 +2356,14 @@ type searchFileSelection struct {
 	// Git instead — a truncated posting list would let a block state a repository-wide total it
 	// cannot know.
 	termPostings *searchTermPostings
+	// corpusFiles is the number of files in the searched tree when this selection can give an
+	// EXACT repository-wide document frequency for every query term, and zero otherwise. Where the
+	// counts come from is corpusFromSelected: false means the content pass saw every file and its
+	// posting totals are the counts; true means the selected files are a superset of every file
+	// whose content contains a query term (Git returned every match, or every file was selected), so
+	// counting over the selected files is counting over the corpus. See searchCorpusIDFStatistics.
+	corpusFiles        int
+	corpusFromSelected bool
 	// gitGrepUsable records that Git answered a grep for this repository, so the lookup may ask it
 	// again for a needle the posting lists do not cover. gitGrepTreeish is the tree that grep must
 	// run against — empty means the working tree, which is what a worktree search indexes.
@@ -2404,6 +2453,10 @@ func preselectSearchFiles(
 	if exactFullPreindex && !options.Worktree && !options.Deep && grepSafe {
 		var matches []string
 		var grepErr error
+		// Only the plain fixed-string route below returns EVERY file containing a query term; the
+		// alias route selects by validated alias hits, a different term set, so it never claims
+		// exact corpus statistics.
+		matchesEveryTermFile := false
 		if len(q.inferredAbbreviations) > 0 {
 			validationRead := source.read
 			if limit := resolveMaxParseBytes(options.MaxParseBytes); limit > 0 && limit < defaultMaxParseBytes {
@@ -2445,7 +2498,13 @@ func preselectSearchFiles(
 				})
 			}
 		} else {
-			matches, grepErr = gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
+			// Without -I: `git grep -I` omits files Git classifies as binary by an early NUL OR by
+			// a -diff/binary attribute or diff.*.binary config, even when they are NUL-free text the
+			// content pass reads. Including them makes this set a genuine superset of every file
+			// containing a term; a NUL-containing file among them is still inspected and skipped
+			// by the scorer, exactly as on the cold path.
+			matches, grepErr = gitutil.GrepTreePathsIncludingBinary(ctx, source.absRepo, source.commit, grepPatterns)
+			matchesEveryTermFile = true
 		}
 		if grepErr == nil {
 			// This branch deliberately keeps every matched file rather than
@@ -2461,11 +2520,17 @@ func preselectSearchFiles(
 			// Git answered once, so it can answer again for a single needle.
 			selection.gitGrepUsable = true
 			selection.gitGrepTreeish = source.commit
+			if matchesEveryTermFile {
+				// Git returned EVERY file containing a query term (case-insensitive fixed strings
+				// without -I, a superset of the matcher), and this branch keeps every one of them.
+				selection.corpusFiles, selection.corpusFromSelected = len(source.paths), true
+			}
 			return selection, nil
 		}
 	}
 	if options.IndexAllFiles || len(source.paths) <= options.MaxIndexedFiles {
 		selection.files = append([]string(nil), source.paths...)
+		selection.corpusFiles, selection.corpusFromSelected = len(source.paths), true
 		return selection, nil
 	}
 	// Which terms any file matches is not known until the scan is done, so the coverage
@@ -2699,16 +2764,21 @@ func preselectSearchFiles(
 	var contentReadMu sync.Mutex
 	var matchedMu sync.Mutex
 	contentReads := 0
+	contentReadFailures := 0
 	scoreFile := func(filePath string) (searchFileCandidate, bool) {
 		if err := ctx.Err(); err != nil {
 			return searchFileCandidate{}, false
 		}
 		content, ok := source.read(filePath)
+		contentReadMu.Lock()
 		if ok {
-			contentReadMu.Lock()
 			contentReads++
-			contentReadMu.Unlock()
+		} else {
+			// Unread, oversized or failed: whether it contains a query term is UNKNOWN, so
+			// this pass can no longer give an exact repository-wide document frequency.
+			contentReadFailures++
 		}
+		contentReadMu.Unlock()
 		if !ok || strings.IndexByte(content, 0) >= 0 {
 			return searchFileCandidate{}, false
 		}
@@ -2831,6 +2901,10 @@ func preselectSearchFiles(
 	selection.filesContentRead += contentReads
 	selection.preselectionBackend = "go-content"
 	selection.preselectionFilesExamined = len(scanPaths)
+	// Exact only when the content pass INSPECTED every file: scheduled is not the same as read.
+	if !usedGitIndexPreselection && len(scanPaths) == len(source.paths) && contentReadFailures == 0 {
+		selection.corpusFiles = len(scanPaths)
+	}
 	if usedGitIndexPreselection {
 		selection.preselectionBackend = "git-index-grep+go-content"
 		if !progressive {
@@ -3871,6 +3945,62 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 		baseScore:  base,
 		aliases:    append([]string(nil), symbol.Aliases...),
 	}, true
+}
+
+// searchIDFInputs is everything the idf choice depends on, gathered at one call site so the
+// choice is a value a test can read rather than an ordering of statements.
+type searchIDFInputs struct {
+	sampleDF             map[string]int // content-or-path matches over the inspected selected files
+	selectedInspected    int            // selected files actually read, NUL-containing ones included
+	selectedReadFailures int            // selected files that could not be read
+	postingTotals        map[string]int // content-pass posting totals (content matches, whole scan)
+	selectedContentDF    map[string]int // content matches over the inspected selected files
+	corpusFiles          int            // the selection's exact-corpus N, or zero
+	corpusFromSelected   bool           // the selected files contain every match
+}
+
+// searchChooseIDFStatistics returns the document frequencies, file count and whether they are
+// exact repository-wide statistics. The sample fallback's N is the number of selected files
+// actually INSPECTED — a selected file that could not be read is unknown, and counting it in N
+// while its matches are missing from DF is the defect exactness revocation exists to prevent.
+func searchChooseIDFStatistics(in searchIDFInputs) (map[string]int, int, bool) {
+	corpusDF, corpusFiles := in.postingTotals, in.corpusFiles
+	if in.corpusFromSelected {
+		corpusDF = in.selectedContentDF
+		if in.selectedReadFailures > 0 {
+			corpusFiles = 0
+		}
+	}
+	df, files := searchCorpusIDFStatistics(in.sampleDF, in.selectedInspected, corpusDF, corpusFiles)
+	return df, files, corpusFiles > 0
+}
+
+// searchCorpusIDFStatistics chooses the document frequencies BM25 idf is computed from.
+//
+// The selected files are the ones preselection kept BECAUSE they contain the most query words, so
+// within them nearly every query word is common and its idf collapses toward zero. A word that is
+// rare in the repository — the one that actually identifies the target — then weighs no more than
+// a word every file shares, and the target's matches cannot outscore a fixed path prior.
+//
+// When the selection can supply exact repository-wide counts (corpusFiles > 0), idf uses them:
+// document frequency is the number of text files whose CONTENT contains the term, over every file
+// in the tree. Every backend that can know this computes the same number — the content pass from
+// its posting totals, Git tree grep and whole-tree selections by counting over their selected files,
+// which contain every match — so a query scores the same whichever backend served it. A
+// Git-narrowed or bounded pass cannot know it, and keeps the sample statistics.
+func searchCorpusIDFStatistics(sampleDF map[string]int, sampleFiles int, corpusDF map[string]int, corpusFiles int) (map[string]int, int) {
+	if corpusFiles <= 0 {
+		return sampleDF, maxInt(1, sampleFiles)
+	}
+	// A copy of the corpus counts, keyed by query term (both producers count only q.terms). Sample
+	// terms absent here are terms no inspected file's content contains: DF 0, the map zero value.
+	// Copying only the SAMPLE's terms instead would drop a term the corpus has but the selection
+	// lacks — the rare term this function exists to count.
+	df := make(map[string]int, len(corpusDF))
+	for term, count := range corpusDF {
+		df[term] = count
+	}
+	return df, corpusFiles
 }
 
 func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF map[string]int, fileCount int) {

@@ -24,17 +24,22 @@ auto-generated notes on
 
 - Upgraded the Go toolchain to 1.27.
 - Improved snapshot, search, and analyze performance and substantially reduced memory allocation, and made `stats` return a fast, single-line answer instead of a full rescan.
-- Statusline now shows only the savings estimate by default and labels it clearly as an estimate rather than an exact count.
+- Stats and statusline now show a signed, explicitly unvalidated 1:1 context model, retaining losses and distinguishing unavailable comparisons from zero; legacy JSON fields remain compatible.
 - Aligned Graph's trail runners with Brain's and hardened CI with Windows test sharding and safer nightly prerelease publishing.
 
 ### Fixed
 
+- Scoped generated agent guidance to the observed source view: a complete body does not certify later freshness or dependencies, and unmarked source no longer mandates a duplicate read. Follow-up reads target missing or possibly changed source.
+- Certified already-whole search bodies against their exact source without changing the selected JSON spans, and preserved unmarked source excerpts when an agent response cannot fit the complete body and its marker.
+- Preserved validated nested repository boundaries in working-tree fallback scans, avoiding duplicate source and search results from untracked nested clones, linked worktrees, and submodules while retaining outer-repository tracked source.
+- Classified ambiguous same-file nearest-declaration call guesses as `name_only` with reduced confidence, preserving the ambiguity through C++ out-of-line mapping. This corrects false certainty, not semantic overload selection; fast-profile and argument-forwarding filters now omit these uncertain edges.
 - Fixed seven wrong-answer defects in the provider and type scanners and stopped bare type names resolving across language boundaries.
 - Fixed language-scanner defect classes across C, C++, F#, and Julia, including declarator-based function naming, data-member and in-class method extraction, module-path and qualifier resolution, a forward-pipe precision bug, and bare-call scoping, and declared the type and data-flow relations all ten supported languages actually emit.
 - Fixed six defects in default-export extraction, GraphQL fragment spreads, compact snapshots, and command-table search, a nested JS/TS function-expression scoping bug, and a prose-query ranking miss in search.
 - Fixed nine CLI and gitutil navigation defects that previously answered wrongly instead of not answering at all, and stopped `explain` buffering its input.
 - Fixed parameter-clause parsing to read every clause, let `--force` reach derived snapshots, and fixed the compact-tree walker to list only regular files.
 - Fixed verification and search to stop advertising commands that cannot run, and stopped reporting a failed verification as a pass.
+- Fixed opt-in agent session replay to respect the current output byte budget, including attribution and terminal escaping; oversized stored responses now yield a fresh bounded search instead of an over-budget echo.
 - Fixed pipeline workers to observe shared context correctly, closed a map-race condition, and fixed the semantic diff to report pure file renames instead of hiding them.
 - Fixed the doctor handshake, git-metadata error reporting, and repository agent activation so failures explain themselves and activation survives initializers.
 - Fixed statusline to prefer the managed install over a stray developer build, and fixed the LoCoMo benchmark reproduction kit to run off the author's machine with stronger scoring and redaction guards.

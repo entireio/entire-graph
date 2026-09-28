@@ -201,8 +201,20 @@ const (
 )
 
 // FullUnitSignal is searchFullUnitSignal exported for renderers: a result carrying it was returned
-// as its enclosing unit on the caller's orders and must never be abbreviated on the way out.
+// as its enclosing unit on the caller's orders. Any output shortening must not retain a
+// completeness promise.
+//
+// It does NOT mean the body is whole. A forced unit the safety cap clipped carries full-unit AND
+// FullUnitElidedSignal and withholds complete-symbol (see the producer below). A renderer deciding
+// whether the reader may skip a follow-up read must therefore key on complete-symbol, never on
+// full-unit alone -- doing the latter stamps a completeness promise onto a fragment.
 const FullUnitSignal = searchFullUnitSignal
+
+// FullUnitElidedSignal is searchFullUnitElidedSignal exported for the reason above: it is the
+// negative half of the full-unit contract, and a renderer that cannot see it cannot tell a whole
+// forced unit from a clipped one. Exported after peer review caught a predicate that accepted
+// full-unit alone.
+const FullUnitElidedSignal = searchFullUnitElidedSignal
 
 // RenderedSnippetHeadRanks is searchRenderedSnippetHeadRanks exported so the text renderer's test can
 // assert that the depth the allocator ASSUMES is printed is the depth that actually is. If the two
@@ -339,9 +351,82 @@ func clipSearchUnitToBytes(lines []string, start, end, focus, maxBytes int) (int
 	}
 }
 
-// CompleteSymbolSignal is searchCompleteSymbolSignal exported for renderers: a result carrying
-// it is a whole callable and must never be abbreviated on the way out.
+// CompleteSymbolSignal is searchCompleteSymbolSignal exported for renderers: the stored
+// source span contains the whole callable. A renderer may show an unmarked excerpt, but
+// must not display a completeness marker over a partial or transformed body.
 const CompleteSymbolSignal = searchCompleteSymbolSignal
+
+// certifyAlreadyCompleteSearchResults adds metadata to source already selected and
+// rendered. It runs after every allocation/merge pass: completeness participates in
+// those decisions, so assigning it earlier can spend a sibling's source on metadata.
+// eligible is the original body head, matched by identity rather than renumbered rank.
+// No source, identity, ordering or section is changed, and only spare serialized
+// budget (after funded context blocks) may pay for the signal.
+func certifyAlreadyCompleteSearchResults(
+	results, eligible []SearchResult,
+	symbolsByID map[string]SymbolRecord,
+	read contentReader,
+	maxBytes, reservedBytes int,
+) ([]SearchResult, int) {
+	if len(results) == 0 || len(eligible) == 0 {
+		return results, 0
+	}
+	type identity struct{ file, symbol string }
+	allowed := make(map[identity]bool, len(eligible))
+	for _, result := range eligible {
+		if result.SymbolID != "" {
+			allowed[identity{result.FilePath, result.SymbolID}] = true
+		}
+	}
+	plan := append([]SearchResult(nil), results...)
+	total, added := serializedSearchResultBytes(results), 0
+	fileLines := make(map[string][]string)
+	for index, result := range results {
+		if !allowed[identity{result.FilePath, result.SymbolID}] || !searchResultRendersSource(results, index) ||
+			hasSearchSignal(result, searchCompleteSymbolSignal) || hasSearchSignal(result, searchFullUnitElidedSignal) {
+			continue
+		}
+		symbol, ok := symbolsByID[result.SymbolID]
+		if !ok || symbol.ID != result.SymbolID || symbol.FilePath != result.FilePath || !searchEnclosableSymbolKind(symbol.Kind) ||
+			result.Kind != symbol.Kind || result.SymbolName != symbol.Name ||
+			symbol.StartLine < 1 || symbol.EndLine < symbol.StartLine {
+			continue
+		}
+		start, end := result.SnippetStartLine, result.SnippetEndLine
+		if start < 1 || start > symbol.StartLine || end < symbol.EndLine || result.StartLine < 1 ||
+			result.StartLine > start || result.EndLine < end || result.FocusLine < start || result.FocusLine > end ||
+			result.SymbolStartLine < 0 || result.SymbolEndLine < 0 ||
+			(result.SymbolStartLine > 0 && result.SymbolStartLine != symbol.StartLine) ||
+			(result.SymbolEndLine > 0 && result.SymbolEndLine != symbol.EndLine) {
+			continue
+		}
+		if (result.UnitStartLine != 0 || result.UnitEndLine != 0) &&
+			(result.UnitStartLine < start || result.UnitEndLine > end || result.UnitEndLine < result.UnitStartLine) {
+			continue
+		}
+		candidate := result
+		candidate.Signals = append(append([]string(nil), result.Signals...), searchCompleteSymbolSignal)
+		nextBytes := total - serializedSearchResultBytes(result) + serializedSearchResultBytes(candidate)
+		if maxBytes > 0 && nextBytes+reservedBytes > maxBytes {
+			continue
+		}
+		lines, cached := fileLines[result.FilePath]
+		if !cached {
+			content, readable := read(result.FilePath)
+			if readable && strings.IndexByte(content, 0) < 0 {
+				lines = strings.Split(content, "\n")
+			}
+			fileLines[result.FilePath] = lines
+		}
+		// True symbol bounds must fit without clamping. Exact slice equality also
+		// rejects byte-clipped single-line bodies whose line numbers still fit.
+		if end > len(lines) || result.Snippet != strings.Join(lines[start-1:end], "\n") {
+			continue
+		}
+		plan[index], total, added = candidate, nextBytes, added+1
+	}
+	return plan, added
+}
 
 // HeadWindowSignal is searchHeadWindowSignal exported for the same reason: the allocator spent budget
 // widening this result to a readable window, and a renderer that then prints it as a locator throws
