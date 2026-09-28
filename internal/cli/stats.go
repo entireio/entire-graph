@@ -26,34 +26,31 @@ import (
 // ~/.claude/projects/<path-slug>/). Nothing is uploaded; the only thing written is a per-file
 // memo under the cache directory, which --no-cache turns off.
 //
-// The DEFAULT output is one line: the estimated tokens saved. --verbose restores the full report
-// (per-verb and per-kind tables, billed tokens, the graph-first rate, the model text), and
+// The DEFAULT output is one line: a signed, explicitly counterfactual context model.
+// --verbose restores the full report (per-verb/per-kind tables, usage and model text), and
 // --format json is a machine contract whose shape only ever grows.
 
 // savingsModelShort/savingsModelText document the counterfactual. Both the text and the JSON
 // output carry it verbatim so the number is never quoted without its assumption.
-const savingsModelShort = "each graph locate call is credited with one exploration call it displaced, " +
-	"priced from this session's own measured per-call costs"
+const savingsModelShort = "unvalidated 1:1 substitution assumption using same-session result bytes; not measured savings"
 
-const savingsModelText = "Model (assumption, not a measurement): each graph locate call " +
-	"(query/neighbors/impact) is credited with the ONE exploration call (Read/Grep/Glob/bash " +
-	"grep-find-read) it displaced. Both prices are MEASURED from the same session's own " +
-	"transcript: graph bytes per locate call, and exploration bytes per exploration call. Saving " +
-	"per substitution = exploration bytes/call minus graph bytes/call, floored at 0, converted at " +
-	"4 bytes = 1 token. The only assumption left is the 1:1 substitution ratio, and a paired A/B " +
-	"benchmark of this tool measured 0.980 exploration calls displaced per graph call; 1:1 is that " +
-	"number rounded in the understating direction. What you would actually have read instead is " +
-	"not observable, so treat this as an estimate, not ground truth."
+const savingsModelText = "Model (assumption, not a measurement): assume each observed graph locate " +
+	"result replaces one exploration result at that session's average exploration bytes/result. " +
+	"Subtract observed graph locate bytes and sum signed results, including losses, across sessions " +
+	"with both result types. Positive means fewer bytes under this unvalidated 1:1 substitution " +
+	"assumption; negative means more. Convert bytes to estimated tokens using the rough 4 bytes = 1 " +
+	"token approximation. Unmatched queries, transformed or truncated outputs, and task quality " +
+	"are not controlled. Transcripts cannot establish what would have been read instead or causal " +
+	"billed-token savings. Legacy JSON savings fields retain their positive-only floor for " +
+	"compatibility; the headline uses the signed unfloored fields."
 
 // bytesPerToken is the standard rough transcript-accounting conversion. Tool results are raw
 // text, so token counts are not recorded per call anywhere; 4 bytes/token is the usual
-// approximation and is stated in the output. Real code runs nearer 3.2-3.6 bytes/token, so
-// dividing by 4 understates the tokens a byte count stands for.
+// approximation and is stated in the output. Actual ratios depend on the content and tokenizer.
 const bytesPerToken = 4
 
 // substitutionRatio is how many exploration calls one graph locate call is assumed to displace.
-// Measured at 0.980 in a paired A/B benchmark of this tool; carried as 1 because rounding the
-// ratio up understates the saving and keeps the arithmetic exact in integers.
+// This is an unvalidated counterfactual, not an empirical coefficient for these transcripts.
 const substitutionRatio = 1
 
 // graphLocateVerbs are the verbs whose whole purpose is to replace exploration, and therefore
@@ -85,8 +82,13 @@ var graphVerbs = map[string]bool{
 	"agent-guide": true, "init-agents": true, "version": true, "help": true,
 }
 
-// bashExploreCommands are the shell tools the graph is meant to displace. Matched as the first
-// word of any pipeline/`&&`/`;` segment.
+// semGraphVerbs are the `entire sem` subcommands that answer the same structural question the
+// graph does. They are a subset of graphVerbs (TestSemGraphVerbsAreIndexable), so a sem call lands
+// in graph_calls_by_verb under a name the rest of the report already indexes.
+var semGraphVerbs = map[string]bool{"edges": true, "symbols": true}
+
+// bashExploreCommands are the shell tools the graph is meant to displace. Matched as the command
+// word of a pipeline's LEADING stage — see isExploringShellCommand.
 var bashExploreCommands = map[string]bool{
 	"grep": true, "egrep": true, "fgrep": true, "rg": true, "ag": true, "ack": true,
 	"find": true, "cat": true, "head": true, "tail": true, "sed": true, "awk": true,
@@ -137,8 +139,7 @@ type statsTokens struct {
 }
 
 // statsResponse is a machine contract: fields are only ever ADDED, never removed or renamed.
-// scripts/entire-graph-statusline.sh reads estimated_savings_est_tokens and
-// estimated_savings_pct_of_session_tokens out of it on every prompt render.
+// The statusline reads the signed unfloored estimate plus comparison availability.
 type statsResponse struct {
 	FormatVersion             int          `json:"format_version"`
 	Provider                  string       `json:"provider"`
@@ -189,11 +190,21 @@ type statsResponse struct {
 	GraphLocateReturnedBytes int64   `json:"graph_locate_returned_bytes"`
 	GraphBytesPerLocateCall  float64 `json:"graph_bytes_per_locate_call"`
 	ExplorationBytesPerCall  float64 `json:"exploration_bytes_per_call"`
-	// SessionsWithPositiveSavings is how many in-window sessions produced a saving above 0. A
-	// session whose graph calls returned more per call than the exploration they displaced
-	// contributes 0 — a correct answer, not one to be floored away at the total.
+	// SessionsWithPositiveSavings counts positive modeled results, not verified task savings.
 	SessionsWithPositiveSavings int     `json:"sessions_with_positive_savings"`
 	SubstitutionRatio           float64 `json:"substitution_ratio"`
+	// EstimatedSavingsBytesUnfloored / EstimatedSavingsTokensUnfloored are the SAME model with the
+	// per-session floor removed, so a session that cost more than it saved subtracts instead of
+	// contributing 0. EstimatedSavingsBytes sums max(0, saved) per session, which keeps every win
+	// and discards every loss — a positive bias, and the only direct sign bias in this report.
+	//
+	// The floored fields remain for compatibility. Human output uses the signed model and
+	// SessionsWithSavingsComparison to distinguish zero from an unavailable comparison.
+	EstimatedSavingsBytesUnfloored  int64 `json:"estimated_savings_bytes_unfloored"`
+	EstimatedSavingsTokensUnfloored int64 `json:"estimated_savings_est_tokens_unfloored"`
+	// SessionsWithSavingsComparison counts sessions containing at least one observed graph
+	// locate result and one observed exploration result. Availability is not causal validity.
+	SessionsWithSavingsComparison int `json:"sessions_with_savings_comparison"`
 }
 
 func runStats(ctx context.Context, opts Options, args []string) error {
@@ -772,10 +783,12 @@ func (a *sessionAcc) locateTotals() (calls, results int, bytes int64) {
 // The subtracted term is exactly locateResults * (locateBytes / locateResults), which is why the
 // graph-side division cancels and no per-call rounding accumulates.
 //
-// Floored at 0 per SESSION: a session whose graph calls returned more per call than the
-// exploration they displaced saved nothing. That is a real answer — this tool's own paired A/B
-// benchmark found graph output larger per call than the baseline's — and it is not floored away
-// at the total, which is a sum of per-session results.
+// The result is SIGNED: larger graph results produce a modeled loss. Legacy JSON keeps
+// its per-session floor, but human output uses the signed sum and a separate availability count.
+//
+// The 0 returned when either side is missing is a DIFFERENT zero: it means "one side of the
+// comparison is absent", not "the comparison came out flat". It stays, and must not be conflated
+// with a measured loss.
 func (a *sessionAcc) savingsBytes() int64 {
 	_, locateResults, locateBytes := a.locateTotals()
 	exploreResults := sumCounts(a.kindResults)
@@ -783,9 +796,6 @@ func (a *sessionAcc) savingsBytes() int64 {
 		return 0
 	}
 	displaced := mulDiv(int64(locateResults)*substitutionRatio, sumBytes(a.kindBytes), int64(exploreResults))
-	if displaced <= locateBytes {
-		return 0
-	}
 	return displaced - locateBytes
 }
 
@@ -1049,6 +1059,11 @@ func graphVerbFromCommand(command string) (string, bool) {
 					return verb, true
 				}
 			}
+			if base == "entire" && len(rest) > 0 && shellWord(rest[0]) == "sem" {
+				if verb, ok := firstSemVerb(rest[1:]); ok {
+					return verb, true
+				}
+			}
 			if base == "entire-graph" {
 				if verb, ok := firstGraphVerb(rest); ok {
 					return verb, true
@@ -1056,6 +1071,23 @@ func graphVerbFromCommand(command string) (string, bool) {
 			}
 			break // this segment's command word is something else
 		}
+	}
+	return "", false
+}
+
+// firstSemVerb matches the `entire sem <verb>` form. The CLI's own agent instructions recommend
+// `entire sem edges` and `entire sem symbols` by name as the deterministic callers/definitions
+// lookup, and they were counted in NEITHER arm: not a graph call, and not exploration either — so
+// a session driven entirely by them read as a session that used no tool at all. They are counted
+// as graph calls; the savings model still prices only graphLocateVerbs, so nothing here is
+// credited with a displacement it did not make.
+func firstSemVerb(fields []string) (string, bool) {
+	if len(fields) == 0 {
+		return "", false
+	}
+	verb := strings.TrimLeft(shellWord(fields[0]), "-")
+	if semGraphVerbs[verb] {
+		return verb, true
 	}
 	return "", false
 }
@@ -1105,33 +1137,394 @@ func explorationKindFromToolUse(block contentBlock) (string, bool) {
 	return "", false
 }
 
+// isExploringShellCommand reports whether a Bash call's purpose was to LOCATE code in the
+// repository. Two rules decide it, and both were absent before:
+//
+//   - Only the LEADING stage of each pipeline is classified. Everything downstream of a `|`
+//     reshapes text that is already in context; it reads nothing. Matching any pipe segment whose
+//     first word was grep/rg/head/tail/sed/awk turned `go test ./... 2>&1 | tail -40` into a locate
+//     call.
+//   - A WRITE is not a locate, however grep-shaped it looks. No redirection was parsed at all, so
+//     `cat > file`, `cat <<'EOF' > file`, `tee` and `sed -i` all counted as exploration — and a
+//     here-document's BODY was read as if its lines were commands.
+//
+// Measured over a real 2,690-transcript corpus, against the classifier this replaces: the
+// pipeline-head rule alone removes 32,303 of 100,273 exploration calls (32.2%), write detection
+// removes a further 4,502 on top of it, 36,805 in total (36.7%). The calls removed averaged 1,016
+// returned bytes against 3,117 for the ones kept, so the measured exploration price per call — the
+// thing the savings model divides by — rose 32.8%.
 func isExploringShellCommand(command string) bool {
 	if command == "" {
 		return false
 	}
-	for _, segment := range splitShellSegments(command) {
-		for _, field := range strings.Fields(segment) {
-			word := shellWord(field)
-			if word == "" || strings.Contains(word, "=") {
-				continue
-			}
-			word = filepath.Base(word)
-			if commandPrefixes[word] {
-				continue
-			}
-			if bashExploreCommands[word] {
-				return true
-			}
-			break
+	for _, stage := range pipelineHeadStages(command) {
+		if isWritingShellStage(stage) {
+			continue
+		}
+		if bashExploreCommands[shellCommandWord(stage)] {
+			return true
 		}
 	}
 	return false
 }
 
+// shellCommandWord returns the command a stage runs — wrappers (`rtk`, `sudo`, `xargs`) and
+// leading VAR=value assignments skipped — or "" when the stage runs nothing.
+func shellCommandWord(stage string) string {
+	for _, field := range strings.Fields(stage) {
+		word := shellWord(field)
+		if word == "" || strings.Contains(word, "=") {
+			continue
+		}
+		word = filepath.Base(word)
+		if commandPrefixes[word] {
+			continue
+		}
+		return word
+	}
+	return ""
+}
+
+// pipelineHeadStages splits a command into its STATEMENTS (`;`, `&&`, `||`, a background `&`, a
+// newline) and returns the leading stage of each — the text up to that statement's first `|`.
+//
+// Per statement, not per command: `cd internal && grep -rn foo .` is a real search, so every
+// statement's head is classified, not just the first one in the string.
+//
+// This deliberately does NOT reuse splitShellSegments. That splitter is shared with
+// graphVerbFromCommand, which legitimately needs non-first segments (`cd /repo && entire graph
+// neighbors --symbol Foo`), so narrowing it in place would stop the graph half of the report from
+// finding its own calls. Two readers, two rules, two splitters.
+// Quoting is honoured throughout: `git commit -m "fix: a; grep the logs"` is ONE commit, not two
+// statements the second of which searches.
+func pipelineHeadStages(command string) []string {
+	runes := []rune(stripHeredocBodies(command))
+	literal := shellQuoteMask(runes)
+	var stages []string
+	var current []rune
+	capturing := true
+	endStatement := func() {
+		if capturing {
+			stages = append(stages, string(current))
+		}
+		current = current[:0]
+		capturing = true
+	}
+	for index := 0; index < len(runes); index++ {
+		character := runes[index]
+		switch {
+		case literal[index]:
+			// Inside quotes nothing is an operator; it is just text the command carries.
+			if capturing {
+				current = append(current, character)
+			}
+		case character == '\n' || character == ';':
+			endStatement()
+		case character == '&':
+			switch {
+			case index+1 < len(runes) && runes[index+1] == '&' && !literal[index+1]:
+				index++
+				endStatement()
+			case index+1 < len(runes) && runes[index+1] == '>' && !literal[index+1]:
+				// `&>` / `&>>` send both streams to a file. It is a redirect, and splitting the
+				// statement there hid the redirect from the write check that runs on the head.
+				if capturing {
+					current = append(current, character)
+				}
+			case previousNonSpaceIsRedirect(runes, literal, index):
+				// `2>&1` duplicates a file descriptor; it is not a statement boundary.
+				if capturing {
+					current = append(current, character)
+				}
+			default:
+				endStatement() // backgrounding operator
+			}
+		case character == '|':
+			if index+1 < len(runes) && runes[index+1] == '|' && !literal[index+1] {
+				index++
+				endStatement()
+				continue
+			}
+			// The head of this pipeline is complete; the rest of the statement only reshapes it.
+			if capturing {
+				stages = append(stages, string(current))
+				current = current[:0]
+			}
+			capturing = false
+		default:
+			if capturing {
+				current = append(current, character)
+			}
+		}
+	}
+	endStatement()
+	return stages
+}
+
+// shellQuoteMask marks the runes of a command that are inside single or double quotes, or are a
+// backslash escape and the character it escapes. Every scanner below consults it, because none of
+// the operators they look for — `|`, `;`, `&`, `>`, `<<` — is an operator inside quotes:
+// `git commit -m "fix: a; grep the logs"` is one commit, and `cat "odd>name.txt"` is a read.
+//
+// A command whose quotes do not balance gets an all-false mask: masking to end-of-string on an
+// unterminated quote would hide every later statement, and falling back to the unquoted reading is
+// this file's pre-existing behaviour, so the failure stays bounded.
+func shellQuoteMask(runes []rune) []bool {
+	masked := make([]bool, len(runes))
+	var quote rune
+	for index := 0; index < len(runes); index++ {
+		character := runes[index]
+		switch {
+		case character == '\\' && quote != '\'':
+			masked[index] = true
+			if index+1 < len(runes) {
+				masked[index+1] = true
+				index++
+			}
+		case quote != 0:
+			masked[index] = true
+			if character == quote {
+				quote = 0
+			}
+		case character == '\'' || character == '"':
+			quote = character
+			masked[index] = true
+		}
+	}
+	if quote != 0 {
+		return make([]bool, len(runes))
+	}
+	return masked
+}
+
+func previousNonSpaceIsRedirect(runes []rune, literal []bool, index int) bool {
+	for cursor := index - 1; cursor >= 0; cursor-- {
+		if literal[cursor] {
+			return false
+		}
+		switch runes[cursor] {
+		case ' ', '\t':
+			continue
+		case '>':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// stripHeredocBodies removes here-document BODIES before anything is classified. A body is data
+// being written into a file, not a sequence of commands: `cat > run.sh <<'EOF'` followed by a line
+// reading `grep -rn foo .` is ONE write, and treating the payload's lines as statements counted the
+// file's contents as locate calls. The opening line survives — it is a real command — and so does
+// everything after the terminator.
+func stripHeredocBodies(command string) string {
+	if !strings.Contains(command, "<<") {
+		return command
+	}
+	lines := strings.Split(command, "\n")
+	kept := make([]string, 0, len(lines))
+	for index := 0; index < len(lines); index++ {
+		kept = append(kept, lines[index])
+		delimiter := heredocDelimiter(lines[index])
+		if delimiter == "" {
+			continue
+		}
+		// Strip only a body that is actually CLOSED. An unterminated here-document is far more
+		// likely to be a misread `<<` than a real one, and swallowing the rest of the command
+		// would silently drop whatever locate calls its later lines make — the failure mode this
+		// whole function exists to prevent, pointed the other way.
+		terminator := -1
+		for cursor := index + 1; cursor < len(lines); cursor++ {
+			if strings.TrimSpace(lines[cursor]) == delimiter {
+				terminator = cursor
+				break
+			}
+		}
+		if terminator < 0 {
+			continue
+		}
+		index = terminator
+	}
+	return strings.Join(kept, "\n")
+}
+
+// heredocDelimiter returns the terminator word a line's here-document opens with, or "" when it
+// opens none.
+//
+// It is deliberately conservative, because a false positive costs real commands: stripHeredocBodies
+// would discard the lines that follow. Three guards here, and stripHeredocBodies adds a fourth by
+// refusing to strip an unterminated body:
+//
+//   - the `<<` must be OUTSIDE quotes, so `echo "count << 2"` opens nothing;
+//   - `<<<` is a here-STRING, whose data is on the same line;
+//   - the word must be quoted (`<<'EOF'`) or an unquoted SHOUTING identifier (EOF, PY, PYEOF) —
+//     the shapes real here-documents actually use. That is what rejects `std::cout << x` and
+//     `n << 2`, whose operands are a lowercase word and a number.
+//
+// A lowercase unquoted delimiter (`<<eof`) is therefore missed, and the command falls back to
+// being classified line by line — the behaviour that predates this function, so the failure is
+// bounded rather than destructive.
+func heredocDelimiter(line string) string {
+	runes := []rune(line)
+	literal := shellQuoteMask(runes)
+	for index := 0; index < len(runes); index++ {
+		if literal[index] || runes[index] != '<' {
+			continue
+		}
+		if index+1 >= len(runes) || runes[index+1] != '<' || literal[index+1] {
+			continue
+		}
+		position := index + 2
+		if position < len(runes) && runes[position] == '<' && !literal[position] {
+			index = position // here-string
+			continue
+		}
+		if position < len(runes) && runes[position] == '-' {
+			position++
+		}
+		for position < len(runes) && (runes[position] == ' ' || runes[position] == '\t') {
+			position++
+		}
+		word, quoted := heredocWord(runes[position:])
+		if word != "" && (quoted || isShoutingWord(word)) {
+			return word
+		}
+		index = position - 1
+	}
+	return ""
+}
+
+// heredocWord reads the delimiter token after a `<<`, reporting whether it was quoted. A quoted
+// delimiter is unambiguous, so it is accepted whatever it spells.
+func heredocWord(runes []rune) (string, bool) {
+	if len(runes) == 0 {
+		return "", false
+	}
+	if runes[0] == '\'' || runes[0] == '"' {
+		for cursor := 1; cursor < len(runes); cursor++ {
+			if runes[cursor] == runes[0] {
+				return string(runes[1:cursor]), true
+			}
+		}
+		return "", false
+	}
+	end := 0
+	for end < len(runes) && !strings.ContainsRune(" \t|;&<>()'\"", runes[end]) {
+		end++
+	}
+	return string(runes[:end]), false
+}
+
+// isShoutingWord reports whether a word is an all-caps identifier — EOF, PY, PYEOF, SQL2. It is
+// the shape an unquoted here-document delimiter takes in practice, and the cheapest way to tell
+// one from the right-hand side of a shift or a stream insertion.
+func isShoutingWord(word string) bool {
+	hasLetter := false
+	for _, character := range word {
+		switch {
+		case character >= 'A' && character <= 'Z':
+			hasLetter = true
+		case character >= '0' && character <= '9' || character == '_':
+		default:
+			return false
+		}
+	}
+	return hasLetter
+}
+
+// isWritingShellStage reports whether a stage's purpose is to write rather than to read. The
+// command word alone cannot tell: `cat x.go` is a read and `cat > x.go` is a file being created,
+// and the difference is entirely in the redirection nobody was parsing.
+func isWritingShellStage(stage string) bool {
+	switch shellCommandWord(stage) {
+	case "tee":
+		// tee always names a file to write, with or without a redirect.
+		return true
+	case "cat":
+		return hasStdoutRedirect(stage) || heredocDelimiter(stage) != ""
+	case "sed":
+		return hasInPlaceFlag(stage)
+	}
+	return false
+}
+
+// hasStdoutRedirect reports whether a stage sends STDOUT to a file. `2>` is excluded on purpose:
+// silencing stderr is something a read does too, and treating `cat x.go 2>/dev/null` as a write
+// would drop a real read. A `>` inside quotes is not a redirect either — `cat "odd>name.txt"` reads
+// a file whose name contains the character.
+func hasStdoutRedirect(stage string) bool {
+	runes := []rune(stage)
+	literal := shellQuoteMask(runes)
+	for index, character := range runes {
+		if character != '>' || literal[index] {
+			continue
+		}
+		if index+1 < len(runes) && runes[index+1] == '&' {
+			continue // `>&2` duplicates a descriptor; it does not name a file
+		}
+		if index > 0 && runes[index-1] == '<' {
+			continue // `<>` opens for read-write
+		}
+		if index > 0 && runes[index-1] >= '0' && runes[index-1] <= '9' && runes[index-1] != '1' {
+			continue // 2>, 3>, … are not stdout
+		}
+		return true
+	}
+	return false
+}
+
+// hasInPlaceFlag reports whether a `sed` stage edits its input in place. GNU takes an optional
+// suffix (`-i.bak`), BSD a separate one (`-i ”`), and short flags bundle (`-ni`).
+func hasInPlaceFlag(stage string) bool {
+	for _, field := range strings.Fields(stage) {
+		word := shellWord(field)
+		if word == "--in-place" || strings.HasPrefix(word, "--in-place=") {
+			return true
+		}
+		if len(word) < 2 || word[0] != '-' || word[1] == '-' {
+			continue
+		}
+		flags := word[1:]
+		if cut := strings.IndexAny(flags, ".='\""); cut >= 0 {
+			flags = flags[:cut]
+		}
+		if strings.ContainsRune(flags, 'i') {
+			return true
+		}
+	}
+	return false
+}
+
+// splitShellSegments is the GRAPH side's splitter: every `|`/`;`/`&`/newline segment, because an
+// `entire graph` invocation is a real call wherever in the command it sits. The exploration side
+// uses pipelineHeadStages instead — see the note there before narrowing this.
+//
+// The two sides differ in WHICH segments they classify, not in what counts as a segment boundary.
+// Both honour quoting and both ignore here-document bodies, because an instrument that discounts a
+// quoted `grep` while still counting a quoted `entire graph query` is biased, not merely imprecise:
+// `git commit -m "risky; entire graph query foo"` is a commit, and the body of `cat > run.sh
+// <<'EOF'` is a file being written whichever tool its lines name.
 func splitShellSegments(command string) []string {
-	return strings.FieldsFunc(command, func(r rune) bool {
-		return r == '|' || r == ';' || r == '&' || r == '\n'
-	})
+	runes := []rune(stripHeredocBodies(command))
+	literal := shellQuoteMask(runes)
+	var segments []string
+	var current []rune
+	for index, character := range runes {
+		if !literal[index] && (character == '|' || character == ';' || character == '&' || character == '\n') {
+			if len(current) > 0 {
+				segments = append(segments, string(current))
+				current = current[:0]
+			}
+			continue
+		}
+		current = append(current, character)
+	}
+	if len(current) > 0 {
+		segments = append(segments, string(current))
+	}
+	return segments
 }
 
 // --- aggregation and rendering ----------------------------------------------------------
@@ -1200,8 +1593,15 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 		report.GraphLocateCalls += locateCalls
 		report.CreditedGraphCalls += locateResults
 		report.GraphLocateReturnedBytes += locateBytes
-		exploreResults += sumCounts(acc.kindResults)
-		if saved := acc.savingsBytes(); saved > 0 {
+		sessionExploreResults := sumCounts(acc.kindResults)
+		exploreResults += sessionExploreResults
+		if locateResults > 0 && sessionExploreResults > 0 {
+			report.SessionsWithSavingsComparison++
+		}
+		// Preserve the legacy positive-only sum; human output uses the signed model.
+		saved := acc.savingsBytes()
+		report.EstimatedSavingsBytesUnfloored += saved
+		if saved > 0 {
 			report.EstimatedSavingsBytes += saved
 			report.SessionsWithPositiveSavings++
 		}
@@ -1221,6 +1621,7 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 	report.GraphReturnedTokens = report.GraphReturnedBytes / bytesPerToken
 	report.ExplorationReturnedTokens = report.ExplorationReturnedBytes / bytesPerToken
 	report.EstimatedSavingsTokens = report.EstimatedSavingsBytes / bytesPerToken
+	report.EstimatedSavingsTokensUnfloored = report.EstimatedSavingsBytesUnfloored / bytesPerToken
 	if report.CreditedGraphCalls > 0 {
 		report.GraphBytesPerLocateCall = roundTo(
 			float64(report.GraphLocateReturnedBytes)/float64(report.CreditedGraphCalls), 2)
@@ -1294,9 +1695,7 @@ func roundTo(value float64, places int) float64 {
 
 const statsPrefix = "[entire-graph]"
 
-// writeStatsSummary is the DEFAULT text output: one line, the number, nothing else. The tilde is
-// load-bearing — it is what stops a modelled estimate from reading as a measurement — and the
-// full model text is one --verbose away.
+// writeStatsSummary is one line with the sign, assumption and availability at the point of use.
 func writeStatsSummary(out io.Writer, report statsResponse) {
 	if !report.SessionsDirFound {
 		fmt.Fprintf(out, "%s no coding-agent session transcripts for this repo yet (looked in %s)\n",
@@ -1308,8 +1707,18 @@ func writeStatsSummary(out io.Writer, report statsResponse) {
 			statsPrefix, termsafe.Line(report.Since))
 		return
 	}
-	fmt.Fprintln(out, statsGreen(out, fmt.Sprintf("%s ~%s tokens saved",
-		statsPrefix, humanInt(report.EstimatedSavingsTokens))))
+	fmt.Fprintf(out, "%s %s\n", statsPrefix, statsModelSummary(report))
+}
+
+func statsModelSummary(report statsResponse) string {
+	if report.SessionsWithSavingsComparison == 0 {
+		return "1:1 context model: unavailable (no session has both result types)"
+	}
+	signed := humanInt(report.EstimatedSavingsTokensUnfloored)
+	if report.EstimatedSavingsTokensUnfloored > 0 {
+		signed = "+" + signed
+	}
+	return "1:1 context model: " + signed + " est. tokens; not measured savings"
 }
 
 // statsGreen styles the headline for a terminal and degrades to plain text everywhere else,
@@ -1346,11 +1755,9 @@ func writeStatsText(out io.Writer, report statsResponse) {
 		return
 	}
 
-	fmt.Fprintf(out, "graph calls: %s · exploration calls: %s · graph-first rate: %s (%d/%d sessions)\n",
+	fmt.Fprintf(out, "graph calls: %s · exploration calls: %s\n",
 		humanInt(int64(report.GraphCalls)),
-		humanInt(int64(report.ExplorationCalls)),
-		percent(report.GraphFirstRate),
-		report.GraphFirstSessions, report.SessionsWithLocate)
+		humanInt(int64(report.ExplorationCalls)))
 	fmt.Fprintln(out)
 
 	if len(report.GraphByVerb) > 0 {
@@ -1364,7 +1771,7 @@ func writeStatsText(out io.Writer, report statsResponse) {
 	}
 
 	if len(report.ExplorationByKind) > 0 {
-		fmt.Fprintln(out, "exploration calls (what the graph is meant to replace)")
+		fmt.Fprintln(out, "observed exploration calls")
 		fmt.Fprintf(out, "  %-22s %8s %14s\n", "kind", "calls", "est. tokens")
 		for _, entry := range report.ExplorationByKind {
 			fmt.Fprintf(out, "  %-22s %8s %14s\n", entry.Name, humanInt(int64(entry.Calls)), humanInt(entry.ReturnedTokens))
@@ -1373,28 +1780,24 @@ func writeStatsText(out io.Writer, report statsResponse) {
 		fmt.Fprintln(out)
 	}
 
-	fmt.Fprintln(out, "session tokens (billed, read from transcript usage)")
+	fmt.Fprintln(out, "session usage tokens (reported by transcripts)")
 	fmt.Fprintf(out, "  input %s · cache write %s · cache read %s · output %s · total %s\n",
 		humanInt(report.SessionTokens.Input), humanInt(report.SessionTokens.CacheWrite),
 		humanInt(report.SessionTokens.CacheRead), humanInt(report.SessionTokens.Output),
 		humanInt(report.SessionTokens.Total))
 	fmt.Fprintln(out)
 
-	fmt.Fprintln(out, "measured per-call cost (what the model prices from)")
+	fmt.Fprintln(out, "observed bytes per result (not monetary cost)")
 	fmt.Fprintf(out, "  graph locate %s bytes/call · exploration %s bytes/call\n",
 		strconv.FormatFloat(report.GraphBytesPerLocateCall, 'f', -1, 64),
 		strconv.FormatFloat(report.ExplorationBytesPerCall, 'f', -1, 64))
 	fmt.Fprintln(out)
 
-	fmt.Fprintf(out, "ESTIMATED SAVINGS  ~%s tokens", humanInt(report.EstimatedSavingsTokens))
-	if report.EstimatedSavingsPct > 0 {
-		fmt.Fprintf(out, "  (~%.2f%% of billed session tokens)", report.EstimatedSavingsPct)
-	}
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  credited graph calls: %d of %d (query/neighbors/impact only)\n",
+	fmt.Fprintln(out, statsModelSummary(report))
+	fmt.Fprintf(out, "  observed graph locate results: %d of %d graph calls (query/search/neighbors/impact only)\n",
 		report.CreditedGraphCalls, report.GraphCalls)
-	fmt.Fprintf(out, "  sessions with a saving above 0: %d of %d\n",
-		report.SessionsWithPositiveSavings, report.Sessions)
+	fmt.Fprintf(out, "  sessions with both result types: %d of %d\n",
+		report.SessionsWithSavingsComparison, report.Sessions)
 	for _, line := range wrapText(savingsModelText, 88) {
 		fmt.Fprintf(out, "  %s\n", line)
 	}

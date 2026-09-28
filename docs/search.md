@@ -65,3 +65,13 @@ resolution). The installed agent guide asks for `--profile full`, which
 enables the complete relation set and deeper graph expansion. Profile is part
 of the cache key, so mixing profiles across runs builds separate cache
 entries. See the [operations cache guide](operations.md#cache).
+
+The guide also asks for `--format agent`, which is a cost choice rather than a
+depth one. Measured on one query against this repository, `--profile full` with
+the default json rendering came to 17595 bytes and the same query with
+`--format agent` to 6011 -- 2.93x cheaper for the same results. json carries a
+fixed diagnostic floor (`repo_ignored`, `warnings`, `completeness`,
+`partial_failures`, `stats`) that `--max-context-bytes` does not bound, and the
+agent renderer is the only one whose ceiling binds the whole payload rather than
+`results` alone. Profile is not where the cost is: `full` versus `fast` differed
+by 42 bytes on the same query.

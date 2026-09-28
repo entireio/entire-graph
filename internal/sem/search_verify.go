@@ -1604,12 +1604,57 @@ func deriveSearchVerifySuiteComposer(dir string, evidence *searchVerifyEvidence)
 	return nil
 }
 
+// searchVerifyPytestSections are the headings pytest itself reads configuration from, per file.
+// A bare mention of the word anywhere else in these files is not configuration.
+var searchVerifyPytestSections = map[string][]string{
+	"pytest.ini": {"[pytest]"},
+	"tox.ini":    {"[pytest]"},
+	"setup.cfg":  {"[tool:pytest]"},
+	// Both, per pytest's own documentation: [tool.pytest] is the native TOML form supported
+	// since pytest 9.0, [tool.pytest.ini_options] the INI-style form since 6.0. Narrowing to the
+	// second alone regressed every valid pytest 9 configuration.
+	"pyproject.toml": {"[tool.pytest]", "[tool.pytest.ini_options]"},
+}
+
+// searchVerifyHasSection reports whether `content` declares `heading` as a real, uncommented
+// section header on a line of its own. A COMMENTED heading -- "# [pytest]", "; [tool:pytest]" --
+// is something a config carries while using a different runner, and substring matching accepted
+// every one of them. An open-ended "[tool.pytest" prefix also matched headings pytest does not
+// read.
+func searchVerifyHasSection(content, heading string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		if trimmed == heading {
+			return true
+		}
+	}
+	return false
+}
+
 func deriveSearchVerifySuitePytest(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	for _, name := range searchVerifyPytestConfigs {
 		candidate := searchVerifyJoin(dir, name)
 		content, ok := evidence.file(candidate)
-		if ok && strings.Contains(content, "pytest") {
-			return searchVerifySuiteCommand(dir, "python -m pytest", candidate+" pytest config")
+		if !ok {
+			continue
+		}
+		// A SECTION, not a mention. `strings.Contains(content, "pytest")` fired on a keyword in
+		// setup.cfg metadata, on a project description reading "a plugin for pytest users", and
+		// on the comment "migrated off pytest in 2024; we use unittest" -- which says the
+		// opposite of what it was read to mean. setup.cfg and pyproject.toml are general
+		// manifests; the word appears in them for many reasons that are not configuration.
+		//
+		// Milder than the jest case, because pytest runs unittest suites, so a wrong detection
+		// often still works. Not always: where pytest is merely named and not installed, the
+		// derived VERIFY fails with "No module named pytest", and the agent is told to treat a
+		// failure as its own code's fault.
+		for _, section := range searchVerifyPytestSections[name] {
+			if searchVerifyHasSection(content, section) {
+				return searchVerifySuiteCommand(dir, "python -m pytest", candidate+" pytest config")
+			}
 		}
 	}
 	return nil
@@ -2485,9 +2530,166 @@ func searchVerifyNodeRunnerFromManifest(parsed searchVerifyNodeManifest) (string
 	return "", ""
 }
 
+// searchVerifyShellStatements splits a package.json script into statements, treating quoted
+// spans as opaque and ending a statement at an unquoted comment.
+//
+// FieldsFunc on & | ; \n did neither, so separators inside quotes and comments began statements
+// the shell never runs:
+//
+//	echo ok # disabled; jest                        -> a statement "jest"
+//	echo 'disabled; jest; still disabled'           -> a statement "jest"
+//
+// Both then qualified as a jest invocation. Deliberately not a shell parser: an unterminated
+// quote returns false and the caller fails closed.
+func searchVerifyShellStatements(script string) ([]string, bool) {
+	var statements []string
+	var current strings.Builder
+	var quote rune
+	// Whether we are INSIDE a word. Tracked as state rather than read off the last raw byte,
+	// because an ESCAPED space is part of the word: in `release\ #1` the hash sits mid-word and
+	// is literal, while the byte before it is a space. Reading that byte called it a word start
+	// and swallowed the rest of the line as a comment.
+	inWord := false
+	flush := func() {
+		if trimmed := strings.TrimSpace(current.String()); trimmed != "" {
+			statements = append(statements, trimmed)
+		}
+		current.Reset()
+	}
+	runes := []rune(script)
+	for index := 0; index < len(runes); index++ {
+		char := runes[index]
+		switch {
+		case quote != 0:
+			// Inside double quotes and backticks a backslash escapes the next character, so
+			// `"foo \"bar\" baz"` is ONE quoted span: closing at the escaped quote desynced the
+			// tracking for the rest of the script and failed a valid script closed. Inside
+			// single quotes nothing is special, a backslash included.
+			if char == '\\' && quote != '\'' && index+1 < len(runes) {
+				current.WriteRune(char)
+				index++
+				current.WriteRune(runes[index])
+				continue
+			}
+			if char == quote {
+				quote = 0
+			}
+			current.WriteRune(char)
+		case char == '\'' || char == '"' || char == '`':
+			quote = char
+			current.WriteRune(char)
+			inWord = true
+		case char == '\\':
+			// The backslash and what it escapes are both word content, whitespace included.
+			current.WriteRune(char)
+			if index+1 < len(runes) {
+				index++
+				current.WriteRune(runes[index])
+			}
+			inWord = true
+		case char == '#' && !inWord:
+			// A shell comment opens only at the START OF A WORD. `echo release#1; jest` has a
+			// literal hash inside a word, and treating it as a comment swallowed a real command.
+			for index < len(runes) && runes[index] != '\n' {
+				index++
+			}
+			flush()
+		case char == '&' || char == '|' || char == ';' || char == '\n':
+			flush()
+			inWord = false
+		default:
+			current.WriteRune(char)
+			inWord = char != ' ' && char != '\t'
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	flush()
+	return statements, true
+}
+
+// searchVerifyScriptInvokesRunner reports whether `script` actually INVOKES `runner`, rather
+// than merely mentioning it somewhere.
+//
+// The predicate was strings.Contains, and a substring is not an invocation. Three scripts that
+// run no jest at all were each reported as jest:
+//
+//	"playwright test --reporter=jest-junit"   a Playwright suite naming a jest REPORTER
+//	"node scripts/jest-shim.js"               a filename
+//	"echo skipping jest for now && exit 0"    a script saying it is not running jest
+//
+// This matters more than a mis-detection usually would. The derived command is printed to the
+// agent as VERIFY, with "run it ONCE after editing; if it fails, fix the code" -- so a wrong
+// runner produces either a spurious failure the agent then "fixes" working code to satisfy, or
+// a spurious pass. It also beat better evidence: scripts.test is consulted BEFORE the declared
+// dependencies, so a substring in a string overrode an explicit devDependency.
+//
+// A runner counts when it is the HEAD of a statement, after environment assignments and the
+// usual wrappers are stepped over. Anything else -- a flag value, a path, prose -- does not.
+func searchVerifyScriptInvokesRunner(script, runner string) bool {
+	statements, parsed := searchVerifyShellStatements(script)
+	if !parsed {
+		return false // a form we do not model: fail closed rather than guess
+	}
+	for _, statement := range statements {
+		fields := strings.Fields(statement)
+		index := 0
+		// Assignments and wrappers INTERLEAVE and must be consumed in one loop, not in two
+		// passes: `cross-env NODE_ENV=test jest` puts a wrapper before the assignment, and a
+		// fixed order missed it. A wrapper delegates to the real command; `npm`/`yarn` may be
+		// followed by a subcommand, which is stepped over too. A bare `npm test` then names no
+		// runner, which is right -- it names a script, and resolving that is not a guess to
+		// make here.
+		for index < len(fields) {
+			field := fields[index]
+			if strings.Contains(field, "=") && !strings.HasPrefix(field, "-") {
+				index++
+				continue
+			}
+			switch field {
+			case "npm", "yarn", "pnpm", "bun":
+				// A package MANAGER. Only these take `run`/`exec` and the quiet flags: after
+				// `env`, a bare `run` is just a command named run, and consuming it there
+				// accepted `env run jest` as an invocation of jest.
+				index++
+				if index < len(fields) && (fields[index] == "run" || fields[index] == "exec") {
+					index++
+				}
+				for index < len(fields) && (fields[index] == "-s" || fields[index] == "--silent") {
+					index++
+				}
+				continue
+			case "npx":
+				// npx has options of its own -- moving it in with the environment wrappers
+				// newly rejected `npx --silent jest`, which had worked. Its flags are consumed
+				// here and nowhere else; `env --silent` is not the same thing and stays
+				// unmodelled.
+				index++
+				for index < len(fields) && (fields[index] == "--silent" || fields[index] == "-s" ||
+					fields[index] == "-y" || fields[index] == "--yes" ||
+					fields[index] == "-q" || fields[index] == "--quiet" ||
+					fields[index] == "--no-install") {
+					index++
+				}
+				continue
+			case "cross-env", "dotenv", "env":
+				// An environment wrapper: it prefixes a command and takes no options we model.
+				index++
+				continue
+			}
+			break
+		}
+		if index < len(fields) && fields[index] == runner {
+			return true
+		}
+	}
+	return false
+}
+
 func searchVerifyNodeRunnerFromScript(script string) (string, bool) {
 	for _, candidate := range searchVerifyNodeRunners {
-		if strings.Contains(script, candidate.name) {
+		if searchVerifyScriptInvokesRunner(script, candidate.name) {
 			return candidate.command, true
 		}
 	}

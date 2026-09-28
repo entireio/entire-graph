@@ -2,7 +2,7 @@
 
 Your FIRST action on any task that requires finding code MUST be ONE Graph query:
 
-    entire graph query --repo . --profile full --query "<task>"
+    entire graph query --repo . --profile full --format agent --query "<task>"
 
 This holds for small edits, follow-up work, and tasks that already name the file,
 and it holds when a Brain brief has already reported locations: a brief reports

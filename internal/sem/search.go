@@ -1915,15 +1915,24 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// Containment is resolved before promotion, not after, so the slots a duplicate was occupying
 	// are handed back to the expansion and spent on regions the payload does not already show.
 	results = dropContainedProseResults(results)
+	reserved := stats.SignatureTypeBytes
+	if len(typeCard) > 0 {
+		reserved += serializedSearchResultBytes(typeCard)
+	}
 	if !options.SingleResolution {
 		// The reference blocks are funded from the same ceiling the response is validated against,
 		// and they were priced before this pass runs, so promotion may only spend what they left.
-		reserved := stats.SignatureTypeBytes
-		if len(typeCard) > 0 {
-			reserved += serializedSearchResultBytes(typeCard)
-		}
 		results = expandProseResolution(results, options.TopK, options.MaxContextBytes, reserved)
 	}
+	// Certify already-whole bodies only after all source/identity/merge decisions.
+	// The original head's identities retain eligibility across later renumbering;
+	// a newly promoted locator must not gain source merely from this metadata.
+	var certified int
+	results, certified = certifyAlreadyCompleteSearchResults(
+		results, ranked[:minInt(bodyHeadRanks, len(ranked))], symbolsByID, read,
+		options.MaxContextBytes, reserved,
+	)
+	stats.CompleteSymbols += certified
 	stats.CandidatesSelected = len(results)
 	stats.ProsePassages, stats.ProsePassageBytes = searchPassageStats(results)
 	resultBytes = serializedSearchResultBytes(results)
