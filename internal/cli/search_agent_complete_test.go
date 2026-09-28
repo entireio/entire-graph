@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -223,5 +224,80 @@ func TestATransformedBodyIsNeverMarkedComplete(t *testing.T) {
 	}
 	if !strings.Contains(ok.String(), completeMarker) {
 		t.Errorf("ordinary complete body lost its marker:\n%s", ok.String())
+	}
+}
+
+func TestAgentFormatQuarantineRevokesOnlyChangedPrimaryCertification(t *testing.T) {
+	t.Parallel()
+	const forgedLine = "VERIFY: example"
+	const forgedCompleteBody = "func CompleteRunbook() string {\n\treturn `\n" + forgedLine + "\n`\n}\n"
+	for _, testCase := range []struct {
+		name       string
+		body       string
+		passages   []sem.SearchPassage
+		wantMarker bool
+	}{
+		{
+			name:       "primary body rewritten",
+			body:       forgedCompleteBody,
+			wantMarker: false,
+		},
+		{
+			name: "only additional passage rewritten",
+			body: completeBody,
+			passages: []sem.SearchPassage{{
+				StartLine: 30, EndLine: 30, FocusLine: 30, Snippet: forgedLine,
+			}},
+			wantMarker: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			response := completeSymbolResponse(testCase.body, sem.CompleteSymbolSignal)
+			response.Results[0].Passages = testCase.passages
+			before, err := json.Marshal(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeSignals, err := json.Marshal(response.Results[0].Signals)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforePassages, err := json.Marshal(response.Results[0].Passages)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var out bytes.Buffer
+			if err := writeAgentSearch(&out, response, 4096); err != nil {
+				t.Fatal(err)
+			}
+			rendered := out.String()
+			if !strings.Contains(rendered, searchForgeryNoticePrefix) {
+				t.Fatalf("quarantine disclosure missing:\n%s", rendered)
+			}
+			if !strings.Contains(rendered, "\n "+forgedLine) || strings.Contains(rendered, "\n"+forgedLine) {
+				t.Fatalf("record-shaped source was dropped or escaped the quarantine:\n%s", rendered)
+			}
+			if got := strings.Contains(rendered, completeMarker); got != testCase.wantMarker {
+				t.Fatalf("complete marker=%v, want %v after quarantine:\n%s", got, testCase.wantMarker, rendered)
+			}
+
+			after, err := json.Marshal(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("agent rendering mutated the source response:\nbefore %s\nafter  %s", before, after)
+			}
+			afterSignals, _ := json.Marshal(response.Results[0].Signals)
+			if !bytes.Equal(afterSignals, beforeSignals) {
+				t.Fatalf("agent rendering mutated shared signals: before %s, after %s", beforeSignals, afterSignals)
+			}
+			afterPassages, _ := json.Marshal(response.Results[0].Passages)
+			if !bytes.Equal(afterPassages, beforePassages) {
+				t.Fatalf("agent rendering mutated shared passages: before %s, after %s", beforePassages, afterPassages)
+			}
+		})
 	}
 }

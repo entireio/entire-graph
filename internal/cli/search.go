@@ -2365,9 +2365,11 @@ func agentSearchScoreTag(result sem.SearchResult) string {
 func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 	// Every location header this block and its helpers emit is one line. See
 	// searchResultOnOneLine.
+	originalSnippet := result.Snippet
 	result = searchResultOnOneLine(result)
+	primaryBodyChanged := result.Snippet != originalSnippet
 	if len(result.Passages) == 0 {
-		return agentSearchPrimaryBlock(result, budget)
+		return agentSearchPrimaryBlock(result, budget, primaryBodyChanged)
 	}
 	for count := len(result.Passages); count >= 0; count-- {
 		passages := renderAgentSearchPassages(result.FilePath, result.Passages[:count])
@@ -2378,7 +2380,7 @@ func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 				continue
 			}
 		}
-		primary := agentSearchPrimaryBlock(result, primaryBudget)
+		primary := agentSearchPrimaryBlock(result, primaryBudget, primaryBodyChanged)
 		if len(primary) == 0 {
 			continue
 		}
@@ -2408,7 +2410,7 @@ func renderAgentSearchPassages(path string, passages []sem.SearchPassage) []byte
 	return output.Bytes()
 }
 
-func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
+func agentSearchPrimaryBlock(result sem.SearchResult, budget int, primaryBodyChanged bool) []byte {
 	name := searchResultDisplayName(result)
 	tag := agentSearchSectionTag(result)
 	scored := agentSearchScoreTag(result)
@@ -2438,7 +2440,7 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 
 	// Prefer the unchanged whole body with its completeness marker. If that cannot fit,
 	// retain source through the ordinary balanced-span loop below, without certification.
-	if searchResultNeedsNoFollowUpRead(result) && !renderedBodyIsTransformed(result.Snippet) {
+	if !primaryBodyChanged && searchResultNeedsNoFollowUpRead(result) && !renderedBodyIsTransformed(result.Snippet) {
 		text := strings.Join(lines, "\n")
 		startLine, endLine := snippetStart, snippetStart+len(lines)-1
 		for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag, scored, completeMarker) {
