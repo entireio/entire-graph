@@ -571,12 +571,10 @@ def _entrypoint_residue_guard(check):
     completion sentinel.
     """
     import shutil as _sh, subprocess as _sp, sys as _sys, tempfile as _tf
-    holder = _tf.mkdtemp(prefix="rq-guard-")
-    stuck = os.path.join(holder, "stuck")
-    os.makedirs(stuck, exist_ok=True)
-    os.chmod(holder, 0o500)                      # the child cannot unlink `stuck`
+    holder = _tf.mkdtemp(prefix=_FORCED_HOLDER_PREFIX)   # empty; the child creates inside it
     try:
-        env = dict(os.environ, RQ_FORCE_RESIDUE="1", RQ_FORCE_RESIDUE_PATH=stuck)
+        env = dict(os.environ, RQ_FORCE_RESIDUE="1", RQ_FORCE_RESIDUE_HOLDER=holder)
+        env.pop("RQ_FORCE_RESIDUE_PATH", None)
         r = _sp.run([_sys.executable, os.path.abspath(__file__), "--test"],
                     capture_output=True, text=True, timeout=600, env=env)
         out = r.stdout + r.stderr
@@ -592,20 +590,106 @@ def _entrypoint_residue_guard(check):
     check("forced residue: the guard leaves no fixture behind", os.path.exists(holder), False)
 
 
-def _force_residue_for_testing():
-    """Adopt a residual path the PARENT created and owns, when the environment names one.
+_FORCED_HOLDER_PREFIX = "rq-guard-"
 
-    The first version CREATED the fixture itself, at mode 0500, inside the child -- and the
-    child exits non-zero by design and never cleans up, while the parent did not know the path
-    to clean. A guard against leaking fixtures that leaked its own fixture, every time it ran.
 
-    Ownership now sits entirely with the parent: it creates the path, passes it by name, and
-    removes it in a finally. The child only ADOPTS it into its tracker, so the refusal behaviour
-    under test is unchanged and nothing here scans or deletes anything it was not handed.
+def _forced_holder_ok(holder):
+    """Whether `holder` is a fresh, empty, parent-issued fixture holder this process may use.
+
+    It must be a real directory (not a symlink), owned by this user, named with the guard's
+    prefix, and empty. Anything else is refused, so an inherited environment variable cannot
+    point this hook at a path someone else owns.
     """
-    path = os.environ.get("RQ_FORCE_RESIDUE_PATH")
-    if path and os.path.isdir(path):
-        _TEMPDIRS.append(path)
+    import stat as _st
+    if not holder:
+        return False
+    try:
+        info = os.lstat(holder)
+    except OSError:
+        return False
+    return (_st.S_ISDIR(info.st_mode) and not _st.S_ISLNK(info.st_mode)
+            and info.st_uid == os.getuid()
+            and os.path.basename(holder.rstrip(os.sep)).startswith(_FORCED_HOLDER_PREFIX)
+            and not os.listdir(holder))
+
+
+def _force_residue_for_testing():
+    """In the forced child only, leave one path it CREATED behind, and return that path.
+
+    The first version created its fixture where the parent could not find it, so it leaked
+    every run. The second ADOPTED any existing directory named by RQ_FORCE_RESIDUE_PATH into
+    the tracker -- without even requiring RQ_FORCE_RESIDUE=1 -- so `--test` under an inherited
+    environment would recursively delete a directory it had never made.
+
+    Now nothing is adopted. The parent hands over an EMPTY holder it owns and will remove; the
+    child checks it (see _forced_holder_ok), creates a fresh directory inside it, tracks only
+    that, and seals the holder so cleanup cannot remove it. The only path this process can ever
+    delete is one it just created.
+    """
+    if os.environ.get("RQ_FORCE_RESIDUE") != "1":
+        return None
+    holder = os.environ.get("RQ_FORCE_RESIDUE_HOLDER")
+    if not _forced_holder_ok(holder):
+        print("  ..    forced residue: holder refused (not a fresh parent-issued holder)")
+        return None
+    import tempfile as _tf
+    stuck = _tf.mkdtemp(prefix="stuck-", dir=holder)
+    _TEMPDIRS.append(stuck)
+    os.chmod(holder, 0o500)                      # cleanup cannot unlink `stuck`
+    return stuck
+
+
+def _forced_hook_decoy_controls(check):
+    """Paths the hook must refuse and leave untouched, each a disposable dir made here."""
+    import shutil as _sh, tempfile as _tf
+    base = _tf.mkdtemp(prefix="rq-decoys-")
+    try:
+        valid = _tf.mkdtemp(prefix=_FORCED_HOLDER_PREFIX, dir=base)
+        wrong_name = _tf.mkdtemp(prefix="unrelated-", dir=base)
+        full = _tf.mkdtemp(prefix=_FORCED_HOLDER_PREFIX, dir=base)
+        with open(os.path.join(full, "keep.txt"), "w") as fh:
+            fh.write("decoy")
+        link = os.path.join(base, _FORCED_HOLDER_PREFIX + "link")
+        os.symlink(valid, link)
+        check("decoy: a fresh parent-issued holder is accepted", _forced_holder_ok(valid), True)
+        for label, path in (("a wrong-name dir", wrong_name), ("a non-empty holder", full),
+                            ("a symlink to a valid holder", link),
+                            ("a missing path", os.path.join(base, "absent"))):
+            check(f"decoy: {label} is refused", _forced_holder_ok(path), False)
+        snapshot = {p: (os.lstat(p).st_mode, sorted(os.listdir(p)) if os.path.isdir(p) else None)
+                    for p in (valid, wrong_name, full, link)}
+        tracked = list(_TEMPDIRS)
+        saved = {k: os.environ.get(k) for k in ("RQ_FORCE_RESIDUE", "RQ_FORCE_RESIDUE_HOLDER",
+                                                "RQ_FORCE_RESIDUE_PATH")}
+        try:
+            for force, holder in ((None, valid), ("1", wrong_name), ("1", full), ("1", link)):
+                os.environ.pop("RQ_FORCE_RESIDUE", None)
+                if force:
+                    os.environ["RQ_FORCE_RESIDUE"] = force
+                os.environ["RQ_FORCE_RESIDUE_HOLDER"] = holder
+                os.environ["RQ_FORCE_RESIDUE_PATH"] = holder   # the old adoption variable, ignored
+                check(f"decoy: hook with FORCE={force} on {os.path.basename(holder)} creates nothing",
+                      _force_residue_for_testing(), None)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        check("decoy: nothing was added to the tracker", _TEMPDIRS == tracked, True)
+        after = {p: (os.lstat(p).st_mode, sorted(os.listdir(p)) if os.path.isdir(p) else None)
+                 for p in (valid, wrong_name, full, link)}
+        check("decoy: every decoy is untouched (mode and contents)", after == snapshot, True)
+    finally:
+        # A hook that misbehaves under test may have sealed a decoy; unseal before removing,
+        # without following symlinks, so the controls cannot leak what they made.
+        for root, dirs, _files in os.walk(base):
+            for name in dirs:
+                path = os.path.join(root, name)
+                if not os.path.islink(path):
+                    os.chmod(path, 0o700)
+        _sh.rmtree(base, ignore_errors=True)
+    check("decoy: controls leave no fixture behind", os.path.exists(base), False)
 
 
 def _finish_tempdirs():
@@ -812,6 +896,7 @@ def _tests_body():
     if os.environ.get("RQ_FORCE_RESIDUE") == "1":
         print("  ..    entrypoint guard skipped in the forced child (it is the subject)")
     else:
+        _forced_hook_decoy_controls(check)
         _entrypoint_residue_guard(check)
 
 
