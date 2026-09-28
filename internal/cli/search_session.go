@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
@@ -79,6 +80,8 @@ type searchSessionState struct {
 	// wrong repository.
 	Repo string `json:"repo,omitempty"`
 	Tree string `json:"tree,omitempty"`
+	// Producer is the binary that rendered the payload; see searchSessionProducer.
+	Producer string `json:"producer,omitempty"`
 }
 
 // searchSessionScope identifies the repository view and wire format a payload describes.
@@ -108,6 +111,10 @@ type searchSessionScope struct {
 	Tree              string
 	PolicyFingerprint string
 	Format            string
+	// Producer identifies the binary answering now. The payload is rendered output, so its ranking,
+	// snippets and budget are the RECORDING binary's; replaying it after an upgrade serves the old
+	// ranking under a header saying the question was already answered.
+	Producer string
 }
 
 // matches reports whether a recorded scope may answer for the live one.
@@ -123,7 +130,10 @@ func (recorded searchSessionState) matches(live searchSessionScope) bool {
 		recorded.PolicyFingerprint != live.PolicyFingerprint ||
 		recorded.Format == "" ||
 		live.Format == "" ||
-		recorded.Format != live.Format {
+		recorded.Format != live.Format ||
+		recorded.Producer == "" ||
+		live.Producer == "" ||
+		recorded.Producer != live.Producer {
 		return false
 	}
 	// The tree hash alone is not a repository identity: sibling --repo subdirectories share the
@@ -270,6 +280,7 @@ func (s *searchSession) record(
 	state.ReplaySchema = searchSessionReplaySchema
 	state.PolicyFingerprint = live.PolicyFingerprint
 	state.Repo, state.Tree, state.Format = live.Repo, live.Tree, live.Format
+	state.Producer = live.Producer
 	if state.Payload == "" && replayable && len(payload) <= maxSearchSessionStateBytes {
 		state.Query = query
 		state.Payload = string(payload)
@@ -320,4 +331,33 @@ func (s *searchSession) record(
 // verb, no invitation to rephrase.
 func searchEchoHeader(asked, answered string) string {
 	return fmt.Sprintf("(one search per task: %q was not run — below is your first search %q, verbatim)\n", asked, answered)
+}
+
+// searchSessionProducer identifies the running binary for replay: its version plus the VCS revision
+// Go stamped into it, and whether that tree was modified. A version alone is not enough — every
+// development build reports the same one whatever source it was built from. Known limit: two builds
+// from DIFFERENTLY modified trees at the same revision share an identity; that is a development-only
+// case, and refusing every modified build instead would disable replay for all local builds (and make
+// its behaviour depend on whether the checkout is dirty). A binary with neither a version nor a
+// revision gets no identity, which matches nothing and answers every question for real.
+func searchSessionProducer(version string) string {
+	revision, modified := "", false
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				revision = setting.Value
+			case "vcs.modified":
+				modified = setting.Value == "true"
+			}
+		}
+	}
+	if version == "" && revision == "" {
+		return ""
+	}
+	identity := version + "+" + revision
+	if modified {
+		identity += "+modified"
+	}
+	return identity
 }

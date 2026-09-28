@@ -645,7 +645,7 @@ func TestSearchSessionRecordSaturatesSearchCount(t *testing.T) {
 	t.Parallel()
 	sessionPath := filepath.Join(t.TempDir(), "session.json")
 	session := &searchSession{path: sessionPath, limit: 1}
-	scope := searchSessionScope{Repo: t.TempDir(), PolicyFingerprint: "policy", Format: "text"}
+	scope := searchSessionScope{Repo: t.TempDir(), PolicyFingerprint: "policy", Format: "text", Producer: "test-producer"}
 	state := searchSessionState{
 		Searches:          math.MaxInt,
 		ReplaySchema:      searchSessionReplaySchema,
@@ -653,6 +653,7 @@ func TestSearchSessionRecordSaturatesSearchCount(t *testing.T) {
 		PayloadPaths:      []string{},
 		Repo:              scope.Repo,
 		Format:            scope.Format,
+		Producer:          scope.Producer,
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -961,5 +962,56 @@ func TestSearchRejectsNonNumericMaxSearches(t *testing.T) {
 	}, []string{"search", "--repo", repo, "--query", "alpha_widget", "--worktree"})
 	if err == nil || !strings.Contains(err.Error(), envMaxSearches) {
 		t.Fatalf("err = %v, want a complaint about %s", err, envMaxSearches)
+	}
+}
+
+// The payload is the recording binary's rendered output — its ranking, snippets and budget. A task
+// whose session spans a binary upgrade must not be served the old binary's answer under a header
+// saying the question was already answered. The same producer still replays (control).
+func TestSearchEchoRefusesReplayAcrossProducerVersions(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Tests")
+	git(t, repo, "config", "user.email", "tests@entire.local")
+	write(t, repo, "item.py", "def producer_bound_item():\n    return True\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "producer fixture")
+	run := func(session, version string) string {
+		t.Helper()
+		var out bytes.Buffer
+		err := Run(t.Context(), Options{
+			Version: version,
+			Env:     EntireEnv{RepoRoot: repo, SearchSession: session},
+			Stdout:  &out,
+		}, []string{"search", "--repo", repo, "--query", "producer_bound_item", "--format", "text",
+			"--profile", "syntax-only", "--top-k", "1", "--head"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+
+	control := filepath.Join(t.TempDir(), "same.json")
+	run(control, "0.1.0")
+	if replay := run(control, "0.1.0"); !strings.Contains(replay, "not run") {
+		t.Fatalf("control: the same producer should replay, got a live search:\n%s", replay)
+	}
+
+	upgraded := filepath.Join(t.TempDir(), "upgraded.json")
+	run(upgraded, "0.1.0")
+	if second := run(upgraded, "0.2.0"); strings.Contains(second, "not run") || !strings.Contains(second, "item.py") {
+		t.Fatalf("a different producer replayed the old binary's payload:\n%s", second)
+	}
+}
+
+func TestSearchSessionProducerRefusesAnUnidentifiableBinary(t *testing.T) {
+	t.Parallel()
+	// Under `go test` the binary carries no VCS stamp, so the version alone identifies it.
+	if got := searchSessionProducer("0.1.0"); got == "" || !strings.HasPrefix(got, "0.1.0+") {
+		t.Fatalf("producer for a versioned test binary = %q", got)
+	}
+	if got := searchSessionProducer(""); got != "" {
+		t.Fatalf("a binary with neither version nor revision must have no identity, got %q", got)
 	}
 }
