@@ -2444,6 +2444,10 @@ func preselectSearchFiles(
 	if exactFullPreindex && !options.Worktree && !options.Deep && grepSafe {
 		var matches []string
 		var grepErr error
+		// Only the plain fixed-string route below returns EVERY file containing a query term; the
+		// alias route selects by validated alias hits, a different term set, so it never claims
+		// exact corpus statistics.
+		matchesEveryTermFile := false
 		if len(q.inferredAbbreviations) > 0 {
 			validationRead := source.read
 			if limit := resolveMaxParseBytes(options.MaxParseBytes); limit > 0 && limit < defaultMaxParseBytes {
@@ -2485,7 +2489,13 @@ func preselectSearchFiles(
 				})
 			}
 		} else {
-			matches, grepErr = gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
+			// Without -I: `git grep -I` omits files Git classifies as binary by an early NUL OR by
+			// a -diff/binary attribute or diff.*.binary config, even when they are NUL-free text the
+			// content pass reads. Including them makes this set a genuine superset of every file
+			// containing a term; a NUL-containing file among them is still inspected and skipped
+			// by the scorer, exactly as on the cold path.
+			matches, grepErr = gitutil.GrepTreePathsIncludingBinary(ctx, source.absRepo, source.commit, grepPatterns)
+			matchesEveryTermFile = true
 		}
 		if grepErr == nil {
 			// This branch deliberately keeps every matched file rather than
@@ -2501,9 +2511,11 @@ func preselectSearchFiles(
 			// Git answered once, so it can answer again for a single needle.
 			selection.gitGrepUsable = true
 			selection.gitGrepTreeish = source.commit
-			// Git returned EVERY file containing a query term (case-insensitive fixed strings, a
-			// superset of the matcher), and this branch keeps every one of them.
-			selection.corpusFiles, selection.corpusFromSelected = len(source.paths), true
+			if matchesEveryTermFile {
+				// Git returned EVERY file containing a query term (case-insensitive fixed strings
+				// without -I, a superset of the matcher), and this branch keeps every one of them.
+				selection.corpusFiles, selection.corpusFromSelected = len(source.paths), true
+			}
 			return selection, nil
 		}
 	}
