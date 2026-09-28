@@ -350,41 +350,35 @@ func searchEchoHeader(asked, answered string) string {
 // package can install an identifiable default (the test binary itself carries no VCS stamp).
 var searchSessionBuildInfo = debug.ReadBuildInfo
 
-// searchSessionProducerFrom identifies a binary for replay from its OWN build metadata only.
+// searchSessionProducerFrom identifies a binary for replay from its OWN build metadata only: a VCS
+// revision stamped from an UNMODIFIED tree, "rev:<revision>". Anything else has no identity, which
+// matches nothing, so the binary answers every question for real.
 //
-// The CLI's version string is not used: Run turns an empty version into "dev", so two unstamped
-// development binaries built from different source both reported "dev" and replayed each other's
-// output. Identity is, in order:
-//   - a VCS revision from an UNMODIFIED tree: "rev:<revision>";
-//   - otherwise a real module version (go install module@version): "mod:<version>";
-//   - otherwise none.
-//
-// A binary built from a modified tree gets none: two different modified builds of one revision are
-// indistinguishable, so such a binary answers every question for real rather than risk replaying
-// another build's output. No identity matches nothing.
+// Deliberately narrow. The CLI's version string is not used: Run turns an empty version into "dev",
+// so unstamped development binaries all reported "dev" and replayed each other's output. A module
+// version is not used either: two modules (or forks) can share a tag, and a binary built through a
+// local `replace` keeps the same module path and version while its source — and its bytes — change.
+// A modified-tree stamp is refused before anything else: two different modified builds of one
+// revision are indistinguishable. Binaries built from a git checkout (as releases are) carry the
+// stamp; `go install module@version` binaries do not and simply never replay.
 func searchSessionProducerFrom(info *debug.BuildInfo, ok bool) string {
 	if !ok || info == nil {
 		return ""
 	}
-	revision, modified := "", false
+	revision, modified, modifiedStamped := "", false, false
 	for _, setting := range info.Settings {
 		switch setting.Key {
 		case "vcs.revision":
 			revision = setting.Value
 		case "vcs.modified":
+			modifiedStamped = true
 			modified = setting.Value == "true"
 		}
 	}
-	if revision != "" {
-		if modified {
-			return ""
-		}
-		return "rev:" + revision
+	if modified || !modifiedStamped || revision == "" {
+		return ""
 	}
-	if version := info.Main.Version; version != "" && version != "(devel)" {
-		return "mod:" + version
-	}
-	return ""
+	return "rev:" + revision
 }
 
 // sessionProducer is the replay identity of the binary serving opts.
