@@ -20,6 +20,10 @@ func TestAMentionedRunnerIsNotAnInvokedRunner(t *testing.T) {
 		"echo ok # disabled; jest",
 		"echo 'disabled; jest; still disabled'",
 		"echo \"off; jest\"",
+		// An ESCAPED quote does not close a double-quoted span, so these separators are still
+		// inside it; closing at `\"` exposed `; jest` as a statement.
+		`echo "say \"hi\"; jest"`,
+		"echo `printf \\` ; jest`",
 		// `run` only means something after a package manager; a bare one invokes nothing named.
 		"run jest",
 		"-s jest",
@@ -70,6 +74,12 @@ func TestAnInvokedRunnerIsStillFound(t *testing.T) {
 		"npx --silent jest":     "npx jest",
 		"npx -y jest":           "npx jest",
 		"npx --no-install jest": "npx jest",
+		// Peer review: an escaped quote inside a double-quoted argument closed the span early,
+		// desynced the tracking and failed this valid script closed as "unterminated".
+		`jest -t "foo \"bar\" baz"`: "npx jest",
+		`echo "a \\" && jest`:       "npx jest",
+		// Inside SINGLE quotes a backslash is literal, so this quote closes and jest runs.
+		`echo 'a\' && jest`: "npx jest",
 	} {
 		got, ok := searchVerifyNodeRunnerFromScript(script)
 		if !ok || got != want {
