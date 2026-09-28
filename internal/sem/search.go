@@ -3983,10 +3983,11 @@ func searchCorpusIDFStatistics(sampleDF map[string]int, sampleFiles int, corpusD
 	if corpusFiles <= 0 {
 		return sampleDF, maxInt(1, sampleFiles)
 	}
-	df := make(map[string]int, len(sampleDF))
-	for term := range sampleDF {
-		df[term] = corpusDF[term]
-	}
+	// A copy of the corpus counts, keyed by query term (both producers count only q.terms). Sample
+	// terms absent here are terms no inspected file's content contains: DF 0, the map zero value.
+	// Copying only the SAMPLE's terms instead would drop a term the corpus has but the selection
+	// lacks — the rare term this function exists to count.
+	df := make(map[string]int, len(corpusDF))
 	for term, count := range corpusDF {
 		df[term] = count
 	}
