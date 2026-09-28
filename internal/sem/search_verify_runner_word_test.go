@@ -137,7 +137,7 @@ func TestPytestIsDetectedFromASectionNotAMention(t *testing.T) {
 		{"a commented pytest 9 heading", "pyproject.toml", "# [tool.pytest]\n", false},
 	} {
 		evidence := searchVerifyTestEvidenceWithout(map[string]string{"/r/" + tc.file: tc.content})
-		got := deriveSearchVerifySuitePytest("/r", &evidence)
+		got := deriveSearchVerifySuitePytest("/r", searchVerifySubject{sourcePath: "/r/test_widget.py"}, &evidence)
 		if (got != nil) != tc.want {
 			t.Errorf("%s (%s): got %v, want detected=%v", tc.label, tc.file, got, tc.want)
 		}
