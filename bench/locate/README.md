@@ -1,0 +1,186 @@
+# Locate-cost benchmarks
+
+Four deterministic, offline, zero-cost benchmarks for the question the tool exists to answer:
+**what does it cost to find code, and how does the graph compare with grep at it?**
+
+No comparative answer is currently established — see the status section below.
+
+Nothing here calls a model or a paid API.
+
+**Three of the four run the real binary against a frozen repository.** `replay_qualify.py` does
+not: it is a static classifier over recorded transcripts, it executes no binary and freezes no
+repository, and it prints its own parser hash and corpus diagnostics rather than a fixture
+revision or a binary hash. Grouping it with the other three overstated it, and that grouping is
+the reason a transcript-derived rate was once quoted as if a frozen fixture had produced it.
+
+| script | question |
+|---|---|
+| `head_to_head.py` | cost to locate a known target: graph vs grep vs grep-with-the-name |
+| `doccomment_bench.py` | does an author's own prose find the symbol it describes? |
+| `budget_falsifier.py` | which target does a smaller `--max-context-bytes` *lose*? |
+| `replay_qualify.py` | of recorded calls, which could even be replayed, and which cannot be judged? (static; runs nothing) |
+
+## Why these exist, and what they are not
+
+Every attempt in this project to derive a token-savings number from agent transcripts has
+failed, three times in one night: replay tiers over-counted 16x, a rank analysis collapsed
+from n=55 to n=8 under a stricter parser, and an aggregate hit@5 hid a target lost at rank 9.
+Fixture-executed measurement caught all three. **It has since failed repeatedly on its own
+account** — a baseline searching for strings no file contains, a declaration metric that matched
+a regex instead of the source, and three fixtures that went vacuous without the suite going red.
+Running the thing beats reasoning about it; it is not a guarantee of anything.
+
+So the rule these encode: **transcripts are admissible for diagnosis, never for a rate.**
+Rates come from executing the binary against a frozen tree.
+
+They measure **cost to locate**, which is a property of the tools and can be executed. They do
+**not** measure session-token savings, which is counterfactual — you cannot observe what an
+agent would have read instead — and needs a randomized A/B.
+
+## Method notes that are load-bearing
+
+- **Labels are not ours.** `doccomment_bench` and `head_to_head` build cases from each symbol's
+  own doc comment, with the symbol name and its case-split words stripped, so the query is
+  prose and cannot contain the answer. Otherwise it degenerates into an identifier match — the
+  shape the tool is already good at and not the shape agents send.
+- **Quote medians, not means.** The grep arms are heavy-tailed on common identifiers: one
+  sampled symbol named `resolve` matched 4,492 lines for 1.37 MB and set an arm's mean
+  single-handed (70,445 mean against a 650 median). Both are printed; the median is the number.
+- **Freeze the fixture.** Re-running after committing files into the repository under test
+  moved hit@1 by 33% with no code change. Use a detached worktree at a pinned revision, and
+  never the repository being developed. Source state is checked before and after; a change
+  voids the run.
+- **A failed arm is dropped, never scored as a miss.** `rg` exit 1 means no matches and is a
+  real result; anything above it is a broken run.
+- **Aggregates hide losses.** Two budgets can post an identical hit@5 while one has dropped a
+  target at rank 9. `budget_falsifier.py` prints the per-case set difference for that reason.
+
+## Usage
+
+```sh
+python3 bench/locate/replay_qualify.py --test          # self-test, 48 fixtures
+git worktree add --detach /tmp/fx <rev>                # frozen fixture
+python3 bench/locate/head_to_head.py <binary> /tmp/fx 20 4096 /tmp/receipts
+python3 bench/locate/budget_falsifier.py <binary> /tmp/fx 20 4096 24576
+```
+
+The three fixture benchmarks print the fixture revision, its dirty state, the binary's sha256
+and their own script sha256, so a result ties back to exactly what produced it.
+
+**Receipts and the run verdict.** The output directory path **must not exist** — a run creates
+it, and refuses any directory that is already there, *including an empty one*, before touching
+anything. Emptiness is a property of the instant you looked: two runs starting together both
+find an empty directory, both proceed, and their receipts interleave under a single verdict.
+Only a directory a run creates is exclusively its own. With such a directory, `head_to_head.py` writes a receipt
+for **every attempt, before the admission gate** — argv, exit code, stderr, raw stdout and the
+bytes actually scored, per arm. Failed attempts are the ones most worth inspecting and used to
+leave nothing behind at all. Those receipts mean nothing on their own: `run-manifest.json`
+carries the verdict, written atomically at the very end as `VALID`, or as `VOID` if the fixture
+moved under the run. **A run that dies partway leaves receipts and no manifest, and that reads
+as invalid** — which is the point. Do not quote a directory whose manifest does not say VALID.
+`replay_qualify.py` prints its parser sha256 and corpus diagnostics only — it has no fixture and
+no binary to name.
+
+**What the replay classifier will never tell you.** It reports `source-identity-candidate` when
+a recorded response carries a real `commit` and `tree`, and that is a candidate for exact
+replay, not a certification of one. Exact replay also needs the binary's identity, its build,
+the working directory, the full option set and the source's clean status. **This classifier
+does not establish those, so `full-execution` is unknown, not zero.**
+
+That is deliberately narrower than it first read here. "A transcript records none of them" is a
+claim about the medium, and it is false — a harness that captured the raw response alongside a
+receipt and build metadata would qualify, and one exists. The limit is this parser and the
+records it has been shown. An earlier claim in this directory that exact replay was
+"unreachable by construction" died the same way, and the fix for it reintroduced the same shape
+of error one layer along.
+
+It also refuses to attribute output it cannot place. `entire graph query … >/dev/null; printf
+'1. a/b.go:1 F'` was scored as a clean graph render; the graph's bytes went to /dev/null and
+`printf` produced everything measured. Commands whose **stdout is redirected away**, plus piped, teed, multi-statement and
+`&&`-guarded ones, are reported as unattributable rather than credited. A stderr-only redirect
+is not one of them: `2>&1` and `2>>err.log` leave stdout reaching the record and stay
+attributable. Order is respected — `2>&1 >/dev/null` moves stderr and *then* discards stdout,
+so it is refused.
+
+## Status of what they have measured
+
+**No comparative number in this directory is currently valid. Do not quote one.**
+
+The figures that stood here — locator 64/100 vs 20/100, declaration 16/100 vs 20/100 — were
+produced against a doc-phrase baseline that peer review has since shown to be broken in three
+ways at once, each of which flattered the graph:
+
+- It was handed the **unstripped** doc comment, which normally contains the target's name,
+  while the graph was asked with that name removed. Different inputs to the two arms is the
+  precise asymmetry this benchmark exists to prevent, and I wrote it myself.
+- Its search string was **non-adjacent words joined by spaces**, drawn from a comment whose
+  physical lines had already been space-joined. Passed to `rg -F`, that is a fixed string
+  which occurs in no file. Its 20/100 was in part a measurement of a phrase that cannot match.
+- It **scored itself**, setting locator and declaration from a single condition, so the two
+  columns could not take different values.
+
+All three are fixed and each has a synthetic falsifier in `--test` that fails on the old code.
+
+## The equal-input rule
+
+Settled with the reviewer after the third of those defects, and now the rule this directory
+is built on:
+
+> Every evaluated arm receives **byte-identical canonical query text**, and may derive its
+> search **from those bytes alone** — never from the original doc comment, the target's name,
+> its span, or knowledge of a hit.
+
+**The oracle arm is the one exception, and it is therefore not an evaluated arm.** It greps the
+target's name, which nothing else is given. It is reported below a separator as a capability
+ceiling, with its own denominator, and it sits outside every comparison — including the gate
+that decides which cases are scored at all. It was once inside that gate, which meant a case
+where *only* the oracle failed was dropped from every arm: a non-comparable control deciding
+what the real comparison ran on.
+
+The canonical query is the doc comment with the target's name and its case-split parts blanked,
+**with the physical line breaks kept**. The breaks are there because a lexical arm has to know
+where contiguous source text ends, and they are given to *everyone* rather than to one arm as
+side knowledge. A first repair got this wrong in a subtler way than the original bug: it read
+the line structure straight off the source file, which is still a second channel the graph has
+no access to.
+
+Keeping the breaks was checked rather than assumed, but the check is **one query**: that query
+with and without them returned a byte-identical ranking, the same five symbols at the same
+scores. One example is one example. It refutes "line breaks obviously degrade the query"; it
+does not establish that they are neutral in general, and no measurement here rests on their
+being so.
+The corrected instrument has not been run at cohort scale, and it is the run, not the repair,
+that decides what is true. Rerun it yourself and read the number off your own output.
+
+## Claims these benchmarks have already destroyed
+
+Kept because the withdrawals are more useful than the survivors:
+
+- **"grep cost scales with repository size."** Refuted — median grep cost is not monotonic in
+  repo size across five fixtures. It tracks how common the symbol name is.
+- **"A lexical search structurally cannot bridge a description to an identifier."** Refuted —
+  the description is in the file, above the declaration. The doc-phrase arm was added because
+  of this. It was once reported as beating the graph on one fixture; that comparison used the
+  broken arm described above and is withdrawn along with everything else it produced.
+- **"Exact replay is unreachable by construction."** Refuted — the query JSON already carries
+  `commit` and `tree`. The identity was in the result, not the argv.
+- **"The doc-phrase arm's weakness is coverage, not precision."** Withdrawn. That read a
+  locator == declaration equality off the results table — an equality the arm's own `return`
+  statement forced. A property of my code, published as a property of lexical search.
+- **A 24× declaration gap**, then 10.7×, then 1.6×, then 0.80×, now withdrawn pending a rerun.
+  Every reduction came from a defect in these scripts rather than from new data: an OR-ed
+  metric, a weak baseline, body text credited to the wrong result, and finally a baseline
+  searching for strings that cannot occur.
+
+**A median is not a total.** Quote the median *and* the mean and total together, with the
+failure denominator beside them: they are different estimands and a median payload win is not a
+token saving. The median is the right headline only because grep's cost is heavy-tailed enough
+that one common symbol name sets the mean; that is a reason to show both, not a licence to show
+one.
+
+**"Transcripts are never admissible for a rate"** was too broad. The limitation belongs to *this*
+unqualified historical corpus and *this* parser — independently verified receipts can carry valid
+rate evidence, and the receipts this directory now writes are the shape that would.
+
+Every one of those was found by running something rather than reasoning about it. Treat a
+mechanism story from this directory as a hypothesis until a fixture kills it.
