@@ -54,22 +54,21 @@ func TestSearchCorpusIDFStatisticsKeepsTheSampleWithoutAWholeCorpusPass(t *testi
 // over the whole tree) and warm (Git tree grep over the committed tree) used to disagree once idf
 // came from the corpus on one backend and from the sample on the other.
 func TestSearchCorpusIDFIsTheSameOnEveryBackend(t *testing.T) {
-	// Not parallel: it sets the package-level idf observer to compare the STATISTICS each backend
-	// scored with, not just the resulting scores (which also carry avgdl and can hide a DF/N split).
+	// Compares the STATISTICS each backend scored with (via the per-search idf observer), not just
+	// the resulting scores, which also carry avgdl and can hide a DF/N split.
 	type seen struct {
 		df    map[string]int
 		n     int
 		exact bool
 	}
 	var observed []seen
-	searchIDFObserver = func(df map[string]int, n int, exact bool) {
+	observe := func(df map[string]int, n int, exact bool) {
 		copied := make(map[string]int, len(df))
 		for term, count := range df {
 			copied[term] = count
 		}
 		observed = append(observed, seen{copied, n, exact})
 	}
-	t.Cleanup(func() { searchIDFObserver = nil })
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -82,6 +81,7 @@ func TestSearchCorpusIDFIsTheSameOnEveryBackend(t *testing.T) {
 	git(t, repo, "commit", "-m", "initial")
 	const query = "reconciles quorum ledger"
 	base := SearchOptions{Profile: ProfileFull, TopK: 5, MaxIndexedFiles: 2}
+	base.idfObserver = observe
 	cold := base
 	cold.DisableCache = true
 	coldResponse, err := SearchRepository(t.Context(), repo, "test-version", query, cold)
@@ -251,10 +251,9 @@ func TestSearchRepositoryIDFWiringOnSelectedPathsWithAnUnreadFile(t *testing.T) 
 		exact bool
 	}
 	var got []seen
-	searchIDFObserver = func(df map[string]int, n int, exact bool) { got = append(got, seen{df["needle"], n, exact}) }
-	t.Cleanup(func() { searchIDFObserver = nil })
 	response, err := SearchRepository(t.Context(), repo, "test-version", "needle", SearchOptions{
 		Worktree: true, Profile: ProfileFull, TopK: 5, MaxIndexedFiles: 10, DisableCache: true,
+		idfObserver: func(df map[string]int, n int, exact bool) { got = append(got, seen{df["needle"], n, exact}) },
 	})
 	if err != nil {
 		t.Fatal(err)

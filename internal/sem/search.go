@@ -96,6 +96,10 @@ type SearchOptions struct {
 	// mutation between a complete cache lookup and source preselection. It is
 	// deliberately unexported and nil in production.
 	afterPreindexLoad func()
+	// idfObserver is a deterministic test seam: it receives the idf statistics a search scored
+	// with, so a test can check the call-site wiring rather than only the helper. Per search, so
+	// concurrent tests cannot capture each other's calls. Unexported and nil in production.
+	idfObserver func(df map[string]int, files int, exact bool)
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -1517,8 +1521,8 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		corpusFiles:          selection.corpusFiles,
 		corpusFromSelected:   selection.corpusFromSelected,
 	})
-	if searchIDFObserver != nil {
-		searchIDFObserver(idfDF, idfFiles, idfExact)
+	if options.idfObserver != nil {
+		options.idfObserver(idfDF, idfFiles, idfExact)
 	}
 	scoreSearchCandidates(candidates, q, idfDF, idfFiles)
 	callerBoosts := searchGraphCallerBoosts(snapshot.Relations, symbolsByID)
@@ -3958,10 +3962,6 @@ func searchChooseIDFStatistics(in searchIDFInputs) (map[string]int, int, bool) {
 	df, files := searchCorpusIDFStatistics(in.sampleDF, in.selectedInspected, corpusDF, corpusFiles)
 	return df, files, corpusFiles > 0
 }
-
-// searchIDFObserver, when set by a test, receives the idf statistics each search scored with. It
-// is the seam that lets a test check the WIRING at the call site, not only the helper.
-var searchIDFObserver func(df map[string]int, files int, exact bool)
 
 // searchCorpusIDFStatistics chooses the document frequencies BM25 idf is computed from.
 //
