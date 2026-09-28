@@ -22,8 +22,8 @@ auto-generated notes on
 
 ### Changed
 
-- `graph query --format agent` with no `--max-context-bytes` now uses the smallest of 4 KiB, 8 KiB or 16 KiB that still shows both the first printed block and the best-ranked result exactly as an unbounded render does, and 24 KiB only when none does. On 40 recorded locate queries the median payload fell from 6,662 to 2,887 bytes, with the same targets found at the same ranks and every top-hit block byte-identical to before. An explicit budget is honoured exactly.
-- Under a binding budget, agent-format search now keeps every ranked location with its rank, name and score, and gives the remaining bytes to the head of the ranking (by 1/rank², passing any share a result cannot use on to the others) instead of an even floor per result. The top hit no longer degrades to a bare `path:line *` to fit one more body line.
+- `graph query --format agent` with no `--max-context-bytes` now uses the smallest of 4 KiB, 8 KiB or 16 KiB that still shows both the first printed block and the best-ranked result exactly as an unbounded render does, and 24 KiB only when none does. An explicit budget is honoured exactly.
+- Under a binding budget, agent-format search now keeps every ranked location with its rank, name and score, and shares the remaining bytes towards the head of the ranking, passing any share a result cannot use on to the others. The top hit no longer degrades to a bare `path:line *` to fit one more body line.
 - Upgraded the Go toolchain to 1.27.
 - Improved snapshot, search, and analyze performance and substantially reduced memory allocation, and made `stats` return a fast, single-line answer instead of a full rescan.
 - Statusline now shows only the savings estimate by default and labels it clearly as an estimate rather than an exact count.

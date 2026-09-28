@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/entire-graph/internal/sem"
 	"github.com/entireio/entire-graph/internal/termsafe"
@@ -315,5 +316,53 @@ func TestAgentSearchFloorOnlyBudgetKeepsEveryRankedLocation(t *testing.T) {
 		if !strings.HasPrefix(rendered, prefix) && !strings.Contains(rendered, "\n"+prefix) {
 			t.Fatalf("rank %d lost its ranked location at its floor:\n%s", rank, rendered)
 		}
+	}
+}
+
+// Rank weights must never reach zero: at index 32768 (1<<30)/32769² is 0, and a zero-weight open
+// tail stalled the water-filling and left the whole remainder to a byte-at-a-time loop.
+func TestAgentSearchRankWeightNeverReachesZero(t *testing.T) {
+	t.Parallel()
+	for _, index := range []int{0, 1, 32767, 32768, 1 << 20, math.MaxInt32} {
+		if got := agentSearchRankWeight(index); got < 1 {
+			t.Fatalf("weight at index %d = %d, want >= 1", index, got)
+		}
+	}
+	if agentSearchRankWeight(32768) != 1 {
+		t.Fatal("fixture drift: unfloored weight at 32768 is no longer zero; move the boundary")
+	}
+}
+
+// Past the zero-weight boundary, with the largest budget the parser accepts, the split must
+// finish promptly and still sum exactly to the budget.
+func TestAgentSearchResultBudgetsBeyondTheZeroWeightBoundary(t *testing.T) {
+	t.Parallel()
+	const count = 32768 + 64
+	results := make([]sem.SearchResult, count)
+	for i := range results {
+		results[i] = sem.SearchResult{
+			Rank: i + 1, FilePath: "p.go", SymbolName: "F", StartLine: i + 1, EndLine: i + 1,
+			SnippetStartLine: i + 1, FocusLine: i + 1, Snippet: "x()\n",
+		}
+	}
+	done := make(chan []int, 1)
+	go func() { done <- agentSearchResultBudgets(results, math.MaxInt) }()
+	select {
+	case budgets := <-done:
+		total := 0
+		for index, got := range budgets {
+			if got < agentSearchLocationCost(results[index]) {
+				t.Fatalf("index %d below its floor", index)
+			}
+			if total > math.MaxInt-got {
+				t.Fatal("budgets overflow when summed")
+			}
+			total += got
+		}
+		if total != math.MaxInt {
+			t.Fatalf("budgets sum to %d, want %d", total, math.MaxInt)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("split did not finish: byte-at-a-time remainder loop")
 	}
 }

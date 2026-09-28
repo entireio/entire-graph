@@ -2370,7 +2370,8 @@ func agentSearchResultBudgets(results []sem.SearchResult, budget int) []int {
 		}
 		// remaining*weight can overflow int64 for a large explicit budget, so the share is
 		// taken as quotient and remainder: (q*W + r)*w/W = q*w + r*w/W. q*w <= remaining
-		// because w <= W, and r*w < W*w < 2^62 because W < 2^31: every term fits.
+		// because w <= W, and r*w < W*w < 2^62 because w <= 2^30 and W < 2^31 + count: every term
+		// fits for any count below 2^31.
 		quotient, rest := int64(remaining)/weightTotal, int64(remaining)%weightTotal
 		capped := false
 		spent := 0
@@ -2409,9 +2410,22 @@ func agentSearchResultBudgets(results []sem.SearchResult, budget int) []int {
 }
 
 // agentSearchRankWeight is the 1/(index+1)² share weight agentSearchResultBudgets gives the
-// result at presentation position index.
+// result at presentation position index, floored at 1.
+//
+// Without the floor the weight reaches zero at index 32768 ((1<<30)/32769² = 0), a count that
+// --top-k and --index-all-files can reach. With a large budget the positive-weight results then
+// saturate, weightTotal over the open zero-weight tail is 0, the water-filling loop stops, and
+// the top-up loop hands out the whole remainder one byte per iteration. With every weight >= 1
+// each round gives every open result a share of the pool, and the sum of the floored shares falls
+// short of the pool by less than the number of open results, so the top-up is one pass at most.
+// The floor also keeps W < 2^31 + count, which preserves the overflow bound on r*w. The early
+// return is the floor for large positions, taken before position*position can overflow int64.
 func agentSearchRankWeight(index int) int64 {
-	return agentSearchRankWeightScale / int64((index+1)*(index+1))
+	position := int64(index) + 1
+	if position > agentSearchRankWeightScale/position {
+		return 1
+	}
+	return max(1, agentSearchRankWeightScale/(position*position))
 }
 
 // agentSearchRankWeightScale is the common numerator for agentSearchResultBudgets' 1/rank²
