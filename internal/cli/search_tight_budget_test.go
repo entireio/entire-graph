@@ -78,9 +78,9 @@ func TestAgentSearchLocatorRecognition(t *testing.T) {
 
 // A block gives up body lines before it gives up its rank, name and score.
 //
-// The budget here fits the minimal header over the WHOLE body, and the rich header over all but
-// the last line. When span was the outer loop the widest span won under any header, so the head
-// result came back as a bare `a.go:1 *` — no rank, no name, no score — to show one more line.
+// The budget here fits the minimal header over the WHOLE body, but the rich header only over a
+// shorter prefix. When span was the outer loop the widest span won under any header, so the head
+// result came back as a bare `a.go:1 *` — no rank, no name, no score — to show more lines.
 func TestAgentSearchBlockKeepsIdentityBeforeBodyLines(t *testing.T) {
 	t.Parallel()
 	body := "func Resolve() {\n\tstepOne()\n\tstepTwo()\n\tstepThree()\n}\n"
@@ -99,9 +99,17 @@ func TestAgentSearchBlockKeepsIdentityBeforeBodyLines(t *testing.T) {
 	if !strings.Contains(got, "func Resolve() {") {
 		t.Fatalf("head result lost its source entirely: %q", got)
 	}
-	// Non-vacuity: the minimal header over the whole body must really fit this budget, or the
-	// old ordering would not have chosen it and this test would prove nothing.
-	if minimal := "a.go:1 *\n" + body; len(minimal) > minimalWhole {
-		t.Fatalf("fixture no longer exercises the ordering: %d > %d", len(minimal), minimalWhole)
+	// Non-vacuity, measured from the real headers: the rich header must NOT fit over the whole
+	// body (else span-major and tier-major agree) and MUST fit over the first line (else tier-major
+	// has nothing to choose under the rich header).
+	headers := func(end int) []string {
+		return agentSearchLocationHeaders(1, "a.go", 1, end, 1, "Resolve", "", agentSearchScoreTag(result))
+	}
+	lines := strings.SplitAfter(strings.TrimSuffix(body, "\n"), "\n")
+	if richWhole := len(headers(5)[0]) + len(body); richWhole <= minimalWhole {
+		t.Fatalf("fixture drift: rich header fits the whole body (%d <= %d)", richWhole, minimalWhole)
+	}
+	if richShort := len(headers(1)[0]) + len(lines[0]); richShort > minimalWhole {
+		t.Fatalf("fixture drift: rich header does not fit even the first line (%d > %d)", richShort, minimalWhole)
 	}
 }

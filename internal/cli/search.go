@@ -2252,7 +2252,7 @@ func writeAgentSearchAdaptive(out io.Writer, response sem.SearchResponse, ceilin
 	if ceiling <= 0 || len(results) == 0 {
 		return writeAgentSearch(out, response, ceiling)
 	}
-	head := termsafe.Bytes(agentSearchBlock(results[0], 0))
+	heads := agentSearchProtectedHeads(results)
 	for _, budget := range agentSearchAdaptiveBudgets {
 		if budget >= ceiling {
 			break
@@ -2261,12 +2261,38 @@ func writeAgentSearchAdaptive(out io.Writer, response sem.SearchResponse, ceilin
 		if err := writeAgentSearch(&rendered, response, budget); err != nil {
 			return err
 		}
-		if agentSearchPayloadCarriesBlock(rendered.Bytes(), head) {
+		whole := true
+		for _, head := range heads {
+			if !agentSearchPayloadCarriesBlock(rendered.Bytes(), head) {
+				whole = false
+				break
+			}
+		}
+		if whole {
 			_, err := out.Write(rendered.Bytes())
 			return err
 		}
 	}
 	return writeAgentSearch(out, response, ceiling)
+}
+
+// agentSearchProtectedHeads returns the unbounded blocks writeAgentSearchAdaptive must find whole:
+// the first block printed AND the absolute best-ranked result. They differ when section grouping
+// (orderAgentSearchResults) prints a lower-ranked primary fix site ahead of a rank-1 docs,
+// related or test hit — which keeps its rank label, so it is still "the top hit" to a reader.
+// Protecting only the first printed block let a 4 KiB render be accepted with rank 1 clipped.
+func agentSearchProtectedHeads(ordered []sem.SearchResult) [][]byte {
+	best := 0
+	for index, result := range ordered {
+		if result.Rank > 0 && (ordered[best].Rank <= 0 || result.Rank < ordered[best].Rank) {
+			best = index
+		}
+	}
+	heads := [][]byte{termsafe.Bytes(agentSearchBlock(ordered[0], 0))}
+	if best != 0 {
+		heads = append(heads, termsafe.Bytes(agentSearchBlock(ordered[best], 0)))
+	}
+	return heads
 }
 
 // agentSearchPayloadCarriesBlock reports whether block appears in payload starting at a line.
@@ -2316,28 +2342,76 @@ func agentSearchResultBudgets(results []sem.SearchResult, budget int) []int {
 	if floorTotal > budget {
 		return rankedAgentSearchBudgets(count, budget)
 	}
+	// Water-filling: each round shares what is left among the results still short of their
+	// natural (unbounded) size, by 1/(index+1)² weights; a result that reaches its natural
+	// size is capped there and its surplus goes back into the pool. Without the cap a
+	// two-line fix site kept most of a budget it could not use while a long rank-1 block was
+	// clipped. Each round either finishes or caps at least one more result, so there are at
+	// most `count` rounds.
+	budgets := append([]int(nil), floors...)
+	needs := make([]int, count)
+	for index, result := range results {
+		needs[index] = max(len(agentSearchBlock(result, 0)), floors[index])
+	}
 	remaining := budget - floorTotal
-	// Weights are 1/(index+1)² over a common denominator, kept in int64 so a large budget
-	// times a large weight cannot overflow.
-	weights := make([]int64, count)
-	var weightTotal int64
-	for index := range weights {
-		weights[index] = agentSearchRankWeightScale / int64((index+1)*(index+1))
-		weightTotal += weights[index]
+	open := make([]bool, count)
+	for index := range open {
+		open[index] = budgets[index] < needs[index]
 	}
-	budgets := make([]int, count)
-	allocated := 0
-	for index := range budgets {
-		extra := int(int64(remaining) * weights[index] / weightTotal)
-		budgets[index] = floors[index] + extra
-		allocated += extra
+	for remaining > 0 {
+		var weightTotal int64
+		for index := range open {
+			if open[index] {
+				weightTotal += agentSearchRankWeight(index)
+			}
+		}
+		if weightTotal == 0 {
+			break
+		}
+		// remaining*weight can overflow int64 for a large explicit budget, so the share is
+		// taken as quotient and remainder: (q*W + r)*w/W = q*w + r*w/W. q*w <= remaining
+		// because w <= W, and r*w < W*w < 2^62 because W < 2^31: every term fits.
+		quotient, rest := int64(remaining)/weightTotal, int64(remaining)%weightTotal
+		capped := false
+		spent := 0
+		for index := range budgets {
+			if !open[index] {
+				continue
+			}
+			weight := agentSearchRankWeight(index)
+			share := int(quotient*weight + rest*weight/weightTotal)
+			if room := needs[index] - budgets[index]; share >= room {
+				share, open[index], capped = room, false, true
+			}
+			budgets[index] += share
+			spent += share
+		}
+		remaining -= spent
+		if !capped {
+			break
+		}
 	}
-	// Integer division leaves a few bytes; the head of the ranking is where they buy most.
-	for index := 0; allocated < remaining; index = (index + 1) % count {
-		budgets[index]++
-		allocated++
+	// Once every result is whole, what is left is surplus the renderer will not spend; it is
+	// credited to the head in one step so the budgets still sum to the caller's budget. Short of
+	// that, the floors of the r*w/W terms leave fewer bytes than there are open results, and
+	// they go to the open results nearest the top of the ranking.
+	if !slices.Contains(open, true) {
+		budgets[0] += remaining
+		return budgets
+	}
+	for index := 0; remaining > 0; index = (index + 1) % count {
+		if open[index] {
+			budgets[index]++
+			remaining--
+		}
 	}
 	return budgets
+}
+
+// agentSearchRankWeight is the 1/(index+1)² share weight agentSearchResultBudgets gives the
+// result at presentation position index.
+func agentSearchRankWeight(index int) int64 {
+	return agentSearchRankWeightScale / int64((index+1)*(index+1))
 }
 
 // agentSearchRankWeightScale is the common numerator for agentSearchResultBudgets' 1/rank²
