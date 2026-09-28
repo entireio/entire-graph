@@ -573,7 +573,7 @@ func TestMergeSearchRelatedSitesNeverGrowsThePayload(t *testing.T) {
 	)
 	before := serializedSearchResultBytes(results)
 	sites := []searchRelatedSite{mergeTestSite("alpha", 3), mergeTestSite("beta", 11)}
-	merged, count := mergeSearchRelatedSites(results, sites, read, 0)
+	merged, count := mergeSearchRelatedSites(results, sites, read, 0, len(results)+len(sites))
 	if count == 0 {
 		t.Fatalf("no related sites merged")
 	}
@@ -602,6 +602,63 @@ func TestMergeSearchRelatedSitesNeverGrowsThePayload(t *testing.T) {
 	}
 }
 
+func TestMergeSearchRelatedSitesResultCount(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		topK, redundant, want     int
+		protectSource, tightBytes bool
+	}{
+		{name: "full pool exchanges two redundant tails", topK: 10, redundant: 2, want: 2},
+		{name: "full pool reduces block to one legal exchange", topK: 10, redundant: 1, want: 1},
+		{name: "spare slot keeps both sites with one exchange", topK: 11, redundant: 1, want: 2},
+		{name: "last file mentions cannot fund sites", topK: 10, want: 0},
+		{name: "rendered source cannot fund a slot", topK: 10, redundant: 2, protectSource: true, want: 1},
+		{name: "byte and count limits both bind", topK: 10, redundant: 2, tightBytes: true, want: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			results := mergeTestResults(10, "head source")
+			for _, index := range []int{5, 7}[:tc.redundant] {
+				results[index].FilePath = results[0].FilePath
+				results[index].Snippet = strings.Repeat("x", 1200)
+			}
+			if tc.protectSource {
+				results[7].Signals = append(results[7].Signals, searchCompleteSymbolSignal)
+			}
+			budget := serializedSearchResultBytes(results)
+			if tc.tightBytes {
+				budget -= 1500
+			}
+			sites := []searchRelatedSite{mergeTestSite("alpha", 3), mergeTestSite("beta", 11)}
+			merged, count := mergeSearchRelatedSites(results, sites, cloneFamilyFixture().reader(), budget, tc.topK)
+			if count != tc.want || len(merged) > tc.topK {
+				t.Fatalf("sites=%d results=%d, want %d sites and at most %d results", count, len(merged), tc.want, tc.topK)
+			}
+			if got := serializedSearchResultBytes(merged); got > budget {
+				t.Errorf("%d bytes exceed %d", got, budget)
+			}
+			for index := 0; index < 5; index++ {
+				if merged[index].FilePath != results[index].FilePath || merged[index].Snippet != results[index].Snippet {
+					t.Errorf("protected head changed at index %d", index)
+				}
+			}
+			for _, original := range results {
+				found := false
+				for _, result := range merged {
+					found = found || result.FilePath == original.FilePath
+				}
+				if !found {
+					t.Errorf("last mention of %s lost", original.FilePath)
+				}
+			}
+			for index, result := range merged {
+				if result.Rank != index+1 {
+					t.Errorf("rank %d at index %d", result.Rank, index)
+				}
+			}
+		})
+	}
+}
+
 // TestMergeSearchRelatedSitesRespectsTheHardBudget pins that --max-context-bytes still binds: a
 // ranking already at or over the ceiling cannot buy a block, and the payload it returns is the
 // untouched ranking rather than an over-budget one (which SearchResponse.Validate would reject).
@@ -610,7 +667,7 @@ func TestMergeSearchRelatedSitesRespectsTheHardBudget(t *testing.T) {
 	fixture := cloneFamilyFixture()
 	results := mergeTestResults(6, strings.Repeat("x", 300))
 	budget := serializedSearchResultBytes(results) / 2
-	merged, count := mergeSearchRelatedSites(results, []searchRelatedSite{mergeTestSite("alpha", 3)}, fixture.reader(), budget)
+	merged, count := mergeSearchRelatedSites(results, []searchRelatedSite{mergeTestSite("alpha", 3)}, fixture.reader(), budget, len(results)+1)
 	if count != 0 {
 		t.Fatalf("merged %d related sites into a payload already over the ceiling", count)
 	}
@@ -636,7 +693,7 @@ func TestMergeSearchRelatedSitesProtectsTheHead(t *testing.T) {
 		})
 	}
 	sites := []searchRelatedSite{mergeTestSite("alpha", 3), mergeTestSite("beta", 11)}
-	merged, _ := mergeSearchRelatedSites(results, sites, fixture.reader(), 0)
+	merged, _ := mergeSearchRelatedSites(results, sites, fixture.reader(), 0, len(results)+len(sites))
 	kept := 0
 	for _, result := range merged {
 		if result.Section == searchSectionPrimary {
@@ -691,7 +748,7 @@ func TestMergeSearchRelatedSitesKeepsFileRecall(t *testing.T) {
 	add(8, "src/pkg/file0.go", 200, 900)
 	add(9, "src/pkg/only-b.go", 1, 120)
 
-	merged, count := mergeSearchRelatedSites(results, []searchRelatedSite{mergeTestSite("alpha", 3), mergeTestSite("beta", 11)}, fixture.reader(), 0)
+	merged, count := mergeSearchRelatedSites(results, []searchRelatedSite{mergeTestSite("alpha", 3), mergeTestSite("beta", 11)}, fixture.reader(), 0, len(results)+2)
 	if count == 0 {
 		t.Fatalf("no related sites merged")
 	}
@@ -710,7 +767,7 @@ func TestMergeSearchRelatedSitesNoOpWithoutSites(t *testing.T) {
 	t.Parallel()
 	fixture := cloneFamilyFixture()
 	results := mergeTestResults(3, "snippet")
-	merged, count := mergeSearchRelatedSites(results, nil, fixture.reader(), 0)
+	merged, count := mergeSearchRelatedSites(results, nil, fixture.reader(), 0, len(results))
 	if count != 0 || len(merged) != len(results) {
 		t.Fatalf("merge with no sites changed the payload: %d sites, %d results", count, len(merged))
 	}
