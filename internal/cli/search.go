@@ -2380,7 +2380,9 @@ func agentSearchResultBudgets(results []sem.SearchResult, budget int) []int {
 				continue
 			}
 			weight := agentSearchRankWeight(index)
-			share := int(quotient*weight + rest*weight/weightTotal)
+			// q*w + floor(r*w/W) <= floor(remaining*w/W) <= remaining, so the share always fits
+			// an int, 32-bit included; the clamp states that bound where the conversion happens.
+			share := int(min(quotient*weight+rest*weight/weightTotal, int64(remaining)))
 			if room := needs[index] - budgets[index]; share >= room {
 				share, open[index], capped = room, false, true
 			}
