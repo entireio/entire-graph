@@ -1595,7 +1595,7 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		stats.PreselectLatencyMS,
 		stats.TotalLatencyMS,
 	))
-	// Two further rungs between the compact header and the legacy one, shedding the latency
+	// Two further rungs below the compact header, shedding the latency
 	// fields in order of least diagnostic value (preselect, then query, then total) while
 	// keeping the "I:<state>/<index-ms>" shape every consumer keys off. Without these the only
 	// way to buy bytes back for the ranking was the legacy "Index: cache-miss (113ms)" form,
@@ -1664,7 +1664,11 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// varies SLOWEST, so every header rung is tried with the notice present before any rung is
 	// tried without it, which makes the notice the last prefix block the fitter gives up. A rung
 	// without it is offered only when there is a notice at all, so an honest payload adds none.
-	headers := [][]byte{fullHeader, compactHeader, timedHeader, terseHeader, legacyHeader}
+	// The legacy prefix is wider than the terse one and breaks the compact
+	// header contract. Do not let its smaller remainder force a minimal source
+	// tier before the compact-prefix rescue gets a chance. It remains available
+	// only in the result-less last-resort fallback below.
+	headers := [][]byte{fullHeader, compactHeader, timedHeader, terseHeader}
 	heads := make([]agentSearchPrefixHead, 0, 2*len(headers))
 	for _, header := range headers {
 		heads = append(heads, agentSearchPrefixHead{notice: forgeryNotice, header: header})
@@ -1677,11 +1681,13 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	const (
 		protectRankedSource = iota
 		protectMinimalSource
+		protectHeadSource
 		allowLocators
 	)
 	// Exhaust ordinary source-bearing plans before trading the head's identity
-	// for a minimal-header body; locator-only output remains the last resort.
-	for _, mode := range []int{protectRankedSource, protectMinimalSource, allowLocators} {
+	// for a minimal-header body. Try every tail-preserving plan before source
+	// alone; locator-only output remains the last resort.
+	for _, mode := range []int{protectRankedSource, protectMinimalSource, protectHeadSource, allowLocators} {
 		protectTopHit := mode != allowLocators
 		if protectTopHit && len(results) == 0 {
 			continue // nothing to protect; the fallback pass is the only pass
@@ -1735,10 +1741,13 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 									continue
 								}
 								formatted := fitAgentSearchResults(results, remaining)
-								if mode == protectMinimalSource && !agentSearchBlockCarriesSource(formatted) {
+								if (mode == protectMinimalSource || mode == protectHeadSource) && !agentSearchBlockCarriesSource(formatted) {
 									// Replace only the first locator; retain every tail locator
-									// already seated by the ordinary allocator at this prefix.
+									// already seated, unless every such source plan failed.
 									_, tail, _ := bytes.Cut(formatted, []byte("\n"))
+									if mode == protectHeadSource {
+										tail = nil
+									}
 									headSource := fitAgentSearchHeadSource(results[0], remaining-len(tail))
 									formatted = nil
 									if len(headSource) > 0 {

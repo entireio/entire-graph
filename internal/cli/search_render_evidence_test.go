@@ -152,3 +152,62 @@ func TestAgentSearchSourceRescueKeepsTailLocations(t *testing.T) {
 		t.Fatalf("source rescue lost an affordable tail location: %q", out.String())
 	}
 }
+
+// A wider legacy prefix can accidentally force the ordinary allocator into a
+// source-bearing minimal tier. It must not win ahead of the compact-prefix
+// source rescue: that makes the public header shape depend on machine latency.
+func TestAgentSearchSourceRescuePreservesCompactTelemetry(t *testing.T) {
+	response := sem.SearchResponse{
+		Results: []sem.SearchResult{{
+			Rank: 1, FilePath: "a.py", SymbolName: "target", Score: 25,
+			StartLine: 1, EndLine: 2, SnippetStartLine: 1, FocusLine: 1,
+			Snippet: "def target():\n    return True\n",
+		}},
+		Warnings: []sem.ProviderWarning{{Code: "W_DIRTY", FilePath: "a.py"}},
+		Completeness: sem.CompletenessReport{Languages: map[string]sem.LanguageCompleteness{
+			"Python": {Files: 1, Symbols: 1},
+		}},
+		Stats: sem.SearchStats{IndexLatencyMS: 139, QueryLatencyMS: 78, PreselectLatencyMS: 194, TotalLatencyMS: 431},
+	}
+	for _, budget := range []int{64, 60, 56, 52, 48} {
+		t.Run(strconv.Itoa(budget), func(t *testing.T) {
+			var out bytes.Buffer
+			if err := writeAgentSearch(&out, response, budget); err != nil {
+				t.Fatal(err)
+			}
+			if out.Len() > budget || !strings.HasPrefix(out.String(), "I:miss/139") ||
+				!strings.Contains(out.String(), "!N W1 F0 L1/1") ||
+				!strings.Contains(out.String(), "a.py:1") ||
+				!strings.Contains(out.String(), "def target():") {
+				t.Fatalf("latency must not change the compact header, coverage, or source at %d bytes: %q", budget, out.String())
+			}
+		})
+	}
+}
+
+func TestAgentSearchHeadSourceOutranksUnaffordableTail(t *testing.T) {
+	const source = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+	response := sem.SearchResponse{
+		Results: []sem.SearchResult{
+			{Rank: 1, FilePath: "a.py", SymbolName: strings.Repeat("N", 100), Score: 25,
+				StartLine: 1, EndLine: 1, SnippetStartLine: 1, FocusLine: 1, Snippet: source},
+			{Rank: 2, FilePath: strings.Repeat("b", 24) + ".py", SymbolName: "tail", Score: 10,
+				StartLine: 1, EndLine: 1, SnippetStartLine: 1, FocusLine: 1,
+				Snippet: strings.Repeat("y", 200) + "\n"},
+		},
+		Warnings: []sem.ProviderWarning{{Code: "W_DIRTY", FilePath: "a.py"}},
+		Completeness: sem.CompletenessReport{Languages: map[string]sem.LanguageCompleteness{
+			"Python": {Files: 1, Symbols: 1},
+		}},
+		Stats: sem.SearchStats{IndexLatencyMS: 139, QueryLatencyMS: 78, PreselectLatencyMS: 194, TotalLatencyMS: 431},
+	}
+	var out bytes.Buffer
+	if err := writeAgentSearch(&out, response, 100); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() > 100 || !strings.HasPrefix(out.String(), "I:miss/139") ||
+		!strings.Contains(out.String(), "!N W1 F0 L1/1") ||
+		!strings.Contains(out.String(), source) {
+		t.Fatalf("unaffordable tail must not displace all source or compact telemetry: %q", out.String())
+	}
+}
