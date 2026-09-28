@@ -832,12 +832,14 @@ func searchRelatedSiteAlreadySurfaced(results []SearchResult, site searchRelated
 //     is where displacement stops.
 //   - The most sites wins, then the fewest displaced hits: a plan that keeps a ranked hit for
 //     free is strictly better than one that drops it for nothing.
+//   - topK caps the returned count, including related sites. Spare slots or legal tail exchanges
+//     must fund every entry; byte savings alone cannot buy extra result slots.
 //   - Ranks are renumbered so the payload keeps its 1..N invariant.
 func mergeSearchRelatedSites(
 	results []SearchResult,
 	sites []searchRelatedSite,
 	read contentReader,
-	hardBudget int,
+	hardBudget, topK int,
 ) ([]SearchResult, int) {
 	if len(results) == 0 || len(sites) == 0 {
 		return results, 0
@@ -870,6 +872,9 @@ func mergeSearchRelatedSites(
 	order := searchRelatedDisplacementOrder(results, floor)
 	for count := len(entries); count >= 1; count-- {
 		for drop := 0; drop <= minInt(count, len(order)); drop++ {
+			if len(results)-drop+count > topK {
+				continue
+			}
 			merged := searchRelatedMergedPlan(results, entries[:count], order[:drop])
 			if serializedSearchResultBytes(merged) <= budget {
 				return merged, count

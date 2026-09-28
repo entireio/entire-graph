@@ -17,6 +17,47 @@ import (
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
+// The final result cap includes covering tests and optional callee-hop entries,
+// not just the candidates selected before those blocks are assembled.
+func TestSearchRepositoryFinalResultCount(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "server/handler.go", "package server\nfunc normalizePath(input string) string {\n return clean(input)\n}\nfunc clean(input string) string {\n return input\n}\n")
+	write(t, repo, "server/handler_test.go", "package server\nfunc TestNormalizePath(t *testing.T) {\n got := normalizePath(\"\")\n require.Equal(t, \"/\", got)\n}\n")
+	for index := 1; index <= 12; index++ {
+		write(t, repo, fmt.Sprintf("server/path%d.go", index), fmt.Sprintf(
+			"package server\n// normalizePath handles path variant %d.\nfunc normalizePath%d(input string) string {\n return input + %q\n}\n", index, index, fmt.Sprint(index)))
+	}
+	for _, topK := range []int{1, 10, 0, -1} {
+		for _, calleeHop := range []bool{false, true} {
+			t.Run(fmt.Sprintf("topK=%d/callee=%v", topK, calleeHop), func(t *testing.T) {
+				response, err := SearchRepository(t.Context(), repo, "test", "normalizePath", SearchOptions{
+					Worktree: true, Profile: ProfileFull, TopK: topK, CalleeHop: calleeHop,
+					MaxContextBytes: 100000,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				limit := topK
+				if limit <= 0 {
+					limit = 10
+				}
+				if len(response.Results) != limit {
+					t.Errorf("returned %d results for normalized TopK %d (covering=%d, related=%d, callee=%d)",
+						len(response.Results), limit, response.Stats.CoveringTests, response.Stats.RelatedSites, response.Stats.CalleeHopSites)
+				}
+				if response.Stats.CandidatesSelected != len(response.Results) {
+					t.Errorf("CandidatesSelected = %d, actual results = %d", response.Stats.CandidatesSelected, len(response.Results))
+				}
+				for index, result := range response.Results {
+					if result.Rank != index+1 {
+						t.Errorf("rank %d at index %d", result.Rank, index)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestSearchRepositoryRanksExactSymbol(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "config/service.go", `package config

@@ -386,13 +386,19 @@ func searchCalleeHopResult(site searchCalleeHopSite, lines []string, withBody bo
 //     searchBudgetWindowMinLines, and failing that the site is emitted as a LOCATOR. Never the other
 //     way around: a hop is a pointer first and source second. --max-context-bytes is exact at every
 //     step — the returned plan is only ever one that measured under it.
+//  4. topK caps all returned entries. Hops may only use spare result slots: unlike the related
+//     and contract blocks, their funding policy never permits dropping a ranked hit.
 func mergeSearchCalleeHopSites(
 	results []SearchResult,
 	entries []SearchResult,
 	anchorIndexes []int,
-	hardBudget, tailLines, protectRanks int,
+	hardBudget, tailLines, protectRanks, topK int,
 ) ([]SearchResult, int) {
 	if len(results) == 0 || len(entries) == 0 || len(entries) != len(anchorIndexes) {
+		return results, 0
+	}
+	maxCount := minInt(len(entries), topK-len(results))
+	if maxCount <= 0 {
 		return results, 0
 	}
 	if protectRanks < 1 {
@@ -403,7 +409,7 @@ func mergeSearchCalleeHopSites(
 	// printing, then locators. A hop always prefers to shrink ITSELF before it asks the payload for
 	// anything, which is what makes it the lowest-priority claim on the budget.
 	for _, forms := range [][]SearchResult{entries, clipSearchCalleeHopEntries(entries), locatorSearchCalleeHopEntries(entries)} {
-		for count := len(forms); count >= 1; count-- {
+		for count := maxCount; count >= 1; count-- {
 			for demoteFrom := len(results); demoteFrom >= floor; demoteFrom-- {
 				plan := planSearchCalleeHopRanking(results, forms[:count], anchorIndexes[:count], demoteFrom, tailLines)
 				if hardBudget <= 0 || serializedSearchResultBytes(plan) <= hardBudget {
