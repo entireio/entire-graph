@@ -1674,7 +1674,15 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 			heads = append(heads, agentSearchPrefixHead{header: header})
 		}
 	}
-	for _, protectTopHit := range []bool{true, false} {
+	const (
+		protectRankedSource = iota
+		protectMinimalSource
+		allowLocators
+	)
+	// Exhaust ordinary source-bearing plans before trading the head's identity
+	// for a minimal-header body; locator-only output remains the last resort.
+	for _, mode := range []int{protectRankedSource, protectMinimalSource, allowLocators} {
+		protectTopHit := mode != allowLocators
 		if protectTopHit && len(results) == 0 {
 			continue // nothing to protect; the fallback pass is the only pass
 		}
@@ -1727,6 +1735,16 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 									continue
 								}
 								formatted := fitAgentSearchResults(results, remaining)
+								if mode == protectMinimalSource && !agentSearchBlockCarriesSource(formatted) {
+									// Replace only the first locator; retain every tail locator
+									// already seated by the ordinary allocator at this prefix.
+									_, tail, _ := bytes.Cut(formatted, []byte("\n"))
+									headSource := fitAgentSearchHeadSource(results[0], remaining-len(tail))
+									formatted = nil
+									if len(headSource) > 0 {
+										formatted = append(headSource, tail...)
+									}
+								}
 								if protectTopHit && !agentSearchBlockCarriesSource(formatted) {
 									// This prefix is too wide to leave room for the top hit's complete block.
 									// Degrade the prefix and try again rather than handing back a truncated
@@ -2093,10 +2111,8 @@ func agentDiagnosticPath(path string) string {
 // agentSearchBlockCarriesSource reports whether a rendered ranked block contains any source,
 // as opposed to being nothing but locator lines.
 //
-// The shape matters and cost two wrong attempts. The AGENT format's locator is `path:line *`,
-// with no `N. ` rank prefix (that is the TEXT format), so a prefix test classified the locator
-// itself as source, the protection accepted a locator-only plan, and it stayed dead. A locator
-// line is therefore recognised by its structure: a first token of `<path>:<digits>`.
+// Both the minimal `path:line *` and ranked `N. path:line name ...` forms are metadata.
+// Counting the rank/name header as source would stop prefix degradation before a real body fits.
 func agentSearchBlockCarriesSource(block []byte) bool {
 	for _, line := range bytes.Split(block, []byte("\n")) {
 		trimmed := bytes.TrimRight(line, " \t")
@@ -2110,23 +2126,51 @@ func agentSearchBlockCarriesSource(block []byte) bool {
 	return false
 }
 
-// agentSearchLineIsLocator matches `<path>:<digits>` at the head of a line, where <path> has no
-// whitespace. Source lines fail it: `def target():` has a space before its colon, and an indented
-// body line does not start with a path at all.
+// agentSearchLineIsLocator recognizes the emitted minimal and ranked locator forms.
+// Paths may contain spaces, so ranked locations end at the numeric line suffix,
+// not necessarily at the first space. Indented source never starts a locator.
 func agentSearchLineIsLocator(line []byte) bool {
-	first := line
-	if i := bytes.IndexAny(line, " \t"); i >= 0 {
-		first = line[:i]
-	}
-	// leading whitespace means an indented body line, never a locator
-	if len(first) == 0 {
+	if len(line) == 0 || line[0] == ' ' || line[0] == '\t' {
 		return false
 	}
-	colon := bytes.LastIndexByte(first, ':')
-	if colon <= 0 || colon == len(first)-1 {
+	ranked := false
+	if prefix, rest, ok := bytes.Cut(line, []byte(". ")); ok && len(prefix) > 0 {
+		ranked = true
+		for _, c := range prefix {
+			if c < '0' || c > '9' {
+				ranked = false
+				break
+			}
+		}
+		if ranked {
+			line = rest
+		}
+	}
+	// The minimal marker must end the line: a multiplication expression such
+	// as `const value = {x:2 * 3};` is source, not a location.
+	if bytes.HasSuffix(line, []byte(" *")) && agentSearchLocationToken(line[:len(line)-2]) {
+		return true
+	}
+	for index, c := range line {
+		if c != ' ' && c != '\t' {
+			continue
+		}
+		if agentSearchLocationToken(line[:index]) {
+			return true
+		}
+		if !ranked {
+			return false
+		}
+	}
+	return agentSearchLocationToken(line)
+}
+
+func agentSearchLocationToken(location []byte) bool {
+	colon := bytes.LastIndexByte(location, ':')
+	if colon <= 0 || colon == len(location)-1 {
 		return false
 	}
-	for _, c := range first[colon+1:] {
+	for _, c := range location[colon+1:] {
 		if c < '0' || c > '9' {
 			return false
 		}
@@ -2182,6 +2226,35 @@ func fitAgentSearchResults(results []sem.SearchResult, budget int) []byte {
 			}
 			available = next
 		}
+	}
+	return nil
+}
+
+// fitAgentSearchHeadSource is a bounded fallback for the source-protecting pass.
+// A ranked-only header can occupy a width where a minimal header plus source fits.
+// Explicitly select that tier with the real available budget; shrinking below the
+// ranked-header size would also exclude affordable longer source lines.
+// The caller still validates the final payload's byte cap and quarantine disclosure.
+func fitAgentSearchHeadSource(result sem.SearchResult, budget int) []byte {
+	result = searchResultOnOneLine(result)
+	// Source from a secondary passage cannot stand in for the first primary body.
+	result.Passages = nil
+	for available := budget; available > 0; {
+		rendered := agentSearchPrimaryBlockFromTier(result, available, agentSearchMinimalHeaderTier)
+		if len(rendered) == 0 {
+			return nil
+		}
+		formatted := termsafe.Bytes(rendered)
+		if len(formatted) <= budget {
+			return formatted
+		}
+		// As in the ordinary fitter, decrease according to observed escaping
+		// expansion, rather than trying every intermediate byte budget.
+		next := int(int64(len(rendered)) * int64(budget) / int64(len(formatted)))
+		if next >= available {
+			next = available - 1
+		}
+		available = next
 	}
 	return nil
 }
@@ -2534,12 +2607,18 @@ func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 	if len(result.Passages) == 0 {
 		return agentSearchPrimaryBlock(result, budget)
 	}
+	locationFloor := agentSearchLocationCost(result)
 	for count := len(result.Passages); count >= 0; count-- {
 		passages := renderAgentSearchPassages(result.FilePath, result.Passages[:count])
 		primaryBudget := budget
 		if budget > 0 && len(passages) > 0 {
 			primaryBudget -= len(passages) + 1
 			if primaryBudget <= 0 {
+				continue
+			}
+			// Passages may use spare bytes, not the primary identity's promised floor.
+			// Below that floor the existing best-effort fallback still applies.
+			if budget >= locationFloor && primaryBudget < locationFloor {
 				continue
 			}
 		}
@@ -2574,6 +2653,10 @@ func renderAgentSearchPassages(path string, passages []sem.SearchPassage) []byte
 }
 
 func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
+	return agentSearchPrimaryBlockFromTier(result, budget, 0)
+}
+
+func agentSearchPrimaryBlockFromTier(result sem.SearchResult, budget, firstTier int) []byte {
 	name := searchResultDisplayName(result)
 	tag := agentSearchSectionTag(result)
 	scored := agentSearchScoreTag(result)
@@ -2616,8 +2699,8 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 	// with body, compact header ALONE, and only then the minimal header with
 	// body — at a cap too small for a rank and a name at all, one line of
 	// source under a bare locator says more than a bare locator with none.
-	for tier := range agentSearchLocationHeaderTiers {
-		if tier == agentSearchMinimalHeaderTier {
+	for tier := firstTier; tier < agentSearchLocationHeaderTiers; tier++ {
+		if tier == agentSearchMinimalHeaderTier && firstTier != agentSearchMinimalHeaderTier {
 			if located := fitAgentSearchRankedLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget); located != nil {
 				return located
 			}
