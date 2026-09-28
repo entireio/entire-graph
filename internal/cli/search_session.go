@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
@@ -58,7 +59,7 @@ type searchSession struct {
 // session written without the current schema must run a real search: its opaque payload cannot be
 // upgraded or inspected safely after the fact.
 const (
-	searchSessionReplaySchema = 3
+	searchSessionReplaySchema = 4
 	// A normal search payload is budgeted in kilobytes. Keep a generous ceiling for callers that
 	// deliberately widen it, but never let an untrusted/stale session file allocate without bound.
 	maxSearchSessionStateBytes = 8 << 20
@@ -80,6 +81,8 @@ type searchSessionState struct {
 	// wrong repository.
 	Repo string `json:"repo,omitempty"`
 	Tree string `json:"tree,omitempty"`
+	// Producer is the binary that rendered the payload; see searchSessionProducer.
+	Producer string `json:"producer,omitempty"`
 }
 
 // searchSessionScope identifies the repository view and wire format a payload describes.
@@ -109,6 +112,10 @@ type searchSessionScope struct {
 	Tree              string
 	PolicyFingerprint string
 	Format            string
+	// Producer identifies the binary answering now. The payload is rendered output, so its ranking,
+	// snippets and budget are the RECORDING binary's; replaying it after an upgrade serves the old
+	// ranking under a header saying the question was already answered.
+	Producer string
 }
 
 // matches reports whether a recorded scope may answer for the live one.
@@ -124,7 +131,10 @@ func (recorded searchSessionState) matches(live searchSessionScope) bool {
 		recorded.PolicyFingerprint != live.PolicyFingerprint ||
 		recorded.Format == "" ||
 		live.Format == "" ||
-		recorded.Format != live.Format {
+		recorded.Format != live.Format ||
+		recorded.Producer == "" ||
+		live.Producer == "" ||
+		recorded.Producer != live.Producer {
 		return false
 	}
 	// The tree hash alone is not a repository identity: sibling --repo subdirectories share the
@@ -272,6 +282,7 @@ func (s *searchSession) record(
 	state.ReplaySchema = searchSessionReplaySchema
 	state.PolicyFingerprint = live.PolicyFingerprint
 	state.Repo, state.Tree, state.Format = live.Repo, live.Tree, live.Format
+	state.Producer = live.Producer
 	if state.Payload == "" && replayable && len(payload) <= maxSearchSessionStateBytes {
 		state.Query = query
 		state.Payload = string(payload)
@@ -333,4 +344,50 @@ func searchReplayFitsByteBudget(state searchSessionState, asked string, budget i
 // verb, no invitation to rephrase.
 func searchEchoHeader(asked, answered string) string {
 	return fmt.Sprintf("(one search per task: %q was not run — below is your first search %q, verbatim)\n", asked, answered)
+}
+
+// searchSessionBuildInfo reads the running binary's build metadata. A package variable so the test
+// package can install an identifiable default (the test binary itself carries no VCS stamp).
+var searchSessionBuildInfo = debug.ReadBuildInfo
+
+// searchSessionProducerFrom identifies a binary for replay from its OWN build metadata only: a VCS
+// revision stamped from an UNMODIFIED tree, "rev:<revision>". Anything else has no identity, which
+// matches nothing, so the binary answers every question for real.
+//
+// Deliberately narrow. The CLI's version string is not used: Run turns an empty version into "dev",
+// so unstamped development binaries all reported "dev" and replayed each other's output. A module
+// version is not used either: two modules (or forks) can share a tag, and a binary built through a
+// local `replace` keeps the same module path and version while its source — and its bytes — change.
+// Anything but an explicit vcs.modified="false" is refused: two different modified builds of one
+// revision are indistinguishable. This is a source-revision identity, not a binary attestation:
+// builds of one clean revision with different flags or toolchains share it. A clean checkout
+// built by scripts/release.sh carries the stamp; `go install module@version` binaries do not and
+// never replay (a deliberate capability tradeoff).
+func searchSessionProducerFrom(info *debug.BuildInfo, ok bool) string {
+	if !ok || info == nil {
+		return ""
+	}
+	revision, clean := "", false
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			// Only the literal "false" is clean: "true", an empty value, or any other text is not.
+			clean = setting.Value == "false"
+		}
+	}
+	if !clean || revision == "" {
+		return ""
+	}
+	return "rev:" + revision
+}
+
+// sessionProducer is the replay identity of the binary serving opts.
+func (opts Options) sessionProducer() string {
+	read := searchSessionBuildInfo
+	if opts.buildInfo != nil {
+		read = opts.buildInfo
+	}
+	return searchSessionProducerFrom(read())
 }

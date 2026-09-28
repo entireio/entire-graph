@@ -693,7 +693,7 @@ func TestSearchSessionRecordSaturatesSearchCount(t *testing.T) {
 	t.Parallel()
 	sessionPath := filepath.Join(t.TempDir(), "session.json")
 	session := &searchSession{path: sessionPath, limit: 1}
-	scope := searchSessionScope{Repo: t.TempDir(), PolicyFingerprint: "policy", Format: "text"}
+	scope := searchSessionScope{Repo: t.TempDir(), PolicyFingerprint: "policy", Format: "text", Producer: "test-producer"}
 	state := searchSessionState{
 		Searches:          math.MaxInt,
 		ReplaySchema:      searchSessionReplaySchema,
@@ -701,6 +701,7 @@ func TestSearchSessionRecordSaturatesSearchCount(t *testing.T) {
 		PayloadPaths:      []string{},
 		Repo:              scope.Repo,
 		Format:            scope.Format,
+		Producer:          scope.Producer,
 	}
 	data, err := json.Marshal(state)
 	if err != nil {

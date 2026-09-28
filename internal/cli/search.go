@@ -166,7 +166,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		forceSessionReplace bool
 	)
 	if session != nil {
-		scope = searchSessionScopeFor(ctx, repo)
+		scope = searchSessionScopeFor(ctx, repo, opts.sessionProducer())
 		scope.Format = flags.Format
 		// A rendered payload is opaque: snippets and reference blocks cannot be safely removed from
 		// it after the fact. Bind it to the semantic layer's effective corpus policy and validate
@@ -221,7 +221,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 					IgnoreFiles:  flags.IgnoreFiles,
 					IncludeFiles: flags.IncludeFiles,
 				})
-				confirmedScope := searchSessionScopeFor(ctx, repo)
+				confirmedScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer())
 				confirmedScope.PolicyFingerprint = confirmedPolicy.Fingerprint()
 				confirmedScope.Format = flags.Format
 				if confirmErr == nil &&
@@ -239,7 +239,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 							IgnoreFiles:  flags.IgnoreFiles,
 							IncludeFiles: flags.IncludeFiles,
 						})
-						finalScope := searchSessionScopeFor(ctx, repo)
+						finalScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer())
 						finalScope.PolicyFingerprint = finalPolicy.Fingerprint()
 						finalScope.Format = flags.Format
 						if finalErr == nil &&
@@ -377,8 +377,12 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 // path is enough to separate two checkouts in the common case; when even that is unavailable the
 // zero scope matches nothing, so the echo is refused and the question gets a real answer. The one
 // outcome this must never produce is a confident scope that is wrong.
-func searchSessionScopeFor(ctx context.Context, repo string) searchSessionScope {
-	scope := searchSessionScope{Repo: repo}
+//
+// The producer is set HERE, not at call sites: the replay decision rebuilds this scope twice after
+// its policy checks, and an identity field set by only one of three builders silently refused every
+// replay.
+func searchSessionScopeFor(ctx context.Context, repo, producer string) searchSessionScope {
+	scope := searchSessionScope{Repo: repo, Producer: producer}
 	if resolved, err := filepath.Abs(repo); err == nil {
 		scope.Repo = resolved
 	}
