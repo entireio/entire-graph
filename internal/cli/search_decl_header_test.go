@@ -50,15 +50,14 @@ func declRecoverLineNumbers(block []byte) (numbers []int, sources []string, last
 	return numbers, sources, last, true
 }
 
-// declCheckRecoverable asserts that every printed line of a DECLARATION block (one that differs
-// from the ordinary block) sits at the file line recoverable from the block's own header and
-// elision counts, on every header rung, and that a range header ends at the last printed line.
+// declCheckRecoverable asserts that every printed line of a block — a declaration block or the
+// ordinary one, whichever the renderer chose — sits at the file line recoverable from the block's
+// own header and elision counts, on every header rung, and that a range header ends at the last
+// printed line. Only a bare header with no lines under it is exempt.
 func declCheckRecoverable(t *testing.T, tag string, result sem.SearchResult, budget int) []byte {
 	t.Helper()
-	view := agentSearchBlockViewOf(result)
-	plain, _, _ := agentSearchFocusWindow(view, budget)
 	block := agentSearchPrimaryBlock(result, budget)
-	if len(block) == 0 || string(block) == string(plain) || !strings.Contains(string(block), "\n") {
+	if len(block) == 0 || !strings.Contains(strings.TrimSuffix(string(block), "\n"), "\n") {
 		return nil
 	}
 	numbers, sources, last, ok := declRecoverLineNumbers(block)

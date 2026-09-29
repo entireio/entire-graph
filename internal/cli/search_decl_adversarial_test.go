@@ -39,10 +39,9 @@ func declAdvCheck(t *testing.T, tag string, block []byte, result sem.SearchResul
 	if m[3] != "" {
 		b, _ = strconv.Atoi(m[3])
 	}
-	if strings.HasSuffix(parts[0], " *") && !strings.HasPrefix(parts[0], fmt.Sprint(result.Rank)+". ") {
-		// minimal rung: path:focus only; no range claim.
-		return
-	}
+	// The minimal rung (`path:N *`) names the first printed line and claims no range: its lines are
+	// checked like any other rung's, only the range end is not.
+	minimal := strings.HasSuffix(parts[0], " *") && !strings.HasPrefix(parts[0], fmt.Sprint(result.Rank)+". ")
 	file := strings.Split(result.Snippet, "\n")
 	line := a
 	for _, p := range parts[1:] {
@@ -58,7 +57,7 @@ func declAdvCheck(t *testing.T, tag string, block []byte, result sem.SearchResul
 		}
 		line++
 	}
-	if line-1 != b {
+	if !minimal && line-1 != b {
 		t.Fatalf("%s: header range %d-%d but printed+elided covers %d-%d:\n%s", tag, a, b, a, line-1, block)
 	}
 }
