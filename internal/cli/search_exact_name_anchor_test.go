@@ -319,16 +319,7 @@ func TestSearchSessionDoesNotReplayTheExactAnswer(t *testing.T) {
 
 	search := func(query string) string {
 		t.Helper()
-		var out bytes.Buffer
-		err := Run(t.Context(), Options{
-			Version: "0.1.0",
-			Env:     EntireEnv{RepoRoot: repo, SearchSession: session},
-			Stdout:  &out,
-		}, []string{"search", "--repo", repo, "--query", query, "--format", "agent", "--profile", "syntax-only", "--head", "--top-k", "5"})
-		if err != nil {
-			t.Fatalf("search %q: %v", query, err)
-		}
-		return out.String()
+		return exactNameSessionSearch(t, repo, session, query, "5")
 	}
 	first := search("exact_session_target")
 	if !strings.Contains(first, "def exact_session_target(value):\n") || !strings.Contains(first, "exact name:") {
@@ -354,5 +345,49 @@ func TestSearchSessionDoesNotReplayTheExactAnswer(t *testing.T) {
 	header, replayed, ok := strings.Cut(third, "\n")
 	if !ok || !strings.Contains(header, "not run") || replayed != second {
 		t.Fatalf("the cap no longer holds after the phrase search:\n got %q\nwant replay of %q", third, second)
+	}
+
+	// A schema-2 state file (the build before this one) may hold an exact answer whose omission line
+	// invites a phrase search. It must not be replayed: schema 3 is what says the slot never holds one.
+	rewriteSearchSessionState(t, session, func(state map[string]any) {
+		state["replay_schema"] = 2
+		state["query"] = "exact_session_target"
+		state["payload"] = "1. target.py:1 exact_session_target *\ndef exact_session_target(value):\nexact name: 1 other result omitted; search a phrase to see them\n"
+	})
+	fourth := search("who calls the exact session target")
+	if strings.Contains(fourth, "not run") {
+		t.Fatalf("a schema-2 session payload was replayed:\n%s", fourth)
+	}
+}
+
+func exactNameSessionSearch(t *testing.T, repo, session, query, topK string) string {
+	t.Helper()
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{
+		Version: "0.1.0",
+		Env:     EntireEnv{RepoRoot: repo, SearchSession: session},
+		Stdout:  &out,
+	}, []string{"search", "--repo", repo, "--query", query, "--format", "agent", "--profile", "syntax-only", "--head", "--top-k", topK})
+	if err != nil {
+		t.Fatalf("search %q: %v", query, err)
+	}
+	return out.String()
+}
+
+// The CLI passes --top-k to the renderer: a ranking cut at --top-k 1 whose one row is the exact
+// definition says more may exist and names the knob (no session, so the knob may be named).
+func TestSearchExactNameReportsTheTopKCut(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Tests")
+	git(t, repo, "config", "user.email", "tests@entire.local")
+	write(t, repo, "a.py", "def topk_cut_target(value):\n    return value\n")
+	write(t, repo, "b.py", "class Other:\n    def topk_cut_target(self):\n        return 2\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "top-k fixture")
+	got := exactNameSessionSearch(t, repo, "", "topk_cut_target", "1")
+	if !strings.Contains(got, "exact name: showing 1 exact definition from the top 1; more may exist; raise --top-k\n") {
+		t.Fatalf("the top-k cut is not reported:\n%s", got)
 	}
 }
