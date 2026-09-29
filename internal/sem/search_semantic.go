@@ -452,17 +452,26 @@ func fuseSemanticCandidates(
 		candidate searchCandidate
 		semantic  bool
 	}
-	seen := map[semanticKey]bool{}
+	seen := map[semanticKey]int{}
 	var fused []fusedRow
 	add := func(candidate searchCandidate, fromSemantic bool) {
+		key := keyOf(candidate)
+		if position, ok := seen[key]; ok {
+			// The lexical side already seated this symbol. The channel matched it too, so the
+			// seated row records that provenance (signal and cosine) without moving or rescoring.
+			if fromSemantic && !fused[position].semantic {
+				seated := &fused[position].candidate
+				seated.result.Signals = appendUnique(append([]string(nil), seated.result.Signals...), semanticSignal)
+				if candidate.result.SemanticScore > 0 {
+					seated.result.SemanticScore = candidate.result.SemanticScore
+				}
+			}
+			return
+		}
 		if len(fused) >= topK {
 			return
 		}
-		key := keyOf(candidate)
-		if seen[key] {
-			return
-		}
-		seen[key] = true
+		seen[key] = len(fused)
 		fused = append(fused, fusedRow{candidate: candidate, semantic: fromSemantic})
 	}
 	for index := 0; index < max(len(lexical), len(semantic)); index++ {
@@ -490,6 +499,21 @@ func fuseSemanticCandidates(
 		out[index].score = 0
 	}
 	return out, seated
+}
+
+// countSemanticSeated counts the delivered primary rows the channel placed or matched: every row
+// carrying its signal, including a lexical row the channel also nominated.
+func countSemanticSeated(selected []searchCandidate) int {
+	seated := 0
+	for _, candidate := range selected {
+		for _, signal := range candidate.result.Signals {
+			if signal == semanticSignal {
+				seated++
+				break
+			}
+		}
+	}
+	return seated
 }
 
 // --- index -------------------------------------------------------------------------------------

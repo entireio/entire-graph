@@ -471,7 +471,8 @@ type SearchStats struct {
 	// selection BEYOND MaxIndexedFiles so the nearest symbols could be rendered. At most the
 	// channel's top-k (10). It is disclosed because FilesIndexed can exceed MaxIndexedFiles by it.
 	SemanticNominatedFiles int `json:"semantic_nominated_files,omitempty"`
-	// SemanticResults counts rows of the primary ranking the channel placed (before byte fitting).
+	// SemanticResults counts delivered primary rows (before byte fitting) the channel placed or also
+	// matched — every row carrying the semantic:embedding signal.
 	SemanticResults int `json:"semantic_results,omitempty"`
 }
 
@@ -1705,13 +1706,26 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// related-site, callee-hop and covering-test sections are built later from this list and are
 	// untouched — dedupe on (file, symbol start), cut to top-k. Ranks are numbered just below, so
 	// every later pass sees the fused order. See fuseSemanticCandidates.
+	//
+	// The fix-site promotion above is RE-APPLIED to the fused list, because embedding-first can seat
+	// a test ahead of the production fix site the lexical pass had just promoted — and the rule
+	// that a test is never rank 1 for a query that did not ask for tests must hold on the ranking
+	// that is delivered, not on an intermediate one. Fusion therefore keeps one row beyond top-k
+	// and the promotion runs BEFORE the cut: at top-k 1 the only fused row can be the test, and
+	// the fix site it should yield to exists only in that extra row.
 	if len(embedding.hits) > 0 {
 		keyOf := func(candidate searchCandidate) semanticKey { return semanticCandidateKey(candidate, symbolsByFile) }
-		selected, embedding.seated = fuseSemanticCandidates(
+		fused, _ := fuseSemanticCandidates(
 			selected,
 			semanticCandidates(embedding.hits, candidates, symbolsByFile, read, fileLanguages, options),
-			options.TopK, keyOf,
+			options.TopK+1, keyOf,
 		)
+		fused = promoteFixSiteOverLeadingTest(fused, q)
+		if len(fused) > options.TopK {
+			fused = fused[:options.TopK]
+		}
+		selected = fused
+		embedding.seated = countSemanticSeated(selected)
 	}
 	// Passage deduplication runs HERE, on the final selection, and not inside selectSearchCandidates
 	// which only produced the semantic half of it: hybrid fusion replaces and reorders rows, so a
