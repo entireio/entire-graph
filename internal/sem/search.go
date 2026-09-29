@@ -1221,7 +1221,29 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		if selection.commit == "" {
 			tree = ""
 		}
-		resolved, err := resolveSemanticChannel(ctx, options.Semantic, options, tree, query)
+		// The corpus the index must match is the prepared committed snapshot THIS search's policy
+		// yields at the index's profile: the one already loaded when the profiles agree, otherwise
+		// the cached complete snapshot for that profile. With neither, no index can be shown to
+		// describe this search's corpus and the channel reports no-index.
+		corpusFor := func(profile string) string {
+			if tree == "" || searchCacheDisabled {
+				return ""
+			}
+			if preindexCacheHit && preindexedSnapshot.Header.Tree == tree && preindexedSnapshot.Header.Profile == profile {
+				return semanticCorpusDigest(preindexedSnapshot.Symbols)
+			}
+			if profile == "" {
+				return ""
+			}
+			profiled := baseSnapshotOptions
+			profiled.Profile = Profile(profile)
+			binding, hit, err := loadCachedCompleteSearchSnapshotBinding(ctx, repo, providerVersion, profiled, options.CacheDir)
+			if err != nil || !hit || binding.snapshot.Header.Tree != tree {
+				return ""
+			}
+			return semanticCorpusDigest(binding.snapshot.Symbols)
+		}
+		resolved, err := resolveSemanticChannel(ctx, options.Semantic, options, tree, corpusFor, query)
 		if err != nil {
 			return SearchResponse{}, err
 		}

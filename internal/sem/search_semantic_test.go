@@ -604,8 +604,11 @@ func TestSemanticNominationRespectsTheSearchCorpus(t *testing.T) {
 		t.Fatalf("fixture drift: target not seated without the ignore rule: %v", resultFiles(open.Results))
 	}
 	response := semanticSearch(t, repo, cacheDir, config, func(options *SearchOptions) { options.IgnoreFiles = []string{ignore} })
-	if response.Stats.SemanticStatus != SemanticStatusUsed {
-		t.Fatalf("status = %q", response.Stats.SemanticStatus)
+	// The ignore rule changes the corpus, so the index built without it no longer describes this
+	// search: it is treated as missing (F2), which is a stronger guarantee than filtering its hits.
+	// Nomination's own corpus filter is pinned separately by TestNominateSemanticFilesUnit.
+	if response.Stats.SemanticStatus != "unavailable:no-index" {
+		t.Fatalf("status = %q, want unavailable:no-index for an index built from a wider corpus", response.Stats.SemanticStatus)
 	}
 	for _, result := range response.Results {
 		if strings.HasPrefix(result.FilePath, "upstream/") {

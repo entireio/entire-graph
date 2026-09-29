@@ -321,3 +321,48 @@ func TestSemanticFixF3CanceledBuildNeverPublishes(t *testing.T) {
 		t.Fatalf("previous generation not intact: %v", err)
 	}
 }
+
+// F2 at query time: an index prepared under one ignore policy is used only by a search under the
+// same policy; a search whose corpus is wider treats it as missing rather than trusting it.
+func TestSemanticFixF2QueryRequiresTheSameCorpus(t *testing.T) {
+	repo := semanticFixtureRepo(t)
+	server := httptest.NewServer(&fakeEmbedder{})
+	defer server.Close()
+	cacheDir := t.TempDir()
+	ignore := t.TempDir() + "/ignore"
+	writeFile(t, ignore[:strings.LastIndex(ignore, "/")], "ignore", "util/\n")
+	narrow := ProviderSnapshotOptions{NoNetwork: true, IgnoreFiles: []string{ignore}}
+	snapshot, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", narrow, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, symbol := range snapshot.Symbols {
+		if strings.HasPrefix(symbol.FilePath, "util/") {
+			t.Fatalf("NON-VACUITY: the narrow snapshot still holds %s", symbol.FilePath)
+		}
+	}
+	config := SemanticConfig{Endpoint: server.URL, Model: semanticFixtureModel}
+	if report, err := BuildSemanticIndex(t.Context(), repo, snapshot, cacheDir, config, false); err != nil || report.Status != "built" {
+		t.Fatalf("narrow build: %+v %v", report, err)
+	}
+	same := semanticSearch(t, repo, cacheDir, &config, func(options *SearchOptions) { options.IgnoreFiles = []string{ignore} })
+	if same.Stats.SemanticStatus != SemanticStatusUsed {
+		t.Fatalf("same-policy search: status %q, want used", same.Stats.SemanticStatus)
+	}
+	// The wider search prepares its own complete snapshot first, so a corpus exists to compare.
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{NoNetwork: true}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	wider := semanticSearch(t, repo, cacheDir, &config, nil)
+	if wider.Stats.SemanticStatus != "unavailable:no-index" || wider.Stats.SemanticNominatedFiles != 0 {
+		t.Fatalf("wider-policy search: status %q nominated %d, want unavailable:no-index and no nomination",
+			wider.Stats.SemanticStatus, wider.Stats.SemanticNominatedFiles)
+	}
+	// No prepared snapshot for the search's policy at all: nothing proves the corpus either.
+	other := t.TempDir() + "/other"
+	writeFile(t, other[:strings.LastIndex(other, "/")], "other", "api/\n")
+	unprepared := semanticSearch(t, repo, cacheDir, &config, func(options *SearchOptions) { options.IgnoreFiles = []string{other} })
+	if unprepared.Stats.SemanticStatus != "unavailable:no-index" {
+		t.Fatalf("unprepared-policy search: status %q, want unavailable:no-index", unprepared.Stats.SemanticStatus)
+	}
+}

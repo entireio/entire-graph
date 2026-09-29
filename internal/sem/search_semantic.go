@@ -173,9 +173,10 @@ func applySemanticOutcome(response *SearchResponse, outcome *semanticOutcome) {
 // canceled or expired parent context is returned as an error, because "the caller stopped asking"
 // is not "the embedder was unavailable" and must not come back as a successful lexical answer.
 func resolveSemanticChannel(
-	ctx context.Context, config *SemanticConfig, options SearchOptions, tree, query string,
+	ctx context.Context, config *SemanticConfig, options SearchOptions, tree string,
+	corpusFor func(profile string) string, query string,
 ) (semanticOutcome, error) {
-	outcome := resolveSemanticChannelOutcome(ctx, config, options, tree, query)
+	outcome := resolveSemanticChannelOutcome(ctx, config, options, tree, corpusFor, query)
 	if err := ctx.Err(); err != nil {
 		return semanticOutcome{}, err
 	}
@@ -183,7 +184,8 @@ func resolveSemanticChannel(
 }
 
 func resolveSemanticChannelOutcome(
-	ctx context.Context, config *SemanticConfig, options SearchOptions, tree, query string,
+	ctx context.Context, config *SemanticConfig, options SearchOptions, tree string,
+	corpusFor func(profile string) string, query string,
 ) semanticOutcome {
 	if !config.configured() {
 		return semanticOutcome{}
@@ -215,6 +217,26 @@ func resolveSemanticChannelOutcome(
 	index, err := loadSemanticIndexContext(ctx, options.CacheDir, tree, config.Model)
 	if err != nil {
 		return fail(err)
+	}
+	// The index must describe THIS search's corpus, not just its tree. corpusFor answers with the
+	// digest of the prepared committed snapshot this search's own ignore/include and parse policy
+	// produces at the profile the index was built from, or "" when no such prepared snapshot
+	// exists. Without one nothing proves the index was built from the same corpus, and an index
+	// built under a different policy is as good as absent.
+	corpus := ""
+	if corpusFor != nil {
+		corpus = corpusFor(index.Profile)
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
+	if corpus == "" {
+		return fail(unavailable("no-index",
+			"no prepared index for this search's corpus; run `entire graph index --semantic` with the same settings"))
+	}
+	if index.Corpus != corpus {
+		return fail(unavailable("no-index",
+			"the semantic index was built from a different corpus; rerun `entire graph index --semantic` with this search's settings"))
 	}
 	timeout := config.QueryTimeout
 	if timeout <= 0 {
@@ -471,9 +493,17 @@ type semanticIndexSymbol struct {
 // semanticIndexFile is the persisted index. Vectors is one row-major little-endian float32 blob
 // (Count x Dimension), L2-normalised at build time so a dot product IS the cosine.
 type semanticIndexFile struct {
-	Recipe    int                   `json:"recipe_version"`
-	Model     string                `json:"model"`
-	Tree      string                `json:"tree"`
+	Recipe int    `json:"recipe_version"`
+	Model  string `json:"model"`
+	Tree   string `json:"tree"`
+	// Corpus is semanticCorpusDigest of the prepared snapshot the index embedded. The tree alone
+	// does not fix WHICH symbols were embedded — ignore/include rules, .graphignore, parse and
+	// file limits all shape the snapshot — so an index is reused, and consulted by a search,
+	// only for the exact corpus it was built from.
+	Corpus string `json:"corpus"`
+	// Profile is the snapshot profile the corpus was prepared at, so a search can find the
+	// prepared snapshot its own policy yields at that profile and compare corpora.
+	Profile   string                `json:"profile"`
 	Dimension int                   `json:"dimension"`
 	Count     int                   `json:"count"`
 	Symbols   []semanticIndexSymbol `json:"symbols"`
@@ -691,8 +721,9 @@ func BuildSemanticIndex(
 		return SemanticIndexReport{}, errors.New("semantic index requires a committed HEAD snapshot")
 	}
 	report := SemanticIndexReport{Model: config.Model, Tree: tree, Recipe: semanticRecipeVersion}
+	corpus := semanticCorpusDigest(snapshot.Symbols)
 	if !force {
-		if existing, err := loadSemanticIndexContext(ctx, cacheDir, tree, config.Model); err == nil {
+		if existing, err := loadSemanticIndexContext(ctx, cacheDir, tree, config.Model); err == nil && existing.Corpus == corpus {
 			report.Status = "reused"
 			report.Dimension = existing.Dimension
 			report.Symbols = existing.Count
@@ -700,21 +731,7 @@ func BuildSemanticIndex(
 			return report, nil
 		}
 	}
-	symbols := make([]SymbolRecord, 0, len(snapshot.Symbols))
-	for _, symbol := range snapshot.Symbols {
-		if semanticIndexableKind(symbol.Kind) && symbol.StartLine > 0 {
-			symbols = append(symbols, symbol)
-		}
-	}
-	sort.SliceStable(symbols, func(i, j int) bool {
-		if symbols[i].FilePath != symbols[j].FilePath {
-			return symbols[i].FilePath < symbols[j].FilePath
-		}
-		if symbols[i].StartLine != symbols[j].StartLine {
-			return symbols[i].StartLine < symbols[j].StartLine
-		}
-		return symbols[i].Name < symbols[j].Name
-	})
+	symbols := semanticEligibleSymbols(snapshot.Symbols)
 	if err := ctx.Err(); err != nil {
 		return SemanticIndexReport{}, err
 	}
@@ -756,7 +773,10 @@ func BuildSemanticIndex(
 		texts = append(texts, semanticDocumentText(symbol, lines))
 		kept = append(kept, semanticIndexSymbol{FilePath: symbol.FilePath, StartLine: symbol.StartLine, Name: symbol.Name})
 	}
-	index := semanticIndexFile{Recipe: semanticRecipeVersion, Model: config.Model, Tree: tree, Count: len(kept), Symbols: kept}
+	index := semanticIndexFile{
+		Recipe: semanticRecipeVersion, Model: config.Model, Tree: tree, Corpus: corpus, Profile: snapshot.Header.Profile,
+		Count: len(kept), Symbols: kept,
+	}
 	var blob bytes.Buffer
 	for start := 0; start < len(texts); start += semanticBuildBatchSize {
 		end := min(start+semanticBuildBatchSize, len(texts))
@@ -811,6 +831,46 @@ func BuildSemanticIndex(
 	report.Symbols = index.Count
 	report.LatencyMS = time.Since(started).Milliseconds()
 	return report, nil
+}
+
+// semanticEligibleSymbols is the ordered list of symbols a build embeds: every function and
+// method with a start line, in (file, start line, name) order.
+func semanticEligibleSymbols(all []SymbolRecord) []SymbolRecord {
+	symbols := make([]SymbolRecord, 0, len(all))
+	for _, symbol := range all {
+		if semanticIndexableKind(symbol.Kind) && symbol.StartLine > 0 {
+			symbols = append(symbols, symbol)
+		}
+	}
+	sort.SliceStable(symbols, func(i, j int) bool {
+		if symbols[i].FilePath != symbols[j].FilePath {
+			return symbols[i].FilePath < symbols[j].FilePath
+		}
+		if symbols[i].StartLine != symbols[j].StartLine {
+			return symbols[i].StartLine < symbols[j].StartLine
+		}
+		return symbols[i].Name < symbols[j].Name
+	})
+	return symbols
+}
+
+// semanticCorpusDigest fingerprints the corpus a build embeds: the recipe version and every
+// eligible symbol's location, name, kind and signature (the recipe's inputs besides the file text,
+// which the tree already fixes). Two snapshots of one tree prepared under different ignore/include
+// or parse policies hold different symbols and so get different digests; the same prepared
+// snapshot always gets the same one.
+func semanticCorpusDigest(all []SymbolRecord) string {
+	hash := sha256.New()
+	writeCacheKeyString(hash, "recipe", fmt.Sprint(semanticRecipeVersion))
+	for _, symbol := range semanticEligibleSymbols(all) {
+		writeCacheKeyString(hash, "file", symbol.FilePath)
+		writeCacheKeyString(hash, "start", fmt.Sprint(symbol.StartLine))
+		writeCacheKeyString(hash, "end", fmt.Sprint(symbol.EndLine))
+		writeCacheKeyString(hash, "name", symbol.Name)
+		writeCacheKeyString(hash, "kind", symbol.Kind)
+		writeCacheKeyString(hash, "signature", symbol.Signature)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func semanticIndexableKind(kind string) bool {
