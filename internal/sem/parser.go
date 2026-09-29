@@ -3918,6 +3918,9 @@ func cFamilyTypedefAliasEntities(node *sitter.Node, src []byte, language string,
 		}
 		alias := primary
 		alias.Name = name
+		// Its own declarator's line, never the primary's: `typedef int\n A,\n B;` names A on
+		// line 2 and B on line 3. Unknown (0) when no declarator binds it.
+		alias.nameLine, _ = nameLineFromDeclarators(node, src, name)
 		// Recompute rather than copy: for a single-line declaration the
 		// fingerprint is the signature with the entity's own name blanked out,
 		// so sharing the primary's would make every alias look like the same
