@@ -103,7 +103,7 @@ func TestSemanticStateIsVisibleInTextAndAgent(t *testing.T) {
 // Q1 rendering: a row the channel synthesized shows its own labelled score, never a lexical 0.
 func TestSemanticOnlyRowRendersItsOwnScore(t *testing.T) {
 	row := semanticStateLexicalRow()
-	row.Score, row.SemanticScore, row.Signals = 0, 0.83, []string{"semantic:embedding"}
+	row.Score, row.SemanticScore, row.Signals = 0, 0.83, []string{"semantic:embedding", "semantic:only"}
 	response := semanticStateResponse(t, sem.SemanticStatusUsed, row)
 	var text, agent bytes.Buffer
 	if err := writeSearchResponse(&text, response, "text", 4096); err != nil {

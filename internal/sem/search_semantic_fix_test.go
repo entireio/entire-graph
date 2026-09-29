@@ -389,7 +389,7 @@ func TestSemanticFixQ3FusionDedupesBySymbolID(t *testing.T) {
 // weakens, a strong lexical answer; a weak lexical answer is still marked weak; an all-semantic
 // payload is marked because nothing lexical vouches for it.
 func TestSemanticFixQ1ConfidenceReadsLexicalRows(t *testing.T) {
-	semantic := SearchResult{FilePath: "dense.go", Score: 0, SemanticScore: 0.9, Signals: []string{semanticSignal}}
+	semantic := SearchResult{FilePath: "dense.go", Score: 0, SemanticScore: 0.9, Signals: []string{semanticSignal, semanticOnlySignal}}
 	strong := SearchResult{FilePath: "strong.go", Score: 40}
 	next := SearchResult{FilePath: "next.go", Score: 20}
 	weak := SearchResult{FilePath: "weak.go", Score: 2}

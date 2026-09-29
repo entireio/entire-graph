@@ -36,6 +36,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -72,6 +73,11 @@ const (
 	semanticMaxBuildResponseBytes = 256 << 20
 	semanticMaxDimension          = 1 << 16
 	semanticSignal                = "semantic:embedding"
+	// semanticOnlySignal is the PROVENANCE of a row the channel synthesized: no lexical candidate
+	// existed for its symbol. It is recorded, never inferred from scores — a cosine can be 0 or
+	// negative, and a lexical score can be 0 — so SearchResult.SemanticOnly reads this and nothing
+	// else. It rides in `signals`, so a JSON consumer can tell the two row kinds apart too.
+	semanticOnlySignal = "semantic:only"
 	// semanticUnitNormTolerance is how far a stored or freshly normalised row's squared norm may
 	// sit from 1. float32 rounding of a unit vector stays orders of magnitude inside it.
 	semanticUnitNormTolerance = 1e-3
@@ -412,10 +418,11 @@ func semanticCandidates(
 	return out
 }
 
-// SemanticOnly reports whether the semantic channel synthesized this row: it has a semantic score
-// and no lexical relevance score. Such a row's Score is "not measured", not "worthless".
+// SemanticOnly reports whether the semantic channel synthesized this row, read from its recorded
+// provenance (the semantic:only signal), never from its scores: its cosine may be 0 or negative,
+// and its Score 0 means "not measured", not "worthless".
 func (result SearchResult) SemanticOnly() bool {
-	return result.Score == 0 && result.SemanticScore > 0
+	return slices.Contains(result.Signals, semanticOnlySignal)
 }
 
 func semanticSymbolFor(symbols []SymbolRecord, hit semanticHit) (SymbolRecord, bool) {
@@ -489,9 +496,7 @@ func fuseSemanticCandidates(
 			if fromSemantic && !fused[position].semantic {
 				seated := &fused[position].candidate
 				seated.result.Signals = appendUnique(append([]string(nil), seated.result.Signals...), semanticSignal)
-				if candidate.result.SemanticScore > 0 {
-					seated.result.SemanticScore = candidate.result.SemanticScore
-				}
+				seated.result.SemanticScore = candidate.result.SemanticScore
 			}
 			return
 		}
@@ -523,6 +528,9 @@ func fuseSemanticCandidates(
 		if out[index].result.SemanticScore == 0 {
 			out[index].result.SemanticScore = row.candidate.score
 		}
+		// Provenance and the unmeasured score are set together, here, so SemanticOnly never has to
+		// infer one from the other.
+		out[index].result.Signals = appendUnique(append([]string(nil), out[index].result.Signals...), semanticOnlySignal)
 		out[index].score = 0
 	}
 	return out, seated

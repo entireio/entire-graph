@@ -113,7 +113,7 @@ func TestSemanticRereviewFullUnitGapWithSemanticOnlyHead(t *testing.T) {
 // RR-Q1NEG: a semantic-only row with a non-positive cosine is not recognised as semantic-only.
 func TestSemanticRereviewSemanticOnlyNonPositiveCosine(t *testing.T) {
 	for _, cos := range []float64{0.2, 0, -0.15} {
-		r := SearchResult{Score: 0, SemanticScore: cos, FilePath: "a.go"}
+		r := SearchResult{Score: 0, SemanticScore: cos, Signals: []string{semanticSignal, semanticOnlySignal}, FilePath: "a.go"}
 		resp := SearchResponse{Results: []SearchResult{r, {Score: 40, FilePath: "b.go"}, {Score: 12, FilePath: "c.go"}}}
 		a := AssessSearchConfidence(resp)
 		t.Logf("cos=%v SemanticOnly=%v confidence=%+v", cos, r.SemanticOnly(), a)
