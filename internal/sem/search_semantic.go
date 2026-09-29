@@ -168,9 +168,21 @@ func applySemanticOutcome(response *SearchResponse, outcome *semanticOutcome) {
 }
 
 // resolveSemanticChannel decides whether the channel runs for this search and, if it does, returns
-// the nearest indexed symbols to the query. Every failure is a status, never an error: the caller
-// continues with the lexical answer.
+// the nearest indexed symbols to the query. Every CHANNEL failure is a status, never an error: the
+// caller continues with the lexical answer. The one exception is the CALLER's cancellation: a
+// canceled or expired parent context is returned as an error, because "the caller stopped asking"
+// is not "the embedder was unavailable" and must not come back as a successful lexical answer.
 func resolveSemanticChannel(
+	ctx context.Context, config *SemanticConfig, options SearchOptions, tree, query string,
+) (semanticOutcome, error) {
+	outcome := resolveSemanticChannelOutcome(ctx, config, options, tree, query)
+	if err := ctx.Err(); err != nil {
+		return semanticOutcome{}, err
+	}
+	return outcome, nil
+}
+
+func resolveSemanticChannelOutcome(
 	ctx context.Context, config *SemanticConfig, options SearchOptions, tree, query string,
 ) semanticOutcome {
 	if !config.configured() {
@@ -200,7 +212,7 @@ func resolveSemanticChannel(
 	if options.DisableCache || options.CacheDir == "" {
 		return fail(unavailable("cache-disabled", "the semantic index lives in the cache directory"))
 	}
-	index, err := loadSemanticIndex(options.CacheDir, tree, config.Model)
+	index, err := loadSemanticIndexContext(ctx, options.CacheDir, tree, config.Model)
 	if err != nil {
 		return fail(err)
 	}
@@ -218,7 +230,11 @@ func resolveSemanticChannel(
 		return fail(unavailable("dimension-mismatch",
 			fmt.Sprintf("query embedding has %d dimensions, index has %d", len(vectors[0]), index.Dimension)))
 	}
-	return semanticOutcome{status: SemanticStatusUsed, hits: index.nearest(vectors[0], semanticTopK)}
+	hits, err := index.nearest(ctx, vectors[0], semanticTopK)
+	if err != nil {
+		return fail(err)
+	}
+	return semanticOutcome{status: SemanticStatusUsed, hits: hits}
 }
 
 // nominateSemanticFiles adds the files of the channel's hits to the lexical file selection so their
@@ -484,6 +500,13 @@ func semanticIndexEntry(cacheDir, tree, model string) (cacheEntry, error) {
 }
 
 func loadSemanticIndex(cacheDir, tree, model string) (*semanticIndexFile, error) {
+	return loadSemanticIndexContext(context.Background(), cacheDir, tree, model)
+}
+
+// loadSemanticIndexContext reads and validates the index, stopping when ctx is done: the decode
+// reads through a context-checking reader and the validation walk checks ctx per row block, so a
+// large or hostile entry cannot hold a canceled search.
+func loadSemanticIndexContext(ctx context.Context, cacheDir, tree, model string) (*semanticIndexFile, error) {
 	entry, err := semanticIndexEntry(cacheDir, tree, model)
 	if err != nil {
 		return nil, unavailable("no-index", "the semantic cache entry cannot be addressed")
@@ -496,10 +519,16 @@ func loadSemanticIndex(cacheDir, tree, model string) (*semanticIndexFile, error)
 	var index semanticIndexFile
 	// The cache file is not trusted input: its decode and validation errors can quote strings it
 	// holds, so the payload gets a stable sentence, never the error text.
-	if err := decodeSemanticIndex(file, &index); err != nil {
+	if err := decodeSemanticIndex(semanticContextReader{ctx: ctx, reader: file}, &index); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, unavailable("invalid-index", "the semantic index could not be decoded; rebuild it")
 	}
-	if err := index.validate(tree, model); err != nil {
+	if err := index.validateContext(ctx, tree, model); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, unavailable("invalid-index", "the semantic index failed validation; rebuild it")
 	}
 	return &index, nil
@@ -527,9 +556,29 @@ func decodeSemanticIndex(reader io.Reader, index *semanticIndexFile) error {
 	return nil
 }
 
+// semanticContextReader fails a read once its context is done.
+type semanticContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (reader semanticContextReader) Read(buffer []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return reader.reader.Read(buffer)
+}
+
+// semanticScanCheckRows is how many rows a scan walks between context checks.
+const semanticScanCheckRows = 4096
+
 // validate is the load-time contract: the header must name this tree, model and recipe, and the
 // cardinality and dimension must agree with the blob. Anything else is an unusable index.
 func (index *semanticIndexFile) validate(tree, model string) error {
+	return index.validateContext(context.Background(), tree, model)
+}
+
+func (index *semanticIndexFile) validateContext(ctx context.Context, tree, model string) error {
 	switch {
 	case index.Recipe != semanticRecipeVersion:
 		return fmt.Errorf("recipe version %d, want %d", index.Recipe, semanticRecipeVersion)
@@ -556,6 +605,11 @@ func (index *semanticIndexFile) validate(tree, model string) error {
 	// cosine, which is true only of unit rows. A finite row of arbitrary magnitude (a damaged or
 	// forged entry, or an all-zero row) would otherwise rank as a confident, meaningless hit.
 	for row := 0; row < index.Count; row++ {
+		if row%semanticScanCheckRows == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
 		var sum float64
 		for _, value := range index.decoded[row*index.Dimension : (row+1)*index.Dimension] {
 			sum += float64(value) * float64(value)
@@ -569,13 +623,18 @@ func (index *semanticIndexFile) validate(tree, model string) error {
 
 // nearest returns the k indexed symbols with the highest cosine to query (already normalised).
 // Ties keep index order, which is (file, start line) order, so the answer is deterministic.
-func (index *semanticIndexFile) nearest(query []float32, k int) []semanticHit {
+func (index *semanticIndexFile) nearest(ctx context.Context, query []float32, k int) ([]semanticHit, error) {
 	type scored struct {
 		index int
 		score float64
 	}
 	scores := make([]scored, index.Count)
 	for row := 0; row < index.Count; row++ {
+		if row%semanticScanCheckRows == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		vector := index.decoded[row*index.Dimension : (row+1)*index.Dimension]
 		var dot float64
 		for i, value := range vector {
@@ -595,7 +654,7 @@ func (index *semanticIndexFile) nearest(query []float32, k int) []semanticHit {
 			Score: math.Round(entry.score*10000) / 10000,
 		})
 	}
-	return hits
+	return hits, nil
 }
 
 // SemanticIndexReport describes one `index --semantic` run.
@@ -633,7 +692,7 @@ func BuildSemanticIndex(
 	}
 	report := SemanticIndexReport{Model: config.Model, Tree: tree, Recipe: semanticRecipeVersion}
 	if !force {
-		if existing, err := loadSemanticIndex(cacheDir, tree, config.Model); err == nil {
+		if existing, err := loadSemanticIndexContext(ctx, cacheDir, tree, config.Model); err == nil {
 			report.Status = "reused"
 			report.Dimension = existing.Dimension
 			report.Symbols = existing.Count
@@ -656,10 +715,16 @@ func BuildSemanticIndex(
 		}
 		return symbols[i].Name < symbols[j].Name
 	})
+	if err := ctx.Err(); err != nil {
+		return SemanticIndexReport{}, err
+	}
 	// Blob reads at the snapshot's own commit, so the text embedded is the text of the tree the
 	// index is keyed on, whatever the worktree holds now.
 	read, closeRead, err := openSearchContentReader(ctx, repo, commit, true, nil, nil, 0)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return SemanticIndexReport{}, ctxErr
+		}
 		return SemanticIndexReport{}, err
 	}
 	if closeRead != nil {
@@ -669,9 +734,17 @@ func BuildSemanticIndex(
 	texts := make([]string, 0, len(symbols))
 	kept := make([]semanticIndexSymbol, 0, len(symbols))
 	for _, symbol := range symbols {
+		// A read that fails because the build was canceled must not be mistaken for an unreadable
+		// file and skipped: that would publish a partial (or empty) index as complete.
+		if err := ctx.Err(); err != nil {
+			return SemanticIndexReport{}, err
+		}
 		lines, ok := linesByFile[symbol.FilePath]
 		if !ok {
 			content, readable := read(symbol.FilePath)
+			if err := ctx.Err(); err != nil {
+				return SemanticIndexReport{}, err
+			}
 			if readable {
 				lines = strings.Split(content, "\n")
 			}
@@ -690,6 +763,9 @@ func BuildSemanticIndex(
 		batchCtx, cancel := context.WithTimeout(ctx, semanticBuildBatchTimeout)
 		vectors, err := semanticEmbed(batchCtx, &config, texts[start:end], semanticMaxBuildResponseBytes)
 		cancel()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return SemanticIndexReport{}, fmt.Errorf("embed batch %d: %w", report.Batches+1, ctxErr)
+		}
 		if err != nil {
 			return SemanticIndexReport{}, fmt.Errorf("embed batch %d: %w", report.Batches+1, err)
 		}
@@ -724,8 +800,10 @@ func BuildSemanticIndex(
 		return SemanticIndexReport{}, err
 	}
 	// cacheEntry.write is the atomic path: a unique O_EXCL temp in the entry's directory, then a
-	// rename over the entry, with the temp removed on every failure.
-	if err := entry.write("semantic", index); err != nil {
+	// rename over the entry, with the temp removed on every failure. The context is checked
+	// immediately before the rename commits, so a build canceled at any point up to publication
+	// leaves the previous valid generation in place and reports the cancellation.
+	if err := entry.writeCommitting("semantic", index, ctx.Err); err != nil {
 		return SemanticIndexReport{}, fmt.Errorf("persist semantic index: %w", err)
 	}
 	report.Status = "built"

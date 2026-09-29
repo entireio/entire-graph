@@ -1221,7 +1221,11 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		if selection.commit == "" {
 			tree = ""
 		}
-		*embedding = resolveSemanticChannel(ctx, options.Semantic, options, tree, query)
+		resolved, err := resolveSemanticChannel(ctx, options.Semantic, options, tree, query)
+		if err != nil {
+			return SearchResponse{}, err
+		}
+		*embedding = resolved
 		selection.files, embedding.nominated = nominateSemanticFiles(
 			selection.files, selection.allFiles, embedding.hits, semanticTopK,
 		)

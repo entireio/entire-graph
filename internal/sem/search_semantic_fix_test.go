@@ -222,3 +222,102 @@ func TestSemanticFixF1LoopbackOnly(t *testing.T) {
 		t.Fatalf("localhost endpoint through the production client: %v", err)
 	}
 }
+
+// F3: the CALLER's cancellation during the semantic request is an error, not a successful
+// lexical answer — here with a query that selects no lexical file at all, the case the review
+// showed returning an empty success. A channel deadline (the caller still waiting) stays a
+// disclosed fallback; TestSemanticChannelFailsOpen/hang covers that half.
+func TestSemanticFixF3QueryCancellationPropagates(t *testing.T) {
+	repo := semanticFixtureRepo(t)
+	server := httptest.NewServer(&fakeEmbedder{})
+	defer server.Close()
+	cacheDir := t.TempDir()
+	buildSemanticFixtureIndex(t, repo, cacheDir, server.URL)
+	config := &SemanticConfig{Endpoint: server.URL, Model: semanticFixtureModel}
+	const noLexicalHit = "zzqxv wqpzk"
+
+	control, err := SearchRepository(t.Context(), repo, "test-version", noLexicalHit,
+		SearchOptions{CacheDir: cacheDir, MaxIndexedFiles: 2, Semantic: config})
+	if err != nil || control.Stats.SemanticStatus != SemanticStatusUsed {
+		t.Fatalf("NON-VACUITY: uncanceled control err=%v status=%q", err, control.Stats.SemanticStatus)
+	}
+	lexical, err := SearchRepository(t.Context(), repo, "test-version", noLexicalHit,
+		SearchOptions{CacheDir: cacheDir, MaxIndexedFiles: 2})
+	if err != nil || len(lexical.Results) != 0 {
+		t.Fatalf("NON-VACUITY: the query must select no lexical result: err=%v results=%d", err, len(lexical.Results))
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	previous := semanticHTTPClient
+	semanticHTTPClient = &http.Client{Transport: semanticFixRoundTripper(func(request *http.Request) (*http.Response, error) {
+		cancel()
+		return nil, request.Context().Err()
+	})}
+	t.Cleanup(func() { semanticHTTPClient = previous })
+	response, err := SearchRepository(ctx, repo, "test-version", noLexicalHit,
+		SearchOptions{CacheDir: cacheDir, MaxIndexedFiles: 2, Semantic: config})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled search returned err=%v status=%q results=%d, want context.Canceled",
+			err, response.Stats.SemanticStatus, len(response.Results))
+	}
+}
+
+// F3: load and scan stop on a done context instead of running to completion.
+func TestSemanticFixF3LoadAndScanHonourContext(t *testing.T) {
+	cacheDir := t.TempDir()
+	entry, err := semanticIndexEntry(cacheDir, "tree", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := binary.LittleEndian.AppendUint32(nil, math.Float32bits(1))
+	index := semanticIndexFile{Recipe: semanticRecipeVersion, Model: "m", Tree: "tree", Dimension: 1, Count: 1,
+		Symbols: []semanticIndexSymbol{{FilePath: "a.go", StartLine: 1, Name: "A"}}, Vectors: blob}
+	if err := entry.write("semantic", index); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSemanticIndexContext(t.Context(), cacheDir, "tree", "m"); err != nil {
+		t.Fatalf("NON-VACUITY: live load failed: %v", err)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := loadSemanticIndexContext(canceled, cacheDir, "tree", "m"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled load: %v, want context.Canceled", err)
+	}
+	if err := index.validate("tree", "m"); err != nil {
+		t.Fatal(err)
+	}
+	if hits, err := index.nearest(t.Context(), []float32{1}, 1); err != nil || len(hits) != 1 {
+		t.Fatalf("NON-VACUITY: live scan %v %v", hits, err)
+	}
+	if _, err := index.nearest(canceled, []float32{1}, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled scan: %v, want context.Canceled", err)
+	}
+}
+
+// F3: a build whose context is already done never publishes, and reports the cancellation.
+func TestSemanticFixF3CanceledBuildNeverPublishes(t *testing.T) {
+	repo := semanticFixtureRepo(t)
+	server := httptest.NewServer(&fakeEmbedder{})
+	defer server.Close()
+	cacheDir := t.TempDir()
+	first := buildSemanticFixtureIndex(t, repo, cacheDir, server.URL)
+	before := semanticCacheFiles(t, cacheDir)
+	snapshot, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{NoNetwork: true}, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	report, err := BuildSemanticIndex(canceled, repo, snapshot, cacheDir,
+		SemanticConfig{Endpoint: server.URL, Model: semanticFixtureModel}, true)
+	if !errors.Is(err, context.Canceled) || report.Status == "built" {
+		t.Fatalf("canceled forced rebuild: report=%+v err=%v, want context.Canceled and no build", report, err)
+	}
+	if after := semanticCacheFiles(t, cacheDir); strings.Join(after, ",") != strings.Join(before, ",") {
+		t.Fatalf("canceled build changed the cache: %v -> %v", before, after)
+	}
+	if reloaded, err := loadSemanticIndex(cacheDir, snapshot.Header.Tree, semanticFixtureModel); err != nil || reloaded.Count != first.Symbols {
+		t.Fatalf("previous generation not intact: %v", err)
+	}
+}
