@@ -3,6 +3,7 @@ package sem
 import (
 	"fmt"
 	"math/rand"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -103,5 +104,70 @@ func TestSemanticLexicalHeadSurvivesSpanMerge(t *testing.T) {
 	}
 	if merged[0].lexicalRank != 3 {
 		t.Fatalf("merged span carries lexical rank %d, want 3", merged[0].lexicalRank)
+	}
+}
+
+// Through SearchRepository: every delivered lexical row carries the rank the LEXICAL ranking gave
+// it (read from the pre-fusion observer), fusion does push some of them below their lexical rank —
+// the case the protection exists for — and no row the channel synthesized carries one.
+func TestSemanticSearchStampsPreFusionLexicalRanks(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "upstream/pool.go", "package upstream\n\n// AbandonStalledBackend drops a stalled backend: abandon it.\nfunc AbandonStalledBackend() error {\n\treturn nil\n}\n")
+	for i := 0; i < 8; i++ {
+		var b strings.Builder
+		b.WriteString("package api\n\n")
+		for j := 0; j < 2; j++ {
+			fmt.Fprintf(&b, "// Server%d_%d handles a server request.\nfunc Server%d_%d(r string) string {\n\treturn \"server \" + r\n}\n\n", i, j, i, j)
+		}
+		writeFile(t, repo, fmt.Sprintf("api/h%d.go", i), b.String())
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "fixture")
+	server := httptest.NewServer(&fakeEmbedder{})
+	t.Cleanup(server.Close)
+	cacheDir := t.TempDir()
+	snapshot, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version",
+		ProviderSnapshotOptions{NoNetwork: true, Profile: ProfileFull}, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BuildSemanticIndex(t.Context(), repo, snapshot, cacheDir,
+		SemanticConfig{Endpoint: server.URL, Model: semanticFixtureModel}, false); err != nil {
+		t.Fatal(err)
+	}
+	lexicalRanks := map[string]int{}
+	options := SearchOptions{CacheDir: cacheDir, TopK: 10, Profile: ProfileFull, MaxContextBytes: 24 * 1024,
+		Semantic: &SemanticConfig{Endpoint: server.URL, Model: semanticFixtureModel}}
+	options.preFusionObserver = func(selected []searchCandidate) {
+		for index, candidate := range selected {
+			lexicalRanks[candidate.result.FilePath+"#"+candidate.result.SymbolID] = index + 1
+		}
+	}
+	response, err := SearchRepository(t.Context(), repo, "test-version", "quit sluggish server", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.SemanticStatus != SemanticStatusUsed || len(lexicalRanks) == 0 {
+		t.Fatalf("fixture drift: status %q, %d lexical rows", response.Stats.SemanticStatus, len(lexicalRanks))
+	}
+	pushed := 0
+	for index, result := range response.Results {
+		if result.Section != "" {
+			continue
+		}
+		want := lexicalRanks[result.FilePath+"#"+result.SymbolID]
+		if result.SemanticOnly() {
+			want = 0
+		}
+		if result.lexicalRank != want {
+			t.Errorf("rank %d %s %s: lexical rank %d, want %d", result.Rank, result.FilePath, result.SymbolName, result.lexicalRank, want)
+		}
+		if want > 0 && index+1 > want {
+			pushed++
+		}
+	}
+	if pushed == 0 {
+		t.Fatal("fixture drift: fusion pushed no lexical row below its lexical rank")
 	}
 }
