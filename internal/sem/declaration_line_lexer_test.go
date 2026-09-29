@@ -118,3 +118,29 @@ func TestDeclarationLineIndexForUsesTheLanguagesRules(t *testing.T) {
 		}
 	}
 }
+
+// `#` rules: in Python (and the other hash-anywhere languages) `#` opens a comment wherever it
+// stands, so `#(` inside a decorator's arguments is a comment, not a bracket. With no language
+// known, `#` at the start of a line or after whitespace opens one unless it opens an attribute.
+// An unrecognised language name does not hide the file's extension.
+func TestDeclarationHashCommentsAndRouting(t *testing.T) {
+	t.Parallel()
+	decorator := []string{"@policy(", "    enabled=True, #(", ")", "def run():", "    pass"}
+	for _, c := range []struct {
+		name, language, path string
+		lines                []string
+		want                 int
+		wantOK               bool
+	}{
+		{"python-hash-paren", "Python", "", decorator, 3, true},
+		{"unknown-hash-paren", "", "", decorator, 3, true},
+		{"python-hash-glued", "Python", "", []string{"x = 1#run() here", "def run(): pass"}, 1, true},
+		{"unknown-attribute-is-code", "", "", []string{"#[inline] fn run() {}"}, 0, true},
+		{"unrecognised-language-uses-extension", "RustLang", "src/lib.rs", []string{`    let s = r"\"; fn run() {}`}, 0, true},
+	} {
+		got, ok := DeclarationLineIndexFor(c.language, c.path, c.lines, 0, len(c.lines)-1, "run")
+		if ok != c.wantOK || ok && got != c.want {
+			t.Errorf("%s: %d,%v; want %d,%v", c.name, got, ok, c.want, c.wantOK)
+		}
+	}
+}
