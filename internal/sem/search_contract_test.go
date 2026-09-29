@@ -65,6 +65,37 @@ func TestMergeSearchContractContextResultCount(t *testing.T) {
 	}
 }
 
+func TestMergeSearchContractContextDoesNotChargeCalleeExceptionSlot(t *testing.T) {
+	results := append([]SearchResult(nil), contractPayload()[:searchEnclosureHeadRanks]...)
+	results = append(results, contractCalleeEntry(len(results)+1))
+	entry := contractTestEntry()
+	note := &SearchCoverageNote{Symbol: "head", Total: 2, Peers: []string{"TestOther"}}
+	merged, card, gotNote, tests, entries := mergeSearchContractContext(results,
+		searchContractContext{test: &entry, note: note, card: contractCard()}, 100000, searchEnclosureHeadRanks)
+
+	if countNormalResultsForTest(merged) != searchEnclosureHeadRanks || len(merged) != searchEnclosureHeadRanks+1 {
+		t.Errorf("results=%d normal=%d, want %d total with %d capped normal rows",
+			len(merged), countNormalResultsForTest(merged), searchEnclosureHeadRanks+1, searchEnclosureHeadRanks)
+	}
+	if !hasSearchSignal(merged[len(merged)-1], searchCalleeHopSignal) {
+		t.Error("callee exception row did not survive")
+	}
+	if tests != 0 || gotNote != nil {
+		t.Errorf("covering tests=%d note=%+v, want an unseatable test and its note omitted", tests, gotNote)
+	}
+	if entries != len(contractCard()) || !reflect.DeepEqual(card, contractCard()) {
+		t.Errorf("card=%+v entries=%d, want the useful slot-free card retained", card, entries)
+	}
+	if got := contractTotalBytes(merged, card); got > 100000 {
+		t.Errorf("payload bytes=%d exceed 100000", got)
+	}
+	for index, result := range merged {
+		if result.Rank != index+1 {
+			t.Errorf("rank %d at index %d", result.Rank, index)
+		}
+	}
+}
+
 // contractPayload is a ranked payload with a protected head and two tail locators, one of which is
 // the LAST mention of its file (so it may never be displaced) and one of which is redundant.
 func contractPayload() []SearchResult {
@@ -93,6 +124,24 @@ func contractTestEntry() SearchResult {
 		Signals: []string{searchRelatedSignalPrefix + searchCoveringTestSignal},
 		Snippet: "\tgot := head()\n\trequire.Equal(t, 1, got)",
 	}
+}
+
+func contractCalleeEntry(rank int) SearchResult {
+	return SearchResult{
+		Rank: rank, FilePath: "src/helper.go", StartLine: 10, EndLine: 12, FocusLine: 10,
+		SnippetStartLine: 10, SnippetEndLine: 10, Kind: "function", SymbolName: "headHelper",
+		Signals: []string{searchCalleeHopSignal}, Snippet: "func headHelper() string {",
+	}
+}
+
+func countNormalResultsForTest(results []SearchResult) int {
+	count := 0
+	for _, result := range results {
+		if !hasSearchSignal(result, searchCalleeHopSignal) {
+			count++
+		}
+	}
+	return count
 }
 
 func contractCard() []TypeCardEntry {

@@ -75,6 +75,78 @@ func TestSearchRepositoryFinalResultCount(t *testing.T) {
 	}
 }
 
+func TestSearchRepositoryCalleeOverflowKeepsSlotFreeTypeCard(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "server/handler.go", `package server
+type PathConfig struct { Prefix string }
+func normalizePath(config PathConfig, input string) string {
+ return normalizePathClean(config.Prefix, input)
+}
+`)
+	write(t, repo, "server/helper.go", `package server
+func normalizePathClean(prefix, input string) string {
+ return prefix + input
+}
+`)
+	write(t, repo, "server/handler_test.go", `package server
+func TestNormalizePath(t *testing.T) {
+ got := normalizePath(PathConfig{Prefix: "/"}, "docs")
+ require.Equal(t, "/docs", got)
+}
+`)
+
+	const topK = 1
+	const maxBytes = 100000
+	response, err := SearchRepository(t.Context(), repo, "test", "normalizePath", SearchOptions{
+		Worktree: true, Profile: ProfileFull, TopK: topK, CalleeHop: true,
+		IncludeTypeCard: true, MaxContextBytes: maxBytes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	normal, callees, covering := 0, 0, 0
+	for index, result := range response.Results {
+		if result.Rank != index+1 {
+			t.Errorf("rank %d at index %d", result.Rank, index)
+		}
+		switch {
+		case containsString(result.Signals, searchCalleeHopSignal):
+			callees++
+			if result.FilePath != "server/helper.go" || result.SymbolName != "normalizePathClean" {
+				t.Errorf("callee = %+v, want the cross-file normalizePathClean helper", result)
+			}
+		case result.Section == searchSectionCoveringTest:
+			covering++
+		default:
+			normal++
+		}
+	}
+	if normal != topK || callees != 1 || covering != 0 {
+		t.Errorf("normal=%d callees=%d covering=%d, want %d normal, 1 callee exception, and no covering row",
+			normal, callees, covering, topK)
+	}
+	if response.Stats.CalleeHopSites != 1 || response.Stats.CoveringTests != 0 || response.CoverageNote != nil {
+		t.Errorf("callee/covering stats = %d/%d, note=%+v; want 1/0 and nil",
+			response.Stats.CalleeHopSites, response.Stats.CoveringTests, response.CoverageNote)
+	}
+	if len(response.TypeCard) == 0 || response.Stats.TypeCardEntries != len(response.TypeCard) {
+		t.Fatalf("type card=%+v entries=%d, want a retained useful card", response.TypeCard, response.Stats.TypeCardEntries)
+	}
+	usefulCard := false
+	for _, entry := range response.TypeCard {
+		usefulCard = usefulCard || strings.Contains(entry.Name, "PathConfig") || strings.Contains(entry.Decl, "PathConfig")
+	}
+	if !usefulCard {
+		t.Errorf("type card=%+v, want the PathConfig declaration", response.TypeCard)
+	}
+	if got := serializedSearchResultBytes(response.Results) + serializedSearchResultBytes(response.TypeCard); got > maxBytes {
+		t.Errorf("result and card bytes=%d exceed max=%d", got, maxBytes)
+	}
+	if err := response.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSearchRepositoryRanksExactSymbol(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "config/service.go", `package config

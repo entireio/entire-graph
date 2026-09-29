@@ -832,8 +832,9 @@ func searchRelatedSiteAlreadySurfaced(results []SearchResult, site searchRelated
 //     is where displacement stops.
 //   - The most sites wins, then the fewest displaced hits: a plan that keeps a ranked hit for
 //     free is strictly better than one that drops it for nothing.
-//   - topK caps the returned count, including related sites. Spare slots or legal tail exchanges
-//     must fund every entry; byte savings alone cannot buy extra result slots.
+//   - topK caps the normal returned count, including related sites. Explicit callee-hop rows are
+//     exceptions to that cap. Spare slots or legal tail exchanges must fund every normal entry;
+//     byte savings alone cannot buy extra normal-result slots.
 //   - Ranks are renumbered so the payload keeps its 1..N invariant.
 func mergeSearchRelatedSites(
 	results []SearchResult,
@@ -872,16 +873,30 @@ func mergeSearchRelatedSites(
 	order := searchRelatedDisplacementOrder(results, floor)
 	for count := len(entries); count >= 1; count-- {
 		for drop := 0; drop <= minInt(count, len(order)); drop++ {
-			if len(results)-drop+count > topK {
+			merged := searchRelatedMergedPlan(results, entries[:count], order[:drop])
+			if searchTopKResultCount(merged) > topK {
 				continue
 			}
-			merged := searchRelatedMergedPlan(results, entries[:count], order[:drop])
 			if serializedSearchResultBytes(merged) <= budget {
 				return merged, count
 			}
 		}
 	}
 	return results, 0
+}
+
+// searchTopKResultCount counts rows governed by the normal result cap. A callee-hop row that still
+// exists here survived its own byte-aware planner and remains the explicit exception documented for
+// --callee-hop. Counting the rows themselves, rather than the earlier CalleeHopSites statistic,
+// avoids crediting callees that a later same-file span merge absorbed.
+func searchTopKResultCount(results []SearchResult) int {
+	count := 0
+	for _, result := range results {
+		if !hasSearchSignal(result, searchCalleeHopSignal) {
+			count++
+		}
+	}
+	return count
 }
 
 // searchRelatedMergedPlan builds one merged payload: the ranking minus the displaced indices,

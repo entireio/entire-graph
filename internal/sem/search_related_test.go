@@ -607,6 +607,7 @@ func TestMergeSearchRelatedSitesResultCount(t *testing.T) {
 		name                      string
 		topK, redundant, want     int
 		protectSource, tightBytes bool
+		calleeOverflow            bool
 	}{
 		{name: "full pool exchanges two redundant tails", topK: 10, redundant: 2, want: 2},
 		{name: "full pool reduces block to one legal exchange", topK: 10, redundant: 1, want: 1},
@@ -614,6 +615,7 @@ func TestMergeSearchRelatedSitesResultCount(t *testing.T) {
 		{name: "last file mentions cannot fund sites", topK: 10, want: 0},
 		{name: "rendered source cannot fund a slot", topK: 10, redundant: 2, protectSource: true, want: 1},
 		{name: "byte and count limits both bind", topK: 10, redundant: 2, tightBytes: true, want: 2},
+		{name: "callee exception does not consume a normal slot", topK: 10, redundant: 1, calleeOverflow: true, want: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			results := mergeTestResults(10, "head source")
@@ -624,14 +626,18 @@ func TestMergeSearchRelatedSitesResultCount(t *testing.T) {
 			if tc.protectSource {
 				results[7].Signals = append(results[7].Signals, searchCompleteSymbolSignal)
 			}
+			if tc.calleeOverflow {
+				results = append(results, contractCalleeEntry(len(results)+1))
+			}
 			budget := serializedSearchResultBytes(results)
 			if tc.tightBytes {
 				budget -= 1500
 			}
 			sites := []searchRelatedSite{mergeTestSite("alpha", 3), mergeTestSite("beta", 11)}
 			merged, count := mergeSearchRelatedSites(results, sites, cloneFamilyFixture().reader(), budget, tc.topK)
-			if count != tc.want || len(merged) > tc.topK {
-				t.Fatalf("sites=%d results=%d, want %d sites and at most %d results", count, len(merged), tc.want, tc.topK)
+			if count != tc.want || countNormalResultsForTest(merged) > tc.topK {
+				t.Fatalf("sites=%d results=%d normal=%d, want %d sites and at most %d normal results",
+					count, len(merged), countNormalResultsForTest(merged), tc.want, tc.topK)
 			}
 			if got := serializedSearchResultBytes(merged); got > budget {
 				t.Errorf("%d bytes exceed %d", got, budget)
@@ -653,6 +659,15 @@ func TestMergeSearchRelatedSitesResultCount(t *testing.T) {
 			for index, result := range merged {
 				if result.Rank != index+1 {
 					t.Errorf("rank %d at index %d", result.Rank, index)
+				}
+			}
+			if tc.calleeOverflow {
+				found := false
+				for _, result := range merged {
+					found = found || hasSearchSignal(result, searchCalleeHopSignal)
+				}
+				if !found {
+					t.Error("callee exception row was displaced")
 				}
 			}
 		})
