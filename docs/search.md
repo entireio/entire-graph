@@ -75,3 +75,50 @@ fixed diagnostic floor (`repo_ignored`, `warnings`, `completeness`,
 agent renderer is the only one whose ceiling binds the whole payload rather than
 `results` alone. Profile is not where the cost is: `full` versus `fast` differed
 by 42 bytes on the same query.
+
+## Opt-in semantic channel
+
+With `ENTIRE_GRAPH_SEMANTIC_ENDPOINT` (a localhost/loopback URL) and
+`ENTIRE_GRAPH_SEMANTIC_MODEL` both set, a `--head` query built against an
+`entire graph index --semantic` index also asks a local embedder for the
+nearest functions and interleaves them with the lexical ranking, embedding
+first. Unconfigured, the payload is byte-identical to a build without the
+channel: none of the fields below appear.
+
+- `results[].semantic_score`: the channel's cosine for a row it matched, on
+  its own scale; never copied into `score`. A row the channel synthesized
+  (no lexical candidate existed) carries the `semantic:only` signal and a
+  `score` of 0, meaning "not measured", not "worthless". A lexical row the
+  channel also matched keeps its measured `score` and gains the
+  `semantic:embedding` signal.
+- `stats.semantic_status`: `used`, `off:flag`, `off:worktree`, or
+  `unavailable:<reason>` (which also adds a `W_SEMANTIC_UNAVAILABLE` warning).
+  Every channel failure falls open to the lexical answer, including
+  `unavailable:nomination-snapshot` (the nominated files could not be
+  loaded; any cold-path eviction is undone, so the answer is the unconfigured
+  one).
+- `stats.semantic_results`: delivered primary rows carrying the
+  `semantic:embedding` signal, which counts both rows the channel added and
+  lexical rows it merely matched. Count `semantic:only` rows for the former.
+- `stats.semantic_nominated_files`: files outside the lexical selection
+  loaded so the channel's rows can be rendered (at most 10).
+- `stats.semantic_evicted_files`: lexical files that gave up their parse slot
+  to a nomination. On a preindexed (warm) search nominations are additive and
+  this is always 0. On a cold search nominations count against
+  `--max-indexed-files`, and an evicted file's lexical rows are not produced.
+
+On a preindexed search the channel does not change the lexical ranking at
+all: the lexical candidates, their scores and idf are exactly what an
+unconfigured search computes, and the nominated files' symbols join only
+after the lexical ranking is final. On a cold search the one difference is
+eviction: idf and query-word presence still come from the full lexical
+selection, but the evicted files' rows are gone and, with their symbols, so is
+their share of BM25's average document length and any call edges they
+carried, so surviving scores can shift slightly. The fused order is the
+delivered order, so `results` is not necessarily descending by `score`.
+Fusion keeps one row per symbol: rows are deduplicated on the symbol ID, so
+two symbols that start on the same line stay distinct, and file plus line
+stands in only for a row that has no symbol.
+
+`format_version` stays 1: every field above is additive and omitted when the
+channel is not configured.

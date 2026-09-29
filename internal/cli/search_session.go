@@ -59,7 +59,7 @@ type searchSession struct {
 // session written without the current schema must run a real search: its opaque payload cannot be
 // upgraded or inspected safely after the fact.
 const (
-	searchSessionReplaySchema = 4
+	searchSessionReplaySchema = 5
 	// A normal search payload is budgeted in kilobytes. Keep a generous ceiling for callers that
 	// deliberately widen it, but never let an untrusted/stale session file allocate without bound.
 	maxSearchSessionStateBytes = 8 << 20
@@ -83,6 +83,9 @@ type searchSessionState struct {
 	Tree string `json:"tree,omitempty"`
 	// Producer is the binary that rendered the payload; see searchSessionProducer.
 	Producer string `json:"producer,omitempty"`
+	// Semantic is the semantic channel's effective configuration the payload was rendered under;
+	// see searchSessionScope.Semantic. Omitted when the channel is unconfigured.
+	Semantic string `json:"semantic,omitempty"`
 }
 
 // searchSessionScope identifies the repository view and wire format a payload describes.
@@ -116,6 +119,11 @@ type searchSessionScope struct {
 	// snippets and budget are the RECORDING binary's; replaying it after an upgrade serves the old
 	// ranking under a header saying the question was already answered.
 	Producer string
+	// Semantic is the semantic channel's effective configuration (sem.SemanticConfig.ReplayIdentity):
+	// "" unconfigured, "off" for --no-semantic, otherwise on + model + a HASH of the endpoint. A
+	// payload rendered with the channel on holds rows and a stats line the lexical one does not, and
+	// vice versa, so a payload recorded under one configuration never answers for another.
+	Semantic string
 }
 
 // matches reports whether a recorded scope may answer for the live one.
@@ -134,7 +142,8 @@ func (recorded searchSessionState) matches(live searchSessionScope) bool {
 		recorded.Format != live.Format ||
 		recorded.Producer == "" ||
 		live.Producer == "" ||
-		recorded.Producer != live.Producer {
+		recorded.Producer != live.Producer ||
+		recorded.Semantic != live.Semantic {
 		return false
 	}
 	// The tree hash alone is not a repository identity: sibling --repo subdirectories share the
@@ -283,6 +292,7 @@ func (s *searchSession) record(
 	state.PolicyFingerprint = live.PolicyFingerprint
 	state.Repo, state.Tree, state.Format = live.Repo, live.Tree, live.Format
 	state.Producer = live.Producer
+	state.Semantic = live.Semantic
 	if state.Payload == "" && replayable && len(payload) <= maxSearchSessionStateBytes {
 		state.Query = query
 		state.Payload = string(payload)

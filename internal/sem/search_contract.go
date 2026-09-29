@@ -97,7 +97,8 @@ func buildSearchContractContext(
 //     list an agent reads as "where do I edit".
 //   - The payload grows by at most searchContractAllowanceBytes, and never past hardBudget.
 //   - When hardBudget forces a choice, tail locators are displaced to pay — fewest first, and
-//     only ones whose file the payload still names somewhere else.
+//     only ones whose file the payload still names somewhere else, and never a row of the lexical
+//     head, wherever semantic fusion seated it (searchLexicalHeadRows).
 //   - Ranks are renumbered so the payload keeps its 1..N invariant.
 func mergeSearchContractContext(
 	results []SearchResult,

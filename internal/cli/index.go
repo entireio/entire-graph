@@ -27,6 +27,9 @@ type indexFlags struct {
 	// Force rebuilds the committed-tree snapshot from scratch and overwrites the
 	// cache entry even when a valid one already exists for this tree.
 	Force bool
+	// Semantic also builds the opt-in semantic index for this committed tree, embedding with the
+	// endpoint and model named by ENTIRE_GRAPH_SEMANTIC_ENDPOINT / _MODEL. Force rebuilds it too.
+	Semantic bool
 }
 
 type indexResponse struct {
@@ -43,6 +46,9 @@ type indexResponse struct {
 	Warnings        []sem.ProviderWarning  `json:"warnings"`
 	PartialFailures []sem.PartialFailure   `json:"partial_failures"`
 	Completeness    sem.CompletenessReport `json:"completeness"`
+	// Semantic reports the semantic index build; omitted unless --semantic was passed, so the
+	// default index payload is unchanged.
+	Semantic *sem.SemanticIndexReport `json:"semantic,omitempty"`
 }
 
 func runIndex(ctx context.Context, opts Options, args []string) error {
@@ -92,6 +98,12 @@ func runIndexCommand(ctx context.Context, opts Options, args []string, health bo
 	if cacheDir == "" {
 		return errors.New("index requires --cache-dir or ENTIRE_PLUGIN_DATA_DIR: this platform has no resolvable per-user cache directory")
 	}
+	// Checked BEFORE the snapshot build: asking for a semantic index without naming the embedder is
+	// a usage error, and it should not cost a full index to find that out.
+	semanticConfig := opts.Env.semanticConfig()
+	if flags.Semantic && semanticConfig == nil {
+		return fmt.Errorf("index --semantic requires both %s and %s", envSemanticEndpoint, envSemanticModel)
+	}
 	snapOptions := sem.ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Profile:      profile,
@@ -128,6 +140,14 @@ func runIndexCommand(ctx context.Context, opts Options, args []string, health bo
 	if err != nil {
 		return err
 	}
+	var semanticReport *sem.SemanticIndexReport
+	if flags.Semantic {
+		report, err := sem.BuildSemanticIndex(ctx, repo, snapshot, cacheDir, *semanticConfig, flags.Force)
+		if err != nil {
+			return fmt.Errorf("semantic index: %w", err)
+		}
+		semanticReport = &report
+	}
 	warnings := snapshot.Header.Warnings
 	if warnings == nil {
 		warnings = []sem.ProviderWarning{}
@@ -150,6 +170,7 @@ func runIndexCommand(ctx context.Context, opts Options, args []string, health bo
 		Warnings:        warnings,
 		PartialFailures: partialFailures,
 		Completeness:    snapshot.Header.Completeness,
+		Semantic:        semanticReport,
 	}
 	if health {
 		return writeHealth(opts.Stdout, response, outputText, flags.Force)
@@ -240,6 +261,10 @@ func writeIndexText(w io.Writer, r indexResponse, reportPath string) error {
 			fmt.Fprintf(w, "      %d more — run with --format json for the rest\n", remaining)
 		}
 	}
+	if s := r.Semantic; s != nil {
+		fmt.Fprintf(w, "  semantic index %s: %s symbols x %d dims (%s, recipe v%d)\n",
+			s.Status, humanInt(int64(s.Symbols)), s.Dimension, termsafe.Line(s.Model), s.Recipe)
+	}
 	if reportPath != "" {
 		fmt.Fprintf(w, "  report written to %s\n", reportPath)
 	}
@@ -295,6 +320,8 @@ func parseIndexFlags(args []string) (indexFlags, []string, error) {
 			flags.Format, index = value, next
 		case "--force":
 			flags.Force = true
+		case "--semantic":
+			flags.Semantic = true
 		case "--head", "--no-network":
 			// Indexing is always local-only and always targets committed HEAD.
 		case "--worktree":

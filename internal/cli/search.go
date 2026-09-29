@@ -87,6 +87,8 @@ type searchFlags struct {
 	ContainerMap   bool
 	SignatureTypes bool
 	TypeCard       bool
+	// NoSemantic turns a configured semantic channel off for this one call. See envSemanticEndpoint.
+	NoSemantic bool
 }
 
 // applySearchReferenceBlocks turns a comma-separated block list into flags. It is used for both the
@@ -159,6 +161,9 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	// One semantic configuration for the whole call: the replay identity below and the search it
+	// guards must describe the same channel.
+	semanticConfig := searchSemanticConfig(opts.Env, flags.NoSemantic)
 	var (
 		scope               searchSessionScope
 		replayPolicy        sem.SearchReplayPolicy
@@ -166,7 +171,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		forceSessionReplace bool
 	)
 	if session != nil {
-		scope = searchSessionScopeFor(ctx, repo, opts.sessionProducer())
+		scope = searchSessionScopeFor(ctx, repo, opts.sessionProducer(), semanticConfig)
 		scope.Format = flags.Format
 		// A rendered payload is opaque: snippets and reference blocks cannot be safely removed from
 		// it after the fact. Bind it to the semantic layer's effective corpus policy and validate
@@ -221,7 +226,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 					IgnoreFiles:  flags.IgnoreFiles,
 					IncludeFiles: flags.IncludeFiles,
 				})
-				confirmedScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer())
+				confirmedScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer(), semanticConfig)
 				confirmedScope.PolicyFingerprint = confirmedPolicy.Fingerprint()
 				confirmedScope.Format = flags.Format
 				if confirmErr == nil &&
@@ -239,7 +244,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 							IgnoreFiles:  flags.IgnoreFiles,
 							IncludeFiles: flags.IncludeFiles,
 						})
-						finalScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer())
+						finalScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer(), semanticConfig)
 						finalScope.PolicyFingerprint = finalPolicy.Fingerprint()
 						finalScope.Format = flags.Format
 						if finalErr == nil &&
@@ -318,6 +323,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		IncludeContainerMap:   flags.ContainerMap,
 		IncludeSignatureTypes: flags.SignatureTypes,
 		IncludeTypeCard:       flags.TypeCard,
+		Semantic:              semanticConfig,
 	})
 	if err != nil {
 		return err
@@ -371,6 +377,16 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	return nil
 }
 
+// searchSemanticConfig is the channel configuration for one search: nil (unconfigured, the default)
+// unless the environment names both an endpoint and a model, and marked Disabled by --no-semantic.
+func searchSemanticConfig(env EntireEnv, disabled bool) *sem.SemanticConfig {
+	config := env.semanticConfig()
+	if config != nil {
+		config.Disabled = disabled
+	}
+	return config
+}
+
 // searchSessionScopeFor describes the tree a payload recorded now would be answering for.
 //
 // Failure is not an error here. A directory git cannot describe still has a resolved path, and a
@@ -378,11 +394,11 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 // zero scope matches nothing, so the echo is refused and the question gets a real answer. The one
 // outcome this must never produce is a confident scope that is wrong.
 //
-// The producer is set HERE, not at call sites: the replay decision rebuilds this scope twice after
-// its policy checks, and an identity field set by only one of three builders silently refused every
-// replay.
-func searchSessionScopeFor(ctx context.Context, repo, producer string) searchSessionScope {
-	scope := searchSessionScope{Repo: repo, Producer: producer}
+// The producer and the semantic identity are set HERE, not at call sites: the replay decision
+// rebuilds this scope twice after its policy checks, and an identity field set by only one of three
+// builders silently refused every replay (or, worse, silently accepted one).
+func searchSessionScopeFor(ctx context.Context, repo, producer string, semantic *sem.SemanticConfig) searchSessionScope {
+	scope := searchSessionScope{Repo: repo, Producer: producer, Semantic: semantic.ReplayIdentity()}
 	if resolved, err := filepath.Abs(repo); err == nil {
 		scope.Repo = resolved
 	}
@@ -772,6 +788,14 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			if _, err := out.Write(block); err != nil {
 				return err
 			}
+		}
+	}
+	// The semantic channel's state, ahead of the results for the reason the ignore disclosure is:
+	// a reader of the hits has to know whether they are lexical-only. One bounded line of stable
+	// codes and counts, printed only when the channel is configured.
+	if line := textSearchSemanticLine(response.Stats); len(line) > 0 {
+		if _, err := out.Write(line); err != nil {
+			return err
 		}
 	}
 	if notice, _ := searchLowConfidenceNotices(response); len(notice) > 0 {
@@ -1214,7 +1238,11 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	// A callee-hop entry is excluded for the same reason: it was admitted by a CALLS edge, not by
 	// relevance, so it carries no ranked score and `score=0.0000` beside it would read as
 	// "worthless" rather than "not applicable". The signals list already says why it is here.
-	if result.Section != sem.SearchSectionCoveringTest && !searchResultIsCalleeHop(result) {
+	if result.SemanticOnly() {
+		// A row the opt-in semantic channel synthesized has no lexical score; printing
+		// `score=0.0000` would read as "worthless". Its own, separately labelled scale is shown.
+		fmt.Fprintf(out, " semantic_score=%.4f", result.SemanticScore)
+	} else if result.Section != sem.SearchSectionCoveringTest && !searchResultIsCalleeHop(result) {
 		fmt.Fprintf(out, " score=%.4f", result.Score)
 	}
 	if name != "" {
@@ -1564,13 +1592,18 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	if stats.IndexCacheHit {
 		cacheState = "hit"
 	}
+	// The semantic channel's state rides IN every header rung (and the last-resort rungs below),
+	// so it survives any budget that can hold a header at all. Empty when the channel is not
+	// configured, which keeps the default payload byte-identical.
+	semantic := agentSearchSemanticTag(stats)
 	fullHeader := []byte(fmt.Sprintf(
-		"Index: cache-%s (%dms) | Query: %dms | Preselect: %dms | Total: %dms\n",
+		"Index: cache-%s (%dms) | Query: %dms | Preselect: %dms | Total: %dms%s\n",
 		cacheState,
 		stats.IndexLatencyMS,
 		stats.QueryLatencyMS,
 		stats.PreselectLatencyMS,
 		stats.TotalLatencyMS,
+		semantic,
 	))
 	// EVERY block below is measured against the caller's byte cap, so every block
 	// is escaped BEFORE it is measured. The terminal-safety rewrite turns one ESC
@@ -1667,12 +1700,13 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// top-ranked location at budgets where the expanded diagnostic otherwise
 	// crowds out every result.
 	compactHeader := []byte(fmt.Sprintf(
-		"I:%s/%d Q:%d P:%d T:%d\n",
+		"I:%s/%d Q:%d P:%d T:%d%s\n",
 		cacheState,
 		stats.IndexLatencyMS,
 		stats.QueryLatencyMS,
 		stats.PreselectLatencyMS,
 		stats.TotalLatencyMS,
+		semantic,
 	))
 	// Two further rungs between the compact header and the legacy one, shedding the latency
 	// fields in order of least diagnostic value (preselect, then query, then total) while
@@ -1680,9 +1714,9 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// way to buy bytes back for the ranking was the legacy "Index: cache-miss (113ms)" form,
 	// which changes the prefix — so a slow machine had to choose between losing the snippet and
 	// losing the machine-readable header. It now loses neither.
-	timedHeader := []byte(fmt.Sprintf("I:%s/%d T:%d\n", cacheState, stats.IndexLatencyMS, stats.TotalLatencyMS))
-	terseHeader := []byte(fmt.Sprintf("I:%s/%d\n", cacheState, stats.IndexLatencyMS))
-	legacyHeader := []byte(fmt.Sprintf("Index: cache-%s (%dms)\n", cacheState, stats.IndexLatencyMS))
+	timedHeader := []byte(fmt.Sprintf("I:%s/%d T:%d%s\n", cacheState, stats.IndexLatencyMS, stats.TotalLatencyMS, semantic))
+	terseHeader := []byte(fmt.Sprintf("I:%s/%d%s\n", cacheState, stats.IndexLatencyMS, semantic))
+	legacyHeader := []byte(fmt.Sprintf("Index: cache-%s (%dms)%s\n", cacheState, stats.IndexLatencyMS, semantic))
 	diagnosticVariants := [][]byte{fullDiagnostics}
 	if !bytes.Equal(fullDiagnostics, compactDiagnostics) {
 		diagnosticVariants = append(diagnosticVariants, compactDiagnostics)
@@ -1866,8 +1900,8 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 			excluded = fmt.Sprintf(" X%d", response.Stats.RepoIgnoredFiles)
 		}
 		candidates := [][]byte{
-			[]byte(fmt.Sprintf("Index: cache-%s%s%s\n", cacheState, marker, excluded)),
-			[]byte(fmt.Sprintf("%s I:%s%s\n", marker, cacheState, excluded)),
+			[]byte(fmt.Sprintf("Index: cache-%s%s%s%s\n", cacheState, marker, excluded, semantic)),
+			[]byte(fmt.Sprintf("%s I:%s%s%s\n", marker, cacheState, excluded, semantic)),
 		}
 		if excluded != "" {
 			// The count outlives the cache state, not the other way round. Below the
@@ -1881,6 +1915,8 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 			candidates = append(candidates, []byte(fmt.Sprintf("%s%s\n", marker, excluded)))
 		}
 		candidates = append(candidates,
+			[]byte(fmt.Sprintf("Index: cache-%s%s%s\n", cacheState, marker, semantic)),
+			[]byte(fmt.Sprintf("%s I:%s%s\n", marker, cacheState, semantic)),
 			[]byte(fmt.Sprintf("Index: cache-%s%s\n", cacheState, marker)),
 			[]byte(fmt.Sprintf("%s I:%s\n", marker, cacheState)),
 		)
@@ -1896,6 +1932,39 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	}
 	_, err := out.Write(payload)
 	return err
+}
+
+// agentSearchSemanticTag is the compact semantic-channel state for agent headers: " sem=<status>"
+// (used, off:flag, off:worktree, unavailable:<reason>) with the number of delivered primary rows
+// the channel placed when it was used, or "" when the channel is not configured. Only the status
+// code travels — never a warning detail, an endpoint or a model name.
+func agentSearchSemanticTag(stats sem.SearchStats) string {
+	if stats.SemanticStatus == "" {
+		return ""
+	}
+	if stats.SemanticStatus == sem.SemanticStatusUsed {
+		return fmt.Sprintf(" sem=used/%d", stats.SemanticResults)
+	}
+	return " sem=" + stats.SemanticStatus
+}
+
+// textSearchSemanticLine is the text renderer's one-line semantic-channel state, "" when the
+// channel is not configured. Like the agent tag it carries only stable codes and counts.
+func textSearchSemanticLine(stats sem.SearchStats) []byte {
+	switch {
+	case stats.SemanticStatus == "":
+		return nil
+	case stats.SemanticStatus == sem.SemanticStatusUsed && stats.SemanticEvictedFiles > 0:
+		return []byte(fmt.Sprintf("semantic: used (%d results, %d nominated files, %d lexical files evicted)\n",
+			stats.SemanticResults, stats.SemanticNominatedFiles, stats.SemanticEvictedFiles))
+	case stats.SemanticStatus == sem.SemanticStatusUsed:
+		return []byte(fmt.Sprintf("semantic: used (%d results, %d nominated files)\n",
+			stats.SemanticResults, stats.SemanticNominatedFiles))
+	case strings.HasPrefix(stats.SemanticStatus, "unavailable:"):
+		return []byte("semantic: " + stats.SemanticStatus + " - results are lexical only\n")
+	default:
+		return []byte("semantic: " + stats.SemanticStatus + "\n")
+	}
 }
 
 // searchLowConfidenceNotices renders the low-confidence marker in a full and a compact
@@ -2363,6 +2432,11 @@ func agentSearchScoreTag(result sem.SearchResult) string {
 	if result.Section == sem.SearchSectionRelated || result.Section == sem.SearchSectionCoveringTest {
 		return ""
 	}
+	if result.SemanticOnly() {
+		// Synthesized by the opt-in semantic channel: no lexical score, so the cosine is shown on
+		// its own label (`e=`) rather than as a lexical `s=0.0`.
+		return fmt.Sprintf(" e=%.2f", result.SemanticScore)
+	}
 	return fmt.Sprintf(" s=%.1f", result.Score)
 }
 
@@ -2710,6 +2784,9 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 			flags.CacheDir, i = value, next
 		case "--no-cache":
 			flags.DisableCache = true
+		// --no-semantic: skip a configured semantic channel for this call (reported as off:flag).
+		case "--no-semantic":
+			flags.NoSemantic = true
 		case "--max-indexed-files":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

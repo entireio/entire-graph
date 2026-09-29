@@ -268,6 +268,14 @@ func mergedSearchSpanResult(results []SearchResult, run []int, lines []string) (
 	// widest thing it touches would report a container as the fix site.
 	span.Signals = appendUnique(append([]string(nil), span.Signals...), searchSpanMergedSignal)
 	span.MergedRanks = ranks
+	// The span now holds every member's text, so it carries the best (lowest) pre-fusion lexical
+	// rank among them: a lexical head row folded into a semantic survivor must stay as protected
+	// from displacement as it was on its own (searchLexicalHeadRows). Never serialized; 0 unfused.
+	for _, index := range run {
+		if member := results[index].lexicalRank; member > 0 && (span.lexicalRank == 0 || member < span.lexicalRank) {
+			span.lexicalRank = member
+		}
+	}
 	return survivor, span, true
 }
 

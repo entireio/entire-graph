@@ -253,6 +253,13 @@ func (entry cacheEntry) open() (*os.File, error) {
 // portable os.Root cannot also pin the object's lexical ancestry, and that process already has the
 // authority needed to move existing cache artifacts through the same namespace.
 func (entry cacheEntry) write(temporaryPrefix string, value any) error {
+	return entry.writeCommitting(temporaryPrefix, value, nil)
+}
+
+// writeCommitting is write with a last veto: beforeCommit (when non-nil) runs after the temporary
+// is complete and immediately before the rename that publishes it, and an error from it abandons
+// the temporary and leaves the existing entry untouched.
+func (entry cacheEntry) writeCommitting(temporaryPrefix string, value any, beforeCommit func() error) error {
 	if err := os.MkdirAll(entry.root, 0o700); err != nil {
 		return err
 	}
@@ -298,6 +305,11 @@ func (entry cacheEntry) write(temporaryPrefix string, value any) error {
 	}
 	if err := temporary.Close(); err != nil {
 		return err
+	}
+	if beforeCommit != nil {
+		if err := beforeCommit(); err != nil {
+			return err
+		}
 	}
 	// Rename, not a write through the destination: renameat replaces a symlink sitting at the
 	// artifact name instead of following it, so the one component an attacker can predict without
