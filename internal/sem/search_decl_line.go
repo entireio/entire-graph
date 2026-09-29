@@ -37,6 +37,11 @@ const searchDeclarationLineMaxScan = 16
 // searchDeclarationLineMaxScan lines down, and inside the snippet [first, first+len(lines)-1] (the
 // name outside literals and leading annotations, definition-shaped lines first). ok is false when the symbol does not start inside the snippet or no such line exists.
 func searchDeclarationLine(lines []string, first, symbolStart, symbolEnd int, name string) (int, bool) {
+	return searchDeclarationLineFor("", "", lines, first, symbolStart, symbolEnd, name)
+}
+
+// searchDeclarationLineFor is searchDeclarationLine lexing with the file's language rules.
+func searchDeclarationLineFor(language, path string, lines []string, first, symbolStart, symbolEnd int, name string) (int, bool) {
 	if name == "" || first <= 0 || symbolStart < first || symbolStart >= first+len(lines) {
 		return 0, false
 	}
@@ -47,23 +52,32 @@ func searchDeclarationLine(lines []string, first, symbolStart, symbolEnd int, na
 	if limit := symbolStart + searchDeclarationLineMaxScan - 1; limit < last {
 		last = limit
 	}
-	index, ok := DeclarationLineIndex(lines, symbolStart-first, last-first, name)
+	index, ok := DeclarationLineIndexFor(language, path, lines, symbolStart-first, last-first, name)
 	if !ok {
 		return 0, false
 	}
 	return first + index, true
 }
 
-// searchSymbolDeclarationLine is the declaration line of a symbol whose snippet lines start at file
-// line first: the parser's name line when it lies in the symbol's span and the snippet (parsed is
-// then true, and there is no scan bound: it is where the name IS, however many annotation lines
-// precede it), else searchDeclarationLine's text fallback.
-func searchSymbolDeclarationLine(lines []string, first, symbolStart, symbolEnd, nameLine int, name string) (line int, ok, parsed bool) {
-	if nameLine > 0 && nameLine >= symbolStart && (symbolEnd < symbolStart || nameLine <= symbolEnd) &&
-		nameLine >= first && nameLine < first+len(lines) {
-		return nameLine, true, true
+// searchSymbolDeclarationLine is the declaration line of the symbol r names (its SymbolStartLine,
+// SymbolEndLine, SymbolNameLine, SymbolName, Language and FilePath) in lines, which start at file
+// line first. The parser's name line decides in all of its states:
+//
+//   - valid (inside the symbol's span) and inside lines: it is the declaration (parsed is true),
+//     with no scan bound;
+//   - valid but outside lines, or outside the symbol's span (invalid): there is no declaration
+//     here, and the text finder is NOT asked — it would take a same-name call or mention for it;
+//   - absent (0): searchDeclarationLineFor's text fallback.
+func searchSymbolDeclarationLine(lines []string, first int, r SearchResult) (line int, ok, parsed bool) {
+	nameLine := r.SymbolNameLine
+	if nameLine != 0 {
+		valid := nameLine > 0 && nameLine >= r.SymbolStartLine && (r.SymbolEndLine < r.SymbolStartLine || nameLine <= r.SymbolEndLine)
+		if valid && nameLine >= first && nameLine < first+len(lines) {
+			return nameLine, true, true
+		}
+		return 0, false, false
 	}
-	line, ok = searchDeclarationLine(lines, first, symbolStart, symbolEnd, name)
+	line, ok = searchDeclarationLineFor(r.Language, r.FilePath, lines, first, r.SymbolStartLine, r.SymbolEndLine, r.SymbolName)
 	return line, ok, false
 }
 
@@ -76,8 +90,7 @@ func searchResultDeclarationLine(result SearchResult) (int, bool, bool) {
 	if len(lines) != result.SnippetEndLine-result.SnippetStartLine+1 {
 		return 0, false, false
 	}
-	return searchSymbolDeclarationLine(lines, result.SnippetStartLine, result.SymbolStartLine, result.SymbolEndLine,
-		result.SymbolNameLine, result.SymbolName)
+	return searchSymbolDeclarationLine(lines, result.SnippetStartLine, result)
 }
 
 // searchLineMentionsName reports whether line contains name as a whole identifier anywhere,
@@ -177,14 +190,14 @@ func searchMergedDeclarations(results []SearchResult, run []int, survivor int, l
 	}
 	span := lines[start-1 : end]
 	lead := results[survivor]
-	own, hasOwn, _ := searchSymbolDeclarationLine(span, start, lead.SymbolStartLine, lead.SymbolEndLine, lead.SymbolNameLine, lead.SymbolName)
+	own, hasOwn, _ := searchSymbolDeclarationLine(span, start, lead)
 	type found struct{ decl, start int }
 	var list []found
 	seen := map[int]bool{}
 	anyParsed := false
 	for _, index := range run {
 		member := results[index] // the survivor's own declaration is excluded by `own` below
-		decl, ok, parsed := searchSymbolDeclarationLine(span, start, member.SymbolStartLine, member.SymbolEndLine, member.SymbolNameLine, member.SymbolName)
+		decl, ok, parsed := searchSymbolDeclarationLine(span, start, member)
 		if !ok || seen[decl] || hasOwn && decl == own {
 			continue
 		}

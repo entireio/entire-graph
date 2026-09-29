@@ -105,6 +105,22 @@ func agentSearchDeclIndex(lines []string, first, start, end int, name string) (i
 	return sem.DeclarationLineIndex(lines, start-first, last-first, name)
 }
 
+// agentSearchDeclIndexFor is agentSearchDeclIndex for a result, lexing with its file's language.
+func agentSearchDeclIndexFor(result sem.SearchResult, lines []string, first int) (int, bool) {
+	start, end, name := result.SymbolStartLine, result.SymbolEndLine, result.SymbolName
+	if name == "" || start < first || start >= first+len(lines) {
+		return 0, false
+	}
+	last := first + len(lines) - 1
+	if end >= start && end < last {
+		last = end
+	}
+	if limit := start + exactNameAnchorLines - 1; limit < last {
+		last = limit
+	}
+	return sem.DeclarationLineIndexFor(result.Language, result.FilePath, lines, start-first, last-first, name)
+}
+
 // agentSearchSignatureContinuation counts the lines after lines[index] that continue an unfinished
 // signature: while the line so far ends in `(` or `,`, the next line belongs to it.
 func agentSearchSignatureContinuation(lines []string, index, last int) int {
@@ -128,9 +144,10 @@ func agentSearchDecls(view agentSearchBlockView) (agentSearchDecl, bool, []agent
 		last = result.SymbolEndLine - first
 	}
 	var own agentSearchDecl
-	index, hasOwn, parsed := agentSearchNameLineIndex(result, first, len(lines))
-	if !parsed {
-		index, hasOwn = agentSearchDeclIndex(lines, first, result.SymbolStartLine, result.SymbolEndLine, result.SymbolName)
+	index, state := agentSearchNameLineIndex(result, first, len(lines))
+	hasOwn := state == agentSearchNameLinePrinted
+	if state == agentSearchNameLineAbsent {
+		index, hasOwn = agentSearchDeclIndexFor(result, lines, first)
 	}
 	if hasOwn {
 		own = agentSearchDecl{index: index, cont: agentSearchSignatureContinuation(lines, index, last)}
@@ -154,15 +171,35 @@ func agentSearchDecls(view agentSearchBlockView) (agentSearchDecl, bool, []agent
 	return own, hasOwn, absorbed
 }
 
-// agentSearchNameLineIndex returns the snippet index of the parser's name line for the result's own
-// symbol when it lies in the symbol's span and in the snippet of n lines starting at file line first.
-func agentSearchNameLineIndex(result sem.SearchResult, first, n int) (index int, ok, parsed bool) {
+// agentSearchNameLineState is what a result's SymbolNameLine says about its own declaration.
+type agentSearchNameLineState int
+
+const (
+	// agentSearchNameLineAbsent: no name line (0). Only this state uses the text finder.
+	agentSearchNameLineAbsent agentSearchNameLineState = iota
+	// agentSearchNameLinePrinted: valid (inside the symbol's span) and inside the snippet.
+	agentSearchNameLinePrinted
+	// agentSearchNameLineElsewhere: valid, but outside the snippet. The declaration is known and
+	// not printable here; the text finder must not substitute a same-name call or mention for it.
+	agentSearchNameLineElsewhere
+	// agentSearchNameLineInvalid: outside the symbol's span. Corrupt or stale metadata fails
+	// closed the same way.
+	agentSearchNameLineInvalid
+)
+
+// agentSearchNameLineIndex classifies the result's name line and, when it is printed, returns its
+// index in the snippet of n lines starting at file line first.
+func agentSearchNameLineIndex(result sem.SearchResult, first, n int) (int, agentSearchNameLineState) {
 	line := result.SymbolNameLine
-	if line <= 0 || line < result.SymbolStartLine || result.SymbolEndLine >= result.SymbolStartLine && line > result.SymbolEndLine ||
-		line < first || line >= first+n {
-		return 0, false, false
+	switch {
+	case line == 0:
+		return 0, agentSearchNameLineAbsent
+	case line < 0 || line < result.SymbolStartLine || result.SymbolEndLine >= result.SymbolStartLine && line > result.SymbolEndLine:
+		return 0, agentSearchNameLineInvalid
+	case line < first || line >= first+n:
+		return 0, agentSearchNameLineElsewhere
 	}
-	return line - first, true, true
+	return line - first, agentSearchNameLinePrinted
 }
 
 // agentSearchDeclarationBlock returns the block with its declaration(s) shown, or nil when the
@@ -253,9 +290,17 @@ func agentSearchPlainHeads(view agentSearchBlockView, absorbed []agentSearchDecl
 	}
 	in := make([]bool, len(view.lines))
 	result := view.result
-	if index, _, parsed := agentSearchNameLineIndex(result, view.first, len(view.lines)); parsed {
+	index, state := agentSearchNameLineIndex(result, view.first, len(view.lines))
+	if state == agentSearchNameLineElsewhere && result.SymbolNameLine >= view.first+len(view.lines) {
+		index = len(view.lines) - 1 // the region runs past the snippet's end: all of it that is here
+	}
+	if state == agentSearchNameLinePrinted || state == agentSearchNameLineElsewhere {
 		// Exact: the whole header region the parser names, annotations included, with no bound.
+		// When the name line is outside the snippet, the part of the region inside it.
 		for i := max(result.SymbolStartLine-view.first, left, 0); i <= min(index, right); i++ {
+			if state == agentSearchNameLineElsewhere && result.SymbolNameLine < view.first {
+				break // the region ended above the snippet
+			}
 			in[i] = true
 		}
 	} else if start := result.SymbolStartLine - view.first; result.SymbolStartLine > 0 && result.SymbolName != "" && start < len(view.lines) {
