@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // DECLARATION LINES IN AGENT BLOCKS (agent format only).
@@ -483,7 +484,12 @@ func agentSearchRenderDecls(view agentSearchBlockView, decls []agentSearchDecl, 
 		view.focusLine, view.name, view.tag, view.scored, "")
 	headers[len(headers)-1] = fmt.Sprintf("%s:%d *\n", result.FilePath, view.first+top)
 	for _, header := range headers {
-		if candidate := header + text.String(); budget <= 0 || len(candidate) <= budget {
+		// Measured ESCAPED, the form it is printed in. A declaration line the ordinary window did
+		// not print can carry control bytes that escape to several bytes each; measured raw, it
+		// overran its share after escaping, and the final fitter then shrank every row's share to
+		// compensate, costing another row a declaration it had shown (the raw pricing bound in
+		// agentSearchWidestWithDecls stays a valid lower bound: escaping never shrinks a line).
+		if candidate := header + text.String(); budget <= 0 || len(termsafe.Bytes([]byte(candidate))) <= budget {
 			return []byte(candidate), agentSearchBodyLines(len(lines), decls, left, right)
 		}
 	}
@@ -491,9 +497,29 @@ func agentSearchRenderDecls(view agentSearchBlockView, decls []agentSearchDecl, 
 }
 
 // agentSearchElisionLine stands for n source lines a block leaves out between two it prints. It is
-// not shaped like a locator (agentSearchLineIsLocator): its first token carries no `:<digits>`.
+// not shaped like a locator (agentSearchLineIsLocator): its first token carries no `:<digits>`. A
+// source line with this exact spelling is quarantined (indented) by the forgery quarantine, so in a
+// payload an unindented line of this shape is always the renderer's gap record.
 func agentSearchElisionLine(n int) string {
 	return fmt.Sprintf("... %d line%s elided\n", n, pluralSuffix(n))
+}
+
+// agentSearchLineIsElision reports whether line (without its newline) has the gap record's shape:
+// `... <digits> line elided` or `... <digits> lines elided`, allowing trailing whitespace.
+func agentSearchLineIsElision(line string) bool {
+	rest, ok := strings.CutPrefix(line, "... ")
+	if !ok {
+		return false
+	}
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return false
+	}
+	rest = strings.TrimRight(rest[digits:], " \t\r")
+	return rest == " line elided" || rest == " lines elided"
 }
 
 // agentSearchIdentifierRune reports whether r continues an identifier: a Unicode letter or digit,
