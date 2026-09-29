@@ -189,7 +189,9 @@ func resolveSemanticChannel(
 		if errors.As(err, &reason) {
 			return semanticOutcome{status: semanticUnavailablePrefix + reason.reason, detail: reason.detail}
 		}
-		return semanticOutcome{status: semanticUnavailablePrefix + "error", detail: err.Error()}
+		// An unclassified error's text is not ours to vouch for (it can carry a path or a URL),
+		// so only the stable code travels into the payload.
+		return semanticOutcome{status: semanticUnavailablePrefix + "error"}
 	}
 	if tree == "" {
 		return fail(unavailable("no-commit", "the search is not reading a committed tree"))
@@ -483,7 +485,7 @@ func semanticIndexEntry(cacheDir, tree, model string) (cacheEntry, error) {
 func loadSemanticIndex(cacheDir, tree, model string) (*semanticIndexFile, error) {
 	entry, err := semanticIndexEntry(cacheDir, tree, model)
 	if err != nil {
-		return nil, unavailable("no-index", err.Error())
+		return nil, unavailable("no-index", "the semantic cache entry cannot be addressed")
 	}
 	file, err := entry.open()
 	if err != nil {
@@ -491,11 +493,13 @@ func loadSemanticIndex(cacheDir, tree, model string) (*semanticIndexFile, error)
 	}
 	defer file.Close()
 	var index semanticIndexFile
+	// The cache file is not trusted input: its decode and validation errors can quote strings it
+	// holds, so the payload gets a stable sentence, never the error text.
 	if err := decodeSemanticIndex(file, &index); err != nil {
-		return nil, unavailable("invalid-index", err.Error())
+		return nil, unavailable("invalid-index", "the semantic index could not be decoded; rebuild it")
 	}
 	if err := index.validate(tree, model); err != nil {
-		return nil, unavailable("invalid-index", err.Error())
+		return nil, unavailable("invalid-index", "the semantic index failed validation; rebuild it")
 	}
 	return &index, nil
 }
@@ -871,14 +875,19 @@ func semanticEmbed(ctx context.Context, config *SemanticConfig, inputs []string,
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
 		return nil, unavailable("endpoint-invalid", "want an http(s) base URL such as http://localhost:11434")
 	}
+	// Credential-bearing URL state is refused before any request, not redacted after one: a
+	// local embedder needs none of it, and a transport error would otherwise quote it back.
+	if base.User != nil || base.RawQuery != "" || base.ForceQuery || base.Fragment != "" {
+		return nil, unavailable("endpoint-invalid", "the endpoint URL must not carry userinfo, a query or a fragment")
+	}
 	endpoint := base.JoinPath("api", "embed").String()
 	body, err := json.Marshal(semanticEmbedRequest{Model: config.Model, Input: inputs})
 	if err != nil {
-		return nil, unavailable("error", err.Error())
+		return nil, unavailable("error", "the embedding request could not be encoded")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, unavailable("endpoint-invalid", err.Error())
+		return nil, unavailable("endpoint-invalid", "the endpoint URL cannot carry a request")
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := semanticHTTPClient.Do(request)
@@ -887,7 +896,8 @@ func semanticEmbed(ctx context.Context, config *SemanticConfig, inputs []string,
 		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
 			return nil, unavailable("timeout", "")
 		}
-		return nil, unavailable("endpoint", err.Error())
+		// The transport's error text quotes the request URL; the code alone is the diagnostic.
+		return nil, unavailable("endpoint", "the embedding endpoint could not be reached")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -900,17 +910,18 @@ func semanticEmbed(ctx context.Context, config *SemanticConfig, inputs []string,
 		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 			return nil, unavailable("timeout", "")
 		}
-		return nil, unavailable("endpoint", err.Error())
+		return nil, unavailable("endpoint", "the embedding response could not be read")
 	}
 	if int64(len(raw)) > maxResponseBytes {
 		return nil, unavailable("bad-response", "response exceeds the size ceiling")
 	}
 	var decoded semanticEmbedResponse
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, unavailable("bad-response", err.Error())
+		return nil, unavailable("bad-response", "the response is not an embedding answer")
 	}
+	// The answered model name is service-controlled text; it is compared, never quoted.
 	if decoded.Model != "" && !sameSemanticModel(decoded.Model, config.Model) {
-		return nil, unavailable("model-mismatch", fmt.Sprintf("endpoint answered with %q", decoded.Model))
+		return nil, unavailable("model-mismatch", "the endpoint answered with a different model")
 	}
 	if len(decoded.Embeddings) != len(inputs) {
 		return nil, unavailable("bad-response",

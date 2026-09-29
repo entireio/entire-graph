@@ -102,3 +102,51 @@ func TestSemanticFixF4PersistedRowNorms(t *testing.T) {
 		})
 	}
 }
+
+// F5: userinfo and fragment URL state are refused before any request (the peer test covers the
+// query string), and nothing a cache file holds is quoted into the warning.
+func TestSemanticFixF5NoSensitiveEcho(t *testing.T) {
+	for _, endpoint := range []string{
+		"http://user:SYNTHETIC_USERINFO_SECRET@127.0.0.1",
+		"http://127.0.0.1/#SYNTHETIC_FRAGMENT_SECRET",
+		"http://127.0.0.1/?",
+	} {
+		previous := semanticHTTPClient
+		calls := 0
+		semanticHTTPClient = &http.Client{Transport: semanticFixRoundTripper(func(*http.Request) (*http.Response, error) {
+			calls++
+			return nil, errors.New("SYNTHETIC_TRANSPORT_SECRET")
+		})}
+		_, err := semanticEmbed(t.Context(), &SemanticConfig{Endpoint: endpoint, Model: "m"}, []string{"q"}, 1024)
+		semanticHTTPClient = previous
+		var failure *semanticUnavailable
+		if !errors.As(err, &failure) || failure.reason != "endpoint-invalid" || calls != 0 {
+			t.Fatalf("%s: err=%v calls=%d, want endpoint-invalid before any request", endpoint, err, calls)
+		}
+		if strings.Contains(err.Error(), "SECRET") {
+			t.Fatalf("%s: error echoes URL state: %v", endpoint, err)
+		}
+	}
+
+	// A cache entry naming a foreign model: its string must not reach the warning.
+	cacheDir := t.TempDir()
+	entry, err := semanticIndexEntry(cacheDir, "tree", "wanted-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := entry.write("semantic", semanticIndexFile{
+		Recipe: semanticRecipeVersion, Model: "SYNTHETIC_CACHE_MODEL_SECRET", Tree: "tree", Dimension: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = loadSemanticIndex(cacheDir, "tree", "wanted-model")
+	var failure *semanticUnavailable
+	if !errors.As(err, &failure) || failure.reason != "invalid-index" {
+		t.Fatalf("foreign-model entry: %v, want invalid-index", err)
+	}
+	var response SearchResponse
+	applySemanticOutcome(&response, &semanticOutcome{status: semanticUnavailablePrefix + failure.reason, detail: failure.detail})
+	if strings.Contains(err.Error(), "SECRET") || strings.Contains(response.Warnings[0].Detail, "SECRET") {
+		t.Fatalf("cache-held string echoed: err=%v warning=%q", err, response.Warnings[0].Detail)
+	}
+}
