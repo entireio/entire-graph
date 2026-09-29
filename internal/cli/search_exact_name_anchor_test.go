@@ -211,6 +211,40 @@ func TestAgentSearchExactNameLongDocLeavesAnnotations(t *testing.T) {
 	}
 }
 
+// A definition inside another symbol counts only in that file's own language: `class Animal {` in a
+// Go test's string literal is fixture text, and showing its test as a definition of Animal cost
+// ~1.3 KB per query on fx-graph (Animal, TokenService, Drawable) for no declaration.
+func TestAgentExactNameDefinitionsAreLanguageAware(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		line, ext string
+		want      bool
+	}{
+		{"\tresolveRef := func(ref string) string { return ref }", ".go", true},
+		{"func (r *recv) resolveRef(ctx context.Context) error {", ".go", true},
+		{"\twriteFile(t, repo, \"A.java\", `class resolveRef {", ".go", false},
+		{"    class resolveRef:", ".py", true},
+		{"    resolveRef := 1", ".py", false},
+		{"  const resolveRef = (x: string) => x;", ".ts", true},
+		{"    class resolveRef implements Named {}", ".java", true},
+		{"    let resolveRef = |x| x;", ".rs", true},
+		{"    def resolveRef", ".txt", false},
+		{"\tresolveRef = other", ".go", false},
+		{"\t// var resolveRef is gone", ".go", false},
+	}
+	for _, c := range cases {
+		if got := exactNameLineDefines(c.line, "resolveRef", c.ext); got != c.want {
+			t.Errorf("%s %q: defines = %v, want %v", c.ext, c.line, got, c.want)
+		}
+	}
+	response := exactNameFixture("resolveMessageRef", 1)
+	row := &response.Results[1]
+	row.Snippet = "// Helper2 documents row 2.\n//\n//\nfunc (r *recv2) Helper2(t *testing.T) error {\n\twriteFile(t, repo, \"A.java\", `class resolveMessageRef {}`)\n\treturn nil\n}\n"
+	if rows, _ := agentExactNameRows(response.Results, response.Query); len(rows) != 1 {
+		t.Fatalf("a Go row whose string literal holds a Java class was kept as a definition (%d rows)", len(rows))
+	}
+}
+
 // The name must occur as a whole identifier: an annotation that mentions `toStringHelper` does not
 // name `toString`, and anchoring on it would print the annotation in place of the signature.
 func TestAgentSearchExactNameMatchesWholeIdentifiers(t *testing.T) {

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
@@ -37,8 +38,10 @@ import (
 //     exactNameAnchorLines down, that contains the name as a whole identifier. A row with no such line
 //     disqualifies the whole mode (see Ambiguity).
 //   - Definitions the index did not surface: a row for ANOTHER symbol whose own span defines the name
-//     (`name := func…`, `const name =`, `def name`) is a definition too, and the ordinary answer
-//     showed it. It is kept as an exact row, anchored on that line.
+//     in that file's own language (`name := func…` in Go, `const name =` in TS, a nested `def name`
+//     in Python) is a definition too, and the ordinary answer showed it. It is kept as an exact row,
+//     anchored on that line. Another language's keyword (`class Animal {` inside a Go test's string
+//     literal) is text, not a definition.
 //   - Ambiguity: EVERY exact row is shown, in ranking order, never a subset. First each gets its
 //     named line plus a bounded body from a rank-weighted share; if that cannot hold every row, each
 //     gets its named line only; if even that does not fit, the ordinary path runs. There is no rung
@@ -117,17 +120,37 @@ func exactNameOccurrences(line, name string) []int {
 	return found
 }
 
-// exactNameDefinitionKeywords introduce a definition of the identifier that follows them.
-var exactNameDefinitionKeywords = map[string]bool{
-	"func": true, "def": true, "class": true, "var": true, "let": true, "const": true, "fn": true,
-	"type": true, "struct": true, "interface": true, "enum": true, "function": true, "val": true,
-	"trait": true, "module": true, "record": true,
+// exactNameDefinitionKeywords are, per file extension, the keywords that introduce a definition of
+// the identifier after them. They are per language because a keyword of one language inside another
+// language's file is almost always text: `class Animal {` in a Go test's string literal is fixture
+// source, not a definition of Animal, and treating it as one printed test bodies as "definitions".
+// A file whose language is not listed gets none.
+var exactNameDefinitionKeywords = map[string][]string{
+	".go":    {"func", "var", "const", "type"},
+	".py":    {"def", "class"},
+	".ts":    {"function", "class", "const", "let", "var", "interface", "type", "enum"},
+	".tsx":   {"function", "class", "const", "let", "var", "interface", "type", "enum"},
+	".js":    {"function", "class", "const", "let", "var"},
+	".jsx":   {"function", "class", "const", "let", "var"},
+	".mjs":   {"function", "class", "const", "let", "var"},
+	".java":  {"class", "interface", "enum", "record"},
+	".cs":    {"class", "interface", "enum", "record", "struct"},
+	".rs":    {"fn", "struct", "enum", "trait", "type", "mod", "const", "static", "let"},
+	".kt":    {"fun", "class", "interface", "object", "val", "var"},
+	".rb":    {"def", "class", "module"},
+	".swift": {"func", "class", "struct", "enum", "protocol", "let", "var"},
+	".scala": {"def", "class", "object", "trait", "val", "var"},
 }
 
-// exactNameLineDefines reports whether line DEFINES name — `name :=`, or a definition keyword
-// right before it (`const name =`, `def name(`, `func (r *T) name(`) — as opposed to using it. It
-// is deliberately narrow: an assignment `name = …` is a use as often as a definition.
-func exactNameLineDefines(line, name string) bool {
+// exactNameLineDefines reports whether line, in a file with extension ext, DEFINES name — `name :=`
+// in Go, or one of the language's definition keywords right before it (`const name =`, `def name(`,
+// `func (r *T) name(`) — as opposed to using it. It is deliberately narrow: an assignment
+// `name = …` is a use as often as a definition.
+func exactNameLineDefines(line, name, ext string) bool {
+	keywords := exactNameDefinitionKeywords[ext]
+	if len(keywords) == 0 {
+		return false
+	}
 	trimmed := strings.TrimSpace(line)
 	for _, comment := range []string{"//", "/*", "*", "--", "# "} {
 		if strings.HasPrefix(trimmed, comment) {
@@ -135,22 +158,24 @@ func exactNameLineDefines(line, name string) bool {
 		}
 	}
 	for _, at := range exactNameOccurrences(line, name) {
-		if strings.HasPrefix(strings.TrimLeft(line[at+len(name):], " \t"), ":=") {
+		if ext == ".go" && strings.HasPrefix(strings.TrimLeft(line[at+len(name):], " \t"), ":=") {
 			return true
 		}
 		before := strings.TrimRight(line[:at], " \t")
 		if len(before) == len(line[:at]) {
 			continue // the keyword must be separated from the name
 		}
-		if strings.HasSuffix(before, ")") && strings.HasPrefix(strings.TrimSpace(before), "func") {
+		if ext == ".go" && strings.HasSuffix(before, ")") && strings.HasPrefix(strings.TrimSpace(before), "func") {
 			return true // a Go method: func (r *T) name
 		}
 		word := len(before)
 		for word > 0 && exactNameIdentByte(before[word-1]) {
 			word--
 		}
-		if exactNameDefinitionKeywords[before[word:]] {
-			return true
+		for _, keyword := range keywords {
+			if before[word:] == keyword {
+				return true
+			}
 		}
 	}
 	return false
@@ -213,7 +238,7 @@ func agentExactNameAnchor(result sem.SearchResult, name string) (exactNameAnchor
 		}
 	} else {
 		for i := start; i <= end; i++ {
-			if exactNameLineDefines(lines[i], name) {
+			if exactNameLineDefines(lines[i], name, strings.ToLower(path.Ext(result.FilePath))) {
 				named, spanTop = i, i // the lines above it are its enclosing symbol's, not its own
 				break
 			}
