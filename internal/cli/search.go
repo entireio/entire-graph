@@ -1951,6 +1951,9 @@ func textSearchSemanticLine(stats sem.SearchStats) []byte {
 	switch {
 	case stats.SemanticStatus == "":
 		return nil
+	case stats.SemanticStatus == sem.SemanticStatusUsed && stats.SemanticEvictedFiles > 0:
+		return []byte(fmt.Sprintf("semantic: used (%d results, %d nominated files, %d lexical files evicted)\n",
+			stats.SemanticResults, stats.SemanticNominatedFiles, stats.SemanticEvictedFiles))
 	case stats.SemanticStatus == sem.SemanticStatusUsed:
 		return []byte(fmt.Sprintf("semantic: used (%d results, %d nominated files)\n",
 			stats.SemanticResults, stats.SemanticNominatedFiles))

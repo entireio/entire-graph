@@ -177,7 +177,7 @@ var commandDocs = []commandDoc{
 			{name: "--index-all-files", desc: "Widen cold-search parsing to every file"},
 			{name: "--cache-dir", arg: "path", desc: "Override the committed-tree cache directory"},
 			{name: "--no-cache", desc: "Disable the committed-tree cache"},
-			{name: "--no-semantic", desc: "Skip the opt-in semantic channel for this call (ENTIRE_GRAPH_SEMANTIC_ENDPOINT + _MODEL, --head, and an `index --semantic` index enable it)"},
+			{name: "--no-semantic", desc: "Skip the opt-in semantic channel for this call (ENTIRE_GRAPH_SEMANTIC_ENDPOINT + _MODEL, --head, and an `index --semantic` index enable it). On a preindexed search its files are added and the lexical ranking is unchanged; on a cold search they count against --max-indexed-files and may displace lexical tail files (stats.semantic_evicted_files)"},
 		},
 		examples: []string{
 			`entire graph query --repo . --format text "token refresh returns 401"`,

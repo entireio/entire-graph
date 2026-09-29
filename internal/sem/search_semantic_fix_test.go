@@ -412,7 +412,8 @@ func TestSemanticFixQ1ConfidenceReadsLexicalRows(t *testing.T) {
 	}
 }
 
-// Q5 unit: nominations are spent inside the cap. Free slots first, then the lexical tail yields;
+// Q5 unit (COLD path; the warm path is additive — see TestSemanticPlanIsAdditiveWhenWarm): nominations
+// are spent inside the cap. Free slots first, then the lexical tail yields;
 // the lexical head and a file a hit points into never yield; an over-cap selection never grows.
 func TestSemanticFixQ5NominationStaysInsideTheCap(t *testing.T) {
 	corpus := []string{"l1.go", "l2.go", "l3.go", "n1.go", "n2.go", "n3.go"}
@@ -448,7 +449,8 @@ func TestSemanticFixQ5NominationStaysInsideTheCap(t *testing.T) {
 	}
 }
 
-// Q5 end to end: with --max-indexed-files 1 the channel never indexes a second file; the lexical
+// Q5 end to end, COLD path (index prepared at full, search at fast): with --max-indexed-files 1
+// the channel never indexes a second file; the lexical
 // answer keeps its only slot.
 func TestSemanticFixQ5EndToEndCapIsHard(t *testing.T) {
 	repo := semanticFixtureRepo(t)
@@ -466,4 +468,15 @@ func TestSemanticFixQ5EndToEndCapIsHard(t *testing.T) {
 			t.Fatalf("max %d: indexed %d files (nominated %d)", maxFiles, response.Stats.FilesIndexed, response.Stats.SemanticNominatedFiles)
 		}
 	}
+}
+
+// nominateSemanticFiles is the file set a COLD plan parses — the lexical selection minus
+// evictions, then the nominations — in the shape the Q5 tables above were written against.
+func nominateSemanticFiles(selected, corpus []string, hits []semanticHit, budget, maxFiles int) ([]string, int) {
+	plan := planSemanticNominations(selected, corpus, hits, budget, maxFiles, false)
+	if len(plan.nominated) == 0 {
+		return selected, 0
+	}
+	out := append(append([]string(nil), plan.withoutEvicted(selected)...), plan.nominated...)
+	return out, len(plan.nominated)
 }

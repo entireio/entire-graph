@@ -19,7 +19,7 @@ package sem
 // The index is a derivative of ONE committed tree, built explicitly (`index --semantic`), and it
 // is keyed by that tree, the model name and the text-recipe version. It stores only symbol
 // locations and vectors — the ranking still renders source through the normal read path, so a
-// file the corpus policy excludes can never be nominated (see nominateSemanticFiles).
+// file the corpus policy excludes can never be nominated (see planSemanticNominations).
 
 import (
 	"bytes"
@@ -53,8 +53,10 @@ const (
 	semanticCacheFamily   = "semantic"
 	semanticCacheVersion  = "v1"
 	// semanticTopK is how many nearest symbols the channel contributes. It also bounds nomination:
-	// at most this many files are nominated, and every nomination is spent INSIDE MaxIndexedFiles
-	// (see nominateSemanticFiles), so the channel never raises the cold file budget.
+	// at most this many files are nominated. On the cold selective path every nomination is spent
+	// INSIDE MaxIndexedFiles, so the channel never raises the cold parse budget; on the warm
+	// preindexed path nominations cost no parse and are purely additive (see
+	// planSemanticNominations).
 	semanticTopK = 10
 	// semanticQueryTimeout bounds the one network round trip a search can make. A local embedder
 	// answers a single short query in tens of milliseconds; anything slower is a down or loaded
@@ -137,6 +139,7 @@ type semanticOutcome struct {
 	detail    string
 	hits      []semanticHit
 	nominated int
+	evicted   int
 	seated    int
 }
 
@@ -156,6 +159,7 @@ func applySemanticOutcome(response *SearchResponse, outcome *semanticOutcome) {
 	}
 	response.Stats.SemanticStatus = outcome.status
 	response.Stats.SemanticNominatedFiles = outcome.nominated
+	response.Stats.SemanticEvictedFiles = outcome.evicted
 	response.Stats.SemanticResults = outcome.seated
 	if strings.HasPrefix(outcome.status, semanticUnavailablePrefix) {
 		detail := "semantic channel is configured but was not used for this search (" +
@@ -265,25 +269,45 @@ func resolveSemanticChannelOutcome(
 	return semanticOutcome{status: SemanticStatusUsed, hits: hits}
 }
 
-// nominateSemanticFiles adds the files of the channel's hits to the lexical file selection so their
-// symbols are indexed and can be rendered — INSIDE the caller's file cap, never beyond it.
+// semanticNominationPlan is what the channel adds to, and on the cold path takes from, the file
+// set a search parses. The lexical selection it was planned against is NOT rewritten: idf and
+// query-word presence are always computed from the pre-nomination selection, and a nominated file
+// never produces a lexical row (see searchRepository). Warm, that makes the lexical ranking exactly
+// the unconfigured one; cold, the only difference is the evicted files (see evicted).
+type semanticNominationPlan struct {
+	// nominated are the hit files outside the lexical selection whose symbols are loaded so the
+	// channel's rows can be rendered. They never produce lexical candidates.
+	nominated []string
+	// evicted are lexical files that yielded their parse slot to a nomination. Non-empty only on the
+	// COLD selective path; their lexical rows are lost, and with their symbols their share of BM25's
+	// average length and any call edges they carried — the one treatment cost the channel has,
+	// disclosed as stats.semantic_evicted_files. Their content still counts toward idf and presence.
+	evicted map[string]bool
+}
+
+// planSemanticNominations decides which of the channel's hit files are loaded beside the lexical
+// selection, and — on the cold path only — which lexical files give up their parse slot for them.
 //
-// maxFiles is the resolved --max-indexed-files. The selection after nomination holds at most
-// max(maxFiles, len(selected)) files: free slots are spent first, then nominations take slots from
-// the lexical TAIL, which yields file by file. Two lexical files never yield: the lexical head (the
-// file of the best lexical evidence, so the lexical rank-1 hit stays renderable) and any file a hit
-// itself points into (it serves both channels). A selection that already exceeds maxFiles — the
-// warm preindexed path keeps every matched file — only swaps files, it never grows. At most
-// `budget` files (semanticTopK) are nominated, and the count is reported in
-// stats.semantic_nominated_files.
+// WARM (additive): the search's own complete snapshot is preindexed, so a nominated file costs no
+// parse — its symbols are derived from the snapshot already in memory. Nominations are then purely
+// additive: no lexical file yields, and MaxIndexedFiles (a cold parsing guard, not a recall cap —
+// the warm git-tree-grep path deliberately keeps every matched file) is not consulted.
 //
-// Only a file already in the corpus (allFiles: the tree after every ignore rule and include/ignore
-// flag) can be nominated. The index stores paths from the tree it was built on, and that tree's
-// policy is not necessarily this search's; admitting a path the corpus excluded would let an index
-// built before a .graphignore line reintroduce the file it removes.
-func nominateSemanticFiles(selected, corpus []string, hits []semanticHit, budget, maxFiles int) ([]string, int) {
+// COLD (hard cap): every nominated file is a parse, so nominations are spent INSIDE the caller's
+// --max-indexed-files: lexical selection plus nominations hold at most max(maxFiles,
+// len(selected)) files. Free slots are spent first, then the lexical TAIL yields file by file. Two
+// lexical files never yield: the lexical head (the file of the best lexical evidence, so the
+// lexical rank-1 hit stays renderable) and any file a hit itself points into (it serves both
+// channels).
+//
+// Either way at most `budget` files (semanticTopK) are nominated. Only a file already in the corpus
+// (allFiles: the tree after every ignore rule and include/ignore flag) can be nominated: the index
+// stores paths from the tree it was built on, and that tree's policy is not necessarily this
+// search's, so admitting a path the corpus excluded would let an index built before a .graphignore
+// line reintroduce the file it removes.
+func planSemanticNominations(selected, corpus []string, hits []semanticHit, budget, maxFiles int, additive bool) semanticNominationPlan {
 	if len(hits) == 0 || budget <= 0 {
-		return selected, 0
+		return semanticNominationPlan{}
 	}
 	inCorpus := make(map[string]bool, len(corpus))
 	for _, path := range corpus {
@@ -304,35 +328,90 @@ func nominateSemanticFiles(selected, corpus []string, hits []semanticHit, budget
 		present[hit.FilePath] = true
 	}
 	if len(nominations) == 0 {
-		return selected, 0
+		return semanticNominationPlan{}
+	}
+	if additive {
+		return semanticNominationPlan{nominated: nominations}
 	}
 	limit := max(maxFiles, len(selected))
 	free := max(0, limit-len(selected))
 	// Which lexical files may yield, from the tail forward.
-	var yieldable []int
+	var yieldable []string
 	for index := len(selected) - 1; index >= 1; index-- {
 		if !hitFiles[selected[index]] {
-			yieldable = append(yieldable, index)
+			yieldable = append(yieldable, selected[index])
 		}
 	}
 	count := min(len(nominations), free+len(yieldable))
 	if count == 0 {
-		return selected, 0
+		return semanticNominationPlan{}
 	}
-	yielded := make(map[int]bool, count)
-	for _, index := range yieldable[:max(0, count-free)] {
-		yielded[index] = true
+	plan := semanticNominationPlan{nominated: nominations[:count:count]}
+	for _, path := range yieldable[:max(0, count-free)] {
+		if plan.evicted == nil {
+			plan.evicted = map[string]bool{}
+		}
+		plan.evicted[path] = true
 	}
-	// Never write into the caller's backing array: selection.files is shared with the
-	// preselection state that produced it.
-	out := make([]string, 0, len(selected)-len(yielded)+count)
-	for index, path := range selected {
-		if !yielded[index] {
+	return plan
+}
+
+// withoutEvicted is the lexical selection minus the files the plan evicted, in selection order. It
+// never writes into selected's backing array, which is shared with the preselection state.
+func (plan semanticNominationPlan) withoutEvicted(selected []string) []string {
+	if len(plan.evicted) == 0 {
+		return selected
+	}
+	out := make([]string, 0, len(selected)-len(plan.evicted))
+	for _, path := range selected {
+		if !plan.evicted[path] {
 			out = append(out, path)
 		}
 	}
-	out = append(out, nominations[:count]...)
-	return out, count
+	return out
+}
+
+// joinSemanticNominations adds the nominated files' symbols, call edges, languages and partial
+// failures to the maps and snapshot the ranking renders from. searchRepository calls it only once
+// the lexical ranking is final, so nothing here can reach a lexical score. The nominated files are
+// disjoint from the lexical snapshot's (planSemanticNominations never nominates a selected file),
+// and the lexical snapshot's slices are never appended to in place: they can be a cached
+// snapshot's backing arrays.
+func joinSemanticNominations(
+	nomination ProviderSnapshot, snapshot *ProviderSnapshot,
+	symbolsByFile map[string][]SymbolRecord, symbolsByID map[string]SymbolRecord, languages map[string]string,
+) {
+	touched := map[string]bool{}
+	for _, symbol := range nomination.Symbols {
+		if _, seen := symbolsByID[symbol.ID]; seen && symbol.ID != "" {
+			continue
+		}
+		symbolsByFile[symbol.FilePath] = append(symbolsByFile[symbol.FilePath], symbol)
+		symbolsByID[symbol.ID] = symbol
+		touched[symbol.FilePath] = true
+	}
+	for filePath := range touched {
+		sort.Slice(symbolsByFile[filePath], func(i, j int) bool {
+			left, right := symbolsByFile[filePath][i], symbolsByFile[filePath][j]
+			if left.StartLine != right.StartLine {
+				return left.StartLine < right.StartLine
+			}
+			return left.EndLine < right.EndLine
+		})
+	}
+	for _, file := range nomination.Files {
+		if _, ok := languages[file.Path]; !ok {
+			languages[file.Path] = file.Language
+		}
+	}
+	if len(nomination.Relations) > 0 {
+		snapshot.Relations = append(slices.Clip(snapshot.Relations), nomination.Relations...)
+	}
+	if len(nomination.Header.PartialFailures) > 0 {
+		snapshot.Header.PartialFailures = append(
+			slices.Clip(snapshot.Header.PartialFailures), nomination.Header.PartialFailures...,
+		)
+	}
 }
 
 // semanticCandidates turns the channel's hits into ranking candidates. A hit that the lexical pool

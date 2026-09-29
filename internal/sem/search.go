@@ -100,6 +100,11 @@ type SearchOptions struct {
 	// with, so a test can check the call-site wiring rather than only the helper. Per search, so
 	// concurrent tests cannot capture each other's calls. Unexported and nil in production.
 	idfObserver func(df map[string]int, files int, exact bool)
+	// preFusionObserver is a deterministic test seam: it receives the final LEXICAL ranking, after
+	// the fix-site promotion and before the semantic channel's rows are fused in or its nominated
+	// symbols join the ranking maps. The channel contract is that this list is identical with the
+	// channel on or off (cold-path evictions aside, which are disclosed).
+	preFusionObserver func(selected []searchCandidate)
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -467,12 +472,25 @@ type SearchStats struct {
 	// `off:worktree` or `unavailable:<reason>`. OMITTED when the channel is not configured, which
 	// is what keeps the default payload byte-identical; its absence means off.
 	SemanticStatus string `json:"semantic_status,omitempty"`
-	// SemanticNominatedFiles is how many selected files the channel nominated so the nearest symbols
-	// could be rendered. They are spent INSIDE MaxIndexedFiles (lexical tail files yield), never
-	// beyond it, and number at most the channel's top-k (10).
+	// SemanticNominatedFiles is how many files outside the lexical selection the channel loaded so
+	// its nearest symbols could be rendered, at most the channel's top-k (10). They never produce
+	// lexical rows and never enter lexical idf. On the warm preindexed path they are ADDITIVE (no
+	// parse; MaxIndexedFiles is not consulted). On the cold selective path they are spent INSIDE
+	// MaxIndexedFiles, never beyond it: free slots first, then lexical tail files yield — see
+	// SemanticEvictedFiles.
 	SemanticNominatedFiles int `json:"semantic_nominated_files,omitempty"`
-	// SemanticResults counts delivered primary rows (before byte fitting) the channel placed or also
-	// matched — every row carrying the semantic:embedding signal.
+	// SemanticEvictedFiles is how many lexical files gave up their parse slot to a nomination on
+	// the cold selective path (always 0 warm, where the lexical ranking is exactly the unconfigured
+	// one). It is the channel's one cost to the lexical answer, and it is disclosed rather than
+	// hidden: an evicted file's lexical rows are not produced, and the symbols it would have
+	// contributed are missing from the lexical snapshot, so BM25's average document length and any
+	// call edges it carried no longer shape the surviving rows' scores. Its content still counts
+	// toward idf and query-word presence, which come from the pre-nomination selection.
+	SemanticEvictedFiles int `json:"semantic_evicted_files,omitempty"`
+	// SemanticResults counts delivered primary rows (before byte fitting) that carry the
+	// semantic:embedding signal: rows the channel synthesized (semantic:only) PLUS lexical rows the
+	// channel also matched, wherever fusion seated them. It is NOT "rows the channel added" — a
+	// lexical row the channel merely confirmed counts too; count semantic:only rows for that.
 	SemanticResults int `json:"semantic_results,omitempty"`
 }
 
@@ -1217,10 +1235,17 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		preindexCacheHit = false
 	}
 	// THE SEMANTIC CHANNEL NOMINATES HERE: after lexical preselection and before anything is
-	// indexed, so the nearest symbols' files are parsed like any selected file and their symbols
-	// can be rendered. Nominations are spent INSIDE MaxIndexedFiles — the lexical tail yields — and
-	// are disclosed in stats.semantic_nominated_files; see nominateSemanticFiles. Unconfigured,
-	// this block does nothing at all.
+	// indexed, so the nearest symbols' files can be loaded and their symbols rendered. Nomination
+	// NEVER rewrites the lexical selection: lexicalFiles below is the pre-nomination selection,
+	// idf and query-word presence are computed from it, and lexical candidates only ever come
+	// from it. The nominated files are loaded as a SEPARATE snapshot whose symbols join only after
+	// the lexical ranking is final.
+	// On the warm (preindexed) path nominations are additive; on the cold path they are spent
+	// inside MaxIndexedFiles and may evict lexical tail files, disclosed in
+	// stats.semantic_evicted_files. See planSemanticNominations. Unconfigured, this block does
+	// nothing at all.
+	lexicalFiles := selection.files
+	var nominationPlan semanticNominationPlan
 	embedding := options.semanticOutcome
 	if embedding == nil {
 		embedding = &semanticOutcome{}
@@ -1257,9 +1282,11 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			return SearchResponse{}, err
 		}
 		*embedding = resolved
-		selection.files, embedding.nominated = nominateSemanticFiles(
-			selection.files, selection.allFiles, embedding.hits, semanticTopK, options.MaxIndexedFiles,
+		nominationPlan = planSemanticNominations(
+			lexicalFiles, selection.allFiles, embedding.hits, semanticTopK, options.MaxIndexedFiles,
+			preindexCacheHit,
 		)
+		embedding.nominated, embedding.evicted = len(nominationPlan.nominated), len(nominationPlan.evicted)
 	}
 	preselectLatency := time.Since(preselectStarted)
 	// THE DISCLOSURE IS FUNDED FROM INSIDE THE CEILING, and it has to be funded
@@ -1303,12 +1330,14 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// result, preserving the floor-only case when the reserve uses it all.
 		options.MaxContextBytes = max(1, options.MaxContextBytes-reserve)
 	}
-	selectedFiles := selection.files
+	// selectedFiles is what the LEXICAL snapshot parses: the lexical selection minus any cold-path
+	// eviction. With the channel unconfigured it is exactly selection.files.
+	selectedFiles := nominationPlan.withoutEvicted(lexicalFiles)
 	var replayProvenancePaths []string
 	if options.Worktree || selection.commit == "" {
 		replayProvenancePaths = boundedWorktreeSearchReplayProvenance(selection.allFiles)
 	}
-	if len(selectedFiles) == 0 {
+	if len(selectedFiles) == 0 && len(nominationPlan.nominated) == 0 {
 		// A no-hit query still reports the health of an already-preindexed HEAD
 		// graph. Do not build a cold graph merely to return no results, but do
 		// preserve cached partial failures/completeness and cache-hit provenance.
@@ -1388,7 +1417,12 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	snapshotOptions.OnlyFiles = onlyFiles
 	snapshot, cacheHit := preindexedSnapshot, preindexCacheHit
 	indexLatency := preindexLoadLatency
-	if cacheHit && len(snapshotOptions.OnlyFiles) > 0 {
+	if len(selectedFiles) == 0 {
+		// Only the semantic channel nominated anything: the lexical side has no file, so it gets
+		// an empty snapshot (never the complete one — an empty OnlyFiles means "every file") and
+		// the header is taken from the nomination snapshot below.
+		snapshot, cacheHit = ProviderSnapshot{}, false
+	} else if cacheHit && len(snapshotOptions.OnlyFiles) > 0 {
 		// The preindexed complete snapshot never serves a selective query
 		// directly: the loader reuses the per-query selective cache entry, only
 		// derives from the complete snapshot on a miss, and falls back to an
@@ -1411,8 +1445,40 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	// See the analogous no-hit guard above. Tree identity pins source bytes;
 	// repository identity additionally pins the stable IDs built from them.
-	if selection.commit != "" && !searchSnapshotMatchesSelection(snapshot, selection) {
+	if len(selectedFiles) > 0 && selection.commit != "" && !searchSnapshotMatchesSelection(snapshot, selection) {
 		return SearchResponse{}, errors.New("repository identity or HEAD changed during search; retry against a stable repository")
+	}
+	// The semantic channel's nominated files are a SEPARATE snapshot, so the lexical snapshot above
+	// is byte-for-byte the one an unconfigured search builds (same file set, same cache entry) and
+	// nothing the nominated files contain — symbols, call edges, caller degree — can reach lexical
+	// scoring. Warm, they are derived from the preindexed complete snapshot (no parse); cold, they
+	// are parsed, inside the cap planSemanticNominations enforced. Their symbols join the ranking
+	// maps only at fusion.
+	var nominationSnapshot ProviderSnapshot
+	if len(nominationPlan.nominated) > 0 {
+		nominationOptions := baseSnapshotOptions
+		nominationOptions.OnlyFiles = nominationPlan.nominated
+		nominationCacheHit := false
+		indexStarted = time.Now()
+		if preindexCacheHit {
+			nominationSnapshot, nominationCacheHit, err = loadOrDeriveSelectiveSearchSnapshot(
+				ctx, repo, providerVersion, nominationOptions, options.CacheDir, searchCacheDisabled, preindexBinding,
+			)
+		} else {
+			nominationSnapshot, nominationCacheHit, err = loadOrBuildSearchGraphSnapshot(
+				ctx, repo, providerVersion, nominationOptions, options.CacheDir, searchCacheDisabled,
+			)
+		}
+		if err != nil {
+			return SearchResponse{}, err
+		}
+		indexLatency += time.Since(indexStarted)
+		if selection.commit != "" && !searchSnapshotMatchesSelection(nominationSnapshot, selection) {
+			return SearchResponse{}, errors.New("repository identity or HEAD changed during search; retry against a stable repository")
+		}
+		if len(selectedFiles) == 0 {
+			snapshot, cacheHit = ProviderSnapshot{Header: nominationSnapshot.Header}, nominationCacheHit
+		}
 	}
 	queryStarted := time.Now()
 	useHead := !options.Worktree && snapshot.Header.Commit != ""
@@ -1478,9 +1544,14 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// of the query. The content reader is memoized, so the second pass normally re-reads
 	// nothing; a selection larger than the content cache can fall back to disk for the
 	// overflow, which rereadFiles/rereadBytes below keep out of the read telemetry.
+	//
+	// Both passes run over lexicalFiles, the PRE-NOMINATION selection, so the semantic channel
+	// cannot move idf: a cold-path eviction removes a file's lexical rows (disclosed as
+	// semantic_evicted_files), never its contribution to document frequency or N. Nominated files
+	// are in neither pass.
 	corpusMatcher := newSearchQueryTermMatcher(q)
-	indexableFiles := make([]string, 0, len(selectedFiles))
-	for _, filePath := range selectedFiles {
+	indexableFiles := make([]string, 0, len(lexicalFiles))
+	for _, filePath := range lexicalFiles {
 		if err := ctx.Err(); err != nil {
 			return SearchResponse{}, err
 		}
@@ -1513,6 +1584,9 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	for _, filePath := range indexableFiles {
 		if err := ctx.Err(); err != nil {
 			return SearchResponse{}, err
+		}
+		if nominationPlan.evicted[filePath] {
+			continue
 		}
 		content, ok := read(filePath)
 		if !ok {
@@ -1715,6 +1789,19 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// that is delivered, not on an intermediate one. Fusion therefore keeps one row beyond top-k
 	// and the promotion runs BEFORE the cut: at top-k 1 the only fused row can be the test, and
 	// the fix site it should yield to exists only in that extra row.
+	//
+	// The nominated files' symbols join the ranking maps HERE and not earlier: everything above
+	// is the lexical ranking, and it saw only the lexical snapshot. From here on the maps describe
+	// every file whose rows can be delivered, so the post-fusion passes (enclosure, callee hop,
+	// type card) can render a semantic row from a nominated file like any other.
+	if options.preFusionObserver != nil {
+		options.preFusionObserver(append([]searchCandidate(nil), selected...))
+	}
+	if len(nominationPlan.nominated) > 0 {
+		joinSemanticNominations(nominationSnapshot, &snapshot, symbolsByFile, symbolsByID, fileLanguages)
+		stats.FilesIndexed += len(nominationPlan.nominated)
+		stats.SymbolsConsidered += len(nominationSnapshot.Symbols)
+	}
 	if len(embedding.hits) > 0 {
 		keyOf := func(candidate searchCandidate) semanticKey { return semanticCandidateKey(candidate, symbolsByFile) }
 		fused, _ := fuseSemanticCandidates(
