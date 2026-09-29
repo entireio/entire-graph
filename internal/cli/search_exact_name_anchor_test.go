@@ -59,6 +59,18 @@ var exactNameLangCases = []exactNameLangCase{
 	{name: "ts-multiline-fn", lang: "ts", file: "src/user.ts", symbol: "fetchUser", symbolStart: 2, signature: 2,
 		doc:     []string{"// fetchUser loads one user."},
 		snippet: "// fetchUser loads one user.\nexport async function fetchUser(\n  id: string,\n  opts?: Options,\n): Promise<User> {\n  return api.get(id, opts);\n}\n"},
+	// An annotation, attribute, decorator or tag ARGUMENT that spells the name is not the
+	// declaration: a whole-identifier scan took these first lines and printed them as the signature.
+	{name: "java-named-argument", lang: "java", file: "src/main/java/a/Items.java", symbol: "fooBar", symbolStart: 1, signature: 3,
+		snippet: "    @Named(\"fooBar\")\n    @Inject\n    public void fooBar(List<Item> items) {\n        step(items);\n        flush(items);\n    }\n"},
+	{name: "python-route-names-view", lang: "py", file: "app/auth.py", symbol: "login", symbolStart: 1, signature: 2,
+		snippet: "@app.route(\"/login\", methods=[\"GET\", \"POST\"])\ndef login():\n    form = request.form\n    return redirect(url_for(\"index\"))\n"},
+	{name: "rust-route-attribute", lang: "rs", file: "src/routes.rs", symbol: "health", symbolStart: 1, signature: 2,
+		snippet: "#[route(\"health\", method = \"GET\")]\npub async fn health(state: State) -> Response {\n    state.ok()\n}\n"},
+	{name: "csharp-route-attribute", lang: "cs", file: "src/Web/Home.cs", symbol: "Index", symbolStart: 1, signature: 3,
+		snippet: "    [Route(\"Index\")]\n    [HttpGet]\n    public IActionResult Index(int page)\n    {\n        return View(page);\n    }\n"},
+	{name: "go-struct-tag", lang: "go", file: "internal/cfg/retry.go", symbol: "retry", symbolStart: 1, signature: 4,
+		snippet: "\tRetry int `json:\"retry\"`\n}\n\nfunc retry(n int) error {\n\treturn attempt(n)\n}\n"},
 }
 
 // exactNameLangResponse puts c's declaration at each of ranks (1-based) of the ten-row fixture.
@@ -453,5 +465,24 @@ func TestSearchExactNameReportsTheTopKCut(t *testing.T) {
 	got := exactNameSessionSearch(t, repo, "", "topk_cut_target", "1")
 	if !strings.Contains(got, "exact name: showing 1 exact definition from the top 1; more may exist; raise --top-k\n") {
 		t.Fatalf("the top-k cut is not reported:\n%s", got)
+	}
+}
+
+// Every language shape is anchored on its signature line, not on the first line that mentions the
+// name: an annotation, decorator, attribute or struct-tag argument spelling the name (the last five
+// cases) is stepped over. The sweep above proves the consequence on rendered answers; this pins the
+// anchor itself, per case, so one regressing case cannot hide behind another.
+func TestAgentExactNameAnchorsOnTheDeclaringLine(t *testing.T) {
+	t.Parallel()
+	for _, c := range exactNameLangCases {
+		response := exactNameLangResponse(c, 1)
+		anchor, ok := agentExactNameAnchor(response.Results[0], c.symbol)
+		if !ok {
+			t.Errorf("%s: not anchored", c.name)
+			continue
+		}
+		if anchor.named != c.signature-1 {
+			t.Errorf("%s: anchored on %q, want %q", c.name, anchor.lines[anchor.named], c.signatureLine())
+		}
 	}
 }
