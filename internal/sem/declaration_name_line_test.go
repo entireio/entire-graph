@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/c"
 )
 
 // Every shape the text finder misread in review is one the parse tree names exactly. Each case is a
@@ -20,6 +23,16 @@ func TestParserNameLineIsTheNameToken(t *testing.T) {
 		{"csharp-property-type-equals-name", "a/C.cs", "class C {\n    public Options Options\n    {\n        get { return _options ??= new Options(); }\n    }\n}\n", "Options", "", 2},
 		{"csharp-property-type-on-line-above", "a/E.cs", "class E {\n    public Options\n        Options { get; }\n}\n", "Options", "", 3},
 		{"java-annotated-field-unquoted-argument", "a/F.java", "class F {\n  @Column(\n      name = retries\n  )\n  private int retries;\n}\n", "retries", "", 5},
+		{"cpp-fields-on-separate-lines", "a/K.cpp", "class K {\n  int\n    first,\n    second;\n};\n", "second", "", 4},
+		{"cpp-fields-first-of-two", "a/K2.cpp", "class K {\n  int\n    first,\n    second;\n};\n", "first", "", 3},
+		{"js-callable-field-binding", "a/A.js", "class A {\n  run = () => {\n    run();\n  }\n}\n", "run", "", 2},
+		{"java-name-beyond-16-lines-after-misleading-annotation", "a/L.java", "class L {\n  @Doc(\n    text = \"\"\"\n      void run() {}\n      run();\n    \"\"\",\n    k00 = \"run\",\n    k01 = \"run\",\n    k02 = \"run\",\n    k03 = \"run\",\n    k04 = \"run\",\n    k05 = \"run\",\n    k06 = \"run\",\n    k07 = \"run\",\n    k08 = \"run\",\n    k09 = \"run\",\n    k10 = \"run\",\n    k11 = \"run\",\n    k12 = \"run\",\n    k13 = \"run\",\n    last = 0\n  )\n  public void run() {}\n}\n", "run", "method", 23},
+		{"c-declspec-spells-the-name", "a/d.c", "__declspec(item)\nint\nitem(void) { return 0; }\n", "item", "function", 3},
+		{"cpp-operator-in-class", "a/op.cpp", "struct item {\n  bool\n  operator ==(const item& o) const { return true; }\n};\n", "operator ==", "method", 3},
+		{"cpp-operator-out-of-line", "a/op2.cpp", "struct item {};\nbool\nitem::operator ==(const item& o) { return true; }\n", "operator ==", "", 3},
+		{"cpp-destructor-in-class", "a/k.cpp", "struct K {\n  virtual\n  ~K();\n};\n", "~K", "", 3},
+		{"cpp-destructor-out-of-line", "a/k2.cpp", "struct K {\n  ~K();\n};\nK::\n~K() {}\n", "K", "function", 5},
+		{"clojure-multiline-defn", "a/x.clj", "(defn\n  run\n  [x]\n  x)\n", "run", "function", 2},
 		{"csharp-attributes", "a/D.cs", "class D {\n    [Route(\"Index\")]\n    [HttpGet]\n    public IActionResult Index(int page) { return null; }\n}\n", "Index", "method", 4},
 		{"ruby-self-method-no-parens", "a/x.rb", "class A\n  def self.config\n    @config ||= Config.load(config: path)\n  end\nend\n", "config", "method", 2},
 		{"python-decorator-trailing-comment", "a/x.py", "@retry  # fetch() may raise\n@lru_cache()\ndef fetch(url):\n    return get(url)\n", "fetch", "function", 3},
@@ -201,5 +214,137 @@ func TestSearchResultSymbolSitesCarryNameLine(t *testing.T) {
 		SnippetStartLine: 3, SnippetEndLine: 4, Signals: []string{}}, searchEnclosure{start: 1, end: 5, lines: lines, symbol: symbol})
 	if got := widened.SymbolNameLine; got != 3 {
 		t.Errorf("enclosure name line = %d, want 3", got)
+	}
+}
+
+// The name line survives every storage path search reads symbols through: a cold preindex, a
+// complete-cache hit, a selective view derived from the complete entry, and a committed-tree search
+// run cold and then warm. Each must report the annotated method's name token, not its first line.
+func TestNameLineSurvivesColdWarmAndSelectiveCache(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "src/Handler.java", `package demo;
+
+public class Handler {
+  @Policy(
+      dispatchRequest = true
+  )
+  public void dispatchRequest(String input) {
+    System.out.println(input);
+  }
+}
+`)
+	write(t, repo, "src/Other.java", "package demo;\n\npublic class Other {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	nameLineOf := func(label string, snapshot ProviderSnapshot) {
+		t.Helper()
+		for _, symbol := range snapshot.Symbols {
+			if symbol.Name == "dispatchRequest" {
+				if symbol.StartLine != 4 || symbol.NameLine() != 7 {
+					t.Errorf("%s: start %d name line %d; want 4 and 7", label, symbol.StartLine, symbol.NameLine())
+				}
+				return
+			}
+		}
+		t.Errorf("%s: no dispatchRequest symbol", label)
+	}
+	cacheDir := t.TempDir()
+	cold, hit, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFull}, cacheDir)
+	if err != nil || hit {
+		t.Fatalf("cold preindex: hit=%v err=%v", hit, err)
+	}
+	nameLineOf("cold preindex", cold)
+	warm, hit, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFull}, cacheDir)
+	if err != nil || !hit {
+		t.Fatalf("warm preindex: hit=%v err=%v", hit, err)
+	}
+	nameLineOf("complete-cache hit", warm)
+	selective, hit, err := loadOrBuildSearchGraphSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileFull, OnlyFiles: []string{"src/Handler.java"},
+	}, cacheDir, false)
+	if err != nil || !hit {
+		t.Fatalf("selective derivation: hit=%v err=%v", hit, err)
+	}
+	nameLineOf("selective from complete", selective)
+	for _, run := range []string{"cold search", "warm search"} {
+		response, err := SearchRepository(t.Context(), repo, "test-version", "dispatchRequest",
+			SearchOptions{Profile: ProfileFull, CacheDir: cacheDir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, result := range response.Results {
+			if result.SymbolName == "dispatchRequest" {
+				found = true
+				if result.SymbolNameLine != 7 {
+					t.Errorf("%s: symbol_name_line %d, want 7", run, result.SymbolNameLine)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: no dispatchRequest result", run)
+		}
+	}
+}
+
+// Synthetic symbols: a tool keeps its handler's name and so its name line; a route is named by its
+// path, which no source token spells, and has none.
+func TestSyntheticSymbolsNameLines(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/app/users/page.tsx", "export default function UsersPage() {\n  return null\n}\n")
+	writeFile(t, repo, "tools/search.ts", "// registered below\nexport function searchToolHandler(input: string) {\n  const tool = \"search\"\n  return execute(tool, input)\n}\n")
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var routes, tools int
+	for _, symbol := range snapshot.Symbols {
+		switch symbol.Kind {
+		case "route":
+			routes++
+			if symbol.NameLine() != 0 {
+				t.Errorf("route %q carries name line %d", symbol.Name, symbol.NameLine())
+			}
+		case "tool":
+			tools++
+			if symbol.Name == "searchToolHandler" && symbol.NameLine() != 2 {
+				t.Errorf("tool %q name line %d, want its handler's 2", symbol.Name, symbol.NameLine())
+			}
+		}
+	}
+	if routes == 0 || tools == 0 {
+		names := []string{}
+		for _, symbol := range snapshot.Symbols {
+			names = append(names, symbol.Kind+" "+symbol.Name)
+		}
+		t.Fatalf("fixture produced %d routes, %d tools: %v", routes, tools, names)
+	}
+}
+
+// A C-family declaration whose declarators do not bind the name has no name line, whatever else
+// in it is spelled like the name: here a struct tag in the return type spells `other`, and the
+// only binding is `item`.
+func TestNameLineUnboundDeclaratorIsUnknown(t *testing.T) {
+	t.Parallel()
+	src := []byte("struct other\nitem(void) {\n  return (struct other){0};\n}\n")
+	parser := sitter.NewParser()
+	parser.SetLanguage(c.GetLanguage())
+	tree, err := parser.ParseCtx(t.Context(), nil, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	function := tree.RootNode().NamedChild(0)
+	if function.Type() != "function_definition" {
+		t.Fatalf("fixture parsed as %s", function.Type())
+	}
+	if got := declarationNameLine(function, src, "item"); got != 2 {
+		t.Fatalf("control: item's name line %d, want 2", got)
+	}
+	if got := declarationNameLine(function, src, "other"); got != 0 {
+		t.Fatalf("a name no declarator binds got line %d from its spelling in the type", got)
 	}
 }
