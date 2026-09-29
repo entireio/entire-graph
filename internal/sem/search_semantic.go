@@ -72,6 +72,9 @@ const (
 	semanticMaxBuildResponseBytes = 256 << 20
 	semanticMaxDimension          = 1 << 16
 	semanticSignal                = "semantic:embedding"
+	// semanticUnitNormTolerance is how far a stored or freshly normalised row's squared norm may
+	// sit from 1. float32 rounding of a unit vector stays orders of magnitude inside it.
+	semanticUnitNormTolerance = 1e-3
 )
 
 // Semantic status values reported in SearchStats.SemanticStatus. An UNCONFIGURED channel reports
@@ -544,6 +547,18 @@ func (index *semanticIndexFile) validate(tree, model string) error {
 		}
 		index.decoded[i] = value
 	}
+	// Every row must be the unit vector the builder wrote: nearest reads a dot product AS a
+	// cosine, which is true only of unit rows. A finite row of arbitrary magnitude (a damaged or
+	// forged entry, or an all-zero row) would otherwise rank as a confident, meaningless hit.
+	for row := 0; row < index.Count; row++ {
+		var sum float64
+		for _, value := range index.decoded[row*index.Dimension : (row+1)*index.Dimension] {
+			sum += float64(value) * float64(value)
+		}
+		if math.IsNaN(sum) || math.IsInf(sum, 0) || math.Abs(sum-1) > semanticUnitNormTolerance {
+			return fmt.Errorf("vector row %d is not unit length", row)
+		}
+	}
 	return nil
 }
 
@@ -906,24 +921,55 @@ func semanticEmbed(ctx context.Context, config *SemanticConfig, inputs []string,
 		if len(vector) == 0 || len(vector) > semanticMaxDimension || len(vector) != len(decoded.Embeddings[0]) {
 			return nil, unavailable("bad-response", "embeddings have inconsistent or empty dimensions")
 		}
-		var norm float64
-		for _, value := range vector {
-			if math.IsNaN(value) || math.IsInf(value, 0) {
-				return nil, unavailable("bad-response", "embedding holds a non-finite value")
-			}
-			norm += value * value
-		}
-		if norm == 0 {
-			return nil, unavailable("bad-response", "embedding has zero norm")
-		}
-		norm = math.Sqrt(norm)
-		normalised := make([]float32, len(vector))
-		for i, value := range vector {
-			normalised[i] = float32(value / norm)
+		normalised, err := normaliseSemanticVector(vector)
+		if err != nil {
+			return nil, err
 		}
 		out[row] = normalised
 	}
 	return out, nil
+}
+
+// normaliseSemanticVector L2-normalises one embedding without overflowing. Summing raw squares is
+// NOT safe even when every component is finite: [1e308, 0] squares to +Inf, the division by
+// sqrt(+Inf) then turns every component into 0, and an all-zero "unit" vector is accepted as a
+// meaningless tie with every row. So the vector is first scaled by its largest magnitude — every
+// scaled component lies in [-1, 1], their squares sum to at most the dimension — and every output
+// component is checked again, so nothing non-finite or degenerate can be returned.
+func normaliseSemanticVector(vector []float64) ([]float32, error) {
+	var largest float64
+	for _, value := range vector {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return nil, unavailable("bad-response", "embedding holds a non-finite value")
+		}
+		largest = math.Max(largest, math.Abs(value))
+	}
+	if largest == 0 {
+		return nil, unavailable("bad-response", "embedding has zero norm")
+	}
+	var sum float64
+	for _, value := range vector {
+		scaled := value / largest
+		sum += scaled * scaled
+	}
+	norm := math.Sqrt(sum)
+	if math.IsNaN(norm) || math.IsInf(norm, 0) || norm <= 0 {
+		return nil, unavailable("bad-response", "embedding norm is not a positive finite number")
+	}
+	normalised := make([]float32, len(vector))
+	var check float64
+	for i, value := range vector {
+		component := float32((value / largest) / norm)
+		if math.IsNaN(float64(component)) || math.IsInf(float64(component), 0) {
+			return nil, unavailable("bad-response", "embedding does not normalise to a finite vector")
+		}
+		normalised[i] = component
+		check += float64(component) * float64(component)
+	}
+	if math.Abs(check-1) > semanticUnitNormTolerance {
+		return nil, unavailable("bad-response", "embedding does not normalise to a unit vector")
+	}
+	return normalised, nil
 }
 
 // sameSemanticModel treats Ollama's implicit ":latest" tag as the untagged name, so a model
