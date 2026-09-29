@@ -218,10 +218,11 @@ type declarationMode int
 const (
 	declarationInCode declarationMode = iota
 	declarationInBlockComment
-	declarationInTriple   // """...""" or '''...''' (quote holds the quote byte)
-	declarationInBacktick // `...`
-	declarationInRaw      // Rust r"..." / r#"..."# (hashes holds the # count)
-	declarationInVerbatim // C# @"..." ("" escapes a quote)
+	declarationInTriple     // """...""" or '''...''' (quote holds the quote byte)
+	declarationInBacktick   // `...`
+	declarationInRaw        // Rust r"..." / r#"..."# (hashes holds the # count)
+	declarationInVerbatim   // C# @"..." ("" escapes a quote)
+	declarationInRawEscaped // r"..." where a backslash still escapes the quote (rawEscapes dialects)
 )
 
 // declarationLexer masks non-code bytes line by line, carrying multi-line constructs across lines.
@@ -239,40 +240,74 @@ type declarationDialect struct {
 	// rawEscapes: in r"..." a backslash still escapes the quote (Python), so the string is lexed
 	// like an ordinary one; false for Rust, whose raw strings have no escapes.
 	rawEscapes bool
+	// hashAnywhere: `#` outside a literal opens a comment wherever it stands (Python, Ruby, R,
+	// Elixir, ...), not only after whitespace: `enabled=True, #(` comments out the `(`.
+	hashAnywhere bool
 }
 
 // declarationUnknownDialect is used when the language is not known. Each choice errs toward
 // masking too much rather than too little — a missed declaration makes callers fall back to their
 // ordinary output, a false one is printed as the answer: comments nest, raw strings honour
-// escapes, and `#` after whitespace opens a comment.
+// escapes and continue past the line when unclosed, and `#` at the start of a line or after
+// whitespace opens a comment unless it opens an attribute (`#[`, `#![`) or interpolation (`#{`).
 var declarationUnknownDialect = declarationDialect{hashComments: true, nestedComments: true, rawEscapes: true}
 
 // declarationDialectFor resolves a language name (sem's spelling in any case, or a common alias)
 // or, failing that, the file extension of path. Unlisted languages get the unknown dialect.
 func declarationDialectFor(language, path string) declarationDialect {
-	key := strings.ToLower(strings.TrimSpace(language))
-	if key == "" {
-		if dot := strings.LastIndexByte(path, '.'); dot >= 0 && !strings.ContainsAny(path[dot:], "/\\") {
-			key = strings.ToLower(path[dot+1:])
+	if dialect, ok := declarationDialectNamed(strings.ToLower(strings.TrimSpace(language))); ok {
+		return dialect
+	}
+	// An unrecognised language name does not hide a recognisable extension.
+	if dot := strings.LastIndexByte(path, '.'); dot >= 0 && !strings.ContainsAny(path[dot:], "/\\") {
+		if dialect, ok := declarationDialectNamed(strings.ToLower(path[dot+1:])); ok {
+			return dialect
 		}
 	}
+	return declarationUnknownDialect
+}
+
+func declarationDialectNamed(key string) (declarationDialect, bool) {
 	switch key {
+	case "":
+		return declarationDialect{}, false
 	case "python", "py", "pyi":
-		return declarationDialect{hashComments: true, rawEscapes: true}
-	case "ruby", "rb", "bash", "shell", "sh", "zsh", "perl", "pl", "pm", "r", "yaml", "yml", "toml",
-		"elixir", "ex", "exs", "nim", "coffeescript", "coffee", "powershell", "ps1", "makefile", "mk",
-		"dockerfile", "julia", "jl", "graphql", "gql", "php", "crystal", "cr", "cmake", "tcl":
-		return declarationDialect{hashComments: true}
+		return declarationDialect{hashComments: true, hashAnywhere: true, rawEscapes: true}, true
+	case "ruby", "rb", "r", "toml", "elixir", "ex", "exs", "nim", "coffeescript", "coffee", "julia", "jl",
+		"graphql", "gql", "crystal", "cr", "cmake":
+		return declarationDialect{hashComments: true, hashAnywhere: true}, true
+	case "bash", "shell", "sh", "zsh", "perl", "pl", "pm", "yaml", "yml", "powershell", "ps1", "makefile",
+		"mk", "dockerfile", "php", "tcl":
+		return declarationDialect{hashComments: true}, true
 	case "rust", "rs":
-		return declarationDialect{nestedComments: true}
+		return declarationDialect{nestedComments: true}, true
 	case "swift", "kotlin", "kt", "kts", "scala", "sc", "dart":
-		return declarationDialect{nestedComments: true, rawEscapes: true}
+		return declarationDialect{nestedComments: true, rawEscapes: true}, true
 	case "c", "h", "c++", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "objective-c", "objc", "m", "mm",
 		"java", "c#", "csharp", "cs", "go", "javascript", "js", "jsx", "mjs", "cjs", "typescript", "ts",
 		"tsx", "groovy", "gradle", "css", "scss", "less", "zig", "protocol buffers", "protobuf", "proto":
-		return declarationDialect{rawEscapes: true}
+		return declarationDialect{rawEscapes: true}, true
 	}
-	return declarationUnknownDialect
+	return declarationDialect{}, false
+}
+
+// hashOpensComment reports whether the `#` at line[i] (outside any literal) starts a comment.
+func (dialect declarationDialect) hashOpensComment(line string, i int) bool {
+	if !dialect.hashComments {
+		return false
+	}
+	if dialect.hashAnywhere {
+		return true
+	}
+	if i > 0 && line[i-1] != ' ' && line[i-1] != '\t' {
+		return false
+	}
+	if i+1 < len(line) && strings.IndexByte("[!{", line[i+1]) >= 0 {
+		return false
+	}
+	// A C preprocessor #define declares its macro (`#define MAX(a, b)`); other directives are
+	// masked like comments by the whole-line rule, which is harmless: they declare nothing.
+	return !strings.HasPrefix(strings.TrimLeft(line[i+1:], " \t"), "define")
 }
 
 type declarationLexer struct {
@@ -353,6 +388,16 @@ func (lexer *declarationLexer) code(line string) string {
 			i += end + len(closing)
 			lexer.mode = declarationInCode
 			continue
+		case declarationInRawEscaped:
+			end, closed := declarationScanEscaped(line, i, '"')
+			if !closed {
+				blank(i, len(line))
+				return string(out)
+			}
+			blank(i, end)
+			i = end
+			lexer.mode = declarationInCode
+			continue
 		case declarationInVerbatim:
 			j := i
 			for j < len(line) {
@@ -390,8 +435,7 @@ func (lexer *declarationLexer) code(line string) string {
 			blank(i, len(line))
 			return string(out)
 		}
-		if c == '#' && lexer.dialect.hashComments && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t') &&
-			(i+1 == len(line) || line[i+1] == ' ' || line[i+1] == '\t') {
+		if c == '#' && lexer.dialect.hashOpensComment(line, i) {
 			// A `# comment` (Python, Ruby, shell, YAML, ...), including one inside an open
 			// annotation's arguments: its brackets and quotes are not code.
 			blank(i, len(line))
@@ -490,7 +534,13 @@ func (lexer *declarationLexer) literal(line string, i int) (int, bool) {
 		if hashes == 0 && lexer.dialect.rawEscapes {
 			// Python: r"\"" is one string. The backslash stays in the value but the quote after
 			// it does not end the string, so it is lexed like an ordinary literal.
-			return declarationSkipLiteral(line, j, '"'), true
+			end, closed := declarationScanEscaped(line, j+1, '"')
+			if !closed {
+				// Unclosed on this line: the string continues (a multi-line raw string when the
+				// language is not known). Masking on is the safe direction.
+				lexer.mode = declarationInRawEscaped
+			}
+			return end, true
 		}
 		closing := `"` + strings.Repeat("#", hashes)
 		if end := strings.Index(line[j+1:], closing); end >= 0 {
@@ -543,6 +593,22 @@ func declarationAnnotationStart(line string, i int, lead bool) (end int, open, o
 		return i + 1, true, true
 	}
 	return 0, false, false
+}
+
+// declarationScanEscaped scans line from offset from for the quote that closes a literal whose
+// backslashes escape the next byte. It returns the offset after that quote and true, or
+// len(line) and false when the literal does not close on this line.
+func declarationScanEscaped(line string, from int, quote byte) (int, bool) {
+	for j := from; j < len(line); j++ {
+		if line[j] == '\\' {
+			j++
+			continue
+		}
+		if line[j] == quote {
+			return j + 1, true
+		}
+	}
+	return len(line), false
 }
 
 // declarationSkipLiteral returns the offset after the literal opened by quote at line[i]: the next
