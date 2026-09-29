@@ -1455,6 +1455,18 @@ func agentSearchSectionTag(result sem.SearchResult) string {
 	return ""
 }
 
+// agentSearchFitPass names the passes writeAgentSearch makes over its prefix ladder, in order.
+type agentSearchFitPass int
+
+const (
+	// agentSearchExactNamePass fits only the exact-name answer (search_exact_name.go).
+	agentSearchExactNamePass agentSearchFitPass = iota
+	// agentSearchProtectTopHitPass accepts a plan only if the ranking carries source.
+	agentSearchProtectTopHitPass
+	// agentSearchFallbackPass accepts any plan that holds a ranked location.
+	agentSearchFallbackPass
+)
+
 // agentSearchPrefixHead pairs the two outermost prefix blocks so the fitter can walk them as one
 // flat list. See the comment at its only construction site in writeAgentSearch for the ordering
 // the pairing encodes.
@@ -1493,6 +1505,12 @@ func agentSearchHeaderRungs(cacheState string, index, query, preselect, total in
 }
 
 func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, budget int) error {
+	return writeAgentSearchMode(out, response, budget, true)
+}
+
+// writeAgentSearchMode is writeAgentSearch with the exact-name answer (search_exact_name.go)
+// switchable, so a test can render the ordinary answer for the same response and compare.
+func writeAgentSearchMode(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, budget int, exactName bool) error {
 	// Same sink class as the text renderer, and the format agents are told to
 	// prefer — so it gets the same guard. See writeTextSearch.
 	out = termsafe.NewWriter(out)
@@ -1678,7 +1696,22 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 			heads = append(heads, agentSearchPrefixHead{header: header, reserved: len(reserved[i])})
 		}
 	}
-	for _, protectTopHit := range []bool{true, false} {
+	// An exact-identifier query answers with the exact-name rows alone (search_exact_name.go). That
+	// answer gets a pass of its own over the WHOLE prefix ladder before the ordinary passes run: when
+	// it was tried rung by rung beside the ordinary ranking, a rung that kept VERIFY and fitted one
+	// bare locator for an unrelated row beat a rung one step down that showed every exact
+	// declaration, so a larger budget could lose the answer a smaller one had. When no rung can hold
+	// it, the ordinary passes below run untouched and the payload is byte-identical to before.
+	var exactRows []sem.SearchResult
+	exactOmitted := 0
+	if exactName {
+		exactRows, exactOmitted = agentExactNameRows(results, response.Query)
+	}
+	for _, pass := range []agentSearchFitPass{agentSearchExactNamePass, agentSearchProtectTopHitPass, agentSearchFallbackPass} {
+		if pass == agentSearchExactNamePass && len(exactRows) == 0 {
+			continue
+		}
+		protectTopHit := pass == agentSearchProtectTopHitPass
 		if protectTopHit && len(results) == 0 {
 			continue // nothing to protect; the fallback pass is the only pass
 		}
@@ -1734,6 +1767,24 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 										return err
 									}
 									continue
+								}
+								if pass == agentSearchExactNamePass {
+									exact := fitAgentExactNameResults(exactRows, exactOmitted, remaining)
+									if len(exact) == 0 {
+										continue
+									}
+									// The droppable suffixes do not ride along: they are surplus by this
+									// format's own rule, and refilling the cap with them is the cost this
+									// answer exists to remove. VERIFY, if it had to leave the prefix, is
+									// still re-offered first.
+									payload := fitAgentSearchSuffixes(
+										append(prefix(), exact...), agentVerifyFirstSuffixes(verify, verifyBlock, nil), budget-slack,
+									)
+									if !searchPayloadDisclosesItsQuarantine(string(payload), quarantinedLines) {
+										continue
+									}
+									_, err := out.Write(payload)
+									return err
 								}
 								formatted := fitAgentSearchResults(results, remaining)
 								if protectTopHit && !agentSearchBlockCarriesSource(formatted) {
