@@ -28,18 +28,31 @@ import (
 //     literals and leading annotations, definition-shaped lines first (the exact-name anchor's rule,
 //     so `@Named("fooBar")` or `@app.route("/login")` is stepped over rather than printed in the
 //     signature's place). A symbol with no such line is rendered exactly as before.
-//   - A multi-line signature's continuation lines (a named line ending in `(` or `,`) ride with the
-//     declaration only when the block then prints at least as many lines in total, and so do the
-//     declarations of the members a merged span absorbed (sem.SearchResult.MergedDeclLines): each
-//     may replace a body line, never more than one. The survivor's own declaration is mandatory.
+//   - A multi-line signature's continuation lines (a named line ending in `(` or `,`) and the
+//     declarations of the members a merged span absorbed (sem.SearchResult.MergedDeclLines) are
+//     optional. A variant adding k of them is taken only when it prints at most k fewer BODY lines
+//     than the variant without them, where a body line is a printed source line outside every
+//     declaration group: each added declaration displaces at most one body line. The elision line
+//     an added declaration brings with it is not a body line and is not counted either way; its
+//     bytes are paid from the window. The survivor's own declaration is mandatory.
 //   - Never locate less: a block whose ordinary window already shows every declaration is returned
-//     byte for byte, and no variant is taken that drops a declaration the ordinary window showed.
-//   - When no window fits beside the declaration, the declaration alone is printed rather than a
-//     window without it; when not even that fits, the ordinary block (or bare header) is kept.
+//     byte for byte. Otherwise every declaration the ordinary window showed is mandatory, AND every
+//     line it showed that any finder could have taken for one (agentSearchPlainHeads: a line within
+//     agentSearchHeadLines of the symbol's start naming it anywhere, or the lines after an absorbed
+//     member's recorded annotation line down to the first non-annotation line) — so a finder that
+//     took the wrong line for a declaration still never makes the new block drop the right one.
+//   - When no window fits beside the mandatory lines, they alone are printed rather than a window
+//     without them; when not even that fits, the ordinary block (or bare header) is kept.
+//   - Header: the minimal rung names the block's first printed line, not its focus line, so every
+//     printed line's number is recoverable (agentSearchRenderDecls).
 const (
 	// agentSearchSignatureLines bounds the continuation lines of a multi-line signature, the same
 	// bound the exact-name answer uses.
 	agentSearchSignatureLines = exactNameSignatureLines
+	// agentSearchHeadLines is how far below a symbol's first line (or an absorbed member's recorded
+	// declaration line) a line the ordinary window printed is carried over when a finder could have
+	// taken it for the declaration (agentSearchPlainHeads): the declaration search's own bound.
+	agentSearchHeadLines = exactNameAnchorLines
 )
 
 // agentSearchBlockView is one block's rendering inputs, computed once by agentSearchPrimaryBlock.
@@ -53,10 +66,14 @@ type agentSearchBlockView struct {
 	scored    string
 }
 
-// agentSearchDecl is one declaration a block may show: the snippet index of the line that names
-// the symbol and how many signature continuation lines follow it.
+// agentSearchDecl is one group of lines a block must or may show beside its window: the snippet
+// index of its first line and how many lines follow it. A declaration group is the line that names
+// a symbol plus its signature continuation lines. A head group (head) is a run of lines the ordinary
+// window printed within a symbol's first agentSearchHeadLines lines, carried over so the new block
+// never shows less of a declaration than the old one did; its lines count as body, not declaration.
 type agentSearchDecl struct {
 	index, cont int
+	head        bool
 }
 
 // agentSearchDeclIndex returns the snippet index of the line declaring `name` (sem.DeclarationLineIndex:
@@ -122,9 +139,13 @@ func agentSearchDeclarationBlock(view agentSearchBlockView, plain []byte, left, 
 	shownByPlain := func(decl agentSearchDecl) bool {
 		return plain != nil && decl.index >= left && decl.index <= right
 	}
-	// The mandatory set: the block's own declaration and every declaration the ordinary window
-	// already shows. The optional set, in priority order: the own signature's continuation, then the
-	// absorbed declarations the ordinary window does not show.
+	// The mandatory set: the block's own declaration, every declaration the ordinary window already
+	// shows, and (defence in depth) every line the ordinary window showed near the symbol's start
+	// that names it, or that follows an absorbed member's annotation (agentSearchPlainHeads). The
+	// last is what keeps "never locate less" true when a finder takes the wrong line for a
+	// declaration: any line the old block printed that could have been the declaration is printed. The optional set, in
+	// priority order: the own signature's continuation, then the absorbed declarations the ordinary
+	// window does not show.
 	var base, optional []agentSearchDecl
 	missing := false
 	if hasOwn {
@@ -142,31 +163,33 @@ func agentSearchDeclarationBlock(view agentSearchBlockView, plain []byte, left, 
 	if !missing {
 		return nil
 	}
+	base = append(base, agentSearchPlainHeads(view, absorbed, plain, left, right)...)
 	if hasOwn && own.cont > 0 {
 		optional = append([]agentSearchDecl{own}, optional...)
 	}
 
-	baseBlock, basePrinted := plain, right-left+1
+	baseBlock, baseBody := plain, agentSearchBodyLines(len(view.lines), base, left, right)
 	if plain == nil {
-		basePrinted = 0
+		baseBody = 0
 	}
 	if hasOwn && !shownByPlain(own) {
-		baseBlock, basePrinted = agentSearchWidestWithDecls(view, base, budget)
+		baseBlock, baseBody = agentSearchWidestWithDecls(view, base, budget)
 	}
 	if baseBlock == nil {
-		// No window fits beside the mandatory declarations. Print them alone when they fit: the
-		// line that names the callable locates it; a window of body under a header does not.
+		// No window fits beside the mandatory lines. Print them alone when they fit: the line that
+		// names the callable locates it; a window of body under a header does not.
 		if len(base) == 0 {
 			return nil
 		}
 		return agentSearchDeclsOnly(view, base, budget)
 	}
-	// Richer variants, richest first. One is taken only when the block still prints at least as
-	// many lines as the base variant, so every added declaration line displaces at most one body line.
+	// Richer variants, richest first. A variant adding k optional groups is taken only when it
+	// still prints at least baseBody-k BODY lines (source lines outside every declaration group;
+	// elision lines are not body), so each added declaration displaces at most one body line.
 	for count := len(optional); count > 0; count-- {
 		tier := append(append([]agentSearchDecl(nil), base...), optional[:count]...)
-		block, printed := agentSearchWidestWithDecls(view, tier, budget)
-		if block != nil && printed >= basePrinted {
+		block, body := agentSearchWidestWithDecls(view, tier, budget)
+		if block != nil && body >= baseBody-count {
 			return block
 		}
 	}
@@ -176,9 +199,107 @@ func agentSearchDeclarationBlock(view agentSearchBlockView, plain []byte, left, 
 	return nil
 }
 
+// agentSearchPlainHeads returns, as head groups, the lines the ordinary window (left..right; none
+// when plain is nil) printed that any finder could have taken for a declaration:
+//
+//   - within agentSearchHeadLines lines of the symbol's first line, every line that contains the
+//     symbol's name as a whole identifier ANYWHERE — inside an annotation, a literal or a comment
+//     too. That is the superset of every candidate a declaration finder chooses from, so whichever
+//     of them the finder picked, and whether or not it picked the right one, a line the old block
+//     showed that names the symbol near its start is still shown;
+//   - for an absorbed member, whose name the renderer does not have, the recorded declaration line
+//     and, when that line is an annotation, decorator, attribute or comment, the lines after it up
+//     to and including the first line that is not (the declaration an annotation line stands above).
+//
+// Only these lines, not every line the old window showed near a symbol's start: forcing arbitrary
+// body lines printed them as lone islands between elision lines and bought nothing a reader locates by.
+func agentSearchPlainHeads(view agentSearchBlockView, absorbed []agentSearchDecl, plain []byte, left, right int) []agentSearchDecl {
+	if plain == nil || left < 0 {
+		return nil
+	}
+	in := make([]bool, len(view.lines))
+	result := view.result
+	if start := result.SymbolStartLine - view.first; result.SymbolStartLine > 0 && result.SymbolName != "" && start < len(view.lines) {
+		for i := max(start, left); i <= min(start+agentSearchHeadLines-1, right); i++ {
+			if agentSearchLineMentions(view.lines[i], result.SymbolName) {
+				in[i] = true
+			}
+		}
+	}
+	for _, decl := range absorbed {
+		for i := decl.index; i < min(decl.index+agentSearchHeadLines, len(view.lines)); i++ {
+			if i >= left && i <= right {
+				in[i] = true
+			}
+			if !exactNameLeadLine(view.lines[i]) {
+				break
+			}
+		}
+	}
+	var heads []agentSearchDecl
+	for i := 0; i < len(in); i++ {
+		if !in[i] {
+			continue
+		}
+		j := i
+		for j+1 < len(in) && in[j+1] {
+			j++
+		}
+		heads = append(heads, agentSearchDecl{index: i, cont: j - i, head: true})
+		i = j
+	}
+	return heads
+}
+
+// agentSearchLineMentions reports whether line contains name as a whole identifier anywhere,
+// literals, annotations and comments included.
+func agentSearchLineMentions(line, name string) bool {
+	for from := 0; from < len(line); {
+		at := strings.Index(line[from:], name)
+		if at < 0 {
+			return false
+		}
+		at += from
+		end := at + len(name)
+		if (at == 0 || !exactNameIdentByte(line[at-1])) && (end == len(line) || !exactNameIdentByte(line[end])) {
+			return true
+		}
+		from = at + 1
+	}
+	return false
+}
+
+// agentSearchBodyLines counts the BODY lines a candidate prints: the source lines of the window
+// left..right (none when left < 0) and of every group, minus those inside a declaration group (a
+// group that is not a head). Elision lines are not counted.
+func agentSearchBodyLines(n int, decls []agentSearchDecl, left, right int) int {
+	shown := make([]bool, n)
+	declared := make([]bool, n)
+	if left >= 0 {
+		for i := left; i <= right && i < n; i++ {
+			shown[i] = true
+		}
+	}
+	for _, decl := range decls {
+		for i := decl.index; i <= decl.index+decl.cont && i < n; i++ {
+			shown[i] = true
+			if !decl.head {
+				declared[i] = true
+			}
+		}
+	}
+	body := 0
+	for i := range shown {
+		if shown[i] && !declared[i] {
+			body++
+		}
+	}
+	return body
+}
+
 // agentSearchWidestWithDecls is the ordinary widest-balanced-window search with the given
-// declarations always shown. It returns the block and how many lines it prints under its header
-// (source lines plus elision lines), or nil when no window fits.
+// groups always shown. It returns the block and how many BODY lines it prints (agentSearchBodyLines),
+// or nil when no window fits.
 //
 // It chooses exactly what the ordinary search would among windows that fit — the widest span, then
 // the best balance about the focus, then the leftmost — but it prices a candidate from prefix sums
@@ -220,8 +341,8 @@ func agentSearchWidestWithDecls(view agentSearchBlockView, decls []agentSearchDe
 			if budget > 0 && floor+agentSearchDeclBodyBytes(prefix, groups, left, right) > budget {
 				continue
 			}
-			if block, printed := agentSearchRenderDecls(view, decls, left, right, budget); block != nil {
-				return block, printed
+			if block, body := agentSearchRenderDecls(view, decls, left, right, budget); block != nil {
+				return block, body
 			}
 		}
 	}
@@ -255,8 +376,18 @@ func agentSearchDeclsOnly(view agentSearchBlockView, decls []agentSearchDecl, bu
 }
 
 // agentSearchRenderDecls renders the snippet lines left..right (none when left < 0) together with
-// each declaration's lines, in file order, an elision line standing for every run of lines left out
-// between two printed ones. It returns nil when no header rung fits the budget.
+// each group's lines, in file order, an elision line standing for every run of lines left out
+// between two printed ones. It returns the block and the BODY lines it prints
+// (agentSearchBodyLines), or nil when no header rung fits the budget.
+//
+// Every printed line's file line number is recoverable from the block alone: the rich and compact
+// rungs name the range first-last, and the minimal rung names the FIRST printed line (`path:N *`),
+// not the focus line the ordinary block's minimal rung names. Counting down from it, a source line
+// adds one and an elision line adds its count. An ordinary block's window is contiguous around its
+// focus; a declaration block's first line is the declaration, often many lines above the focus, and
+// `path:FOCUS *` over it read as "this declaration is at FOCUS". The locator keeps the shape every
+// other minimal rung has (`<path>:<digits> *`), so agentSearchLineIsLocator and the record grammar
+// the forgery quarantine matches are unchanged.
 func agentSearchRenderDecls(view agentSearchBlockView, decls []agentSearchDecl, left, right, budget int) ([]byte, int) {
 	lines := view.lines
 	shown := make([]bool, len(lines))
@@ -283,12 +414,10 @@ func agentSearchRenderDecls(view agentSearchBlockView, decls []agentSearchDecl, 
 		return nil, 0
 	}
 	var text strings.Builder
-	printed := 0
 	for i := top; i <= bottom; {
 		if shown[i] {
 			text.WriteString(lines[i])
 			text.WriteByte('\n')
-			printed++
 			i++
 			continue
 		}
@@ -297,14 +426,15 @@ func agentSearchRenderDecls(view agentSearchBlockView, decls []agentSearchDecl, 
 			gap++
 		}
 		text.WriteString(agentSearchElisionLine(gap - i))
-		printed++
 		i = gap
 	}
 	result := view.result
-	for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, view.first+top, view.first+bottom,
-		view.focusLine, view.name, view.tag, view.scored) {
+	headers := agentSearchLocationHeaders(result.Rank, result.FilePath, view.first+top, view.first+bottom,
+		view.focusLine, view.name, view.tag, view.scored)
+	headers[len(headers)-1] = fmt.Sprintf("%s:%d *\n", result.FilePath, view.first+top)
+	for _, header := range headers {
 		if candidate := header + text.String(); budget <= 0 || len(candidate) <= budget {
-			return []byte(candidate), printed
+			return []byte(candidate), agentSearchBodyLines(len(lines), decls, left, right)
 		}
 	}
 	return nil, 0
