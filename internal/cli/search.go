@@ -787,6 +787,14 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			}
 		}
 	}
+	// The semantic channel's state, ahead of the results for the reason the ignore disclosure is:
+	// a reader of the hits has to know whether they are lexical-only. One bounded line of stable
+	// codes and counts, printed only when the channel is configured.
+	if line := textSearchSemanticLine(response.Stats); len(line) > 0 {
+		if _, err := out.Write(line); err != nil {
+			return err
+		}
+	}
 	if notice, _ := searchLowConfidenceNotices(response); len(notice) > 0 {
 		if _, err := out.Write(notice); err != nil {
 			return err
@@ -1581,13 +1589,18 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	if stats.IndexCacheHit {
 		cacheState = "hit"
 	}
+	// The semantic channel's state rides IN every header rung (and the last-resort rungs below),
+	// so it survives any budget that can hold a header at all. Empty when the channel is not
+	// configured, which keeps the default payload byte-identical.
+	semantic := agentSearchSemanticTag(stats)
 	fullHeader := []byte(fmt.Sprintf(
-		"Index: cache-%s (%dms) | Query: %dms | Preselect: %dms | Total: %dms\n",
+		"Index: cache-%s (%dms) | Query: %dms | Preselect: %dms | Total: %dms%s\n",
 		cacheState,
 		stats.IndexLatencyMS,
 		stats.QueryLatencyMS,
 		stats.PreselectLatencyMS,
 		stats.TotalLatencyMS,
+		semantic,
 	))
 	// EVERY block below is measured against the caller's byte cap, so every block
 	// is escaped BEFORE it is measured. The terminal-safety rewrite turns one ESC
@@ -1684,12 +1697,13 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// top-ranked location at budgets where the expanded diagnostic otherwise
 	// crowds out every result.
 	compactHeader := []byte(fmt.Sprintf(
-		"I:%s/%d Q:%d P:%d T:%d\n",
+		"I:%s/%d Q:%d P:%d T:%d%s\n",
 		cacheState,
 		stats.IndexLatencyMS,
 		stats.QueryLatencyMS,
 		stats.PreselectLatencyMS,
 		stats.TotalLatencyMS,
+		semantic,
 	))
 	// Two further rungs between the compact header and the legacy one, shedding the latency
 	// fields in order of least diagnostic value (preselect, then query, then total) while
@@ -1697,9 +1711,9 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// way to buy bytes back for the ranking was the legacy "Index: cache-miss (113ms)" form,
 	// which changes the prefix — so a slow machine had to choose between losing the snippet and
 	// losing the machine-readable header. It now loses neither.
-	timedHeader := []byte(fmt.Sprintf("I:%s/%d T:%d\n", cacheState, stats.IndexLatencyMS, stats.TotalLatencyMS))
-	terseHeader := []byte(fmt.Sprintf("I:%s/%d\n", cacheState, stats.IndexLatencyMS))
-	legacyHeader := []byte(fmt.Sprintf("Index: cache-%s (%dms)\n", cacheState, stats.IndexLatencyMS))
+	timedHeader := []byte(fmt.Sprintf("I:%s/%d T:%d%s\n", cacheState, stats.IndexLatencyMS, stats.TotalLatencyMS, semantic))
+	terseHeader := []byte(fmt.Sprintf("I:%s/%d%s\n", cacheState, stats.IndexLatencyMS, semantic))
+	legacyHeader := []byte(fmt.Sprintf("Index: cache-%s (%dms)%s\n", cacheState, stats.IndexLatencyMS, semantic))
 	diagnosticVariants := [][]byte{fullDiagnostics}
 	if !bytes.Equal(fullDiagnostics, compactDiagnostics) {
 		diagnosticVariants = append(diagnosticVariants, compactDiagnostics)
@@ -1883,8 +1897,8 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 			excluded = fmt.Sprintf(" X%d", response.Stats.RepoIgnoredFiles)
 		}
 		candidates := [][]byte{
-			[]byte(fmt.Sprintf("Index: cache-%s%s%s\n", cacheState, marker, excluded)),
-			[]byte(fmt.Sprintf("%s I:%s%s\n", marker, cacheState, excluded)),
+			[]byte(fmt.Sprintf("Index: cache-%s%s%s%s\n", cacheState, marker, excluded, semantic)),
+			[]byte(fmt.Sprintf("%s I:%s%s%s\n", marker, cacheState, excluded, semantic)),
 		}
 		if excluded != "" {
 			// The count outlives the cache state, not the other way round. Below the
@@ -1898,6 +1912,8 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 			candidates = append(candidates, []byte(fmt.Sprintf("%s%s\n", marker, excluded)))
 		}
 		candidates = append(candidates,
+			[]byte(fmt.Sprintf("Index: cache-%s%s%s\n", cacheState, marker, semantic)),
+			[]byte(fmt.Sprintf("%s I:%s%s\n", marker, cacheState, semantic)),
 			[]byte(fmt.Sprintf("Index: cache-%s%s\n", cacheState, marker)),
 			[]byte(fmt.Sprintf("%s I:%s\n", marker, cacheState)),
 		)
@@ -1913,6 +1929,36 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	}
 	_, err := out.Write(payload)
 	return err
+}
+
+// agentSearchSemanticTag is the compact semantic-channel state for agent headers: " sem=<status>"
+// (used, off:flag, off:worktree, unavailable:<reason>) with the number of delivered primary rows
+// the channel placed when it was used, or "" when the channel is not configured. Only the status
+// code travels — never a warning detail, an endpoint or a model name.
+func agentSearchSemanticTag(stats sem.SearchStats) string {
+	if stats.SemanticStatus == "" {
+		return ""
+	}
+	if stats.SemanticStatus == sem.SemanticStatusUsed {
+		return fmt.Sprintf(" sem=used/%d", stats.SemanticResults)
+	}
+	return " sem=" + stats.SemanticStatus
+}
+
+// textSearchSemanticLine is the text renderer's one-line semantic-channel state, "" when the
+// channel is not configured. Like the agent tag it carries only stable codes and counts.
+func textSearchSemanticLine(stats sem.SearchStats) []byte {
+	switch {
+	case stats.SemanticStatus == "":
+		return nil
+	case stats.SemanticStatus == sem.SemanticStatusUsed:
+		return []byte(fmt.Sprintf("semantic: used (%d results, %d nominated files)\n",
+			stats.SemanticResults, stats.SemanticNominatedFiles))
+	case strings.HasPrefix(stats.SemanticStatus, "unavailable:"):
+		return []byte("semantic: " + stats.SemanticStatus + " - results are lexical only\n")
+	default:
+		return []byte("semantic: " + stats.SemanticStatus + "\n")
+	}
 }
 
 // searchLowConfidenceNotices renders the low-confidence marker in a full and a compact
