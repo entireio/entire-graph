@@ -141,3 +141,42 @@ func TestAgentBlockDeclarationLineNumbersRecoverable(t *testing.T) {
 	}
 	t.Logf("%d declaration blocks checked, %d on the minimal rung", checked, minimal)
 }
+
+// DEFENCE IN DEPTH. When the finder takes the wrong line for the declaration — here a keyword
+// argument `route(target=True)` is definition-shaped and comes first — the line the old window
+// showed that really declares the symbol must still be shown, at every budget. Without the carried
+// candidate lines the new block, obliged to print the wrong "declaration", slid its window down and
+// dropped `def target(self):`.
+func TestAgentBlockKeepsCandidateDeclarationTheWindowShowed(t *testing.T) {
+	t.Parallel()
+	lines := []string{"    route(target=True)", "    def target(self):"}
+	for i := 0; i < 40; i++ {
+		lines = append(lines, fmt.Sprintf("        self.step%02d = compute(%d, %s)", i, i, strings.Repeat("q", i%5)))
+	}
+	first := 50
+	result := sem.SearchResult{
+		Rank: 1, Score: 20, FilePath: "app/handlers.py", StartLine: first, EndLine: first + len(lines) - 1,
+		FocusLine: first + 9, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
+		SymbolStartLine: first, SymbolEndLine: first + len(lines) - 1, SymbolName: "target", QualifiedName: "Handler.target",
+		Signals: []string{"complete-symbol"}, Snippet: strings.Join(lines, "\n"),
+	}
+	if index, _ := agentSearchDeclIndex(lines, first, first, first+len(lines)-1, "target"); index != 0 {
+		t.Fatalf("fixture premise: the finder must take the keyword argument (index 0), took %d", index)
+	}
+	exercised := 0
+	for budget := 40; budget <= 2500; budget++ {
+		view := agentSearchBlockViewOf(result)
+		plain, left, _ := agentSearchFocusWindow(view, budget)
+		block := agentSearchPrimaryBlock(result, budget)
+		if plain == nil || left == 0 || !blockShowsLine(plain, lines[1]) {
+			continue
+		}
+		exercised++
+		if !blockShowsLine(block, lines[1]) {
+			t.Fatalf("budget %d: the old window showed the real declaration and the block dropped it\nplain:\n%s\nnew:\n%s", budget, plain, block)
+		}
+	}
+	if exercised == 0 {
+		t.Fatal("no budget had the old window show the real declaration without the finder's line")
+	}
+}
