@@ -613,7 +613,7 @@ func %sDelivery() {}
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "4e88510273830fef30a7aeb44845893c24e723fdf53dfd68f879c44a6f1dbf35")
+	assertSearchResultGolden(t, response.Results, "0952d01a95c4b24d1eed6a9b5b669531f77e6c8f980acbfeb3f134bbf113ff39")
 	identities := make([][3]any, len(response.Results))
 	for index, result := range response.Results {
 		if len(result.Passages) != 0 {
@@ -773,7 +773,7 @@ func Worker%d() {}
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "e9733475f04142cfe8fd78b823651105cd55eac581d38430c1b92424aa4a2a5b")
+	assertSearchResultGolden(t, response.Results, "b3dec24fba4d36dd28229fd43ed4a3c4fcc62bd5475f6caf99fa46b87e319aae")
 	for _, result := range response.Results {
 		if containsString(result.Signals, "retrieval_mode=prose-parent") {
 			t.Fatalf("two-thirds prose corpus activated prose-parent mode: %#v", response.Results)

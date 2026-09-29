@@ -435,6 +435,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		for index := range entities {
 			entities[index].StartLine -= entityLineOffset
 			entities[index].EndLine -= entityLineOffset
+			if entities[index].nameLine > 0 {
+				entities[index].nameLine -= entityLineOffset
+			}
 			// prepareProtocolBuffersParseSource prepends one synthetic syntax
 			// declaration to both parser and entity views. Byte metadata must point
 			// back into the authored content just like the adjusted line metadata.
@@ -4444,6 +4447,8 @@ func setEntitySourceRange(entity *Entity, node *sitter.Node, language string, sr
 	}
 	entity.sourceStartByte = start
 	entity.sourceEndByte = end
+	// The same node the range comes from names the declaration; see declaration_name_line.go.
+	entity.nameLine = declarationNameLine(node, src, entity.Name)
 }
 
 // swiftExtensionDeclaration reports whether a tree-sitter-swift

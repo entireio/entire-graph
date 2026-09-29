@@ -27,7 +27,9 @@ import (
 // nested beneath the complete entry it came from, which would otherwise sit
 // unreachable inside a live version directory and defeat that cleanup rule.
 // v16 retires the diagnostic-count status in favor of source-file health.
-const searchSnapshotCacheVersion = "search-snapshot-v16-" + IdentityRevision
+// v17 retires entries written before symbols carried the parser's name line, which renderers
+// anchor on; an older entry would silently send every symbol back to the text heuristic.
+const searchSnapshotCacheVersion = "search-snapshot-v17-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -66,6 +68,10 @@ type cachedSearchSnapshot struct {
 	// derivation reruns that resolution over cached symbols. Without it a cache
 	// hit would downgrade an overloaded call that a cold run resolves exactly.
 	BodylessSymbolIDs []string `json:"bodyless_symbol_ids,omitempty"`
+	// SymbolNameLines carries SymbolRecord.nameLine, the parser's line for each symbol's name
+	// token, which search copies to SearchResult.SymbolNameLine. Without it a warm cache would
+	// answer with the text heuristic where a cold run anchors on the parse tree.
+	SymbolNameLines map[string]int `json:"symbol_name_lines,omitempty"`
 	// DerivedFrom is the generation of the complete entry this selective view was
 	// derived from, empty on a complete entry. Removing the derived directory
 	// cannot stop a derivation that read the OUTGOING complete snapshot before
@@ -597,6 +603,12 @@ func newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom stri
 		if symbol.bodyless {
 			cache.BodylessSymbolIDs = append(cache.BodylessSymbolIDs, symbol.ID)
 		}
+		if symbol.nameLine > 0 {
+			if cache.SymbolNameLines == nil {
+				cache.SymbolNameLines = make(map[string]int)
+			}
+			cache.SymbolNameLines[symbol.ID] = symbol.nameLine
+		}
 		if symbol.sourceEndByte > symbol.sourceStartByte {
 			if cache.SymbolByteRanges == nil {
 				cache.SymbolByteRanges = make(map[string]cachedSymbolByteRange)
@@ -648,6 +660,7 @@ func restoreCachedSearchInternals(cache *cachedSearchSnapshot) {
 		symbol := &cache.Snapshot.Symbols[index]
 		symbol.Local = localIDs[symbol.ID]
 		symbol.bodyless = bodylessIDs[symbol.ID]
+		symbol.nameLine = cache.SymbolNameLines[symbol.ID]
 		if sourceRange, ok := cache.SymbolByteRanges[symbol.ID]; ok && sourceRange.End > sourceRange.Start {
 			symbol.sourceStartByte = sourceRange.Start
 			symbol.sourceEndByte = sourceRange.End
