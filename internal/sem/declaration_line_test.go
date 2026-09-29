@@ -24,7 +24,7 @@ func TestDeclarationLineIndexSkipsAnnotationArguments(t *testing.T) {
 		{"rust-lifetime", "Foo", []string{`impl<'a> Foo<'a> {`}, 0},
 		{"rust-lifetimes", "Foo", []string{`impl<'a, 'b> Foo<'a, 'b> {`}, 0},
 		{"rust-ref-lifetime", "parse", []string{`pub fn parse(s: &'a str) -> Foo<'a> {`}, 0},
-		{"python-word-string", "run", []string{`    doc = 'run it now'`, `def run():`}, 1},
+		{"python-word-string", "run", []string{`    doc = 'call run() now'`, `def run():`}, 1},
 		{"csharp-route", "Index", []string{`    [Route("Index")]`, `    [HttpGet]`, `    public IActionResult Index(int page)`}, 2},
 		{"csharp-attr-same-line", "Index", []string{`    [HttpGet] public IActionResult Index()`}, 0},
 		{"go-struct-tag", "retry", []string{"\tRetry int `json:\"retry\"`", "}", "", "func retry(n int) error {"}, 3},
@@ -56,6 +56,15 @@ func TestDeclarationLineIndexNoneWhenOnlyMentioned(t *testing.T) {
 		{"\tFoo int `json:\"fooBar\"`"},
 		{`// fooBar does things`},
 		{`[Display("fooBar")]`},
+		// Unquoted annotation arguments, even definition-shaped ones, are still annotations.
+		{`@Named(fooBar)`},
+		{`@Bean(fooBar())`},
+		{`#[route(fooBar())]`},
+		{`[Display(fooBar(1))]`},
+		// Comment lines, even ones that look like a call.
+		{`// fooBar(x) does things`},
+		{`# fooBar(x) does things`},
+		{` * fooBar(x) does things`},
 	} {
 		if got, ok := DeclarationLineIndex(lines, 0, len(lines)-1, "fooBar"); ok {
 			t.Errorf("%q: found a declaration at %d", strings.Join(lines, " | "), got)
