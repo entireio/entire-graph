@@ -84,6 +84,7 @@ func TestGrepPatternLinesAlternationMatchesLegacyMultiPattern(t *testing.T) {
 		"b.go":        "package b\n// helper: creates FIXTURE\nvar dbs = 2\nfunc NoOp() {}\n",
 		"c.txt":       strings.Repeat("filler line\n", 50) + "the sqlite fİle\n" + strings.Repeat("helper again\n", 40),
 		"d.md":        "nothing relevant\n",
+		"f.txt":       "path a\\b here\nq]r\\]s\n",
 		"e/nested.py": "x = 'userDBName'\nNO = True\ndef table(): pass\n",
 	}
 	for name, content := range files {
@@ -103,6 +104,9 @@ func TestGrepPatternLinesAlternationMatchesLegacyMultiPattern(t *testing.T) {
 		"anchors and boundaries": {"^package", "[{}]$", "(^|[^[:alnum:]])[dD][bB]([sS])?($|[^[:alnum:]])"},
 		"alias alternations":     {"((^|[^[:alnum:]])[dD][bB]([sS])?($|[^[:alnum:]])|[[:lower:][:digit:]]D([bB]s|b)[[:upper:]])", "[cC][rR][eE][aA][tT][eE][sS]"},
 		"no match":               {"zzqqxx", "[qQ]{9}"},
+		// POSIX ERE: a backslash inside a bracket expression is a literal member, so
+		// "[\\]" is a complete bracket and "[\\]r]" is that bracket followed by "r]".
+		"bracket backslash": {`[\]`, `[\]r]`, "relevant"},
 	}
 	for name, patterns := range patternSets {
 		for _, maxPerFile := range []int{1, 32} {
