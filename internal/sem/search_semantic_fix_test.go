@@ -384,3 +384,30 @@ func TestSemanticFixQ3FusionDedupesBySymbolID(t *testing.T) {
 		t.Fatalf("one symbol seated twice: %d rows", len(fused))
 	}
 }
+
+// Q1: confidence reads the lexically scored rows. A synthesized head neither ties with, nor
+// weakens, a strong lexical answer; a weak lexical answer is still marked weak; an all-semantic
+// payload is marked because nothing lexical vouches for it.
+func TestSemanticFixQ1ConfidenceReadsLexicalRows(t *testing.T) {
+	semantic := SearchResult{FilePath: "dense.go", Score: 0, SemanticScore: 0.9, Signals: []string{semanticSignal}}
+	strong := SearchResult{FilePath: "strong.go", Score: 40}
+	next := SearchResult{FilePath: "next.go", Score: 20}
+	weak := SearchResult{FilePath: "weak.go", Score: 2}
+	for _, tc := range []struct {
+		name    string
+		results []SearchResult
+		low     bool
+	}{
+		{name: "semantic_head_strong_lexical", results: []SearchResult{semantic, strong, next}},
+		{name: "semantic_head_weak_lexical", results: []SearchResult{semantic, weak}, low: true},
+		{name: "all_semantic", results: []SearchResult{semantic, semantic}, low: true},
+	} {
+		assessment := AssessSearchConfidence(SearchResponse{Results: tc.results})
+		if assessment.Low != tc.low {
+			t.Fatalf("%s: %+v, want low=%v", tc.name, assessment, tc.low)
+		}
+		if strings.Contains(assessment.Reason, "tied") {
+			t.Fatalf("%s: manufactured tie: %+v", tc.name, assessment)
+		}
+	}
+}

@@ -338,6 +338,7 @@ func semanticCandidates(
 		key := semanticSymbolKey(symbol)
 		if lexical, ok := bestLexical[key]; ok {
 			lexical.result.Signals = appendUnique(append([]string(nil), lexical.result.Signals...), semanticSignal)
+			lexical.result.SemanticScore = hit.Score
 			out = append(out, lexical)
 			continue
 		}
@@ -370,17 +371,24 @@ func semanticCandidates(
 				Signature:        symbol.Signature,
 				SymbolStartLine:  symbol.StartLine,
 				SymbolEndLine:    symbol.EndLine,
+				SemanticScore:    hit.Score,
 				Signals:          []string{semanticSignal},
 				Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
 			},
 			aliases: append([]string(nil), symbol.Aliases...),
-			// No lexical score exists for this row; fuseSemanticCandidates assigns it one from
-			// its position, so the reported scores stay non-increasing.
+			// No lexical score exists for this row. The cosine rides here only until fusion,
+			// which moves it into result.SemanticScore and leaves the relevance score at 0.
 			score:        hit.Score,
 			semanticOnly: true,
 		})
 	}
 	return out
+}
+
+// SemanticOnly reports whether the semantic channel synthesized this row: it has a semantic score
+// and no lexical relevance score. Such a row's Score is "not measured", not "worthless".
+func (result SearchResult) SemanticOnly() bool {
+	return result.Score == 0 && result.SemanticScore > 0
 }
 
 func semanticSymbolFor(symbols []SymbolRecord, hit semanticHit) (SymbolRecord, bool) {
@@ -427,11 +435,13 @@ func semanticCandidateKey(candidate searchCandidate, symbolsByFile map[string][]
 // fuseSemanticCandidates is the frozen fusion rule: interleave EMBEDDING FIRST (e1, g1, e2, g2, ...),
 // drop any row whose canonical key already appeared, and cut to topK.
 //
-// Scores are then made non-increasing down the list. Fusion decides ORDER from two scales that do
-// not compare (cosine and lexical relevance), and downstream passes — the full-unit gap test, the
-// confidence rendering — read the score as "how much better is rank 1 than rank 2". A semantic-only
-// row therefore takes the lexical score of the row it displaced, and every row is clamped to the
-// row above it, so the list never claims a lower rank is more relevant than a higher one.
+// Fusion decides ORDER only; it rewrites no relevance score. Cosine and lexical relevance are two
+// scales that do not compare, and the downstream readers of Score (the confidence assessment, the
+// full-unit gap test) are calibrated on the lexical one. So a lexical row keeps its measured score
+// wherever fusion seats it — rank 2 may legitimately score higher than rank 1, exactly as after
+// promoteFixSiteOverLeadingTest — and a row the channel synthesized carries its cosine in
+// result.SemanticScore and a relevance score of 0 ("no lexical evidence"), which
+// AssessSearchConfidence and the renderers recognise via SearchResult.SemanticOnly.
 func fuseSemanticCandidates(
 	lexical, semantic []searchCandidate, topK int, keyOf func(searchCandidate) semanticKey,
 ) ([]searchCandidate, int) {
@@ -474,24 +484,10 @@ func fuseSemanticCandidates(
 		if !row.candidate.semanticOnly {
 			continue
 		}
-		// Take the score of the next lexical row, i.e. the one this row displaced; with no lexical
-		// row below it, the row above it; with neither, keep the cosine it was built with.
-		found := false
-		for _, next := range fused[index+1:] {
-			if !next.candidate.semanticOnly {
-				out[index].score = next.candidate.score
-				found = true
-				break
-			}
+		if out[index].result.SemanticScore == 0 {
+			out[index].result.SemanticScore = row.candidate.score
 		}
-		if !found && index > 0 {
-			out[index].score = out[index-1].score
-		}
-	}
-	for index := 1; index < len(out); index++ {
-		if out[index].score > out[index-1].score {
-			out[index].score = out[index-1].score
-		}
+		out[index].score = 0
 	}
 	return out, seated
 }

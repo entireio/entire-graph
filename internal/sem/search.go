@@ -255,8 +255,14 @@ type SearchPassage struct {
 
 // SearchResult is a ranked source region suitable for direct agent context.
 type SearchResult struct {
-	Rank             int     `json:"rank"`
-	Score            float64 `json:"score"`
+	Rank  int     `json:"rank"`
+	Score float64 `json:"score"`
+	// SemanticScore is the opt-in semantic channel's cosine for a row the channel matched,
+	// OMITTED otherwise (so an unconfigured payload is unchanged). It is a separate scale from
+	// Score and is never copied into it: a row the channel synthesized has no lexical relevance
+	// and carries Score 0 (see SemanticOnly); a lexical row the channel also matched keeps its
+	// own measured Score.
+	SemanticScore    float64 `json:"semantic_score,omitempty"`
 	FilePath         string  `json:"file_path"`
 	StartLine        int     `json:"start_line"`
 	EndLine          int     `json:"end_line"`

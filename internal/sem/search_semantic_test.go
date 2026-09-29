@@ -256,10 +256,9 @@ func TestSemanticChannelNominatesAndRanksTargetFirst(t *testing.T) {
 	if semantic.Stats.SemanticResults < 1 || countWarnings(semantic.Warnings, "W_SEMANTIC_UNAVAILABLE") != 0 {
 		t.Fatalf("stats/warnings wrong for a used channel: %+v %+v", semantic.Stats, semantic.Warnings)
 	}
-	for index, result := range semantic.Results {
-		if index > 0 && result.Score > semantic.Results[index-1].Score {
-			t.Fatalf("fused scores increase at rank %d: %v", result.Rank, semantic.Results)
-		}
+	// The synthesized rank 1 carries its own labelled semantic score, not a copied lexical one.
+	if !semantic.Results[0].SemanticOnly() || semantic.Results[0].SemanticScore <= 0 {
+		t.Fatalf("rank 1 score provenance: score=%v semantic_score=%v", semantic.Results[0].Score, semantic.Results[0].SemanticScore)
 	}
 }
 
@@ -561,26 +560,21 @@ func TestFuseSemanticCandidatesInterleavesEmbeddingFirst(t *testing.T) {
 	if seated != 3 {
 		t.Fatalf("seated = %d, want 3", seated)
 	}
-	for index := 1; index < len(fused); index++ {
-		if fused[index].score > fused[index-1].score {
-			t.Fatalf("scores increase at %d: %v", index, fused)
-		}
+	// Fusion rewrites no relevance score (review Q1): a synthesized row carries its cosine in
+	// SemanticScore and a relevance score of 0; every lexical row keeps its measured score.
+	if fused[0].score != 0 || fused[0].result.SemanticScore != 0.9 || !fused[0].result.SemanticOnly() {
+		t.Fatalf("synthesized rank 1: score=%v semantic=%v, want 0 / 0.9", fused[0].score, fused[0].result.SemanticScore)
 	}
-	if fused[0].score != 9 {
-		t.Fatalf("a semantic-only rank 1 should take the score of the lexical row it displaced, got %v", fused[0].score)
+	if fused[1].score != 9 || fused[2].score != 7 || fused[3].score != 0 || fused[3].result.SemanticScore != 0.8 {
+		t.Fatalf("scores rewritten by fusion: %v %v %v %v", fused[1].score, fused[2].score, fused[3].score, fused[3].result.SemanticScore)
 	}
 
-	// A lexical row the channel seats EARLY keeps its own, higher score from the lexical pool; the
-	// clamp is what stops it claiming more relevance than the row above it.
+	// A lexical row the channel seats EARLY keeps its own, higher score from the lexical pool, even
+	// above a lower-scored lexical row: order is fusion's decision, the score is the measurement.
 	early := []searchCandidate{row("x.go", 1, 0.9, true), row("z.go", 1, 20, false)}
-	clamped, _ := fuseSemanticCandidates(lexical[:2], early, 4, keyOf)
-	for index := 1; index < len(clamped); index++ {
-		if clamped[index].score > clamped[index-1].score {
-			t.Fatalf("scores increase at %d: %+v", index, clamped)
-		}
-	}
-	if clamped[2].result.FilePath != "z.go" {
-		t.Fatalf("NON-VACUITY: the high-scored lexical row is not where the clamp must act: %+v", clamped)
+	kept, _ := fuseSemanticCandidates(lexical[:2], early, 4, keyOf)
+	if kept[2].result.FilePath != "z.go" || kept[2].score != 20 {
+		t.Fatalf("early-seated lexical row lost its measured score: %+v", kept)
 	}
 }
 

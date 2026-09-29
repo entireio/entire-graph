@@ -1227,7 +1227,11 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	// A callee-hop entry is excluded for the same reason: it was admitted by a CALLS edge, not by
 	// relevance, so it carries no ranked score and `score=0.0000` beside it would read as
 	// "worthless" rather than "not applicable". The signals list already says why it is here.
-	if result.Section != sem.SearchSectionCoveringTest && !searchResultIsCalleeHop(result) {
+	if result.SemanticOnly() {
+		// A row the opt-in semantic channel synthesized has no lexical score; printing
+		// `score=0.0000` would read as "worthless". Its own, separately labelled scale is shown.
+		fmt.Fprintf(out, " semantic_score=%.4f", result.SemanticScore)
+	} else if result.Section != sem.SearchSectionCoveringTest && !searchResultIsCalleeHop(result) {
 		fmt.Fprintf(out, " score=%.4f", result.Score)
 	}
 	if name != "" {
@@ -2375,6 +2379,11 @@ func renderAgentSearchResults(results []sem.SearchResult, budgets []int) []byte 
 func agentSearchScoreTag(result sem.SearchResult) string {
 	if result.Section == sem.SearchSectionRelated || result.Section == sem.SearchSectionCoveringTest {
 		return ""
+	}
+	if result.SemanticOnly() {
+		// Synthesized by the opt-in semantic channel: no lexical score, so the cosine is shown on
+		// its own label (`e=`) rather than as a lexical `s=0.0`.
+		return fmt.Sprintf(" e=%.2f", result.SemanticScore)
 	}
 	return fmt.Sprintf(" s=%.1f", result.Score)
 }
