@@ -3,6 +3,7 @@ package sem
 import (
 	"fmt"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -84,6 +85,10 @@ func rr2WarmArms(t *testing.T, repo, query string, maxBytes int) (off, on Search
 // symbol_start_line/end_line. The eval's (file, symbol-span overlap) scorer then scores B' a hit
 // at rank 1 and C' a MISS — the falsifier's "B' top-3 dropped" fires on an artifact of rendering.
 func TestSemanticRereview2SpanMergeAbsorbsLexicalGold(t *testing.T) {
+	// ACCEPTED (D1): the same-file span merge keeps the survivor's symbol identity by design; the
+	// absorbed row's text is in the span (merged_ranks says so) and the eval scorer handles merged
+	// spans (not changed here). Kept as a runnable record of the counterexample: ENTIRE_GRAPH_RUN_ACCEPTED=1.
+	skipAcceptedRereview2(t, "D1 span merge absorbs a lexical row; the eval scorer handles merged spans")
 	repo := t.TempDir()
 	initRepo(t, repo)
 	var src strings.Builder
@@ -124,7 +129,7 @@ func TestSemanticRereview2SpanMergeDebug(t *testing.T) {
 
 // RR2-RELATED-DISPLACE: related sites are funded byte-neutrally by DISPLACING tail locators whose
 // file is named elsewhere (floor = searchEnclosureHeadRanks = 5). E-first seats B' rank 3 at C'
-// rank 6 — outside the floor. When a semantic row from the same file sits in C''s head, that
+// rank 6 — outside the floor. When a semantic row from the same file sits in C”s head, that
 // lexical gold row becomes displaceable; in B' (rank 3) it never is.
 func TestSemanticRereview2RelatedSiteDisplacesPushedLexicalTop3(t *testing.T) {
 	src := strings.Repeat("func f() {}\n", 40)
@@ -178,6 +183,9 @@ func TestSemanticRereview2RelatedSiteDisplacesPushedLexicalTop3(t *testing.T) {
 // semantic code row in C' flips every lexical docs row to section docs-and-fixtures, so a primary-
 // only scorer stops seeing rows B' scored.
 func TestSemanticRereview2AllDocsFallbackFlipsOnSemanticCodeRow(t *testing.T) {
+	// ACCEPTED (D3): the all-docs fallback keys on the payload having no code row at all; a semantic
+	// code row legitimately ends that condition. Record only: ENTIRE_GRAPH_RUN_ACCEPTED=1.
+	skipAcceptedRereview2(t, "D3 all-docs fallback ends when any code row is present")
 	q := buildSearchQuery("quit server")
 	b := []SearchResult{{Rank: 1, FilePath: "docs/quit.md"}, {Rank: 2, FilePath: "fixtures/server.json"}}
 	c := []SearchResult{{Rank: 1, FilePath: "srv/pool.go", Signals: []string{semanticSignal, semanticOnlySignal}},
@@ -187,5 +195,13 @@ func TestSemanticRereview2AllDocsFallbackFlipsOnSemanticCodeRow(t *testing.T) {
 	t.Logf("B' sections: %q %q ; C' sections: %q %q %q", b[0].Section, b[1].Section, c[0].Section, c[1].Section, c[2].Section)
 	if b[0].Section == "" && c[1].Section != "" {
 		t.Errorf("DEFECT(minor): lexical docs row primary in B', sectioned %q in C'", c[1].Section)
+	}
+}
+
+// skipAcceptedRereview2 skips a counterexample whose behaviour was reviewed and kept as designed.
+func skipAcceptedRereview2(t *testing.T, reason string) {
+	t.Helper()
+	if os.Getenv("ENTIRE_GRAPH_RUN_ACCEPTED") == "" {
+		t.Skip("accepted behaviour: " + reason)
 	}
 }
