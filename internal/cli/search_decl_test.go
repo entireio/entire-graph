@@ -226,6 +226,68 @@ func TestAgentBlockUnchangedWhenWindowHoldsDeclaration(t *testing.T) {
 	}
 }
 
+// TestAgentBlockUnchangedWhenWindowHoldsNamedLineButNotContinuation: the window holds the named
+// line of a multi-line signature but not its continuation, and a long line above the declaration
+// makes a variant with the (short) continuation print more lines. The block must still be the
+// window, byte for byte: never-locate-less is about the declaration, and a block that already shows
+// it is not re-rendered.
+func TestAgentBlockUnchangedWhenWindowHoldsNamedLineButNotContinuation(t *testing.T) {
+	t.Parallel()
+	lines := []string{
+		"@Component({ selector: '" + strings.Repeat("s", 150) + "' })",
+		"export function processBatch(",
+		"  a: A,",
+		"  b: B,",
+		"): void {",
+	}
+	for i := 0; i < 30; i++ {
+		lines = append(lines, fmt.Sprintf("  step%02d(a, b);", i))
+	}
+	lines = append(lines, "}")
+	check := func(t *testing.T, lines []string, focusIndex, named int) {
+		result := sem.SearchResult{
+			Rank: 1, Score: 40, FilePath: "src/batch.ts",
+			StartLine: 10, EndLine: 10 + len(lines) - 1, FocusLine: 10 + focusIndex,
+			SnippetStartLine: 10, SnippetEndLine: 10 + len(lines) - 1,
+			SymbolStartLine: 10, SymbolEndLine: 10 + len(lines) - 1, SymbolName: "processBatch", QualifiedName: "processBatch",
+			Snippet: strings.Join(lines, "\n"),
+		}
+		result = searchResultOnOneLine(result)
+		checked := 0
+		for budget := 40; budget < 1200; budget++ {
+			plain, _, _ := agentSearchFocusWindow(agentSearchBlockViewOf(result), budget)
+			if !blockShowsLine(plain, lines[named]) || blockShowsLine(plain, lines[named+2]) {
+				continue
+			}
+			checked++
+			if got := agentSearchPrimaryBlock(result, budget); string(got) != string(plain) {
+				t.Fatalf("budget %d: re-rendered a block that already showed its declaration:\nWANT\n%s\nGOT\n%s", budget, plain, got)
+			}
+		}
+		if checked == 0 {
+			t.Fatal("no budget put the named line in the window without its continuation")
+		}
+	}
+	check(t, lines, 1, 1)
+	// The focus on the first of three annotations, two long ones between it and the named line: a
+	// variant printing the focus, an elision and the short signature would print more lines than the
+	// window in a narrow band of budgets. It must not be taken.
+	annotated := []string{
+		"@Injectable()",
+		"@Component({ selector: '" + strings.Repeat("s", 90) + "' })",
+		"@Memoize({ key: '" + strings.Repeat("k", 90) + "' })",
+		"export function processBatch(",
+		"  a: A,",
+		"  b: B,",
+		"): void {",
+	}
+	for i := 0; i < 30; i++ {
+		annotated = append(annotated, fmt.Sprintf("  step%02d(a, b);", i))
+	}
+	annotated = append(annotated, "}")
+	check(t, annotated, 0, 3)
+}
+
 // TestAgentBlockUndocumentedSymbolWithoutNamedLineIsUnchanged: no line naming the symbol within the
 // anchor bound means the block renders as it always has.
 func TestAgentBlockNoNamedLineIsUnchanged(t *testing.T) {

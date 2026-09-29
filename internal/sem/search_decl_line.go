@@ -110,10 +110,7 @@ func searchMergedDeclarationLines(results []SearchResult, run []int, survivor in
 	var decls []int
 	seen := map[int]bool{}
 	for _, index := range run {
-		if index == survivor {
-			continue
-		}
-		member := results[index]
+		member := results[index] // the survivor's own declaration is excluded by `own` below
 		decl, ok := searchDeclarationLine(span, start, member.SymbolStartLine, member.SymbolEndLine, member.SymbolName)
 		if !ok || seen[decl] || hasOwn && decl == own {
 			continue

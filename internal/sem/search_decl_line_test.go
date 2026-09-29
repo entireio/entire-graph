@@ -54,10 +54,14 @@ func TestTersifyKeepsDeclarationForDemotedTail(t *testing.T) {
 func TestTersifyKeepingDeclarationUnchangedWhenWindowHoldsIt(t *testing.T) {
 	t.Parallel()
 	result, _ := declTailResult(40)
-	result.FocusLine = 43 // one below the named line: the focus window already holds it
-	if got, want := tersifySearchResultKeepingDeclaration(result, 2), tersifySearchResult(result, 2); got.Snippet != want.Snippet ||
-		got.SnippetStartLine != want.SnippetStartLine {
-		t.Fatalf("changed a tail that already showed its declaration: %d-%d vs %d-%d", got.SnippetStartLine, got.SnippetEndLine, want.SnippetStartLine, want.SnippetEndLine)
+	// Focus on the named line (window 41-42) or one below it (window 42-43): the focus window already
+	// holds the declaration, so the row is exactly what tersifySearchResult returns.
+	for _, focus := range []int{42, 43} {
+		result.FocusLine = focus
+		if got, want := tersifySearchResultKeepingDeclaration(result, 2), tersifySearchResult(result, 2); got.Snippet != want.Snippet ||
+			got.SnippetStartLine != want.SnippetStartLine {
+			t.Fatalf("focus %d: changed a tail that already showed its declaration: %d-%d vs %d-%d", focus, got.SnippetStartLine, got.SnippetEndLine, want.SnippetStartLine, want.SnippetEndLine)
+		}
 	}
 	// No symbol start inside the snippet, or no line naming the symbol: unchanged.
 	outside, _ := declTailResult(40)
