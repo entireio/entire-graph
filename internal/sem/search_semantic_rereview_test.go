@@ -85,7 +85,7 @@ func TestSemanticRereviewWarmPathLexicalCorpusUnchanged(t *testing.T) {
 // RR-PROSE: expandProseResolution re-sorts by Score; a semantic-only rank-1 row (Score 0) sinks.
 func TestSemanticRereviewProseExpansionSinksSemanticOnlyRow(t *testing.T) {
 	results := []SearchResult{
-		{Rank: 1, Score: 0, SemanticScore: 0.9, FilePath: "a.go", StartLine: 1, EndLine: 2, SnippetStartLine: 1, SnippetEndLine: 2},
+		{Rank: 1, Score: 0, SemanticScore: 0.9, Signals: []string{semanticSignal, semanticOnlySignal}, FilePath: "a.go", StartLine: 1, EndLine: 2, SnippetStartLine: 1, SnippetEndLine: 2},
 		{Rank: 2, Score: 5, FilePath: "doc.md", StartLine: 1, EndLine: 2, SnippetStartLine: 1, SnippetEndLine: 2,
 			Passages: []SearchPassage{{StartLine: 10, EndLine: 12, FocusLine: 10, Snippet: "x"}}},
 	}
