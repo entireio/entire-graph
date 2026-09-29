@@ -829,7 +829,8 @@ func searchRelatedSiteAlreadySurfaced(results []SearchResult, site searchRelated
 //     earned; with it, the block can only ever be an exchange of like for like.
 //   - The head is never displaced. searchEnclosureHeadRanks is where the allocator already stops
 //     spending on bodies because that is as deep as an agent reads before deciding; the same line
-//     is where displacement stops.
+//     is where displacement stops. With the semantic channel fused in, the head is ALSO every row
+//     the lexical ranking put there, wherever fusion seated it (searchLexicalHeadRows).
 //   - The most sites wins, then the fewest displaced hits: a plan that keeps a ranked hit for
 //     free is strictly better than one that drops it for nothing.
 //   - Ranks are renumbered so the payload keeps its 1..N invariant.
@@ -925,9 +926,14 @@ func searchRelatedDisplacementOrder(results []SearchResult, floor int) []int {
 	for _, result := range results {
 		counts[result.FilePath]++
 	}
+	lexicalHead := searchLexicalHeadRows(results, floor)
 	order := make([]int, 0, len(results))
 	for index := len(results) - 1; index >= floor; index-- {
 		if results[index].Section == searchSectionCoveringTest {
+			continue
+		}
+		// The head is protected by LEXICAL rank, not by fused index. See searchLexicalHeadRows.
+		if lexicalHead[index] {
 			continue
 		}
 		// A result carrying SOURCE the reader will see is not a redundant locator, and this function
@@ -947,4 +953,47 @@ func searchRelatedDisplacementOrder(results []SearchResult, floor int) []int {
 		order = append(order, index)
 	}
 	return order
+}
+
+// searchLexicalHeadRows marks the rows below the index floor that the LEXICAL ranking put in its
+// head, so no context block (related sites, the covering test, signature types — they share this
+// pool) can displace them. The rule is the index floor's own: the head is where an agent reads
+// before deciding, and a row earns its place there from the lexical ranking.
+//
+// Without the semantic channel the two readings coincide and the floor alone protects the head.
+// E-first fusion breaks that: it interleaves embedding hits AHEAD of lexical rows, so lexical rank
+// 3 lands at fused rank 6, below the floor, where a related site from the same file could buy it —
+// displacing a row the unfused payload could never lose. So a fused payload is protected by
+// pre-fusion lexical rank:
+//
+//   - A payload whose rows carry a stamped lexicalRank (the fused path; see
+//     stampSemanticLexicalRanks) protects every row whose lexical rank is within the floor. A row
+//     the channel synthesized has no lexical rank and keeps the index rule alone.
+//   - A payload with no stamp (unfused, or assembled by hand) reads the lexical rank from order:
+//     fusion preserves the lexical rows' relative order, so a row that is not semantic:only is at
+//     lexical position 1 + the number of such rows ahead of it. Unfused, every row is lexical, that
+//     position IS index+1, and the protected set is exactly the old index < floor head — which is
+//     what keeps an unconfigured payload byte-identical.
+func searchLexicalHeadRows(results []SearchResult, floor int) []bool {
+	head := make([]bool, len(results))
+	stamped := false
+	for _, result := range results {
+		if result.lexicalRank > 0 {
+			stamped = true
+			break
+		}
+	}
+	position := 0
+	for index, result := range results {
+		if stamped {
+			head[index] = result.lexicalRank > 0 && result.lexicalRank <= floor
+			continue
+		}
+		if result.SemanticOnly() {
+			continue
+		}
+		position++
+		head[index] = position <= floor
+	}
+	return head
 }

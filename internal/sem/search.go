@@ -323,6 +323,13 @@ type SearchResult struct {
 	// deliberately NOT the same test as `CommentFocusLine > 0` — most re-anchored hits already
 	// carried a body, and gating those would evict source the re-anchor never paid for.
 	BodyFromReanchor bool `json:"body_from_reanchor,omitempty"`
+	// lexicalRank is the row's PRE-FUSION lexical rank (1-based), stamped only when the semantic
+	// channel fused rows into the ranking; 0 on every row of an unfused payload and on every row
+	// fusion synthesized. It is never serialized. The displacement pool the context blocks fund
+	// themselves from reads it (searchRelatedDisplacementOrder): E-first fusion pushes lexical rows
+	// down — lexical rank 3 lands at fused rank 6 — and a row the lexical ranking put in its head
+	// must stay as undisplaceable as it was without the channel.
+	lexicalRank int
 	// There is deliberately no per-result `Neighbors` list here. "The types this hit is
 	// written in terms of" is answered once, by the signature-type block (search_sigtypes.go),
 	// and "the other places this change lands" by the related-site block
@@ -1813,6 +1820,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		if len(fused) > options.TopK {
 			fused = fused[:options.TopK]
 		}
+		stampSemanticLexicalRanks(fused, selected, keyOf)
 		selected = fused
 		embedding.seated = countSemanticSeated(selected)
 	}

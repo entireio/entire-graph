@@ -618,6 +618,26 @@ func fuseSemanticCandidates(
 	return out, seated
 }
 
+// stampSemanticLexicalRanks records, on every fused row the lexical ranking produced, that row's
+// PRE-FUSION lexical rank (its 1-based position in `lexical`), keyed by the same canonical identity
+// fusion deduplicates on — so a lexical row the channel also nominated, and that fusion therefore
+// seated at the embedding's position, still carries its lexical rank. Rows the channel synthesized
+// keep 0. The context blocks' displacement pool reads it: see searchRelatedDisplacementOrder.
+func stampSemanticLexicalRanks(
+	fused, lexical []searchCandidate, keyOf func(searchCandidate) semanticKey,
+) {
+	ranks := make(map[semanticKey]int, len(lexical))
+	for index, candidate := range lexical {
+		key := keyOf(candidate)
+		if _, seen := ranks[key]; !seen {
+			ranks[key] = index + 1
+		}
+	}
+	for index := range fused {
+		fused[index].result.lexicalRank = ranks[keyOf(fused[index])]
+	}
+}
+
 // countSemanticSeated counts the delivered primary rows the channel placed or matched: every row
 // carrying its signal, including a lexical row the channel also nominated.
 func countSemanticSeated(selected []searchCandidate) int {
