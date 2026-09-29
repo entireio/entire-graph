@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
@@ -178,33 +179,73 @@ func agentSearchDeclarationBlock(view agentSearchBlockView, plain []byte, left, 
 // agentSearchWidestWithDecls is the ordinary widest-balanced-window search with the given
 // declarations always shown. It returns the block and how many lines it prints under its header
 // (source lines plus elision lines), or nil when no window fits.
+//
+// It chooses exactly what the ordinary search would among windows that fit — the widest span, then
+// the best balance about the focus, then the leftmost — but it prices a candidate from prefix sums
+// and a lower bound on its header before rendering anything, and tries a span's windows best balance
+// first so the first that fits is the answer. Rendering every candidate the way the ordinary search
+// does cost ~3x its time on a 1,000-line snippet; this is linear in the windows it rejects.
 func agentSearchWidestWithDecls(view agentSearchBlockView, decls []agentSearchDecl, budget int) ([]byte, int) {
 	lines, focus := view.lines, view.focus
+	prefix := make([]int, len(lines)+1)
+	for i, line := range lines {
+		prefix[i+1] = prefix[i] + len(line) + 1
+	}
+	groups := make([][2]int, 0, len(decls)+1)
+	for _, decl := range decls {
+		groups = append(groups, [2]int{decl.index, min(decl.index+decl.cont, len(lines)-1)})
+	}
+	// A lower bound on every header rung: each holds the path, a colon, at least one digit, and at
+	// least two closing bytes (`*\n` or `]\n`). It is only a bound, never an estimate, so pricing a
+	// candidate against it can reject only what no rung could fit.
+	floor := len(view.result.FilePath) + 4
+	lefts := make([]int, 0, len(lines))
 	for span := len(lines); span > 0; span-- {
 		leftMin := max(focus-span+1, 0)
 		leftMax := min(focus, len(lines)-span)
-		bestBalance := len(lines) + 1
-		var best []byte
-		bestPrinted := 0
+		lefts = lefts[:0]
 		for left := leftMin; left <= leftMax; left++ {
+			lefts = append(lefts, left)
+		}
+		balance := func(left int) int {
+			value := focus - left - (left + span - 1 - focus)
+			if value < 0 {
+				return -value
+			}
+			return value
+		}
+		sort.SliceStable(lefts, func(i, j int) bool { return balance(lefts[i]) < balance(lefts[j]) })
+		for _, left := range lefts {
 			right := left + span - 1
-			block, printed := agentSearchRenderDecls(view, decls, left, right, budget)
-			if block == nil {
+			if budget > 0 && floor+agentSearchDeclBodyBytes(prefix, groups, left, right) > budget {
 				continue
 			}
-			balance := focus - left - (right - focus)
-			if balance < 0 {
-				balance = -balance
+			if block, printed := agentSearchRenderDecls(view, decls, left, right, budget); block != nil {
+				return block, printed
 			}
-			if best == nil || balance < bestBalance {
-				best, bestBalance, bestPrinted = block, balance, printed
-			}
-		}
-		if best != nil {
-			return best, bestPrinted
 		}
 	}
 	return nil, 0
+}
+
+// agentSearchDeclBodyBytes is the byte cost of the lines a candidate prints under its header: the
+// window left..right and every declaration group, merged, with one elision line per gap.
+func agentSearchDeclBodyBytes(prefix []int, groups [][2]int, left, right int) int {
+	spans := make([][2]int, 0, len(groups)+1)
+	spans = append(spans, [2]int{left, right})
+	spans = append(spans, groups...)
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	total := 0
+	current := spans[0]
+	for _, next := range spans[1:] {
+		if next[0] <= current[1]+1 {
+			current[1] = max(current[1], next[1])
+			continue
+		}
+		total += prefix[current[1]+1] - prefix[current[0]] + len(agentSearchElisionLine(next[0]-current[1]-1))
+		current = next
+	}
+	return total + prefix[current[1]+1] - prefix[current[0]]
 }
 
 // agentSearchDeclsOnly prints the declarations with no focus window.
