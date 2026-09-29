@@ -147,3 +147,22 @@ func TestSemanticChannelIsOffUnlessBothEnvVarsAreSet(t *testing.T) {
 		t.Fatalf("a default (worktree) search consulted the channel (err %v): %s", err, worktree)
 	}
 }
+
+// TestEntireEnvSemanticConfigNeedsBothSettings pins the environment half of the default-off rule on
+// its own: the sem layer enforces it too, so the end-to-end test above cannot tell which layer held.
+func TestEntireEnvSemanticConfigNeedsBothSettings(t *testing.T) {
+	for _, env := range []EntireEnv{
+		{},
+		{SemanticEndpoint: "http://localhost:11434"},
+		{SemanticModel: "nomic-embed-text"},
+		{SemanticEndpoint: "  ", SemanticModel: "nomic-embed-text"},
+	} {
+		if config := env.semanticConfig(); config != nil {
+			t.Fatalf("%+v configured the channel: %+v", env, config)
+		}
+	}
+	config := searchSemanticConfig(EntireEnv{SemanticEndpoint: "http://localhost:11434", SemanticModel: "m"}, true)
+	if config == nil || !config.Disabled || config.Model != "m" {
+		t.Fatalf("both settings + --no-semantic = %+v", config)
+	}
+}

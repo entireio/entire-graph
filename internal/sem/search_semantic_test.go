@@ -569,6 +569,49 @@ func TestFuseSemanticCandidatesInterleavesEmbeddingFirst(t *testing.T) {
 	if fused[0].score != 9 {
 		t.Fatalf("a semantic-only rank 1 should take the score of the lexical row it displaced, got %v", fused[0].score)
 	}
+
+	// A lexical row the channel seats EARLY keeps its own, higher score from the lexical pool; the
+	// clamp is what stops it claiming more relevance than the row above it.
+	early := []searchCandidate{row("x.go", 1, 0.9, true), row("z.go", 1, 20, false)}
+	clamped, _ := fuseSemanticCandidates(lexical[:2], early, 4, keyOf)
+	for index := 1; index < len(clamped); index++ {
+		if clamped[index].score > clamped[index-1].score {
+			t.Fatalf("scores increase at %d: %+v", index, clamped)
+		}
+	}
+	if clamped[2].result.FilePath != "z.go" {
+		t.Fatalf("NON-VACUITY: the high-scored lexical row is not where the clamp must act: %+v", clamped)
+	}
+}
+
+// TestSemanticNominationRespectsTheSearchCorpus: the index names paths from the tree it was built
+// on, not from this search's corpus. A file the caller's ignore rules exclude must not come back in
+// through nomination, even though it is the nearest neighbour.
+func TestSemanticNominationRespectsTheSearchCorpus(t *testing.T) {
+	t.Parallel()
+	repo := semanticFixtureRepo(t)
+	server := httptest.NewServer(&fakeEmbedder{})
+	defer server.Close()
+	cacheDir := t.TempDir()
+	buildSemanticFixtureIndex(t, repo, cacheDir, server.URL)
+	ignore := filepath.Join(t.TempDir(), "ignore")
+	if err := os.WriteFile(ignore, []byte("upstream/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := &SemanticConfig{Endpoint: server.URL, Model: semanticFixtureModel}
+	// NON-VACUITY: without the ignore rule the channel does seat the target.
+	if open := semanticSearch(t, repo, cacheDir, config, nil); len(open.Results) == 0 || open.Results[0].FilePath != "upstream/pool.go" {
+		t.Fatalf("fixture drift: target not seated without the ignore rule: %v", resultFiles(open.Results))
+	}
+	response := semanticSearch(t, repo, cacheDir, config, func(options *SearchOptions) { options.IgnoreFiles = []string{ignore} })
+	if response.Stats.SemanticStatus != SemanticStatusUsed {
+		t.Fatalf("status = %q", response.Stats.SemanticStatus)
+	}
+	for _, result := range response.Results {
+		if strings.HasPrefix(result.FilePath, "upstream/") {
+			t.Fatalf("an ignored file came back through nomination: %v", resultFiles(response.Results))
+		}
+	}
 }
 
 // TestSplitSemanticNameWords pins recipe 1's identifier split, which is part of the index key's
@@ -593,5 +636,30 @@ func TestSplitSemanticNameWords(t *testing.T) {
 	long := semanticDocumentText(SymbolRecord{Name: "Frob", StartLine: 1, Signature: strings.Repeat("é", 2000)}, []string{"x"})
 	if len(long) > semanticMaxDocumentBytes || !strings.HasPrefix(long, semanticDocumentPrefix) {
 		t.Fatalf("truncation broken: %d bytes", len(long))
+	}
+}
+
+// TestNominateSemanticFilesUnit pins nomination on its own. End to end, the snapshot builder ALSO
+// drops an OnlyFiles path its ignore policy denies, so TestSemanticNominationRespectsTheSearchCorpus
+// stays green if either layer holds; this test is the one that goes red when nomination's own
+// corpus check is removed. It also pins the budget, the no-duplicate rule and that the caller's
+// slice is never appended into.
+func TestNominateSemanticFilesUnit(t *testing.T) {
+	t.Parallel()
+	selected := make([]string, 1, 4)
+	selected[0] = "a.go"
+	corpus := []string{"a.go", "b.go", "c.go", "d.go"}
+	hits := []semanticHit{
+		{FilePath: "ignored.go"}, {FilePath: "a.go"}, {FilePath: "b.go"}, {FilePath: "b.go"}, {FilePath: "c.go"}, {FilePath: "d.go"},
+	}
+	out, nominated := nominateSemanticFiles(selected, corpus, hits, 2)
+	if strings.Join(out, ",") != "a.go,b.go,c.go" || nominated != 2 {
+		t.Fatalf("nominated %d: %v, want a.go,b.go,c.go / 2", nominated, out)
+	}
+	if extended := selected[:cap(selected)]; extended[1] != "" {
+		t.Fatalf("nomination appended into the caller's backing array: %v", extended)
+	}
+	if _, none := nominateSemanticFiles(selected, corpus, nil, semanticTopK); none != 0 {
+		t.Fatal("no hits nominated something")
 	}
 }
