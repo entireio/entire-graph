@@ -366,3 +366,21 @@ func TestSemanticFixF2QueryRequiresTheSameCorpus(t *testing.T) {
 		t.Fatalf("unprepared-policy search: status %q, want unavailable:no-index", unprepared.Stats.SemanticStatus)
 	}
 }
+
+// Q3: fusion dedupe is by symbol identity. Two distinct symbols that start on the same line both
+// survive; two rows of ONE symbol collapse to one.
+func TestSemanticFixQ3FusionDedupesBySymbolID(t *testing.T) {
+	row := func(id string, score float64, semanticOnly bool) searchCandidate {
+		return searchCandidate{result: SearchResult{FilePath: "same.js", SymbolID: id, SymbolName: id,
+			StartLine: 1, EndLine: 1, FocusLine: 1, SymbolStartLine: 1}, score: score, semanticOnly: semanticOnly}
+	}
+	keyOf := func(candidate searchCandidate) semanticKey { return semanticCandidateKey(candidate, nil) }
+	fused, _ := fuseSemanticCandidates([]searchCandidate{row("symbol-a", 40, false)}, []searchCandidate{row("symbol-b", 0.9, true)}, 5, keyOf)
+	if len(fused) != 2 {
+		t.Fatalf("distinct same-line symbols collapsed: %d rows", len(fused))
+	}
+	fused, _ = fuseSemanticCandidates([]searchCandidate{row("symbol-a", 40, false)}, []searchCandidate{row("symbol-a", 0.9, false)}, 5, keyOf)
+	if len(fused) != 1 {
+		t.Fatalf("one symbol seated twice: %d rows", len(fused))
+	}
+}

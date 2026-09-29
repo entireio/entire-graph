@@ -335,7 +335,7 @@ func semanticCandidates(
 		if !ok {
 			continue
 		}
-		key := semanticKey{file: symbol.FilePath, line: symbol.StartLine}
+		key := semanticSymbolKey(symbol)
 		if lexical, ok := bestLexical[key]; ok {
 			lexical.result.Signals = appendUnique(append([]string(nil), lexical.result.Signals...), semanticSignal)
 			out = append(out, lexical)
@@ -392,20 +392,34 @@ func semanticSymbolFor(symbols []SymbolRecord, hit semanticHit) (SymbolRecord, b
 	return SymbolRecord{}, false
 }
 
-// semanticKey is the canonical identity fusion deduplicates on: one row per (file, enclosing
-// symbol start). Two regions of the same function are the same answer to "where is this".
+// semanticKey is the canonical identity fusion deduplicates on: one row per SYMBOL. Two regions
+// of the same function are the same answer to "where is this", but two symbols that merely start
+// on the same line (`function a() {} function b() {}`, a class and its first method) are not, so
+// the identity is the symbol's ID; the file and a line stand in only for a row that carries no
+// symbol at all.
 type semanticKey struct {
 	file string
+	id   string
 	line int
+}
+
+func semanticSymbolKey(symbol SymbolRecord) semanticKey {
+	if symbol.ID != "" {
+		return semanticKey{file: symbol.FilePath, id: symbol.ID}
+	}
+	return semanticKey{file: symbol.FilePath, line: symbol.StartLine}
 }
 
 func semanticCandidateKey(candidate searchCandidate, symbolsByFile map[string][]SymbolRecord) semanticKey {
 	result := candidate.result
-	if result.SymbolStartLine > 0 {
-		return semanticKey{file: result.FilePath, line: result.SymbolStartLine}
+	if result.SymbolID != "" {
+		return semanticKey{file: result.FilePath, id: result.SymbolID}
 	}
 	if symbol, ok := smallestSearchSymbolContainingLine(symbolsByFile[result.FilePath], result.FocusLine); ok {
-		return semanticKey{file: result.FilePath, line: symbol.StartLine}
+		return semanticSymbolKey(symbol)
+	}
+	if result.SymbolStartLine > 0 {
+		return semanticKey{file: result.FilePath, line: result.SymbolStartLine}
 	}
 	return semanticKey{file: result.FilePath, line: result.StartLine}
 }
