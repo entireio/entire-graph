@@ -57,8 +57,10 @@ func declarationNameLine(node *sitter.Node, src []byte, name string) int {
 		if !validNode(child) || int(child.StartByte()) >= limit {
 			continue
 		}
+		// The LAST leaf spelled like the name: a qualified name field (`A.A`, `A::A`) binds its
+		// terminal member, and the qualifier before it may be spelled the same.
 		budget := nameLineVisitBudget
-		if leaf := nameLineLeaf(child, src, short, limit, 0, &budget); validNode(leaf) {
+		if leaf := nameLineLastLeaf(child, src, short, limit, 0, &budget); validNode(leaf) {
 			return int(leaf.StartPoint().Row) + 1
 		}
 		content := strings.TrimSpace(child.Content(src))
@@ -170,6 +172,32 @@ func nameLineLeaf(node *sitter.Node, src []byte, short string, limit, depth int,
 		if leaf := nameLineLeaf(child, src, short, limit, depth+1, budget); validNode(leaf) {
 			return leaf
 		}
+	}
+	return nil
+}
+
+// nameLineLastLeaf is nameLineLeaf returning the last matching leaf in source order.
+func nameLineLastLeaf(node *sitter.Node, src []byte, short string, limit, depth int, budget *int) *sitter.Node {
+	if !validNode(node) || depth >= maxParseWalkDepth || *budget <= 0 || int(node.StartByte()) >= limit {
+		return nil
+	}
+	*budget--
+	if nameLineSkipped(node.Type()) {
+		return nil
+	}
+	if node.NamedChildCount() == 0 {
+		if strings.TrimSpace(node.Content(src)) == short {
+			return node
+		}
+		return nil
+	}
+	for i := int(node.NamedChildCount()) - 1; i >= 0; i-- {
+		if leaf := nameLineLastLeaf(node.NamedChild(i), src, short, limit, depth+1, budget); validNode(leaf) {
+			return leaf
+		}
+	}
+	if isNameNode(node.Type()) && strings.TrimSpace(node.Content(src)) == short {
+		return node
 	}
 	return nil
 }
