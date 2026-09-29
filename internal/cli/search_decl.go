@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/entireio/entire-graph/internal/sem"
 )
@@ -23,11 +25,12 @@ import (
 // block prints it first, then an elision line, then the focus window — all inside the block's own
 // byte share, so no other block gives up anything. Policy:
 //
-//   - The declaration is the line sem.DeclarationLineIndex picks at or after the symbol's start,
-//     within its span and at most exactNameAnchorLines down: the name as a whole identifier outside
-//     literals and leading annotations, definition-shaped lines first (the exact-name anchor's rule,
-//     so `@Named("fooBar")` or `@app.route("/login")` is stepped over rather than printed in the
-//     signature's place). A symbol with no such line is rendered exactly as before.
+//   - The declaration is the parser's name line (sem.SearchResult.SymbolNameLine) whenever the
+//     index recorded one inside the symbol's span and the snippet, however far below the symbol's
+//     first line it sits. Only without one is it the line the text fallback
+//     sem.DeclarationLineIndex picks at or after the symbol's start, within its span and at most
+//     exactNameAnchorLines down (the exact-name anchor's rule). A symbol with neither is rendered
+//     exactly as before.
 //   - A multi-line signature's continuation lines (a named line ending in `(` or `,`) and the
 //     declarations of the members a merged span absorbed (sem.SearchResult.MergedDeclLines) are
 //     optional. A variant adding k of them is taken only when it prints at most k fewer BODY lines
@@ -37,10 +40,13 @@ import (
 //     bytes are paid from the window. The survivor's own declaration is mandatory.
 //   - Never locate less: a block whose ordinary window already shows every declaration is returned
 //     byte for byte. Otherwise every declaration the ordinary window showed is mandatory, AND every
-//     line it showed that any finder could have taken for one (agentSearchPlainHeads: a line within
-//     agentSearchHeadLines of the symbol's start naming it anywhere, or the lines after an absorbed
-//     member's recorded annotation line down to the first non-annotation line) — so a finder that
-//     took the wrong line for a declaration still never makes the new block drop the right one.
+//     line it showed of a declaration REGION (agentSearchPlainHeads). With a parser name line the
+//     region is exact and unbounded: every line from the symbol's first line (for an absorbed member,
+//     its sem.SearchResult.MergedDeclStarts entry) down to the name line, annotations included.
+//     Without one it is every line any text finder could have taken for the declaration: a line
+//     within agentSearchHeadLines of the symbol's start naming it anywhere; for an absorbed member,
+//     every line within agentSearchHeadLines above its recorded line and the annotation run below
+//     it — so a wrong pick never makes the new block drop the right line.
 //   - When no window fits beside the mandatory lines, they alone are printed rather than a window
 //     without them; when not even that fits, the ordinary block (or bare header) is kept.
 //   - Header: the minimal rung names the block's first printed line, not its focus line, so every
@@ -74,6 +80,10 @@ type agentSearchBlockView struct {
 type agentSearchDecl struct {
 	index, cont int
 	head        bool
+	// region is the snippet index where the declaration's region starts when hasRegion: the
+	// declaration line is the parser's name line, so every line from region to index belongs to it.
+	region    int
+	hasRegion bool
 }
 
 // agentSearchDeclIndex returns the snippet index of the line declaring `name` (sem.DeclarationLineIndex:
@@ -116,19 +126,44 @@ func agentSearchDecls(view agentSearchBlockView) (agentSearchDecl, bool, []agent
 		last = result.SymbolEndLine - first
 	}
 	var own agentSearchDecl
-	index, hasOwn := agentSearchDeclIndex(lines, first, result.SymbolStartLine, result.SymbolEndLine, result.SymbolName)
+	index, hasOwn, parsed := agentSearchNameLineIndex(result, first, len(lines))
+	if !parsed {
+		index, hasOwn = agentSearchDeclIndex(lines, first, result.SymbolStartLine, result.SymbolEndLine, result.SymbolName)
+	}
 	if hasOwn {
 		own = agentSearchDecl{index: index, cont: agentSearchSignatureContinuation(lines, index, last)}
+		if parsed {
+			own.region, own.hasRegion = max(result.SymbolStartLine-first, 0), true
+		}
 	}
 	var absorbed []agentSearchDecl
-	for _, line := range result.MergedDeclLines {
+	starts := result.MergedDeclStarts
+	if len(starts) != len(result.MergedDeclLines) {
+		starts = nil
+	}
+	for k, line := range result.MergedDeclLines {
 		index := line - first
 		if index < 0 || index >= len(lines) || hasOwn && index == own.index {
 			continue
 		}
-		absorbed = append(absorbed, agentSearchDecl{index: index})
+		decl := agentSearchDecl{index: index}
+		if starts != nil && starts[k] > 0 && starts[k] <= line {
+			decl.region, decl.hasRegion = max(starts[k]-first, 0), true
+		}
+		absorbed = append(absorbed, decl)
 	}
 	return own, hasOwn, absorbed
+}
+
+// agentSearchNameLineIndex returns the snippet index of the parser's name line for the result's own
+// symbol when it lies in the symbol's span and in the snippet of n lines starting at file line first.
+func agentSearchNameLineIndex(result sem.SearchResult, first, n int) (index int, ok, parsed bool) {
+	line := result.SymbolNameLine
+	if line <= 0 || line < result.SymbolStartLine || result.SymbolEndLine >= result.SymbolStartLine && line > result.SymbolEndLine ||
+		line < first || line >= first+n {
+		return 0, false, false
+	}
+	return line - first, true, true
 }
 
 // agentSearchDeclarationBlock returns the block with its declaration(s) shown, or nil when the
@@ -219,7 +254,12 @@ func agentSearchPlainHeads(view agentSearchBlockView, absorbed []agentSearchDecl
 	}
 	in := make([]bool, len(view.lines))
 	result := view.result
-	if start := result.SymbolStartLine - view.first; result.SymbolStartLine > 0 && result.SymbolName != "" && start < len(view.lines) {
+	if index, _, parsed := agentSearchNameLineIndex(result, view.first, len(view.lines)); parsed {
+		// Exact: the whole header region the parser names, annotations included, with no bound.
+		for i := max(result.SymbolStartLine-view.first, left, 0); i <= min(index, right); i++ {
+			in[i] = true
+		}
+	} else if start := result.SymbolStartLine - view.first; result.SymbolStartLine > 0 && result.SymbolName != "" && start < len(view.lines) {
 		for i := max(start, left); i <= min(start+agentSearchHeadLines-1, right); i++ {
 			if agentSearchLineMentions(view.lines[i], result.SymbolName) {
 				in[i] = true
@@ -227,6 +267,18 @@ func agentSearchPlainHeads(view agentSearchBlockView, absorbed []agentSearchDecl
 		}
 	}
 	for _, decl := range absorbed {
+		if decl.hasRegion {
+			for i := max(decl.region, left); i <= min(decl.index, right); i++ {
+				in[i] = true
+			}
+			continue
+		}
+		// Text fallback: the renderer has no name for an absorbed member, so every line within
+		// agentSearchHeadLines above its recorded line is a candidate for the real declaration,
+		// and so is the annotation run below it.
+		for i := max(decl.index-agentSearchHeadLines+1, left, 0); i <= min(decl.index, right); i++ {
+			in[i] = true
+		}
 		for i := decl.index; i < min(decl.index+agentSearchHeadLines, len(view.lines)); i++ {
 			if i >= left && i <= right {
 				in[i] = true
@@ -261,7 +313,7 @@ func agentSearchLineMentions(line, name string) bool {
 		}
 		at += from
 		end := at + len(name)
-		if (at == 0 || !exactNameIdentByte(line[at-1])) && (end == len(line) || !exactNameIdentByte(line[end])) {
+		if !agentSearchIdentifierRuneBefore(line, at) && !agentSearchIdentifierRuneAt(line, end) {
 			return true
 		}
 		from = at + 1
@@ -444,4 +496,27 @@ func agentSearchRenderDecls(view agentSearchBlockView, decls []agentSearchDecl, 
 // not shaped like a locator (agentSearchLineIsLocator): its first token carries no `:<digits>`.
 func agentSearchElisionLine(n int) string {
 	return fmt.Sprintf("... %d line%s elided\n", n, pluralSuffix(n))
+}
+
+// agentSearchIdentifierRune reports whether r continues an identifier: a Unicode letter or digit,
+// `_` or `$` (sem's declaration lexer uses the same rule), so `naïve2` does not mention `naïve`.
+func agentSearchIdentifierRune(r rune) bool {
+	return r == '_' || r == '$' || unicode.IsLetter(r) || unicode.IsDigit(r) ||
+		unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Mc, r)
+}
+
+func agentSearchIdentifierRuneBefore(line string, i int) bool {
+	if i <= 0 {
+		return false
+	}
+	r, _ := utf8.DecodeLastRuneInString(line[:i])
+	return agentSearchIdentifierRune(r)
+}
+
+func agentSearchIdentifierRuneAt(line string, i int) bool {
+	if i >= len(line) {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(line[i:])
+	return agentSearchIdentifierRune(r)
 }

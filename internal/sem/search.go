@@ -306,6 +306,11 @@ type SearchResult struct {
 	// still show the reader where each absorbed callable starts (search_decl_line.go). Present only
 	// on a merged span. Schema 1.x additive.
 	MergedDeclLines []int `json:"merged_decl_lines,omitempty"`
+	// MergedDeclStarts is parallel to MergedDeclLines: for each, the first line of that absorbed
+	// member's declaration region (its first line, clamped to the span) when the declaration line is
+	// the parser's name line, 0 when the text fallback found it. Absent when no entry is the
+	// parser's. A renderer keeps every line of a region it would otherwise have shown.
+	MergedDeclStarts []int `json:"merged_decl_starts,omitempty"`
 	// UnitStartLine/UnitEndLine are the TRUE span of the enclosing unit when --full-unit-top asked
 	// for that unit whole and searchFullUnitMaxLines clipped it. They are set ONLY on a clipped
 	// forced unit — their absence is the ordinary case and means the printed span IS the unit — and

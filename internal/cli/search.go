@@ -2704,7 +2704,12 @@ func agentSearchLocationHeaders(rank int, path string, start, end, focus int, na
 		compact += " " + complete
 	}
 	compact += scored + " *\n"
-	minimal := fmt.Sprintf("%s:%d *\n", path, focus)
+	// The minimal rung names the FIRST printed line, so every line under it is numbered by counting
+	// down from it. Naming the focus line misnumbered every line of a window that does not start at
+	// the focus, and named a line that is not printed at all for a demoted tail row whose window was
+	// kept at its declaration (focus below the snippet). A bare locator with no lines
+	// (fitAgentSearchLocation) passes start == focus and is unchanged.
+	minimal := fmt.Sprintf("%s:%d *\n", path, start)
 	return []string{rich, compact, minimal}
 }
 
