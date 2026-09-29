@@ -279,6 +279,12 @@ type SearchResult struct {
 	QualifiedName   string   `json:"qualified_name,omitempty"`
 	Signature       string   `json:"signature,omitempty"`
 	Signals         []string `json:"signals"`
+	// SymbolNameLine is the line of the token that NAMES the enclosing symbol, as the parser saw
+	// it (see declaration_name_line.go). It differs from SymbolStartLine whenever annotations,
+	// attributes, decorators or a multi-line header precede the name. Absent (0) when the symbol
+	// came from an extractor with no parse tree; a consumer then falls back to
+	// DeclarationLineIndex. Additive: set only alongside SymbolStartLine, from the same symbol.
+	SymbolNameLine int `json:"symbol_name_line,omitempty"`
 	// Section groups a result for presentation. Empty (omitted) means the primary list of
 	// candidate fix sites; see search_section.go for the other values and why the grouping is
 	// a label rather than a filter.
@@ -3689,6 +3695,7 @@ func attachSparseCandidateSymbols(candidates []searchCandidate, symbolsByFile ma
 		candidate.aliases = append([]string(nil), symbol.Aliases...)
 		candidate.result.SymbolStartLine = symbol.StartLine
 		candidate.result.SymbolEndLine = symbol.EndLine
+		candidate.result.SymbolNameLine = symbol.nameLine
 	}
 }
 
@@ -3945,6 +3952,7 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 			Signature:        symbol.Signature,
 			SymbolStartLine:  symbol.StartLine,
 			SymbolEndLine:    symbol.EndLine,
+			SymbolNameLine:   symbol.nameLine,
 			Signals:          appendUnique(nil, signals...),
 			Snippet:          snippet,
 		},
@@ -4812,6 +4820,7 @@ func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []R
 					Signature:        symbol.Signature,
 					SymbolStartLine:  symbol.StartLine,
 					SymbolEndLine:    symbol.EndLine,
+					SymbolNameLine:   symbol.nameLine,
 					Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
 				},
 				aliases: append([]string(nil), symbol.Aliases...),

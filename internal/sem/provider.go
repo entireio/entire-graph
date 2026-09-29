@@ -360,6 +360,10 @@ type SymbolRecord struct {
 	// frozen provider schema and symbol IDs do not change.
 	sourceStartByte int
 	sourceEndByte   int
+	// nameLine is Entity.nameLine: the parser's line for the declaration's name token, 0 when
+	// unknown. Private for the same reason as the byte range; search carries it to results as
+	// SearchResult.SymbolNameLine.
+	nameLine int
 	// bodyless: this symbol declares a callable without defining it (a
 	// TypeScript overload signature or ambient declaration; see Entity.bodyless).
 	// Call resolution uses it to tell an overload set apart from genuinely
@@ -2059,6 +2063,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			Local:                   entity.Local,
 			sourceStartByte:         entity.sourceStartByte,
 			sourceEndByte:           entity.sourceEndByte,
+			nameLine:                entityNameLineWithin(entity),
 			bodyless:                entity.bodyless,
 			cPlusPlusOwners:         append([]string(nil), entity.cPlusPlusOwners...),
 			cPlusPlusDefinitionName: entity.cPlusPlusDefinitionName,

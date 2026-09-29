@@ -46,6 +46,13 @@ type Entity struct {
 	// intentionally remain line based. A zero start is valid when end > start.
 	sourceStartByte int
 	sourceEndByte   int
+	// nameLine is the 1-based line of the token that NAMES the declaration in the parse tree (the
+	// grammar's `name` field, or the identifier leaf spelled like the name outside comments,
+	// literals and annotations), 0 when the extractor had no parse node for it. It is what renderers
+	// anchor on instead of guessing the naming line from text: an annotation argument, a doc
+	// comment, a raw string or a type spelled like the name is never the name node. Private parse
+	// metadata, like the byte range, so the frozen schema is unchanged.
+	nameLine int
 	// parameterNames holds JS/TS parameter identifiers read from the
 	// declaration's formal_parameters AST node (internal parse metadata, like
 	// the byte range). Signature-string parsing cannot recover these reliably:
