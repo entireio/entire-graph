@@ -193,3 +193,29 @@ func TestAgentSearchLineMentionsUnicodeBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// A known name line the snippet does not hold is not replaced by the text finder's guess: the
+// C++ return type spells a call to run, and the declaration (line 11) is outside the snippet.
+// The block has no own declaration and is the ordinary block at every budget.
+func TestAgentBlockKnownNameLineOutsideSnippetIsNotGuessed(t *testing.T) {
+	t.Parallel()
+	result := sem.SearchResult{Rank: 1, Score: 40, FilePath: "src/runner.cpp", Language: "cpp",
+		StartLine: 3, EndLine: 10, FocusLine: 9, SnippetStartLine: 3, SnippetEndLine: 10,
+		SymbolStartLine: 10, SymbolEndLine: 30, SymbolNameLine: 11, SymbolName: "run", QualifiedName: "run",
+		Snippet: "int a();\nint b();\nint c();\nint d();\nint e();\nint f();\nint g();\ndecltype(run())"}
+	view := agentSearchBlockViewOf(result)
+	if _, ok, _ := agentSearchDecls(view); ok {
+		t.Fatal("a same-name call was taken for the declaration the index placed outside the snippet")
+	}
+	for budget := 30; budget <= 400; budget += 3 {
+		plain, _, _ := agentSearchFocusWindow(agentSearchBlockViewOf(result), budget)
+		if got := agentSearchPrimaryBlock(result, budget); string(got) != string(plain) && plain != nil {
+			t.Fatalf("budget %d: block differs from the ordinary one:\n%s\nplain:\n%s", budget, got, plain)
+		}
+	}
+	absent := result
+	absent.SymbolNameLine = 0
+	if _, ok, _ := agentSearchDecls(agentSearchBlockViewOf(absent)); !ok {
+		t.Fatal("control: with no name line the text fallback should find the (call) line")
+	}
+}

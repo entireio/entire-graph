@@ -138,3 +138,51 @@ func TestTersifyFallbackKeepsShownMentions(t *testing.T) {
 		t.Fatal("no focus window showed a mention: the sweep tests nothing")
 	}
 }
+
+// Known outside the snippet: no declaration here, and no text guess. The fallback control shows the
+// guess the known name line prevents.
+func TestSymbolDeclarationLineKnownOutsideIsNotGuessed(t *testing.T) {
+	t.Parallel()
+	lines := []string{"decltype(run())", "{"}
+	r := SearchResult{SymbolStartLine: 10, SymbolEndLine: 20, SymbolNameLine: 12, SymbolName: "run", Language: "C++"}
+	if line, ok, _ := searchSymbolDeclarationLine(lines, 10, r); ok {
+		t.Fatalf("known name line outside the snippet was replaced by line %d", line)
+	}
+	r.SymbolNameLine = 25 // outside the span: invalid
+	if line, ok, _ := searchSymbolDeclarationLine(lines, 10, r); ok {
+		t.Fatalf("invalid name line fell back to line %d", line)
+	}
+	r.SymbolNameLine = 0
+	if line, ok, parsed := searchSymbolDeclarationLine(lines, 10, r); !ok || parsed || line != 10 {
+		t.Fatalf("control: absent name line should use the text fallback (got %d ok=%v parsed=%v)", line, ok, parsed)
+	}
+}
+
+// Round 2's TestRev2MergedDeclLinesCSharpLazyProperty only logs. Asserted: with no name lines, the
+// absorbed C# property whose type equals its name records its declaration line (40), not the lazy
+// getter below it; with the parser's name line, that line.
+func TestMergedDeclLinesCSharpLazyPropertyAsserted(t *testing.T) {
+	t.Parallel()
+	fileLines := make([]string, 80)
+	for i := range fileLines {
+		fileLines[i] = "        x();"
+	}
+	fileLines[9] = "    public void Load(string path)"
+	fileLines[39] = "    public Options Options"
+	fileLines[40] = "    {"
+	fileLines[41] = "        get { return _options ??= new Options(); }"
+	fileLines[42] = "    }"
+	survivor := spanMergeBody(1, "src/Cfg.cs", 10, 30)
+	survivor.SymbolStartLine, survivor.SymbolEndLine, survivor.SymbolName = 10, 30, "Load"
+	absorbed := spanMergeBody(2, "src/Cfg.cs", 40, 43)
+	absorbed.SymbolStartLine, absorbed.SymbolEndLine, absorbed.SymbolName = 40, 43, "Options"
+	_, span, ok := mergedSearchSpanResult([]SearchResult{survivor, absorbed}, []int{0, 1}, fileLines)
+	if !ok || len(span.MergedDeclLines) != 1 || span.MergedDeclLines[0] != 40 {
+		t.Fatalf("merged=%v MergedDeclLines=%v; want [40]", ok, span.MergedDeclLines)
+	}
+	absorbed.SymbolNameLine = 40
+	_, span, _ = mergedSearchSpanResult([]SearchResult{survivor, absorbed}, []int{0, 1}, fileLines)
+	if len(span.MergedDeclLines) != 1 || span.MergedDeclLines[0] != 40 || len(span.MergedDeclStarts) != 1 || span.MergedDeclStarts[0] != 40 {
+		t.Fatalf("with a name line: MergedDeclLines=%v MergedDeclStarts=%v; want [40] [40]", span.MergedDeclLines, span.MergedDeclStarts)
+	}
+}
