@@ -296,6 +296,12 @@ type SearchResult struct {
 	// case; when it is present the snippet is the verbatim, unelided text of the whole range,
 	// which is the fact that stops a reader spending a turn bridging the gap itself.
 	MergedRanks []int `json:"merged_ranks,omitempty"`
+	// MergedDeclLines are the declaration lines (the line that names the symbol) of the members a
+	// merged span absorbed, ascending, when they lie inside the span. The survivor's own is not
+	// listed; its symbol fields carry it. They exist so a renderer that windows a merged span can
+	// still show the reader where each absorbed callable starts (search_decl_line.go). Present only
+	// on a merged span. Schema 1.x additive.
+	MergedDeclLines []int `json:"merged_decl_lines,omitempty"`
 	// UnitStartLine/UnitEndLine are the TRUE span of the enclosing unit when --full-unit-top asked
 	// for that unit whole and searchFullUnitMaxLines clipped it. They are set ONLY on a clipped
 	// forced unit — their absence is the ordinary case and means the printed span IS the unit — and
