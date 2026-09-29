@@ -89,3 +89,67 @@ func TestExactNameAnchorPrefersParserNameLine(t *testing.T) {
 		}
 	}
 }
+
+// Round 2's TestRev2ExactNameAnchorWrongPick only logs. The invariant, asserted: with no parser
+// name line, the text fallback anchors each shape on its real declaration, and the smallest block
+// prints that line.
+func TestExactNameFallbackAnchorsRealDeclaration(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, file, symbol, snippet string
+		want                        int
+	}{
+		{"cs-lazy-property", "src/Cfg.cs", "Options", "    public Options Options\n    {\n        get { return _options ??= new Options(); }\n    }\n", 0},
+		{"ruby-self-hashkey", "lib/app.rb", "config", "def self.config\n  @config ||= Config.load(config: path)\nend\n", 0},
+		{"py-decorator-trailing-comment", "app/net.py", "fetch", "@retry  # fetch() may raise\n@lru_cache()\ndef fetch(url):\n    return get(url)\n", 2},
+	}
+	for _, c := range cases {
+		n := strings.Count(c.snippet, "\n")
+		r := sem.SearchResult{Rank: 1, Score: 10, FilePath: c.file, StartLine: 10, EndLine: 10 + n - 1, FocusLine: 10,
+			SnippetStartLine: 10, SnippetEndLine: 10 + n - 1, SymbolStartLine: 10, SymbolEndLine: 10 + n - 1,
+			SymbolName: c.symbol, QualifiedName: c.symbol, Snippet: c.snippet}
+		anchor, ok := agentExactNameAnchor(r, c.symbol)
+		if !ok || anchor.named != c.want || anchor.parsed {
+			t.Errorf("%s: anchored=%v named=%d parsed=%v; want the real declaration at %d", c.name, ok, anchor.named, anchor.parsed, c.want)
+			continue
+		}
+		line := strings.Split(c.snippet, "\n")[c.want]
+		if block := string(agentExactNameBlock(anchor, 2, 0)); !strings.Contains(block, "\n"+line+"\n") {
+			t.Errorf("%s: smallest block does not print %q:\n%s", c.name, line, block)
+		}
+	}
+}
+
+// A name line that is present but inconsistent with the symbol's span fails closed even when the
+// line it names is printed: corrupt metadata is not downgraded to the text finder's guess.
+func TestExactNameInvalidNameLineFailsClosed(t *testing.T) {
+	t.Parallel()
+	snippet := "decltype(run())\nrun(int retry) {\n    return retry;\n}\n"
+	row := sem.SearchResult{Rank: 1, Score: 40, FilePath: "src/runner.cpp", StartLine: 10, EndLine: 13, FocusLine: 11,
+		SnippetStartLine: 10, SnippetEndLine: 13, SymbolStartLine: 11, SymbolEndLine: 13, SymbolNameLine: 10,
+		SymbolName: "run", QualifiedName: "run", Snippet: snippet}
+	if anchor, ok := agentExactNameAnchor(row, "run"); ok {
+		t.Fatalf("a name line above the symbol's span was used (named %d)", anchor.named)
+	}
+	row.SymbolNameLine = 11
+	if anchor, ok := agentExactNameAnchor(row, "run"); !ok || anchor.named != 1 || !anchor.parsed {
+		t.Fatalf("valid control: ok=%v named=%d parsed=%v", ok, anchor.named, anchor.parsed)
+	}
+}
+
+// Another symbol's local definition is found with the file's own lexical rules: in Rust `r"\"` is
+// a complete string, so the definition after it on the same line is code.
+func TestExactNameDefinitionScanUsesTheFilesLanguage(t *testing.T) {
+	t.Parallel()
+	response := review302RealRunResponse()
+	response.Results = append(response.Results, sem.SearchResult{
+		Rank: 2, Score: 50, FilePath: "src/fixture.rs", Language: "Rust",
+		SymbolName: "fixture", QualifiedName: "fixture", Kind: "function",
+		StartLine: 1, EndLine: 3, FocusLine: 2, SnippetStartLine: 1, SnippetEndLine: 3,
+		SymbolStartLine: 1, SymbolEndLine: 3, Snippet: "fn fixture() {\n    let s = r\"\\\"; fn run() {}\n}\n",
+	})
+	payload, taken := review302RenderExactName(t, response, true)
+	if !taken || !strings.Contains(payload, "src/fixture.rs:") {
+		t.Fatalf("the Rust definition after a raw string was not found:\n%s", payload)
+	}
+}
