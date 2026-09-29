@@ -1,6 +1,100 @@
 package sem
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func TestMergeSearchContractContextResultCount(t *testing.T) {
+	for _, tc := range []struct {
+		name                                string
+		topK                                int
+		uniqueTail, protectSource, headOnly bool
+		want                                int
+	}{
+		{name: "spare slot", topK: 8, want: 1},
+		{name: "full pool exchanges redundant tail", topK: 7, want: 1},
+		{name: "last file mentions cannot buy slot", topK: 7, uniqueTail: true},
+		{name: "source cannot buy slot", topK: 7, protectSource: true},
+		{name: "TopK one protects head", topK: 1, headOnly: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			results := contractPayload()
+			if tc.uniqueTail {
+				results[5].FilePath = "src/unique.go"
+			}
+			if tc.protectSource {
+				results[5].Signals = append(results[5].Signals, searchCompleteSymbolSignal)
+			}
+			if tc.headOnly {
+				results = results[:1]
+			}
+			entry := contractTestEntry()
+			note := &SearchCoverageNote{Symbol: "head", Total: 2, Peers: []string{"TestOther"}}
+			merged, card, gotNote, tests, _ := mergeSearchContractContext(results,
+				searchContractContext{test: &entry, note: note, card: contractCard()}, 0, tc.topK)
+			if len(merged) > tc.topK || tests != tc.want {
+				t.Fatalf("results=%d tests=%d, want at most %d results and %d tests", len(merged), tests, tc.topK, tc.want)
+			}
+			if !reflect.DeepEqual(card, contractCard()) {
+				t.Error("a result-count limit discarded the slot-free type card")
+			}
+			if (gotNote != nil) != (tests == 1) {
+				t.Error("coverage note must accompany an admitted test only")
+			}
+			for index := 0; index < minInt(len(results), 5); index++ {
+				if !reflect.DeepEqual(merged[index], results[index]) {
+					t.Errorf("protected head changed at index %d", index)
+				}
+			}
+			for _, original := range results {
+				found := false
+				for _, result := range merged {
+					found = found || result.FilePath == original.FilePath
+				}
+				if !found {
+					t.Errorf("last mention of %s lost", original.FilePath)
+				}
+			}
+			for index, result := range merged {
+				if result.Rank != index+1 {
+					t.Errorf("rank %d at index %d", result.Rank, index)
+				}
+			}
+		})
+	}
+}
+
+func TestMergeSearchContractContextDoesNotChargeCalleeExceptionSlot(t *testing.T) {
+	results := append([]SearchResult(nil), contractPayload()[:searchEnclosureHeadRanks]...)
+	results = append(results, contractCalleeEntry(len(results)+1))
+	entry := contractTestEntry()
+	note := &SearchCoverageNote{Symbol: "head", Total: 2, Peers: []string{"TestOther"}}
+	merged, card, gotNote, tests, entries := mergeSearchContractContext(results,
+		searchContractContext{test: &entry, note: note, card: contractCard()}, 100000, searchEnclosureHeadRanks)
+
+	if countNormalResultsForTest(merged) != searchEnclosureHeadRanks || len(merged) != searchEnclosureHeadRanks+1 {
+		t.Errorf("results=%d normal=%d, want %d total with %d capped normal rows",
+			len(merged), countNormalResultsForTest(merged), searchEnclosureHeadRanks+1, searchEnclosureHeadRanks)
+	}
+	if !hasSearchSignal(merged[len(merged)-1], searchCalleeHopSignal) {
+		t.Error("callee exception row did not survive")
+	}
+	if tests != 0 || gotNote != nil {
+		t.Errorf("covering tests=%d note=%+v, want an unseatable test and its note omitted", tests, gotNote)
+	}
+	if entries != len(contractCard()) || !reflect.DeepEqual(card, contractCard()) {
+		t.Errorf("card=%+v entries=%d, want the useful slot-free card retained", card, entries)
+	}
+	if got := contractTotalBytes(merged, card); got > 100000 {
+		t.Errorf("payload bytes=%d exceed 100000", got)
+	}
+	for index, result := range merged {
+		if result.Rank != index+1 {
+			t.Errorf("rank %d at index %d", result.Rank, index)
+		}
+	}
+}
 
 // contractPayload is a ranked payload with a protected head and two tail locators, one of which is
 // the LAST mention of its file (so it may never be displaced) and one of which is redundant.
@@ -32,6 +126,24 @@ func contractTestEntry() SearchResult {
 	}
 }
 
+func contractCalleeEntry(rank int) SearchResult {
+	return SearchResult{
+		Rank: rank, FilePath: "src/helper.go", StartLine: 10, EndLine: 12, FocusLine: 10,
+		SnippetStartLine: 10, SnippetEndLine: 10, Kind: "function", SymbolName: "headHelper",
+		Signals: []string{searchCalleeHopSignal}, Snippet: "func headHelper() string {",
+	}
+}
+
+func countNormalResultsForTest(results []SearchResult) int {
+	count := 0
+	for _, result := range results {
+		if !hasSearchSignal(result, searchCalleeHopSignal) {
+			count++
+		}
+	}
+	return count
+}
+
 func contractCard() []TypeCardEntry {
 	return []TypeCardEntry{
 		{Name: "series.headChunks", FilePath: "src/head.go", Line: 91, Decl: "headChunks *memChunk"},
@@ -56,7 +168,7 @@ func TestMergeSearchContractContextAppendsAfterEverything(t *testing.T) {
 	results := contractPayload()
 	entry := contractTestEntry()
 	merged, card, _, tests, cardEntries := mergeSearchContractContext(
-		results, searchContractContext{test: &entry, card: contractCard()}, 0,
+		results, searchContractContext{test: &entry, card: contractCard()}, 0, len(results)+1,
 	)
 	if tests != 1 || cardEntries != len(contractCard()) {
 		t.Fatalf("counts = %d tests / %d card entries, want 1 / %d", tests, cardEntries, len(contractCard()))
@@ -85,7 +197,7 @@ func TestMergeSearchContractContextRespectsAllowance(t *testing.T) {
 	baseline := serializedSearchResultBytes(results)
 	entry := contractTestEntry()
 	merged, card, _, _, _ := mergeSearchContractContext(
-		results, searchContractContext{test: &entry, card: contractCard()}, 0,
+		results, searchContractContext{test: &entry, card: contractCard()}, 0, len(results)+1,
 	)
 	growth := contractTotalBytes(merged, card) - baseline
 	if growth > searchContractAllowanceBytes {
@@ -107,7 +219,7 @@ func TestMergeSearchContractContextFundsFromRedundantTail(t *testing.T) {
 	blocks := searchContractContext{test: &entry, card: contractCard()}
 
 	// A ceiling exactly at the baseline: nothing may be added without something being given up.
-	merged, card, _, tests, entries := mergeSearchContractContext(results, blocks, baseline)
+	merged, card, _, tests, entries := mergeSearchContractContext(results, blocks, baseline, len(results)+1)
 	total := contractTotalBytes(merged, card)
 	if total > baseline {
 		t.Fatalf("payload is %d bytes (%d tests, %d card entries), over the %d ceiling",
@@ -123,7 +235,7 @@ func TestMergeSearchContractContextFundsFromRedundantTail(t *testing.T) {
 
 	// A ceiling far below the baseline cannot be met at all: the blocks are dropped and the
 	// ranking is returned untouched rather than mutilated.
-	untouched, none, _, tests, entries := mergeSearchContractContext(results, blocks, baseline/2)
+	untouched, none, _, tests, entries := mergeSearchContractContext(results, blocks, baseline/2, len(results)+1)
 	if len(none) != 0 || tests != 0 || entries != 0 {
 		t.Fatalf("blocks were attached under an impossible ceiling: %d tests, %d entries", tests, entries)
 	}
@@ -137,7 +249,7 @@ func TestMergeSearchContractContextFundsFromRedundantTail(t *testing.T) {
 func TestMergeSearchContractContextNoBlocksIsIdentity(t *testing.T) {
 	t.Parallel()
 	results := contractPayload()
-	merged, card, _, tests, entries := mergeSearchContractContext(results, searchContractContext{}, 0)
+	merged, card, _, tests, entries := mergeSearchContractContext(results, searchContractContext{}, 0, len(results))
 	if len(card) != 0 || tests != 0 || entries != 0 {
 		t.Fatalf("empty context produced %d card entries and %d tests", entries, tests)
 	}

@@ -22,7 +22,10 @@ a surprising hit can be audited instead of trusted.
 
 Results are byte-budgeted to drop into an agent's context: top hits carry full
 snippets, later hits shrink to locators, and `--max-context-bytes` bounds the
-total (`0` removes the bound). `--top-k` sets the result count.
+total (`0` removes the bound). `--top-k` caps normal results, including automatic
+related sites and covering tests. Explicit `--callee-hop` is an exception: it may
+add called-helper results beyond that cap, under its existing byte-budget and
+ranked-source protections.
 
 ## What a response contains
 

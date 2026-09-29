@@ -5,6 +5,89 @@ import (
 	"testing"
 )
 
+func TestSearchAuxiliaryBlocksShareResultSlots(t *testing.T) {
+	for _, tc := range []struct {
+		name                                string
+		coveringFirst, distinctRelatedFiles bool
+		calleeOverflow                      bool
+		wantRelated                         int
+	}{
+		{name: "related first with distinct files", distinctRelatedFiles: true, wantRelated: 2},
+		{name: "covering first with distinct files", coveringFirst: true, distinctRelatedFiles: true, wantRelated: 2},
+		{name: "covering may replace a redundant related locator", wantRelated: 1},
+		{name: "related cannot replace covering test", coveringFirst: true, wantRelated: 2},
+		{name: "callee overflow stays outside shared normal slots", distinctRelatedFiles: true, calleeOverflow: true, wantRelated: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			results := mergeTestResults(10, "head source")
+			for _, index := range []int{5, 7, 8} {
+				results[index].FilePath = results[0].FilePath
+				results[index].Snippet = strings.Repeat("x", 1200)
+			}
+			if tc.calleeOverflow {
+				results = append(results, contractCalleeEntry(len(results)+1))
+			}
+			entry := contractTestEntry()
+			sites := []searchRelatedSite{mergeTestSite("alpha", 3), mergeTestSite("beta", 11)}
+			fixture := cloneFamilyFixture()
+			if tc.distinctRelatedFiles {
+				sites[1].symbol.FilePath = "src/text/other.go"
+				fixture.files = append(fixture.files, cloneFamilyFile("src/text/other.go"))
+			}
+			original := append([]SearchResult(nil), results...)
+			addCovering := func() {
+				var count int
+				results, _, _, count, _ = mergeSearchContractContext(results, searchContractContext{test: &entry}, 0, 10)
+				if count != 1 || countNormalResultsForTest(results) > 10 {
+					t.Errorf("covering merge: tests=%d results=%d normal=%d, want 1 and <=10 normal",
+						count, len(results), countNormalResultsForTest(results))
+				}
+			}
+			if tc.coveringFirst {
+				addCovering()
+			}
+			var count int
+			results, count = mergeSearchRelatedSites(results, sites, fixture.reader(), 0, 10)
+			if count != 2 || countNormalResultsForTest(results) > 10 {
+				t.Errorf("related merge: sites=%d results=%d normal=%d, want 2 and <=10 normal",
+					count, len(results), countNormalResultsForTest(results))
+			}
+			if !tc.coveringFirst {
+				addCovering()
+			}
+			sections := map[string]int{}
+			for index, result := range results {
+				sections[result.Section]++
+				if result.Rank != index+1 {
+					t.Errorf("rank %d at index %d", result.Rank, index)
+				}
+			}
+			wantTotal := 10
+			if tc.calleeOverflow {
+				wantTotal++
+			}
+			if len(results) != wantTotal || countNormalResultsForTest(results) != 10 || sections[searchSectionCoveringTest] != 1 || sections[searchSectionRelated] != tc.wantRelated {
+				t.Errorf("final results=%d normal=%d sections=%v, want %d with 10 normal, 1 covering test and %d related sites",
+					len(results), countNormalResultsForTest(results), sections, wantTotal, tc.wantRelated)
+			}
+			for index := 0; index < 5; index++ {
+				if results[index].FilePath != original[index].FilePath || results[index].Snippet != original[index].Snippet {
+					t.Errorf("protected head changed at index %d", index)
+				}
+			}
+			for _, before := range original {
+				found := false
+				for _, result := range results {
+					found = found || result.FilePath == before.FilePath
+				}
+				if !found {
+					t.Errorf("last mention of %s lost", before.FilePath)
+				}
+			}
+		})
+	}
+}
+
 // The tests in this file exist because of the integration, not because of any one feature. Four
 // branches each added a context block, each satisfied its own byte ceiling, and none of them could
 // see the others. Every test here fails if the blocks are recombined in the wrong order — and every

@@ -1816,7 +1816,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		sites := selectSearchRelatedSites(
 			results, anchors, q, snapshot.Relations, symbolsByID, symbolsByFile, read, searchRelatedSiteLimit,
 		)
-		results, stats.RelatedSites = mergeSearchRelatedSites(results, sites, read, options.MaxContextBytes)
+		results, stats.RelatedSites = mergeSearchRelatedSites(results, sites, read, options.MaxContextBytes, options.TopK)
 	}
 	// The three context blocks below share one budget. Their construction order is FIXED and
 	// load-bearing — see the policy in search_blocks.go. In short:
@@ -1840,7 +1840,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			options.IncludeTypeCard,
 		)
 		results, typeCard, coverageNote, stats.CoveringTests, stats.TypeCardEntries =
-			mergeSearchContractContext(results, context, options.MaxContextBytes)
+			mergeSearchContractContext(results, context, options.MaxContextBytes, options.TopK)
 	}
 	var signatureTypes []SearchSignatureType
 	if options.IncludeSignatureTypes {

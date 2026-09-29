@@ -98,11 +98,14 @@ func buildSearchContractContext(
 //   - The payload grows by at most searchContractAllowanceBytes, and never past hardBudget.
 //   - When hardBudget forces a choice, tail locators are displaced to pay — fewest first, and
 //     only ones whose file the payload still names somewhere else.
+//   - The covering test also needs a normal-result slot under topK, funded by the same legal tail
+//     displacement. Explicit callee-hop rows are exceptions to that cap; cards and coverage notes
+//     live outside results and do not consume slots.
 //   - Ranks are renumbered so the payload keeps its 1..N invariant.
 func mergeSearchContractContext(
 	results []SearchResult,
 	context searchContractContext,
-	hardBudget int,
+	hardBudget, topK int,
 ) ([]SearchResult, []TypeCardEntry, *SearchCoverageNote, int, int) {
 	if context.test == nil && len(context.card) == 0 {
 		return results, nil, nil, 0, 0
@@ -125,11 +128,17 @@ func mergeSearchContractContext(
 	}
 	floor := minInt(len(results), searchEnclosureHeadRanks)
 	order := searchRelatedDisplacementOrder(results, floor)
+	if context.test != nil && searchTopKResultCount(results)+1-len(order) > topK {
+		// No legal displacement can seat the test. Dropping a slot-free card cannot help,
+		// so omit only the test and its dependent note before considering byte tradeoffs.
+		context.test = nil
+		context.note = nil
+	}
 	for {
 		outside := cardBytes + searchCoverageNoteCost(context.note)
 		for drop := 0; drop <= len(order); drop++ {
 			merged := searchContractMergedPlan(results, context.test, order[:drop])
-			if serializedSearchResultBytes(merged)+outside <= ceiling {
+			if searchTopKResultCount(merged) <= topK && serializedSearchResultBytes(merged)+outside <= ceiling {
 				tests := 0
 				if context.test != nil {
 					tests = 1

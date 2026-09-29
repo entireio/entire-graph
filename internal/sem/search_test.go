@@ -17,6 +17,136 @@ import (
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
+// The normal result cap includes automatic related and covering-test entries.
+// Explicit callee-hop additions retain their separate, bounded funding contract.
+func TestSearchRepositoryFinalResultCount(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "server/handler.go", "package server\nfunc normalizePath(input string) string {\n return clean(input)\n}\nfunc clean(input string) string {\n return input\n}\n")
+	write(t, repo, "server/handler_test.go", "package server\nfunc TestNormalizePath(t *testing.T) {\n got := normalizePath(\"\")\n require.Equal(t, \"/\", got)\n}\n")
+	for index := 1; index <= 12; index++ {
+		write(t, repo, fmt.Sprintf("server/path%d.go", index), fmt.Sprintf(
+			"package server\n// normalizePath handles path variant %d.\nfunc normalizePath%d(input string) string {\n return input + %q\n}\n", index, index, fmt.Sprint(index)))
+	}
+	for _, topK := range []int{1, 10, 0, -1} {
+		for _, calleeHop := range []bool{false, true} {
+			t.Run(fmt.Sprintf("topK=%d/callee=%v", topK, calleeHop), func(t *testing.T) {
+				response, err := SearchRepository(t.Context(), repo, "test", "normalizePath", SearchOptions{
+					Worktree: true, Profile: ProfileFull, TopK: topK, CalleeHop: calleeHop,
+					MaxContextBytes: 100000,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				limit := topK
+				if limit <= 0 {
+					limit = 10
+				}
+				wantCallees := 0
+				if calleeHop {
+					wantCallees = 1
+				}
+				if response.Stats.CalleeHopSites != wantCallees || len(response.Results) != limit+wantCallees {
+					t.Errorf("returned %d results and %d callees for normalized TopK %d, want %d results and %d callees",
+						len(response.Results), response.Stats.CalleeHopSites, limit, limit+wantCallees, wantCallees)
+				}
+				if len(response.Results) == 0 || response.Results[0].SymbolName != "normalizePath" || response.Results[0].FilePath != "server/handler.go" {
+					t.Fatal("the ranked entry-point head was lost")
+				}
+				if response.Stats.CandidatesSelected != len(response.Results) {
+					t.Errorf("CandidatesSelected = %d, actual results = %d", response.Stats.CandidatesSelected, len(response.Results))
+				}
+				callees := 0
+				for index, result := range response.Results {
+					if result.Rank != index+1 {
+						t.Errorf("rank %d at index %d", result.Rank, index)
+					}
+					if containsString(result.Signals, searchCalleeHopSignal) {
+						callees++
+						if result.SymbolName != "clean" || result.Snippet != "func clean(input string) string {" {
+							t.Errorf("callee entry lost the helper identity or declaration: %+v", result)
+						}
+					}
+				}
+				if callees != wantCallees {
+					t.Errorf("%d callee-hop entries, want %d", callees, wantCallees)
+				}
+			})
+		}
+	}
+}
+
+func TestSearchRepositoryCalleeOverflowKeepsSlotFreeTypeCard(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "server/handler.go", `package server
+type PathConfig struct { Prefix string }
+func normalizePath(config PathConfig, input string) string {
+ return normalizePathClean(config.Prefix, input)
+}
+`)
+	write(t, repo, "server/helper.go", `package server
+func normalizePathClean(prefix, input string) string {
+ return prefix + input
+}
+`)
+	write(t, repo, "server/handler_test.go", `package server
+func TestNormalizePath(t *testing.T) {
+ got := normalizePath(PathConfig{Prefix: "/"}, "docs")
+ require.Equal(t, "/docs", got)
+}
+`)
+
+	const topK = 1
+	const maxBytes = 100000
+	response, err := SearchRepository(t.Context(), repo, "test", "normalizePath", SearchOptions{
+		Worktree: true, Profile: ProfileFull, TopK: topK, CalleeHop: true,
+		IncludeTypeCard: true, MaxContextBytes: maxBytes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	normal, callees, covering := 0, 0, 0
+	for index, result := range response.Results {
+		if result.Rank != index+1 {
+			t.Errorf("rank %d at index %d", result.Rank, index)
+		}
+		switch {
+		case containsString(result.Signals, searchCalleeHopSignal):
+			callees++
+			if result.FilePath != "server/helper.go" || result.SymbolName != "normalizePathClean" {
+				t.Errorf("callee = %+v, want the cross-file normalizePathClean helper", result)
+			}
+		case result.Section == searchSectionCoveringTest:
+			covering++
+		default:
+			normal++
+		}
+	}
+	if normal != topK || callees != 1 || covering != 0 {
+		t.Errorf("normal=%d callees=%d covering=%d, want %d normal, 1 callee exception, and no covering row",
+			normal, callees, covering, topK)
+	}
+	if response.Stats.CalleeHopSites != 1 || response.Stats.CoveringTests != 0 || response.CoverageNote != nil {
+		t.Errorf("callee/covering stats = %d/%d, note=%+v; want 1/0 and nil",
+			response.Stats.CalleeHopSites, response.Stats.CoveringTests, response.CoverageNote)
+	}
+	if len(response.TypeCard) == 0 || response.Stats.TypeCardEntries != len(response.TypeCard) {
+		t.Fatalf("type card=%+v entries=%d, want a retained useful card", response.TypeCard, response.Stats.TypeCardEntries)
+	}
+	usefulCard := false
+	for _, entry := range response.TypeCard {
+		usefulCard = usefulCard || strings.Contains(entry.Name, "PathConfig") || strings.Contains(entry.Decl, "PathConfig")
+	}
+	if !usefulCard {
+		t.Errorf("type card=%+v, want the PathConfig declaration", response.TypeCard)
+	}
+	if got := serializedSearchResultBytes(response.Results) + serializedSearchResultBytes(response.TypeCard); got > maxBytes {
+		t.Errorf("result and card bytes=%d exceed max=%d", got, maxBytes)
+	}
+	if err := response.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSearchRepositoryRanksExactSymbol(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "config/service.go", `package config
