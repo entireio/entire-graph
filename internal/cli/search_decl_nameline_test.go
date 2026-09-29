@@ -18,7 +18,7 @@ func declNameLineFixture(pre, annos, body, first int) ([]string, sem.SearchResul
 		lines = append(lines, fmt.Sprintf("        earlier_%02d();", i))
 	}
 	for i := 0; i < annos; i++ {
-		lines = append(lines, fmt.Sprintf("    @Policy%02d(target = \"x%02d\")", i, i))
+		lines = append(lines, fmt.Sprintf("    @Policy%02d(mode = \"x%02d\")", i, i))
 	}
 	lines = append(lines, "    public void target(int input) {")
 	for i := 0; i < body; i++ {
@@ -39,7 +39,8 @@ func declNameLineFixture(pre, annos, body, first int) ([]string, sem.SearchResul
 // the symbol's first line down to its name line, annotations included, however many — that the
 // ordinary window showed is shown by the new block, on every budget; and a block that differs from
 // the ordinary one shows the name line and numbers every printed line. Annotation stacks run past
-// the text fallback's 16-line bound, and the annotation arguments spell the name.
+// the text fallback's 16-line bound, and no annotation mentions the name, so no text heuristic
+// could stand in for the parser's region.
 func TestAgentBlockParserRegionNeverLess(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(20260929))
@@ -52,7 +53,9 @@ func TestAgentBlockParserRegionNeverLess(t *testing.T) {
 		pre, annos, body := rng.Intn(6), rng.Intn(28), 3+rng.Intn(50)
 		first := 10 + rng.Intn(400)
 		lines, result := declNameLineFixture(pre, annos, body, first)
-		result.FocusLine = first + pre + annos + 1 + rng.Intn(body)
+		// The focus anywhere in the symbol, annotations included: a window centred in the
+		// annotation stack shows region lines without the name line.
+		result.FocusLine = first + pre + rng.Intn(annos+1+body)
 		name := pre + annos
 		for budget := 40; budget <= 2400; budget += 7 + rng.Intn(9) {
 			tag := fmt.Sprintf("iter %d (pre %d annos %d body %d) budget %d", iter, pre, annos, body, budget)
@@ -146,5 +149,47 @@ func TestAgentBlockAbsorbedParserRegionNeverLess(t *testing.T) {
 	}
 	if exercised == 0 {
 		t.Fatal("no budget showed the absorbed region: the sweep tests nothing")
+	}
+}
+
+// A name line outside the symbol's own span is not trusted: the block falls back to the text
+// finder rather than anchoring on a line that belongs to another symbol.
+func TestAgentBlockNameLineOutsideSpanIsIgnored(t *testing.T) {
+	t.Parallel()
+	_, result := declNameLineFixture(2, 3, 20, 100)
+	view := agentSearchBlockViewOf(result)
+	own, ok, _ := agentSearchDecls(view)
+	if !ok || own.index != 5 {
+		t.Fatalf("own declaration index %d ok=%v; want 5 from the name line", own.index, ok)
+	}
+	result.SymbolNameLine = result.SymbolStartLine - 1 // inside the snippet, above the span
+	own, ok, _ = agentSearchDecls(agentSearchBlockViewOf(result))
+	if ok && own.index == 1 {
+		t.Fatalf("a name line outside the span was used as the declaration")
+	}
+	result.SymbolEndLine = result.SymbolStartLine + 3 // the name line now lies below the span
+	result.SymbolNameLine = result.SymbolStartLine + 5
+	own, ok, _ = agentSearchDecls(agentSearchBlockViewOf(result))
+	if ok && own.index == 7 {
+		t.Fatalf("a name line below the span was used as the declaration")
+	}
+}
+
+// Mentions use Unicode identifier boundaries: a longer identifier does not mention a prefix of it.
+func TestAgentSearchLineMentionsUnicodeBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		line, name string
+		want       bool
+	}{
+		{"func runé() {}", "run", false},
+		{"x := érun", "run", false},
+		{"@Named(\"run\")", "run", true},
+		{"def naïve(x):", "naïve", true},
+		{"naïve2(x)", "naïve", false},
+	} {
+		if got := agentSearchLineMentions(c.line, c.name); got != c.want {
+			t.Errorf("%q mentions %q = %v, want %v", c.line, c.name, got, c.want)
+		}
 	}
 }

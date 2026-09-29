@@ -99,3 +99,42 @@ func TestMergedDeclarationsUseParserNameLines(t *testing.T) {
 		t.Fatalf("text-fallback declarations carry region starts %v", span.MergedDeclStarts)
 	}
 }
+
+// Text fallback, wrong pick ABOVE the real declaration: every line the focus window showed within
+// the scan bound that mentions the name is kept, or the focus window stays.
+func TestTersifyFallbackKeepsShownMentions(t *testing.T) {
+	t.Parallel()
+	lines := []string{"    val run = Runner()", "", "    fun run() {"}
+	for i := 0; i < 12; i++ {
+		lines = append(lines, fmt.Sprintf("        step%02d()", i))
+	}
+	lines = append(lines, "    }")
+	first := 30
+	base := SearchResult{FilePath: "a/K.kt", StartLine: first, EndLine: first + len(lines) - 1,
+		SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1, SymbolStartLine: first, SymbolEndLine: first + len(lines) - 1,
+		SymbolName: "run", Snippet: strings.Join(lines, "\n")}
+	if decl, ok, parsed := searchResultDeclarationLine(base); !ok || parsed || decl != first {
+		t.Fatalf("premise: the text fallback should pick the property line %d, got %d ok=%v parsed=%v", first, decl, ok, parsed)
+	}
+	checked := 0
+	for focus := first; focus <= base.SnippetEndLine; focus++ {
+		for maxLines := 1; maxLines <= 4; maxLines++ {
+			r := base
+			r.FocusLine = focus
+			terse := tersifySearchResult(r, maxLines)
+			got := tersifySearchResultKeepingDeclaration(r, maxLines)
+			for line := terse.SnippetStartLine; line <= terse.SnippetEndLine; line++ {
+				if !searchLineMentionsName(lines[line-first], "run") {
+					continue
+				}
+				checked++
+				if line < got.SnippetStartLine || line > got.SnippetEndLine {
+					t.Fatalf("focus %d max %d: the focus window showed %q; kept [%d-%d]", focus, maxLines, lines[line-first], got.SnippetStartLine, got.SnippetEndLine)
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no focus window showed a mention: the sweep tests nothing")
+	}
+}
