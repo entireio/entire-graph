@@ -1087,8 +1087,10 @@ var sparseSearchStopWords = map[string]bool{
 	"would": true, "you": true, "your": true,
 }
 
-// SearchRepository performs local hybrid lexical/semantic retrieval. It uses
-// no qrels, hosted models, embeddings, or network access.
+// SearchRepository performs local hybrid lexical/semantic retrieval. By default it uses
+// no qrels, hosted models, embeddings, or network access. The one exception is the OPT-IN
+// semantic channel (options.Semantic, search_semantic.go): when configured it POSTs the query to
+// an embedding daemon on a loopback address of this machine, and only there.
 // SearchRepository stamps the response envelope version at the ONE place a
 // content-bearing SearchResponse leaves this package, rather than at each
 // construction site. searchRepository has two success returns and error returns

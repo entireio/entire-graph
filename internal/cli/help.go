@@ -122,7 +122,7 @@ var commandDocs = []commandDoc{
 			{name: "--repo", arg: "path", desc: "Repository to index (default: current repo)"},
 			{name: "--head", desc: "Accepted for symmetry with the query commands; index is always HEAD-only, so this is a no-op"},
 			{name: "--force", desc: "Rebuild from scratch and overwrite the cache even if the tree is unchanged"},
-			{name: "--semantic", desc: "Also embed every function/method for the opt-in semantic query channel (needs ENTIRE_GRAPH_SEMANTIC_ENDPOINT and ENTIRE_GRAPH_SEMANTIC_MODEL)"},
+			{name: "--semantic", desc: "Also embed every function/method for the opt-in semantic query channel (needs ENTIRE_GRAPH_SEMANTIC_ENDPOINT, a localhost/loopback URL, and ENTIRE_GRAPH_SEMANTIC_MODEL)"},
 			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth; full favors call-graph correctness"},
 			{name: "--cache-dir", arg: "path", desc: "Override the committed-tree cache directory"},
 			{name: "--report", arg: "path", desc: "Also write a human-readable GRAPH_REPORT.md"},
