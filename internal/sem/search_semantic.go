@@ -89,7 +89,8 @@ const (
 // SemanticConfig configures the opt-in semantic channel. The zero value (and a nil pointer) is
 // "not configured": the channel is enabled only when BOTH Endpoint and Model are set.
 type SemanticConfig struct {
-	// Endpoint is an Ollama-compatible base URL (http://localhost:11434). The channel POSTs
+	// Endpoint is an Ollama-compatible base URL (http://localhost:11434). It must name localhost or
+	// a literal loopback address; anything else leaves the channel unavailable. The channel POSTs
 	// {"model","input":[...]} to <Endpoint>/api/embed and reads {"embeddings":[[...]]}.
 	Endpoint string
 	Model    string
@@ -864,8 +865,65 @@ type semanticEmbedResponse struct {
 
 // semanticHTTPClient never follows a redirect: the endpoint is the one the operator named, and a
 // 3xx is reported as the HTTP status it is rather than silently sending the request elsewhere.
+//
+// It is also LOCAL-ONLY at connection time, not just at URL-parse time. The request carries source
+// text and the query, and the promise is that they go to a daemon on this machine. So the
+// transport ignores every proxy setting (Proxy is nil — an ambient HTTP(S)_PROXY or a PAC-style
+// environment cannot reroute it), and its dialer resolves nothing: "localhost" is mapped to the
+// loopback literals directly and any other name or non-loopback address is refused before a socket
+// is opened. semanticEndpointURL enforces the same rule up front so a refused endpoint never even
+// builds a request.
 var semanticHTTPClient = &http.Client{
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	Transport: &http.Transport{
+		Proxy:                 nil,
+		DialContext:           semanticLoopbackDial,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: semanticBuildBatchTimeout,
+		MaxIdleConns:          4,
+		IdleConnTimeout:       30 * time.Second,
+	},
+}
+
+// errSemanticNotLoopback is the dialer's refusal of a non-loopback destination.
+var errSemanticNotLoopback = errors.New("semantic endpoint is not a loopback address")
+
+// semanticLoopbackHost reports whether host is one the channel may talk to: the name "localhost"
+// or a LITERAL loopback address (127.0.0.0/8, ::1). A hostname that merely resolves to loopback is
+// refused, because what it resolves to is decided outside this process.
+func semanticLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// semanticLoopbackDial dials only loopback literals and never consults a resolver.
+func semanticLoopbackDial(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, errSemanticNotLoopback
+	}
+	var targets []string
+	switch {
+	case strings.EqualFold(host, "localhost"):
+		targets = []string{"127.0.0.1", "::1"}
+	case semanticLoopbackHost(host):
+		targets = []string{host}
+	default:
+		return nil, errSemanticNotLoopback
+	}
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	var lastErr error
+	for _, target := range targets {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(target, port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 // semanticEmbed calls <Endpoint>/api/embed and returns one L2-normalised vector per input. Every
@@ -874,6 +932,10 @@ func semanticEmbed(ctx context.Context, config *SemanticConfig, inputs []string,
 	base, err := url.Parse(strings.TrimSpace(config.Endpoint))
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
 		return nil, unavailable("endpoint-invalid", "want an http(s) base URL such as http://localhost:11434")
+	}
+	if !semanticLoopbackHost(base.Hostname()) {
+		return nil, unavailable("endpoint-not-loopback",
+			"the semantic endpoint must be localhost or a literal loopback address (127.0.0.0/8, ::1)")
 	}
 	// Credential-bearing URL state is refused before any request, not redacted after one: a
 	// local embedder needs none of it, and a transport error would otherwise quote it back.

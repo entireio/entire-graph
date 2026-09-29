@@ -5,11 +5,14 @@ package sem
 // server, and nothing reaches a real model.
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
 	"math"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -148,5 +151,74 @@ func TestSemanticFixF5NoSensitiveEcho(t *testing.T) {
 	applySemanticOutcome(&response, &semanticOutcome{status: semanticUnavailablePrefix + failure.reason, detail: failure.detail})
 	if strings.Contains(err.Error(), "SECRET") || strings.Contains(response.Warnings[0].Detail, "SECRET") {
 		t.Fatalf("cache-held string echoed: err=%v warning=%q", err, response.Warnings[0].Detail)
+	}
+}
+
+// F1: only localhost or a literal loopback address is accepted, before any request is built, and
+// the production transport neither consults a proxy nor resolves names. No test here dials a
+// non-loopback address: the dialer case runs on an already-canceled context, so a dialer that
+// stopped refusing would fail with context.Canceled instead of reaching the network.
+func TestSemanticFixF1LoopbackOnly(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint string
+		allowed  bool
+	}{
+		{"http://127.0.0.1:11434", true},
+		{"http://127.9.9.9", true},
+		{"http://localhost:11434", true},
+		{"http://LOCALHOST", true},
+		{"http://[::1]:11434", true},
+		{"http://10.0.0.1:11434", false},
+		{"http://192.0.2.1", false},
+		{"https://embed.example.com", false},
+		{"http://127.0.0.1.nip.io", false},
+		{"http://localhost.localdomain", false},
+		{"http://[::ffff:192.0.2.1]", false},
+		{"http://0.0.0.0:11434", false},
+	} {
+		previous := semanticHTTPClient
+		calls := 0
+		semanticHTTPClient = &http.Client{Transport: semanticFixRoundTripper(func(*http.Request) (*http.Response, error) {
+			calls++
+			return nil, errors.New("offline")
+		})}
+		_, err := semanticEmbed(t.Context(), &SemanticConfig{Endpoint: tc.endpoint, Model: "m"}, []string{"q"}, 1024)
+		semanticHTTPClient = previous
+		var failure *semanticUnavailable
+		if !errors.As(err, &failure) {
+			t.Fatalf("%s: unclassified error %v", tc.endpoint, err)
+		}
+		if tc.allowed && (failure.reason != "endpoint" || calls != 1) {
+			t.Fatalf("%s: loopback endpoint refused: reason=%q calls=%d", tc.endpoint, failure.reason, calls)
+		}
+		if !tc.allowed && (failure.reason != "endpoint-not-loopback" || calls != 0) {
+			t.Fatalf("%s: non-loopback endpoint admitted: reason=%q calls=%d", tc.endpoint, failure.reason, calls)
+		}
+	}
+
+	transport, ok := semanticHTTPClient.Transport.(*http.Transport)
+	if !ok || transport.Proxy != nil || transport.DialContext == nil {
+		t.Fatalf("production transport must be proxy-free with the loopback dialer: %#v", semanticHTTPClient.Transport)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, address := range []string{"192.0.2.1:80", "embed.example.com:443", "127.0.0.1.nip.io:80"} {
+		if _, err := transport.DialContext(canceled, "tcp", address); !errors.Is(err, errSemanticNotLoopback) {
+			t.Fatalf("dial %s: err=%v, want the loopback refusal", address, err)
+		}
+	}
+
+	// "localhost" reaches a loopback daemon through the production client without a resolver.
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(`{"model":"m","embeddings":[[1,0]]}`))
+	}))
+	defer server.Close()
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vectors, err := semanticEmbed(t.Context(), &SemanticConfig{Endpoint: "http://localhost:" + parsed.Port(), Model: "m"}, []string{"q"}, 1024)
+	if err != nil || len(vectors) != 1 {
+		t.Fatalf("localhost endpoint through the production client: %v", err)
 	}
 }
