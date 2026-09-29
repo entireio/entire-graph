@@ -93,6 +93,10 @@ channel: none of the fields below appear.
   `semantic:embedding` signal.
 - `stats.semantic_status`: `used`, `off:flag`, `off:worktree`, or
   `unavailable:<reason>` (which also adds a `W_SEMANTIC_UNAVAILABLE` warning).
+  Every channel failure falls open to the lexical answer, including
+  `unavailable:nomination-snapshot` (the nominated files could not be
+  loaded; any cold-path eviction is undone, so the answer is the unconfigured
+  one).
 - `stats.semantic_results`: delivered primary rows carrying the
   `semantic:embedding` signal, which counts both rows the channel added and
   lexical rows it merely matched. Count `semantic:only` rows for the former.

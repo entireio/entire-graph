@@ -95,6 +95,9 @@ const (
 	SemanticStatusOffFlag     = "off:flag"
 	SemanticStatusOffWorktree = "off:worktree"
 	semanticUnavailablePrefix = "unavailable:"
+	// semanticNominationSnapshotReason is the stable unavailable reason when the nominated files'
+	// snapshot cannot be loaded; the search falls open to the lexical answer.
+	semanticNominationSnapshotReason = "nomination-snapshot"
 )
 
 // SemanticConfig configures the opt-in semantic channel. The zero value (and a nil pointer) is

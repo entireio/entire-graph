@@ -105,6 +105,9 @@ type SearchOptions struct {
 	// symbols join the ranking maps. The channel contract is that this list is identical with the
 	// channel on or off (cold-path evictions aside, which are disclosed).
 	preFusionObserver func(selected []searchCandidate)
+	// nominationSnapshotFault is a deterministic test seam: when set, loading the semantic
+	// channel's nomination snapshot fails with its error instead of running. Nil in production.
+	nominationSnapshotFault func() error
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -1337,6 +1340,54 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// result, preserving the floor-only case when the reserve uses it all.
 		options.MaxContextBytes = max(1, options.MaxContextBytes-reserve)
 	}
+	// The semantic channel's nominated files are a SEPARATE snapshot, so the lexical snapshot below
+	// is byte-for-byte the one an unconfigured search builds (same file set, same cache entry) and
+	// nothing the nominated files contain — symbols, call edges, caller degree — can reach lexical
+	// scoring. Warm, they are derived from the preindexed complete snapshot (no parse); cold, they
+	// are parsed, inside the cap planSemanticNominations enforced. Their symbols join the ranking
+	// maps only at fusion.
+	//
+	// They load BEFORE the lexical snapshot so that a failure can still fall open: a nomination
+	// snapshot that cannot be loaded is a CHANNEL failure, reported like every other one
+	// (unavailable:nomination-snapshot, one W_SEMANTIC_UNAVAILABLE warning) and never a failed
+	// search. The plan is dropped whole — nominations AND cold-path evictions — so the lexical
+	// snapshot below is the unconfigured one exactly. The caller's own cancellation is still an
+	// error, and so is a HEAD move, as it is for the lexical snapshot.
+	var nominationSnapshot ProviderSnapshot
+	var nominationLatency time.Duration
+	nominationCacheHit := false
+	if len(nominationPlan.nominated) > 0 {
+		nominationOptions := baseSnapshotOptions
+		nominationOptions.OnlyFiles = nominationPlan.nominated
+		nominationStarted := time.Now()
+		var nominationErr error
+		switch {
+		case options.nominationSnapshotFault != nil:
+			nominationErr = options.nominationSnapshotFault()
+		case preindexCacheHit:
+			nominationSnapshot, nominationCacheHit, nominationErr = loadOrDeriveSelectiveSearchSnapshot(
+				ctx, repo, providerVersion, nominationOptions, options.CacheDir, searchCacheDisabled, preindexBinding,
+			)
+		default:
+			nominationSnapshot, nominationCacheHit, nominationErr = loadOrBuildSearchGraphSnapshot(
+				ctx, repo, providerVersion, nominationOptions, options.CacheDir, searchCacheDisabled,
+			)
+		}
+		nominationLatency = time.Since(nominationStarted)
+		if nominationErr != nil {
+			if err := ctx.Err(); err != nil {
+				return SearchResponse{}, err
+			}
+			*embedding = semanticOutcome{
+				status: semanticUnavailablePrefix + semanticNominationSnapshotReason,
+				detail: "the nominated files could not be loaded",
+			}
+			nominationPlan = semanticNominationPlan{}
+			nominationSnapshot, nominationCacheHit = ProviderSnapshot{}, false
+		} else if selection.commit != "" && !searchSnapshotMatchesSelection(nominationSnapshot, selection) {
+			return SearchResponse{}, errors.New("repository identity or HEAD changed during search; retry against a stable repository")
+		}
+	}
 	// selectedFiles is what the LEXICAL snapshot parses: the lexical selection minus any cold-path
 	// eviction. With the channel unconfigured it is exactly selection.files.
 	selectedFiles := nominationPlan.withoutEvicted(lexicalFiles)
@@ -1455,38 +1506,12 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if len(selectedFiles) > 0 && selection.commit != "" && !searchSnapshotMatchesSelection(snapshot, selection) {
 		return SearchResponse{}, errors.New("repository identity or HEAD changed during search; retry against a stable repository")
 	}
-	// The semantic channel's nominated files are a SEPARATE snapshot, so the lexical snapshot above
-	// is byte-for-byte the one an unconfigured search builds (same file set, same cache entry) and
-	// nothing the nominated files contain — symbols, call edges, caller degree — can reach lexical
-	// scoring. Warm, they are derived from the preindexed complete snapshot (no parse); cold, they
-	// are parsed, inside the cap planSemanticNominations enforced. Their symbols join the ranking
-	// maps only at fusion.
-	var nominationSnapshot ProviderSnapshot
-	if len(nominationPlan.nominated) > 0 {
-		nominationOptions := baseSnapshotOptions
-		nominationOptions.OnlyFiles = nominationPlan.nominated
-		nominationCacheHit := false
-		indexStarted = time.Now()
-		if preindexCacheHit {
-			nominationSnapshot, nominationCacheHit, err = loadOrDeriveSelectiveSearchSnapshot(
-				ctx, repo, providerVersion, nominationOptions, options.CacheDir, searchCacheDisabled, preindexBinding,
-			)
-		} else {
-			nominationSnapshot, nominationCacheHit, err = loadOrBuildSearchGraphSnapshot(
-				ctx, repo, providerVersion, nominationOptions, options.CacheDir, searchCacheDisabled,
-			)
-		}
-		if err != nil {
-			return SearchResponse{}, err
-		}
-		indexLatency += time.Since(indexStarted)
-		if selection.commit != "" && !searchSnapshotMatchesSelection(nominationSnapshot, selection) {
-			return SearchResponse{}, errors.New("repository identity or HEAD changed during search; retry against a stable repository")
-		}
-		if len(selectedFiles) == 0 {
-			snapshot, cacheHit = ProviderSnapshot{Header: nominationSnapshot.Header}, nominationCacheHit
-		}
+	// The semantic channel's nominated files were loaded as a SEPARATE snapshot before the lexical
+	// one (see nominationSnapshot above). With no lexical file, the header comes from it.
+	if len(nominationPlan.nominated) > 0 && len(selectedFiles) == 0 {
+		snapshot, cacheHit = ProviderSnapshot{Header: nominationSnapshot.Header}, nominationCacheHit
 	}
+	indexLatency += nominationLatency
 	queryStarted := time.Now()
 	useHead := !options.Worktree && snapshot.Header.Commit != ""
 	read, closeSource, err := openSearchContentReader(
