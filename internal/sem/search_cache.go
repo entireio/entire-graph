@@ -27,9 +27,14 @@ import (
 // nested beneath the complete entry it came from, which would otherwise sit
 // unreachable inside a live version directory and defeat that cleanup rule.
 // v16 retires the diagnostic-count status in favor of source-file health.
-// v17 retires entries written before symbols carried the parser's name line, which renderers
-// anchor on; an older entry would silently send every symbol back to the text heuristic.
-const searchSnapshotCacheVersion = "search-snapshot-v17-" + IdentityRevision
+// v17 retired entries written before symbols carried the parser's name line, which renderers
+// anchor on; an older entry would silently send every symbol back to the text heuristic. v18
+// retires v17 entries, whose name lines came from a producer that could record a wrong POSITIVE
+// line (a return-type tag, a typedef alias's neighbour, a qualifier spelled like its member):
+// nothing else in the key binds the producer's code — the provider version is "dev" for every
+// local build — so only the namespace can keep those lines from being served as authoritative.
+// Bump it again whenever the name-line producer's rules change.
+const searchSnapshotCacheVersion = "search-snapshot-v18-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`

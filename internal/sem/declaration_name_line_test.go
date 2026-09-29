@@ -112,8 +112,8 @@ func TestSearchSnapshotCachePreservesNameLine(t *testing.T) {
 	if got := restored.Snapshot.Symbols[1].NameLine(); got != 0 {
 		t.Fatalf("a symbol without a name line restored %d", got)
 	}
-	if !strings.HasPrefix(searchSnapshotCacheVersion, "search-snapshot-v17-") {
-		t.Fatalf("cache version %q: entries written before name lines must be retired", searchSnapshotCacheVersion)
+	if !strings.HasPrefix(searchSnapshotCacheVersion, "search-snapshot-v18-") {
+		t.Fatalf("cache version %q: entries written before the current name-line producer must be retired", searchSnapshotCacheVersion)
 	}
 }
 
@@ -346,5 +346,25 @@ func TestNameLineUnboundDeclaratorIsUnknown(t *testing.T) {
 	}
 	if got := declarationNameLine(function, src, "other"); got != 0 {
 		t.Fatalf("a name no declarator binds got line %d from its spelling in the type", got)
+	}
+}
+
+// An entry from an earlier name-line producer (namespace v16 or v17) is never reused: its name
+// lines may be wrong positives that consumers would treat as authoritative.
+func TestSearchSnapshotFromEarlierNameLineProducerIsNotReused(t *testing.T) {
+	t.Parallel()
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+	snapshot := ProviderSnapshot{Header: SnapshotHeader{SchemaVersion: SchemaVersion, Provider: ProviderName, ProviderVersion: "dev",
+		Tree: "tree", RepoKey: "repo", Profile: string(options.Profile)}, Symbols: []SymbolRecord{{ID: "s", nameLine: 3}}}
+	current := newCachedSearchSnapshot("dev", "commit", "tree", options, snapshot)
+	if !validCachedSearchSnapshot(current, "repo", "dev", "tree", options) {
+		t.Fatal("control: a current-namespace entry does not validate, so the rejection below would prove nothing")
+	}
+	for _, old := range []string{"search-snapshot-v16-" + IdentityRevision, "search-snapshot-v17-" + IdentityRevision} {
+		stale := current
+		stale.CacheVersion = old
+		if validCachedSearchSnapshot(stale, "repo", "dev", "tree", options) {
+			t.Errorf("an entry in namespace %q was accepted", old)
+		}
 	}
 }
