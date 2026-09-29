@@ -228,7 +228,10 @@ func TestSemanticChannelNominatesAndRanksTargetFirst(t *testing.T) {
 	cacheDir := t.TempDir()
 	buildSemanticFixtureIndex(t, repo, cacheDir, server.URL)
 
-	lexical := semanticSearch(t, repo, cacheDir, nil, nil)
+	// Two slots: the lexical head keeps one (it never yields, review Q5) and the nomination is spent
+	// inside the cap rather than beyond it.
+	two := func(options *SearchOptions) { options.MaxIndexedFiles = 2 }
+	lexical := semanticSearch(t, repo, cacheDir, nil, two)
 	// NON-VACUITY: the fixture only proves nomination while lexical search genuinely misses the
 	// target and genuinely indexes fewer files than the channel does.
 	for _, result := range lexical.Results {
@@ -241,9 +244,12 @@ func TestSemanticChannelNominatesAndRanksTargetFirst(t *testing.T) {
 			len(lexical.Results), lexical.Stats.FilesIndexed)
 	}
 
-	semantic := semanticSearch(t, repo, cacheDir, &SemanticConfig{Endpoint: server.URL, Model: semanticFixtureModel}, nil)
+	semantic := semanticSearch(t, repo, cacheDir, &SemanticConfig{Endpoint: server.URL, Model: semanticFixtureModel}, two)
 	if semantic.Stats.SemanticStatus != SemanticStatusUsed {
 		t.Fatalf("semantic status = %q, want used (warnings %+v)", semantic.Stats.SemanticStatus, semantic.Warnings)
+	}
+	if semantic.Stats.FilesIndexed > 2 {
+		t.Fatalf("nomination exceeded --max-indexed-files 2: indexed %d", semantic.Stats.FilesIndexed)
 	}
 	if len(semantic.Results) == 0 || semantic.Results[0].FilePath != "upstream/pool.go" ||
 		semantic.Results[0].SymbolName != "AbandonStalledBackend" {
@@ -594,10 +600,14 @@ func TestSemanticNominationRespectsTheSearchCorpus(t *testing.T) {
 	}
 	config := &SemanticConfig{Endpoint: server.URL, Model: semanticFixtureModel}
 	// NON-VACUITY: without the ignore rule the channel does seat the target.
-	if open := semanticSearch(t, repo, cacheDir, config, nil); len(open.Results) == 0 || open.Results[0].FilePath != "upstream/pool.go" {
+	two := func(options *SearchOptions) { options.MaxIndexedFiles = 2 }
+	if open := semanticSearch(t, repo, cacheDir, config, two); len(open.Results) == 0 || open.Results[0].FilePath != "upstream/pool.go" {
 		t.Fatalf("fixture drift: target not seated without the ignore rule: %v", resultFiles(open.Results))
 	}
-	response := semanticSearch(t, repo, cacheDir, config, func(options *SearchOptions) { options.IgnoreFiles = []string{ignore} })
+	response := semanticSearch(t, repo, cacheDir, config, func(options *SearchOptions) {
+		options.IgnoreFiles = []string{ignore}
+		options.MaxIndexedFiles = 2
+	})
 	// The ignore rule changes the corpus, so the index built without it no longer describes this
 	// search: it is treated as missing (F2), which is a stronger guarantee than filtering its hits.
 	// Nomination's own corpus filter is pinned separately by TestNominateSemanticFilesUnit.
@@ -649,14 +659,14 @@ func TestNominateSemanticFilesUnit(t *testing.T) {
 	hits := []semanticHit{
 		{FilePath: "ignored.go"}, {FilePath: "a.go"}, {FilePath: "b.go"}, {FilePath: "b.go"}, {FilePath: "c.go"}, {FilePath: "d.go"},
 	}
-	out, nominated := nominateSemanticFiles(selected, corpus, hits, 2)
+	out, nominated := nominateSemanticFiles(selected, corpus, hits, 2, 10)
 	if strings.Join(out, ",") != "a.go,b.go,c.go" || nominated != 2 {
 		t.Fatalf("nominated %d: %v, want a.go,b.go,c.go / 2", nominated, out)
 	}
 	if extended := selected[:cap(selected)]; extended[1] != "" {
 		t.Fatalf("nomination appended into the caller's backing array: %v", extended)
 	}
-	if _, none := nominateSemanticFiles(selected, corpus, nil, semanticTopK); none != 0 {
+	if _, none := nominateSemanticFiles(selected, corpus, nil, semanticTopK, 10); none != 0 {
 		t.Fatal("no hits nominated something")
 	}
 }

@@ -51,9 +51,9 @@ const (
 	semanticRecipeVersion = 1
 	semanticCacheFamily   = "semantic"
 	semanticCacheVersion  = "v1"
-	// semanticTopK is how many nearest symbols the channel contributes. It is also the ENTIRE
-	// nomination budget: at most this many files are added to the selection beyond
-	// MaxIndexedFiles, so the channel's cost is bounded by a constant, not by the repository.
+	// semanticTopK is how many nearest symbols the channel contributes. It also bounds nomination:
+	// at most this many files are nominated, and every nomination is spent INSIDE MaxIndexedFiles
+	// (see nominateSemanticFiles), so the channel never raises the cold file budget.
 	semanticTopK = 10
 	// semanticQueryTimeout bounds the one network round trip a search can make. A local embedder
 	// answers a single short query in tens of milliseconds; anything slower is a down or loaded
@@ -260,16 +260,22 @@ func resolveSemanticChannelOutcome(
 }
 
 // nominateSemanticFiles adds the files of the channel's hits to the lexical file selection so their
-// symbols are indexed and can be rendered. It is a SEPARATE budget from MaxIndexedFiles — at most
-// one file per hit, so at most semanticTopK — and every file it adds is reported in
-// stats.semantic_nominated_files, so a payload that indexed more files than MaxIndexedFiles says
-// why.
+// symbols are indexed and can be rendered — INSIDE the caller's file cap, never beyond it.
+//
+// maxFiles is the resolved --max-indexed-files. The selection after nomination holds at most
+// max(maxFiles, len(selected)) files: free slots are spent first, then nominations take slots from
+// the lexical TAIL, which yields file by file. Two lexical files never yield: the lexical head (the
+// file of the best lexical evidence, so the lexical rank-1 hit stays renderable) and any file a hit
+// itself points into (it serves both channels). A selection that already exceeds maxFiles — the
+// warm preindexed path keeps every matched file — only swaps files, it never grows. At most
+// `budget` files (semanticTopK) are nominated, and the count is reported in
+// stats.semantic_nominated_files.
 //
 // Only a file already in the corpus (allFiles: the tree after every ignore rule and include/ignore
 // flag) can be nominated. The index stores paths from the tree it was built on, and that tree's
 // policy is not necessarily this search's; admitting a path the corpus excluded would let an index
 // built before a .graphignore line reintroduce the file it removes.
-func nominateSemanticFiles(selected, corpus []string, hits []semanticHit, budget int) ([]string, int) {
+func nominateSemanticFiles(selected, corpus []string, hits []semanticHit, budget, maxFiles int) ([]string, int) {
 	if len(hits) == 0 || budget <= 0 {
 		return selected, 0
 	}
@@ -281,25 +287,46 @@ func nominateSemanticFiles(selected, corpus []string, hits []semanticHit, budget
 	for _, path := range selected {
 		present[path] = true
 	}
-	out := selected
-	nominated := 0
+	hitFiles := make(map[string]bool, len(hits))
+	var nominations []string
 	for _, hit := range hits {
-		if nominated >= budget {
-			break
-		}
-		if present[hit.FilePath] || !inCorpus[hit.FilePath] {
+		hitFiles[hit.FilePath] = true
+		if len(nominations) >= budget || present[hit.FilePath] || !inCorpus[hit.FilePath] {
 			continue
 		}
-		if nominated == 0 {
-			// Never append into the caller's backing array: selection.files is shared with the
-			// preselection state that produced it.
-			out = append([]string(nil), selected...)
-		}
-		out = append(out, hit.FilePath)
+		nominations = append(nominations, hit.FilePath)
 		present[hit.FilePath] = true
-		nominated++
 	}
-	return out, nominated
+	if len(nominations) == 0 {
+		return selected, 0
+	}
+	limit := max(maxFiles, len(selected))
+	free := max(0, limit-len(selected))
+	// Which lexical files may yield, from the tail forward.
+	var yieldable []int
+	for index := len(selected) - 1; index >= 1; index-- {
+		if !hitFiles[selected[index]] {
+			yieldable = append(yieldable, index)
+		}
+	}
+	count := min(len(nominations), free+len(yieldable))
+	if count == 0 {
+		return selected, 0
+	}
+	yielded := make(map[int]bool, count)
+	for _, index := range yieldable[:max(0, count-free)] {
+		yielded[index] = true
+	}
+	// Never write into the caller's backing array: selection.files is shared with the
+	// preselection state that produced it.
+	out := make([]string, 0, len(selected)-len(yielded)+count)
+	for index, path := range selected {
+		if !yielded[index] {
+			out = append(out, path)
+		}
+	}
+	out = append(out, nominations[:count]...)
+	return out, count
 }
 
 // semanticCandidates turns the channel's hits into ranking candidates. A hit that the lexical pool

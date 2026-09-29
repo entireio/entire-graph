@@ -467,9 +467,9 @@ type SearchStats struct {
 	// `off:worktree` or `unavailable:<reason>`. OMITTED when the channel is not configured, which
 	// is what keeps the default payload byte-identical; its absence means off.
 	SemanticStatus string `json:"semantic_status,omitempty"`
-	// SemanticNominatedFiles is the separate file budget the channel spent: files added to the
-	// selection BEYOND MaxIndexedFiles so the nearest symbols could be rendered. At most the
-	// channel's top-k (10). It is disclosed because FilesIndexed can exceed MaxIndexedFiles by it.
+	// SemanticNominatedFiles is how many selected files the channel nominated so the nearest symbols
+	// could be rendered. They are spent INSIDE MaxIndexedFiles (lexical tail files yield), never
+	// beyond it, and number at most the channel's top-k (10).
 	SemanticNominatedFiles int `json:"semantic_nominated_files,omitempty"`
 	// SemanticResults counts delivered primary rows (before byte fitting) the channel placed or also
 	// matched — every row carrying the semantic:embedding signal.
@@ -1214,10 +1214,10 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		preindexBinding = preloadedCompleteSnapshot{}
 		preindexCacheHit = false
 	}
-	// THE SEMANTIC CHANNEL NOMINATES HERE: after lexical preselection has spent MaxIndexedFiles and
-	// before anything is indexed, so the nearest symbols' files are parsed like any selected file
-	// and their symbols can be rendered. Nomination is a separate budget (at most semanticTopK
-	// files) disclosed in stats.semantic_nominated_files; see nominateSemanticFiles. Unconfigured,
+	// THE SEMANTIC CHANNEL NOMINATES HERE: after lexical preselection and before anything is
+	// indexed, so the nearest symbols' files are parsed like any selected file and their symbols
+	// can be rendered. Nominations are spent INSIDE MaxIndexedFiles — the lexical tail yields — and
+	// are disclosed in stats.semantic_nominated_files; see nominateSemanticFiles. Unconfigured,
 	// this block does nothing at all.
 	embedding := options.semanticOutcome
 	if embedding == nil {
@@ -1256,7 +1256,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}
 		*embedding = resolved
 		selection.files, embedding.nominated = nominateSemanticFiles(
-			selection.files, selection.allFiles, embedding.hits, semanticTopK,
+			selection.files, selection.allFiles, embedding.hits, semanticTopK, options.MaxIndexedFiles,
 		)
 	}
 	preselectLatency := time.Since(preselectStarted)

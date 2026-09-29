@@ -411,3 +411,59 @@ func TestSemanticFixQ1ConfidenceReadsLexicalRows(t *testing.T) {
 		}
 	}
 }
+
+// Q5 unit: nominations are spent inside the cap. Free slots first, then the lexical tail yields;
+// the lexical head and a file a hit points into never yield; an over-cap selection never grows.
+func TestSemanticFixQ5NominationStaysInsideTheCap(t *testing.T) {
+	corpus := []string{"l1.go", "l2.go", "l3.go", "n1.go", "n2.go", "n3.go"}
+	hits := func(files ...string) []semanticHit {
+		out := make([]semanticHit, 0, len(files))
+		for _, file := range files {
+			out = append(out, semanticHit{FilePath: file})
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name      string
+		selected  []string
+		hits      []semanticHit
+		maxFiles  int
+		want      string
+		nominated int
+	}{
+		{name: "free_slots_first", selected: []string{"l1.go"}, hits: hits("n1.go", "n2.go"), maxFiles: 3, want: "l1.go,n1.go,n2.go", nominated: 2},
+		{name: "tail_yields", selected: []string{"l1.go", "l2.go", "l3.go"}, hits: hits("n1.go", "n2.go"), maxFiles: 3, want: "l1.go,n1.go,n2.go", nominated: 2},
+		{name: "head_never_yields", selected: []string{"l1.go"}, hits: hits("n1.go"), maxFiles: 1, want: "l1.go", nominated: 0},
+		{name: "hit_file_never_yields", selected: []string{"l1.go", "l2.go"}, hits: hits("l2.go", "n1.go"), maxFiles: 2, want: "l1.go,l2.go", nominated: 0},
+		{name: "over_cap_selection_swaps", selected: []string{"l1.go", "l2.go", "l3.go"}, hits: hits("n1.go"), maxFiles: 1, want: "l1.go,l2.go,n1.go", nominated: 1},
+		{name: "empty_lexical", selected: nil, hits: hits("n1.go", "n2.go", "n3.go"), maxFiles: 2, want: "n1.go,n2.go", nominated: 2},
+	} {
+		out, nominated := nominateSemanticFiles(tc.selected, corpus, tc.hits, semanticTopK, tc.maxFiles)
+		if strings.Join(out, ",") != tc.want || nominated != tc.nominated {
+			t.Fatalf("%s: %v (%d nominated), want %s (%d)", tc.name, out, nominated, tc.want, tc.nominated)
+		}
+		if limit := max(tc.maxFiles, len(tc.selected)); len(out) > limit {
+			t.Fatalf("%s: %d files exceed the cap %d", tc.name, len(out), limit)
+		}
+	}
+}
+
+// Q5 end to end: with --max-indexed-files 1 the channel never indexes a second file; the lexical
+// answer keeps its only slot.
+func TestSemanticFixQ5EndToEndCapIsHard(t *testing.T) {
+	repo := semanticFixtureRepo(t)
+	server := httptest.NewServer(&fakeEmbedder{})
+	defer server.Close()
+	cacheDir := t.TempDir()
+	buildSemanticFixtureIndex(t, repo, cacheDir, server.URL)
+	config := &SemanticConfig{Endpoint: server.URL, Model: semanticFixtureModel}
+	for _, maxFiles := range []int{1, 2} {
+		response := semanticSearch(t, repo, cacheDir, config, func(options *SearchOptions) { options.MaxIndexedFiles = maxFiles })
+		if response.Stats.SemanticStatus != SemanticStatusUsed {
+			t.Fatalf("max %d: status %q", maxFiles, response.Stats.SemanticStatus)
+		}
+		if response.Stats.FilesIndexed > maxFiles {
+			t.Fatalf("max %d: indexed %d files (nominated %d)", maxFiles, response.Stats.FilesIndexed, response.Stats.SemanticNominatedFiles)
+		}
+	}
+}
