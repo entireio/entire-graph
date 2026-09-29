@@ -3,6 +3,9 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 const (
@@ -29,6 +32,11 @@ const (
 	// envMaxSearches is how many searches of that session actually run a query (default 1, `0`
 	// disables the echo). See searchSession for the measurement.
 	envMaxSearches = "EG_MAX_SEARCHES"
+	// envSemanticEndpoint and envSemanticModel turn on the OPT-IN semantic channel of `query` and
+	// name the embedder `index --semantic` builds with. BOTH must be set; either alone leaves the
+	// channel unconfigured and the payload byte-identical. See internal/sem/search_semantic.go.
+	envSemanticEndpoint = "ENTIRE_GRAPH_SEMANTIC_ENDPOINT"
+	envSemanticModel    = "ENTIRE_GRAPH_SEMANTIC_MODEL"
 )
 
 // cacheDirName is this provider's directory inside the platform's per-user cache
@@ -81,6 +89,19 @@ type EntireEnv struct {
 	SearchSession string
 	// MaxSearches is how many of that task's searches run a query; empty means the default of 1.
 	MaxSearches string
+	// SemanticEndpoint/SemanticModel configure the opt-in semantic channel; see envSemanticEndpoint.
+	SemanticEndpoint string
+	SemanticModel    string
+}
+
+// semanticConfig is the channel configuration this environment names, or nil when it names only
+// one half of it (or neither): the channel is enabled only when BOTH variables are set.
+func (env EntireEnv) semanticConfig() *sem.SemanticConfig {
+	endpoint, model := strings.TrimSpace(env.SemanticEndpoint), strings.TrimSpace(env.SemanticModel)
+	if endpoint == "" || model == "" {
+		return nil
+	}
+	return &sem.SemanticConfig{Endpoint: endpoint, Model: model}
 }
 
 func EnvFromOS() EntireEnv {
@@ -96,6 +117,9 @@ func EnvFromOS() EntireEnv {
 		PresearchPath:   presearch,
 		SearchSession:   os.Getenv(envSearchSession),
 		MaxSearches:     os.Getenv(envMaxSearches),
+
+		SemanticEndpoint: os.Getenv(envSemanticEndpoint),
+		SemanticModel:    os.Getenv(envSemanticModel),
 	}
 }
 

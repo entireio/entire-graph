@@ -87,6 +87,8 @@ type searchFlags struct {
 	ContainerMap   bool
 	SignatureTypes bool
 	TypeCard       bool
+	// NoSemantic turns a configured semantic channel off for this one call. See envSemanticEndpoint.
+	NoSemantic bool
 }
 
 // applySearchReferenceBlocks turns a comma-separated block list into flags. It is used for both the
@@ -318,6 +320,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		IncludeContainerMap:   flags.ContainerMap,
 		IncludeSignatureTypes: flags.SignatureTypes,
 		IncludeTypeCard:       flags.TypeCard,
+		Semantic:              searchSemanticConfig(opts.Env, flags.NoSemantic),
 	})
 	if err != nil {
 		return err
@@ -369,6 +372,16 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		)
 	}
 	return nil
+}
+
+// searchSemanticConfig is the channel configuration for one search: nil (unconfigured, the default)
+// unless the environment names both an endpoint and a model, and marked Disabled by --no-semantic.
+func searchSemanticConfig(env EntireEnv, disabled bool) *sem.SemanticConfig {
+	config := env.semanticConfig()
+	if config != nil {
+		config.Disabled = disabled
+	}
+	return config
 }
 
 // searchSessionScopeFor describes the tree a payload recorded now would be answering for.
@@ -2710,6 +2723,9 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 			flags.CacheDir, i = value, next
 		case "--no-cache":
 			flags.DisableCache = true
+		// --no-semantic: skip a configured semantic channel for this call (reported as off:flag).
+		case "--no-semantic":
+			flags.NoSemantic = true
 		case "--max-indexed-files":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

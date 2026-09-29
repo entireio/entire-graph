@@ -234,6 +234,13 @@ type SearchOptions struct {
 	// an independent file would — which is what every comparable document retriever does and what
 	// a reader asking a question about a long document actually wants. See search_prose_parent.go.
 	DocumentResolution bool
+	// Semantic configures the OPT-IN embedding channel (search_semantic.go). nil — the default —
+	// leaves the search byte-for-byte what it was: nothing is read, nothing is nominated, no stat
+	// is emitted.
+	Semantic *SemanticConfig
+	// semanticOutcome receives what the channel did, so SearchRepository can stamp it into the
+	// envelope in one place. Unexported; set by SearchRepository only.
+	semanticOutcome *semanticOutcome
 }
 
 // SearchPassage is an additional, non-overlapping source region from the same file as its
@@ -450,6 +457,16 @@ type SearchStats struct {
 	// separate preselection, index, and query phases.
 	SearchLatencyMS    int64 `json:"search_latency_ms"`
 	PreselectLatencyMS int64 `json:"preselect_latency_ms"`
+	// SemanticStatus is the opt-in embedding channel's verdict for this search: `used`, `off:flag`,
+	// `off:worktree` or `unavailable:<reason>`. OMITTED when the channel is not configured, which
+	// is what keeps the default payload byte-identical; its absence means off.
+	SemanticStatus string `json:"semantic_status,omitempty"`
+	// SemanticNominatedFiles is the separate file budget the channel spent: files added to the
+	// selection BEYOND MaxIndexedFiles so the nearest symbols could be rendered. At most the
+	// channel's top-k (10). It is disclosed because FilesIndexed can exceed MaxIndexedFiles by it.
+	SemanticNominatedFiles int `json:"semantic_nominated_files,omitempty"`
+	// SemanticResults counts rows of the primary ranking the channel placed (before byte fitting).
+	SemanticResults int `json:"semantic_results,omitempty"`
 }
 
 // SearchFormatVersion versions the search RESPONSE ENVELOPE, the same axis
@@ -940,6 +957,10 @@ type searchCandidate struct {
 	// attachProseSectionUnits; it is what makes the prose unit of retrieval the SECTION rather than
 	// the file. Empty for code, and for prose whose file has no indexed symbols.
 	proseSection string
+	// semanticOnly marks a row the semantic channel synthesized (no lexical candidate existed for
+	// its symbol), so fusion knows its score is a cosine, not a lexical relevance score. See
+	// fuseSemanticCandidates.
+	semanticOnly bool
 }
 
 type searchContentReadTracker struct {
@@ -1068,11 +1089,16 @@ var sparseSearchStopWords = map[string]bool{
 // emits format_version 0, which a consumer cannot tell from "field absent".
 // This mirrors how AnalyzeGitRangeWithOptions stamps SchemaVersion.
 func SearchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {
+	outcome := &semanticOutcome{}
+	options.semanticOutcome = outcome
 	response, err := searchRepository(ctx, repo, providerVersion, query, options)
 	if err != nil {
 		return SearchResponse{}, err
 	}
 	response.FormatVersion = SearchFormatVersion
+	// The semantic channel's verdict is stamped here for the reason the format version is: one
+	// place, so no success path can forget it. A no-op when the channel is not configured.
+	applySemanticOutcome(&response, outcome)
 	return response, nil
 }
 
@@ -1180,6 +1206,25 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		preindexedSnapshot = ProviderSnapshot{}
 		preindexBinding = preloadedCompleteSnapshot{}
 		preindexCacheHit = false
+	}
+	// THE SEMANTIC CHANNEL NOMINATES HERE: after lexical preselection has spent MaxIndexedFiles and
+	// before anything is indexed, so the nearest symbols' files are parsed like any selected file
+	// and their symbols can be rendered. Nomination is a separate budget (at most semanticTopK
+	// files) disclosed in stats.semantic_nominated_files; see nominateSemanticFiles. Unconfigured,
+	// this block does nothing at all.
+	embedding := options.semanticOutcome
+	if embedding == nil {
+		embedding = &semanticOutcome{}
+	}
+	if options.Semantic.configured() {
+		tree := selection.tree
+		if selection.commit == "" {
+			tree = ""
+		}
+		*embedding = resolveSemanticChannel(ctx, options.Semantic, options, tree, query)
+		selection.files, embedding.nominated = nominateSemanticFiles(
+			selection.files, selection.allFiles, embedding.hits, semanticTopK,
+		)
 	}
 	preselectLatency := time.Since(preselectStarted)
 	// THE DISCLOSURE IS FUNDED FROM INSIDE THE CEILING, and it has to be funded
@@ -1624,6 +1669,18 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// enclosure planner and the VERIFY deriver all see one consistent order.
 	// See search_testrank.go.
 	selected = promoteFixSiteOverLeadingTest(selected, q)
+	// FUSION, the frozen rule: interleave embedding-first over the PRIMARY ranking only — the
+	// related-site, callee-hop and covering-test sections are built later from this list and are
+	// untouched — dedupe on (file, symbol start), cut to top-k. Ranks are numbered just below, so
+	// every later pass sees the fused order. See fuseSemanticCandidates.
+	if len(embedding.hits) > 0 {
+		keyOf := func(candidate searchCandidate) semanticKey { return semanticCandidateKey(candidate, symbolsByFile) }
+		selected, embedding.seated = fuseSemanticCandidates(
+			selected,
+			semanticCandidates(embedding.hits, candidates, symbolsByFile, read, fileLanguages, options),
+			options.TopK, keyOf,
+		)
+	}
 	// Passage deduplication runs HERE, on the final selection, and not inside selectSearchCandidates
 	// which only produced the semantic half of it: hybrid fusion replaces and reorders rows, so a
 	// plan deduplicated against the pre-fusion selection loses passages whose claimant fusion
