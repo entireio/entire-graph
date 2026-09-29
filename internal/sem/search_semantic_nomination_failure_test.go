@@ -79,12 +79,19 @@ func TestSemanticNominationSnapshotCancellationIsAnError(t *testing.T) {
 	cacheDir := t.TempDir()
 	buildSemanticFixtureIndex(t, repo, cacheDir, server.URL)
 	ctx, cancel := context.WithCancel(t.Context())
+	ranked := 0
 	defer cancel()
 	_, err := SearchRepository(ctx, repo, "test-version", semanticFixtureQuery, SearchOptions{
 		CacheDir: cacheDir, MaxIndexedFiles: 2,
 		Semantic:                &SemanticConfig{Endpoint: server.URL, Model: semanticFixtureModel},
 		nominationSnapshotFault: func() error { cancel(); return context.Canceled },
+		// Stops at the nomination load: the lexical snapshot and ranking are never built for a
+		// caller who has stopped asking.
+		preFusionObserver: func([]searchCandidate) { ranked++ },
 	})
+	if ranked != 0 {
+		t.Fatalf("search kept ranking after the caller canceled (observer ran %d times)", ranked)
+	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled nomination load returned %v, want context.Canceled", err)
 	}
