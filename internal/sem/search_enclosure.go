@@ -767,6 +767,7 @@ func widenSearchResultToEnclosure(result SearchResult, enclosure searchEnclosure
 	if enclosure.symbol.StartLine > 0 && enclosure.symbol.EndLine >= enclosure.symbol.StartLine {
 		result.SymbolStartLine = enclosure.symbol.StartLine
 		result.SymbolEndLine = enclosure.symbol.EndLine
+		result.SymbolNameLine = enclosure.symbol.nameLine
 	}
 	if enclosure.window {
 		// A window is readable code but not a whole callable. It gets its own signal so an agent
