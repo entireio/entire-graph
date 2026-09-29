@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/entireio/entire-graph/internal/filedigest"
 )
@@ -985,6 +986,90 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 	if maxPerFile <= 0 {
 		maxPerFile = 32
 	}
+	var fixed []string
+	for _, pattern := range patterns {
+		if pattern != "" {
+			fixed = append(fixed, "-e", pattern)
+		}
+	}
+	if len(fixed) == 0 {
+		return []GrepMatch{}, nil
+	}
+	if alternation, ok := grepFixedStringAlternation(patterns); ok {
+		matches, err := runGrepFixedStringMatches(ctx, repo, treeish, maxPerFile, []string{"-P", "-e", alternation})
+		if !errors.Is(err, errGrepWithoutPCRE) {
+			return matches, err
+		}
+		// Git without PCRE2 compiles -F with the platform regcomp instead;
+		// only the legacy invocation reproduces that exactly.
+	}
+	return runGrepFixedStringMatches(ctx, repo, treeish, maxPerFile, append([]string{"-F"}, fixed...))
+}
+
+// errGrepWithoutPCRE reports a Git built without PCRE2, which rejects -P.
+var errGrepWithoutPCRE = errors.New("git grep: built without PCRE2")
+
+// grepFixedStringAlternation renders fixed strings as the single `-P -i`
+// pattern `\Qp1\E|\Qp2\E|...`, or reports false when that is not provably
+// equivalent to passing each string as `-F -i -e p`.
+//
+// Git's multi-pattern -o matcher is pathologically slow on large text blobs:
+// every -o step evaluates every pattern. Thirteen words took 30-38s on a repo
+// with a 17 MB JSON file; the one alternation below took 0.13s with
+// byte-identical output (git 2.54.0, macOS).
+//
+// Equivalence, from git grep.c (v2.54.0) compile_regexp: in a PCRE2 build a
+// -F pattern is compiled by compile_pcre2_pattern, verbatim when it has no
+// regex metacharacter and wrapped in \Q...\E otherwise. With -i the options
+// are PCRE2_CASELESS plus, under a UTF-8 locale, PCRE2_UTF|PCRE2_UCP; a -P
+// pattern goes through the same function with the same options (literal is
+// false for both once -i is set), so each \Q...\E branch folds exactly as the
+// -F pattern does, including non-ASCII text such as U+212A KELVIN SIGN for k
+// and U+017F LONG S for s. ASCII-only folding ([kK]...) would not, and -E -i
+// uses regcomp, which folds differently again. Custom character tables are
+// only built for a non-ASCII pattern, so non-ASCII input keeps the legacy form.
+//
+// Match selection: for -o, Git's match_next_pattern takes the leftmost match
+// over all patterns and, at equal start, the longest. PCRE2 alternation takes
+// the leftmost start and, there, the first branch that matches. Caseless
+// PCRE2 matches one text character per pattern character, so two literals
+// matching at one offset overlap as prefix and extension; ordering branches
+// by length, longest first, makes the first match at an offset the longest.
+// Line selection and -m counting follow, since a line matches iff a branch
+// does. A backslash (a \E would end the quoting early) or newline (Git splits
+// -e patterns on it) keeps the legacy form.
+func grepFixedStringAlternation(patterns []string) (string, bool) {
+	seen := map[string]bool{}
+	var literals []string
+	for _, pattern := range patterns {
+		if pattern == "" || seen[pattern] {
+			continue
+		}
+		for i := 0; i < len(pattern); i++ {
+			if c := pattern[i]; c >= utf8.RuneSelf || c == '\\' || c == '\n' || c == 0 {
+				return "", false
+			}
+		}
+		seen[pattern] = true
+		literals = append(literals, pattern)
+	}
+	if len(literals) == 0 {
+		return "", false
+	}
+	sort.SliceStable(literals, func(i, j int) bool { return len(literals[i]) > len(literals[j]) })
+	var out strings.Builder
+	for i, literal := range literals {
+		if i > 0 {
+			out.WriteByte('|')
+		}
+		out.WriteString(`\Q`)
+		out.WriteString(literal)
+		out.WriteString(`\E`)
+	}
+	return out.String(), true
+}
+
+func runGrepFixedStringMatches(ctx context.Context, repo, treeish string, maxPerFile int, patternArgs []string) ([]GrepMatch, error) {
 	args := []string{
 		"grep",
 		"--no-recurse-submodules",
@@ -992,18 +1077,9 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 		"--no-column",
 		"--no-color",
 		"--no-full-name",
-		"-z", "-I", "-i", "-F", "-o", "-m", strconv.Itoa(maxPerFile),
+		"-z", "-I", "-i", "-o", "-m", strconv.Itoa(maxPerFile),
 	}
-	patternCount := 0
-	for _, pattern := range patterns {
-		if pattern != "" {
-			args = append(args, "-e", pattern)
-			patternCount++
-		}
-	}
-	if patternCount == 0 {
-		return []GrepMatch{}, nil
-	}
+	args = append(args, patternArgs...)
 	if treeish != "" {
 		args = append(args, treeish)
 	}
@@ -1023,6 +1099,9 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 			return []GrepMatch{}, nil
 		}
 		message := strings.TrimSpace(stderr.String())
+		if errors.As(err, &exitError) && exitError.ExitCode() == 128 && strings.Contains(message, "not compiled with USE_LIBPCRE") {
+			return nil, errGrepWithoutPCRE
+		}
 		if message == "" {
 			message = err.Error()
 		}
