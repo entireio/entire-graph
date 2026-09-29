@@ -34,7 +34,10 @@ import (
 //   - Anchor: the line the index says a symbol starts on is not always the line that names it. For
 //     Java and C# it is the first annotation (`@Override`, `[Obsolete]`), so an answer anchored there
 //     printed an annotation and lost the signature the ordinary answer had shown. A row is anchored
-//     on the line sem.DeclarationLineIndex picks between the symbol's start and at most
+//     on the parser's name line (SearchResult.SymbolNameLine: the token the parse tree names the
+//     symbol with) whenever the index recorded one inside the row's span. Only a symbol without
+//     one (an extractor with no parse tree, or an older index) falls back to the text finder: the
+//     line sem.DeclarationLineIndex picks between the symbol's start and at most
 //     exactNameAnchorLines down, within its span: the name as a whole identifier OUTSIDE literals and
 //     leading annotations (an annotation argument `@Named("fooBar")` or a decorator
 //     `@app.route("/login")` names the symbol but does not declare it), definition-shaped lines
@@ -126,7 +129,8 @@ var exactNameDefinitionKeywords = map[string][]string{
 	".scala": {"def", "class", "object", "trait", "val", "var"},
 }
 
-// exactNameLineDefines reports whether line, in a file with extension ext, DEFINES name — `name :=`
+// exactNameLineDefines reports whether line (masked by sem.DeclarationCodeLines, so literals,
+// comments and annotations spanning lines are already blank), in a file with extension ext, DEFINES name — `name :=`
 // in Go, or one of the language's definition keywords right before it (`const name =`, `def name(`,
 // `func (r *T) name(`) — as opposed to using it. It is deliberately narrow: an assignment
 // `name = …` is a use as often as a definition.
@@ -185,6 +189,9 @@ type exactNameAnchor struct {
 	lines  []string
 	first  int // line number of lines[0]
 	named  int // index of the line that names (or defines) the symbol
+	// parsed is true when named came from the parser's name line, false when the text finder
+	// (sem.DeclarationLineIndex or exactNameLineDefines) picked it.
+	parsed bool
 	// steps[k] is the [top, bottom] line index range shown at growth step k; steps[0] is the named
 	// line alone. Every step contains every earlier one, so more bytes never show fewer lines.
 	steps [][2]int
@@ -212,17 +219,21 @@ func agentExactNameAnchor(result sem.SearchResult, name string) (exactNameAnchor
 		end = min(end, shown.SymbolEndLine-first)
 	}
 	own := result.SymbolName == name
-	named, spanTop := -1, start
+	named, spanTop, parsed := -1, start, false
 	if own {
-		// The shared finder: an annotation, decorator or literal that merely mentions the name
-		// (`@Named("fooBar")`, `@app.route("/login")`) is not the line that declares it.
-		if index, ok := sem.DeclarationLineIndex(lines, start, min(end, start+exactNameAnchorLines-1), name); ok {
+		if index := shown.SymbolNameLine - first; shown.SymbolNameLine > 0 && index >= start && index <= end {
+			// The parser's name token: exact, whatever annotations, literals or comments precede it.
+			named, parsed = index, true
+		} else if index, ok := sem.DeclarationLineIndex(lines, start, min(end, start+exactNameAnchorLines-1), name); ok {
+			// The text fallback: an annotation, decorator, literal or comment that merely mentions
+			// the name (`@Named("fooBar")`, `@app.route("/login")`) is not the line that declares it.
 			named = index
 		}
 	} else {
-		for i := start; i <= end; i++ {
-			if exactNameLineDefines(lines[i], name, strings.ToLower(path.Ext(result.FilePath))) {
-				named, spanTop = i, i // the lines above it are its enclosing symbol's, not its own
+		ext := strings.ToLower(path.Ext(result.FilePath))
+		for k, line := range sem.DeclarationCodeLines(lines, start, end) {
+			if exactNameLineDefines(line, name, ext) {
+				named, spanTop = start+k, start+k // the lines above it are its enclosing symbol's, not its own
 				break
 			}
 		}
@@ -258,7 +269,7 @@ func agentExactNameAnchor(result sem.SearchResult, name string) (exactNameAnchor
 		bottom++
 		grow()
 	}
-	return exactNameAnchor{raw: result, result: shown, lines: lines, first: first, named: named, steps: steps}, true
+	return exactNameAnchor{raw: result, result: shown, lines: lines, first: first, named: named, parsed: parsed, steps: steps}, true
 }
 
 // agentExactNameAnchors returns the exact rows in ranking order, anchored, and how many other
@@ -405,7 +416,13 @@ func agentExactNameBlock(anchor exactNameAnchor, floor, budget int) []byte {
 	name, scored := searchResultDisplayName(row), agentSearchScoreTag(row)
 	render := func(step int) []byte {
 		top, bottom := anchor.steps[step][0], anchor.steps[step][1]
-		header := agentSearchLocationHeaders(row.Rank, row.FilePath, anchor.first+top, anchor.first+bottom, named, name, tag, scored)[floor]
+		headers := agentSearchLocationHeaders(row.Rank, row.FilePath, anchor.first+top, anchor.first+bottom, named, name, tag, scored)
+		// The minimal rung names the FIRST printed line, not the named one: a row grown upward
+		// prints annotations and doc lines above its name, and `path:NAMED *` over them read as
+		// "the first line shown is NAMED", misnumbering every line below it. The rich and compact
+		// rungs already name the range first-last.
+		headers[len(headers)-1] = fmt.Sprintf("%s:%d *\n", row.FilePath, anchor.first+top)
+		header := headers[floor]
 		return termsafe.Bytes([]byte(header + strings.Join(anchor.lines[top:bottom+1], "\n") + "\n"))
 	}
 	if budget <= 0 {
