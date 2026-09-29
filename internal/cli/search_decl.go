@@ -80,8 +80,9 @@ type agentSearchBlockView struct {
 type agentSearchDecl struct {
 	index, cont int
 	head        bool
-	// region is the snippet index where the declaration's region starts when hasRegion: the
-	// declaration line is the parser's name line, so every line from region to index belongs to it.
+	// region is the snippet index where an absorbed member's declaration region starts when
+	// hasRegion: its declaration line is the parser's name line, so every line from region to index
+	// belongs to it. (The block's own region comes from its SymbolStartLine and SymbolNameLine.)
 	region    int
 	hasRegion bool
 }
@@ -132,9 +133,6 @@ func agentSearchDecls(view agentSearchBlockView) (agentSearchDecl, bool, []agent
 	}
 	if hasOwn {
 		own = agentSearchDecl{index: index, cont: agentSearchSignatureContinuation(lines, index, last)}
-		if parsed {
-			own.region, own.hasRegion = max(result.SymbolStartLine-first, 0), true
-		}
 	}
 	var absorbed []agentSearchDecl
 	starts := result.MergedDeclStarts
