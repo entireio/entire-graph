@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -70,8 +71,20 @@ func TestAgentSearchReportsDisplayedSpanAndFocusAfterCompaction(t *testing.T) {
 		t.Fatalf("search block used %d bytes, cap 64: %q", len(block), string(block))
 	}
 	text := string(block)
-	if !strings.Contains(text, "src/worker.go:103") || !strings.Contains(text, "FOCUS103") {
+	if !strings.Contains(text, "FOCUS103") {
 		t.Fatalf("tight block lost the focus line: %q", text)
+	}
+	// The minimal rung names the first PRINTED line, so each printed line's number is recoverable
+	// by counting down from it (the focus line is printed; its number is header + offset).
+	parts := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	var first int
+	if _, err := fmt.Sscanf(parts[0], "src/worker.go:%d *", &first); err != nil {
+		t.Fatalf("header %q is not the minimal rung: %v", parts[0], err)
+	}
+	for k, line := range parts[1:] {
+		if want := first + k; !strings.HasSuffix(line, fmt.Sprint(want)) {
+			t.Fatalf("printed line %q read as line %d: %q", line, want, text)
+		}
 	}
 	if strings.Contains(text, ":10-200") || strings.Contains(text, ":100-106") {
 		t.Fatalf("header reported stale undisplayed span: %q", text)

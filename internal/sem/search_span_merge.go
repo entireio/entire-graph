@@ -268,7 +268,7 @@ func mergedSearchSpanResult(results []SearchResult, run []int, lines []string) (
 	// widest thing it touches would report a container as the fix site.
 	span.Signals = appendUnique(append([]string(nil), span.Signals...), searchSpanMergedSignal)
 	span.MergedRanks = ranks
-	span.MergedDeclLines = searchMergedDeclarationLines(results, run, survivor, lines, start, end)
+	span.MergedDeclLines, span.MergedDeclStarts = searchMergedDeclarations(results, run, survivor, lines, start, end)
 	return survivor, span, true
 }
 
