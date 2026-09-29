@@ -459,3 +459,58 @@ func TestAgentBlockDeclarationDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// agentSearchWidestWithDeclsReference is the exhaustive search the priced one must agree with:
+// render every window of every span, keep the widest span with a fitting window, then the best
+// balance, then the leftmost.
+func agentSearchWidestWithDeclsReference(view agentSearchBlockView, decls []agentSearchDecl, budget int) ([]byte, int) {
+	lines, focus := view.lines, view.focus
+	for span := len(lines); span > 0; span-- {
+		var best []byte
+		bestBalance, bestPrinted := len(lines)+1, 0
+		for left := max(focus-span+1, 0); left <= min(focus, len(lines)-span); left++ {
+			right := left + span - 1
+			block, printed := agentSearchRenderDecls(view, decls, left, right, budget)
+			if block == nil {
+				continue
+			}
+			balance := focus - left - (right - focus)
+			if balance < 0 {
+				balance = -balance
+			}
+			if best == nil || balance < bestBalance {
+				best, bestBalance, bestPrinted = block, balance, printed
+			}
+		}
+		if best != nil {
+			return best, bestPrinted
+		}
+	}
+	return nil, 0
+}
+
+// TestAgentBlockPricedSearchMatchesExhaustive: pricing candidates from prefix sums and a header
+// lower bound, and trying them best balance first, picks exactly what rendering every candidate
+// picks — including for a related-section row, whose headers carry no score.
+func TestAgentBlockPricedSearchMatchesExhaustive(t *testing.T) {
+	t.Parallel()
+	for _, fixture := range declFixtures {
+		for _, section := range []string{"", sem.SearchSectionRelated} {
+			result, _ := fixture.build(95, 30)
+			result.Section = section
+			result = searchResultOnOneLine(result)
+			view := agentSearchBlockViewOf(result)
+			own, _, _ := agentSearchDecls(view)
+			tiers := [][]agentSearchDecl{{{index: own.index}}, {own}, {{index: own.index}, {index: len(view.lines) - 2}}}
+			for budget := 30; budget < 1600; budget += 3 {
+				for _, tier := range tiers {
+					got, gotPrinted := agentSearchWidestWithDecls(view, tier, budget)
+					want, wantPrinted := agentSearchWidestWithDeclsReference(view, tier, budget)
+					if string(got) != string(want) || gotPrinted != wantPrinted {
+						t.Fatalf("%s section=%q budget %d tier %v: priced search disagrees:\nGOT\n%s\nWANT\n%s", fixture.lang, section, budget, tier, got, want)
+					}
+				}
+			}
+		}
+	}
+}
