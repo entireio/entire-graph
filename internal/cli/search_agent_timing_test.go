@@ -144,7 +144,7 @@ func TestAgentSearchHeaderLatencyIsExactBelowCeilingAndSaturatesAbove(t *testing
 	if err := writeAgentSearch(&out, response, 4096); err != nil {
 		t.Fatal(err)
 	}
-	ceiling := agentSearchLatencyCeilingMS
+	ceiling := agentLatencyCeilingMS
 	want := fmt.Sprintf("Index: cache-miss (%dms) | Query: 0ms | Preselect: 0ms | Total: %dms\n", ceiling, ceiling)
 	if !strings.HasPrefix(out.String(), want) {
 		t.Fatalf("header did not saturate:\n%s", out.String())
