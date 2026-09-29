@@ -412,12 +412,13 @@ func TestAgentBlockMergedSpanShowsAbsorbedDeclarations(t *testing.T) {
 		}
 		if absorbed && !blockShowsLine(plain, lines[absorbedAt]) {
 			absorbedShown++
-			// It displaced at most one body line per line it added.
+			// It displaced at most one BODY line (a source line other than the two declarations;
+			// elision lines are not body) against the block that shows the survivor's alone.
 			base, _ := agentSearchWidestWithDecls(view, []agentSearchDecl{{index: 0}}, budget)
-			baseSource, baseElisions := blockBody(base)
-			source, elisions := blockBody(block)
-			if len(source)+elisions < len(baseSource)+baseElisions {
-				t.Fatalf("budget %d: absorbed declaration cost more lines than it added:\n%s\nvs\n%s", budget, base, block)
+			baseSource, _ := blockBody(base)
+			source, _ := blockBody(block)
+			if baseBody, body := len(baseSource)-1, len(source)-2; body < baseBody-1 {
+				t.Fatalf("budget %d: the absorbed declaration displaced %d body lines:\n%s\nvs\n%s", budget, baseBody-body, base, block)
 			}
 		}
 	}
