@@ -102,7 +102,7 @@ func TestSemanticRereviewProseExpansionSinksSemanticOnlyRow(t *testing.T) {
 
 // RR-FULLUNIT: a semantic-only rank 1 (Score 0) makes every rank "within gap".
 func TestSemanticRereviewFullUnitGapWithSemanticOnlyHead(t *testing.T) {
-	results := []SearchResult{{Score: 0, SemanticScore: 0.8}, {Score: 40}, {Score: 1}}
+	results := []SearchResult{{Score: 0, SemanticScore: 0.8, Signals: []string{semanticSignal, semanticOnlySignal}}, {Score: 40}, {Score: 1}}
 	got := searchFullUnitForceRanks(results, 3)
 	t.Logf("forced ranks with semantic-only head = %d; callee-hop ranks = %d", got, searchCalleeHopRanks(results))
 	if got != 1 {
