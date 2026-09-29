@@ -2443,9 +2443,23 @@ func renderAgentSearchPassages(path string, passages []sem.SearchPassage) []byte
 }
 
 func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
-	name := searchResultDisplayName(result)
-	tag := agentSearchSectionTag(result)
-	scored := agentSearchScoreTag(result)
+	view := agentSearchBlockViewOf(result)
+	if len(view.lines) == 0 {
+		return fitAgentSearchLocation(result.Rank, result.FilePath, view.focusLine, view.name, view.tag, view.scored, budget)
+	}
+	plain, left, right := agentSearchFocusWindow(view, budget)
+	if block := agentSearchDeclarationBlock(view, plain, left, right, budget); block != nil {
+		return block
+	}
+	if plain != nil {
+		return plain
+	}
+	return fitAgentSearchLocation(result.Rank, result.FilePath, view.focusLine, view.name, view.tag, view.scored, budget)
+}
+
+// agentSearchBlockViewOf computes a block's rendering inputs: the snippet's lines, the file line of
+// the first, and the focus line (index and the line the header reports).
+func agentSearchBlockViewOf(result sem.SearchResult) agentSearchBlockView {
 	lines := strings.Split(result.Snippet, "\n")
 	if len(lines) > 1 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
@@ -2462,14 +2476,29 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 		focusLine = snippetStart
 	}
 	focus := focusLine - snippetStart
-	if focus < 0 || focus >= len(lines) {
+	switch {
+	case focus >= len(lines) && len(lines) > 0 && result.FocusLine > 0 && result.FocusLine <= result.EndLine:
+		// The matched line lies BELOW the printed lines: a demoted tail row keeps the lines at its
+		// declaration rather than at its match (sem.tersifySearchResultKeepingDeclaration). The header
+		// still reports where the query matched, and the window is taken from the snippet's end,
+		// the lines nearest that match.
+		focus = len(lines) - 1
+	case focus < 0 || focus >= len(lines):
 		focus = len(lines) / 2
 		focusLine = snippetStart + focus
 	}
-	if len(lines) == 0 {
-		return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget)
+	return agentSearchBlockView{
+		result: result, lines: lines, first: snippetStart, focus: focus, focusLine: focusLine,
+		name: searchResultDisplayName(result), tag: agentSearchSectionTag(result), scored: agentSearchScoreTag(result),
 	}
+}
 
+// agentSearchFocusWindow is the block as it has always been rendered: the widest balanced span of
+// the snippet containing the focus line that fits the budget. It also returns the snippet indexes
+// the span covers, or (nil, -1, -1) when not even the focus line fits.
+func agentSearchFocusWindow(view agentSearchBlockView, budget int) ([]byte, int, int) {
+	result, lines, snippetStart, focus, focusLine := view.result, view.lines, view.first, view.focus, view.focusLine
+	name, tag, scored := view.name, view.tag, view.scored
 	// Prefer the widest balanced span containing the focus line. The location
 	// in the header is rebuilt for each candidate, so it always describes the
 	// lines actually displayed rather than the original untrimmed region.
@@ -2484,6 +2513,7 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 		}
 		bestBalance := len(lines) + 1
 		var best []byte
+		bestLeft := -1
 		for left := leftMin; left <= leftMax; left++ {
 			right := left + span - 1
 			text := strings.Join(lines[left:right+1], "\n")
@@ -2496,17 +2526,17 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 						balance = -balance
 					}
 					if best == nil || balance < bestBalance {
-						best, bestBalance = candidate, balance
+						best, bestBalance, bestLeft = candidate, balance, left
 					}
 					break
 				}
 			}
 		}
 		if best != nil {
-			return best
+			return best, bestLeft, bestLeft + span - 1
 		}
 	}
-	return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget)
+	return nil, -1, -1
 }
 
 // agentSearchLocationHeaders builds the location line in decreasing cost. `tag` labels a block
