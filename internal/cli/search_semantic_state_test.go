@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -116,5 +117,45 @@ func TestSemanticOnlyRowRendersItsOwnScore(t *testing.T) {
 	}
 	if !strings.Contains(agent.String(), " e=0.83") || strings.Contains(agent.String(), " s=0.0") {
 		t.Fatalf("agent renders the synthesized row's score wrongly:\n%s", agent.String())
+	}
+}
+
+var volatileRenderedLatency = regexp.MustCompile(`\(\d+ms\)|(Query|Preselect|Total): \d+ms|I:(hit|miss)/\d+|[QPT]:\d+|cache-(hit|miss)`)
+
+// The default-off contract in the HUMAN and AGENT formats too: with only one of the two settings
+// (or neither) the rendered payload is the baseline's, byte for byte after latency normalisation,
+// and never mentions the channel. The pinned-base comparison against a10582ab is a separate
+// receipt (two binaries); this pins the same property inside one build.
+func TestSemanticUnconfiguredTextAndAgentAreUnchanged(t *testing.T) {
+	repo := semanticCLIRepo(t)
+	cacheDir := t.TempDir()
+	if _, err := runGraph(t, EntireEnv{RepoRoot: repo}, "index", "--repo", repo, "--cache-dir", cacheDir, "--format", "json"); err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"text", "agent"} {
+		search := []string{"query", "--repo", repo, "--head", "--cache-dir", cacheDir, "--format", format, "--query", "stalled backend"}
+		if _, err := runGraph(t, EntireEnv{RepoRoot: repo}, search...); err != nil {
+			t.Fatal(err)
+		}
+		baseline, err := runGraph(t, EntireEnv{RepoRoot: repo}, search...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		baseline = volatileRenderedLatency.ReplaceAllString(baseline, "_")
+		if strings.Contains(baseline, "sem=") || strings.Contains(baseline, "semantic") {
+			t.Fatalf("%s baseline mentions the channel: %q", format, baseline)
+		}
+		for name, env := range map[string]EntireEnv{
+			"endpoint-only": {RepoRoot: repo, SemanticEndpoint: "http://127.0.0.1:9"},
+			"model-only":    {RepoRoot: repo, SemanticModel: "fake-embed"},
+		} {
+			got, err := runGraph(t, env, search...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got = volatileRenderedLatency.ReplaceAllString(got, "_"); got != baseline {
+				t.Fatalf("%s %s: payload differs from baseline:\n got %q\nwant %q", format, name, got, baseline)
+			}
+		}
 	}
 }
