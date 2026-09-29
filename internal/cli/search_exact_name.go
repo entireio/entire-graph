@@ -210,6 +210,10 @@ func agentExactNameAnchor(result sem.SearchResult, name string) (exactNameAnchor
 		first = shown.StartLine
 	}
 	decl := agentExactNameDeclLine(shown)
+	own := result.SymbolName == name
+	if own && shown.SymbolNameLine != 0 {
+		return agentExactNameParsedAnchor(result, shown, lines, first, decl)
+	}
 	start := decl - first
 	if first <= 0 || decl <= 0 || start < 0 || start >= len(lines) {
 		return exactNameAnchor{}, false
@@ -218,20 +222,17 @@ func agentExactNameAnchor(result sem.SearchResult, name string) (exactNameAnchor
 	if shown.SymbolEndLine >= decl {
 		end = min(end, shown.SymbolEndLine-first)
 	}
-	own := result.SymbolName == name
-	named, spanTop, parsed := -1, start, false
+	named, spanTop := -1, start
 	if own {
-		if index := shown.SymbolNameLine - first; shown.SymbolNameLine > 0 && index >= start && index <= end {
-			// The parser's name token: exact, whatever annotations, literals or comments precede it.
-			named, parsed = index, true
-		} else if index, ok := sem.DeclarationLineIndex(lines, start, min(end, start+exactNameAnchorLines-1), name); ok {
-			// The text fallback: an annotation, decorator, literal or comment that merely mentions
-			// the name (`@Named("fooBar")`, `@app.route("/login")`) is not the line that declares it.
+		// The name line is ABSENT (no parse node, or an older index): the text fallback. An
+		// annotation, decorator, literal or comment that merely mentions the name
+		// (`@Named("fooBar")`, `@app.route("/login")`) is not the line that declares it.
+		if index, ok := sem.DeclarationLineIndexFor(result.Language, result.FilePath, lines, start, min(end, start+exactNameAnchorLines-1), name); ok {
 			named = index
 		}
 	} else {
 		ext := strings.ToLower(path.Ext(result.FilePath))
-		for k, line := range sem.DeclarationCodeLines(lines, start, end) {
+		for k, line := range sem.DeclarationCodeLinesFor(result.Language, result.FilePath, lines, start, end) {
 			if exactNameLineDefines(line, name, ext) {
 				named, spanTop = start+k, start+k // the lines above it are its enclosing symbol's, not its own
 				break
@@ -241,6 +242,39 @@ func agentExactNameAnchor(result sem.SearchResult, name string) (exactNameAnchor
 	if named < 0 {
 		return exactNameAnchor{}, false
 	}
+	return agentExactNameGrow(result, shown, lines, first, named, spanTop, end, own, false), true
+}
+
+// agentExactNameParsedAnchor anchors an own row whose index recorded a name line
+// (SymbolNameLine != 0). The coordinate is authoritative in all three of its states:
+//
+//   - valid (inside the symbol's span) and inside the snippet: the anchor, with no scan bound and
+//     no requirement that the symbol's first line is printed;
+//   - valid but outside the snippet: the declaration is known and not printable here, so there is
+//     no anchor. The text finder must not substitute another line — a same-name call in a return
+//     type (`decltype(run())`) or a recursive call would be printed as the declaration;
+//   - invalid (outside the symbol's span): corrupt or stale metadata fails closed the same way.
+//
+// Only an ABSENT name line (0) falls back to the text finder, in agentExactNameAnchor.
+func agentExactNameParsedAnchor(result, shown sem.SearchResult, lines []string, first, decl int) (exactNameAnchor, bool) {
+	line := shown.SymbolNameLine
+	if first <= 0 || line <= 0 || decl > 0 && line < decl || shown.SymbolEndLine >= max(decl, 1) && line > shown.SymbolEndLine {
+		return exactNameAnchor{}, false // invalid
+	}
+	named := line - first
+	if named < 0 || named >= len(lines) {
+		return exactNameAnchor{}, false // known, not printable
+	}
+	end := len(lines) - 1
+	if shown.SymbolEndLine >= line {
+		end = min(end, shown.SymbolEndLine-first)
+	}
+	spanTop := max(decl-first, 0)
+	return agentExactNameGrow(result, shown, lines, first, named, spanTop, end, true, true), true
+}
+
+// agentExactNameGrow builds an anchor's growth steps around its named line.
+func agentExactNameGrow(result, shown sem.SearchResult, lines []string, first, named, spanTop, end int, own, parsed bool) exactNameAnchor {
 	top, bottom := named, named
 	steps := [][2]int{{top, bottom}}
 	grow := func() { steps = append(steps, [2]int{top, bottom}) }
@@ -269,7 +303,7 @@ func agentExactNameAnchor(result sem.SearchResult, name string) (exactNameAnchor
 		bottom++
 		grow()
 	}
-	return exactNameAnchor{raw: result, result: shown, lines: lines, first: first, named: named, parsed: parsed, steps: steps}, true
+	return exactNameAnchor{raw: result, result: shown, lines: lines, first: first, named: named, parsed: parsed, steps: steps}
 }
 
 // agentExactNameAnchors returns the exact rows in ranking order, anchored, and how many other
