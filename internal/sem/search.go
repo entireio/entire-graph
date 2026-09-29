@@ -20,6 +20,14 @@ import (
 	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
+// EffectiveSearchTopK is the number of results a search with SearchOptions.TopK = topK is cut at.
+func EffectiveSearchTopK(topK int) int {
+	if topK <= 0 {
+		return defaultSearchTopK
+	}
+	return topK
+}
+
 const (
 	// Keep default search responses compact enough for agent context. Larger top-k and snippet
 	// defaults produced ~15KB responses that are repeatedly carried through later turns; this

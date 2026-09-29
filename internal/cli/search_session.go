@@ -58,8 +58,14 @@ type searchSession struct {
 // searchSessionReplaySchema changes whenever the persisted replay-safety contract changes. A
 // session written without the current schema must run a real search: its opaque payload cannot be
 // upgraded or inspected safely after the fact.
+//
+// 4: the payload is bound to the binary that rendered it (Producer); see searchSessionProducer.
+//
+// 5: additionally, an exact-name agent answer (search_exact_name.go) is never stored for replay.
+// A schema-4 file may hold one, written by a build that recorded it, whose omission line invites a
+// phrase search that the replay would then answer with the same names-only payload.
 const (
-	searchSessionReplaySchema = 4
+	searchSessionReplaySchema = 5
 	// A normal search payload is budgeted in kilobytes. Keep a generous ceiling for callers that
 	// deliberately widen it, but never let an untrusted/stale session file allocate without bound.
 	maxSearchSessionStateBytes = 8 << 20

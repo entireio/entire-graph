@@ -239,7 +239,7 @@ func TestSearchEchoEscapesPersistedTerminalControls(t *testing.T) {
 			session := filepath.Join(t.TempDir(), "session.json")
 
 			first := searchInSessionViewFormat(
-				t, repo, session, "", "terminal_safe_replay_control", false, format, "--no-cache",
+				t, repo, session, "", "terminal safe replay control", false, format, "--no-cache",
 			)
 			if !strings.Contains(first, "safe.py") {
 				t.Fatalf("first %s search did not establish its positive control: %q", format, first)
@@ -532,13 +532,13 @@ func TestSearchEchoRefusesTextAgentFormatChange(t *testing.T) {
 			session := filepath.Join(t.TempDir(), "session.json")
 
 			first := searchInSessionViewFormat(
-				t, repo, session, "", "format_scope_safe", false, test.firstFormat,
+				t, repo, session, "", "format scope safe", false, test.firstFormat,
 			)
 			if !strings.Contains(first, "safe.py") {
 				t.Fatalf("first %s search missed its positive control: %q", test.firstFormat, first)
 			}
 			second := searchInSessionViewFormat(
-				t, repo, session, "", "format_scope_fresh", false, test.secondFormat,
+				t, repo, session, "", "format scope fresh", false, test.secondFormat,
 			)
 			if strings.Contains(second, "not run") || !strings.Contains(second, "fresh.py") {
 				t.Fatalf("%s payload crossed into %s output: %q", test.firstFormat, test.secondFormat, second)

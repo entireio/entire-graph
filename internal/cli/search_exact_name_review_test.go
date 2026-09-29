@@ -96,7 +96,7 @@ func TestRev302OneLineLatencyIndependence(t *testing.T) {
 			r := &base.Results[i]
 			line := strings.Split(r.Snippet, "\n")[3]
 			r.Snippet = strings.TrimSuffix(line, "{") + "{ return nil }\n"
-			r.SnippetStartLine, r.StartLine, r.SymbolStartLine, r.FocusLine = r.SymbolStartLine, r.SymbolStartLine, r.SymbolStartLine, r.SymbolStartLine
+			r.SnippetStartLine, r.StartLine, r.FocusLine = r.SymbolStartLine, r.SymbolStartLine, r.SymbolStartLine
 			r.SymbolEndLine, r.SnippetEndLine, r.EndLine = r.SymbolStartLine, r.SymbolStartLine, r.SymbolStartLine
 		}
 		for budget := 1; budget <= 2048; budget++ {
