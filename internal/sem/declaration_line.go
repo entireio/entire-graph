@@ -67,14 +67,23 @@ var declarationNotTypeWords = map[string]bool{
 // else the first line with such an occurrence. Lexical state is carried from lines[from] down, so
 // a multi-line annotation, comment or literal is never code. ok is false when no line in the range
 // has an occurrence.
+//
+// The lines are lexed with no language known (declarationUnknownDialect); callers that know the
+// file's language use DeclarationLineIndexFor.
 func DeclarationLineIndex(lines []string, from, to int, name string) (int, bool) {
+	return DeclarationLineIndexFor("", "", lines, from, to, name)
+}
+
+// DeclarationLineIndexFor is DeclarationLineIndex lexing with the comment and literal rules of the
+// file's language (language as sem names it, or any case of it; else path's extension).
+func DeclarationLineIndexFor(language, path string, lines []string, from, to int, name string) (int, bool) {
 	if name == "" || from < 0 {
 		return 0, false
 	}
 	if to >= len(lines) {
 		to = len(lines) - 1
 	}
-	code := DeclarationCodeLines(lines, from, to)
+	code := DeclarationCodeLinesFor(language, path, lines, from, to)
 	fallback := -1
 	for k, line := range code {
 		occurrences := declarationIdentifierOccurrences(line, name)
@@ -102,7 +111,7 @@ func DeclarationNameOccurrences(line, name string) []int {
 	if name == "" {
 		return nil
 	}
-	var lexer declarationLexer
+	lexer := declarationLexer{dialect: declarationUnknownDialect}
 	return declarationIdentifierOccurrences(lexer.code(line), name)
 }
 
@@ -110,6 +119,11 @@ func DeclarationNameOccurrences(line, name string) []int {
 // literals, annotations and their arguments — replaced by a space, so byte offsets are unchanged.
 // State is carried from one line to the next; the scan assumes lines[from] starts in code.
 func DeclarationCodeLines(lines []string, from, to int) []string {
+	return DeclarationCodeLinesFor("", "", lines, from, to)
+}
+
+// DeclarationCodeLinesFor is DeclarationCodeLines lexing with the rules of the file's language.
+func DeclarationCodeLinesFor(language, path string, lines []string, from, to int) []string {
 	if from < 0 {
 		from = 0
 	}
@@ -119,7 +133,7 @@ func DeclarationCodeLines(lines []string, from, to int) []string {
 	if from > to {
 		return nil
 	}
-	var lexer declarationLexer
+	lexer := declarationLexer{dialect: declarationDialectFor(language, path)}
 	out := make([]string, 0, to-from+1)
 	for i := from; i <= to; i++ {
 		out = append(out, lexer.code(lines[i]))
@@ -211,10 +225,63 @@ const (
 )
 
 // declarationLexer masks non-code bytes line by line, carrying multi-line constructs across lines.
+// declarationDialect is what the lexer must know about a language's comments and literals. The
+// rules differ in ways one universal rule gets wrong in one direction or the other: Rust block
+// comments nest and C's do not; a backslash escapes the quote in a Python raw string and does not
+// in a Rust one; `#` opens a comment in Python and is code in C.
+type declarationDialect struct {
+	// hashComments: `#` after whitespace and followed by whitespace starts a comment that runs to
+	// the end of the line, also inside an open annotation's arguments. (A whole line starting
+	// with `#`, other than `#[`, `#![` and `#define`, is a comment or directive in every dialect.)
+	hashComments bool
+	// nestedComments: `/* /* */ */` is one comment.
+	nestedComments bool
+	// rawEscapes: in r"..." a backslash still escapes the quote (Python), so the string is lexed
+	// like an ordinary one; false for Rust, whose raw strings have no escapes.
+	rawEscapes bool
+}
+
+// declarationUnknownDialect is used when the language is not known. Each choice errs toward
+// masking too much rather than too little — a missed declaration makes callers fall back to their
+// ordinary output, a false one is printed as the answer: comments nest, raw strings honour
+// escapes, and `#` after whitespace opens a comment.
+var declarationUnknownDialect = declarationDialect{hashComments: true, nestedComments: true, rawEscapes: true}
+
+// declarationDialectFor resolves a language name (sem's spelling in any case, or a common alias)
+// or, failing that, the file extension of path. Unlisted languages get the unknown dialect.
+func declarationDialectFor(language, path string) declarationDialect {
+	key := strings.ToLower(strings.TrimSpace(language))
+	if key == "" {
+		if dot := strings.LastIndexByte(path, '.'); dot >= 0 && !strings.ContainsAny(path[dot:], "/\\") {
+			key = strings.ToLower(path[dot+1:])
+		}
+	}
+	switch key {
+	case "python", "py", "pyi":
+		return declarationDialect{hashComments: true, rawEscapes: true}
+	case "ruby", "rb", "bash", "shell", "sh", "zsh", "perl", "pl", "pm", "r", "yaml", "yml", "toml",
+		"elixir", "ex", "exs", "nim", "coffeescript", "coffee", "powershell", "ps1", "makefile", "mk",
+		"dockerfile", "julia", "jl", "graphql", "gql", "php", "crystal", "cr", "cmake", "tcl":
+		return declarationDialect{hashComments: true}
+	case "rust", "rs":
+		return declarationDialect{nestedComments: true}
+	case "swift", "kotlin", "kt", "kts", "scala", "sc", "dart":
+		return declarationDialect{nestedComments: true, rawEscapes: true}
+	case "c", "h", "c++", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "objective-c", "objc", "m", "mm",
+		"java", "c#", "csharp", "cs", "go", "javascript", "js", "jsx", "mjs", "cjs", "typescript", "ts",
+		"tsx", "groovy", "gradle", "css", "scss", "less", "zig", "protocol buffers", "protobuf", "proto":
+		return declarationDialect{rawEscapes: true}
+	}
+	return declarationUnknownDialect
+}
+
 type declarationLexer struct {
-	mode   declarationMode
-	quote  byte
-	hashes int
+	dialect declarationDialect
+	// commentDepth is the nesting depth of an open block comment (1 unless the dialect nests).
+	commentDepth int
+	mode         declarationMode
+	quote        byte
+	hashes       int
 	// annotation is the bracket depth of an open annotation, attribute or decorator argument list;
 	// while it is positive every byte is masked, and literals inside it are still lexed so a
 	// bracket inside a string does not close it.
@@ -237,13 +304,22 @@ func (lexer *declarationLexer) code(line string) string {
 		switch lexer.mode {
 		case declarationInBlockComment:
 			end := strings.Index(line[i:], "*/")
+			if open := strings.Index(line[i:], "/*"); lexer.dialect.nestedComments && open >= 0 && (end < 0 || open < end) {
+				blank(i, i+open+2)
+				i += open + 2
+				lexer.commentDepth++
+				continue
+			}
 			if end < 0 {
 				blank(i, len(line))
 				return string(out)
 			}
 			blank(i, i+end+2)
 			i += end + 2
-			lexer.mode = declarationInCode
+			if lexer.commentDepth--; lexer.commentDepth <= 0 {
+				lexer.commentDepth = 0
+				lexer.mode = declarationInCode
+			}
 			continue
 		case declarationInTriple:
 			closing := strings.Repeat(string(lexer.quote), 3)
@@ -307,10 +383,17 @@ func (lexer *declarationLexer) code(line string) string {
 		if strings.HasPrefix(line[i:], "/*") {
 			blank(i, i+2)
 			i += 2
-			lexer.mode = declarationInBlockComment
+			lexer.mode, lexer.commentDepth = declarationInBlockComment, 1
 			continue
 		}
 		if strings.HasPrefix(line[i:], "//") {
+			blank(i, len(line))
+			return string(out)
+		}
+		if c == '#' && lexer.dialect.hashComments && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t') &&
+			(i+1 == len(line) || line[i+1] == ' ' || line[i+1] == '\t') {
+			// A `# comment` (Python, Ruby, shell, YAML, ...), including one inside an open
+			// annotation's arguments: its brackets and quotes are not code.
 			blank(i, len(line))
 			return string(out)
 		}
@@ -334,12 +417,6 @@ func (lexer *declarationLexer) code(line string) string {
 			continue
 		}
 		if lead && declarationCommentLine(line[i:]) {
-			blank(i, len(line))
-			return string(out)
-		}
-		if c == '#' && i > 0 && (line[i-1] == ' ' || line[i-1] == '\t') &&
-			(i+1 == len(line) || line[i+1] == ' ' || line[i+1] == '\t') {
-			// A trailing `# comment` (Python, Ruby, shell, YAML, ...).
 			blank(i, len(line))
 			return string(out)
 		}
@@ -409,6 +486,11 @@ func (lexer *declarationLexer) literal(line string, i int) (int, bool) {
 		}
 		if hashes == 0 && strings.HasPrefix(line[j:], `"""`) {
 			return 0, false // r"""...""": the triple-quote case handles it from the quote
+		}
+		if hashes == 0 && lexer.dialect.rawEscapes {
+			// Python: r"\"" is one string. The backslash stays in the value but the quote after
+			// it does not end the string, so it is lexed like an ordinary literal.
+			return declarationSkipLiteral(line, j, '"'), true
 		}
 		closing := `"` + strings.Repeat("#", hashes)
 		if end := strings.Index(line[j+1:], closing); end >= 0 {

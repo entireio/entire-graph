@@ -90,3 +90,31 @@ func TestDeclarationCodeLinesKeepOffsets(t *testing.T) {
 		t.Fatalf("second line masked as %q", code[1])
 	}
 }
+
+// Comment and literal rules follow the file's language where it is known; the unknown dialect
+// errs toward masking. Rust raw strings have no escapes, so `r"\"` ends at its second quote and the
+// code after it is code; C block comments do not nest, so the first `*/` ends the comment.
+func TestDeclarationLineIndexForUsesTheLanguagesRules(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, language, path string
+		lines                []string
+		want                 int
+		wantOK               bool
+	}{
+		{"rust-raw-has-no-escapes", "Rust", "", []string{`    let s = r"\"; fn run() {}`}, 0, true},
+		{"rust-by-extension", "", "src/lib.rs", []string{`    let s = r"\"; fn run() {}`}, 0, true},
+		{"unknown-raw-honours-escapes", "", "", []string{`    let s = r"\"; fn run() {}`}, 0, false},
+		{"python-raw-honours-escapes", "Python", "", []string{`s = r"\"; def run(): pass"`}, 0, false},
+		{"c-comments-do-not-nest", "C", "", []string{"/* a /* b */ int run(void);"}, 0, true},
+		{"cpp-by-extension", "", "a/x.hpp", []string{"/* a /* b */ int run(void);"}, 0, true},
+		{"unknown-comments-nest", "", "", []string{"/* a /* b */ int run(void);"}, 0, false},
+		{"rust-comments-nest", "rust", "", []string{"/* a /* b */ fn run() {}"}, 0, false},
+	}
+	for _, c := range cases {
+		got, ok := DeclarationLineIndexFor(c.language, c.path, c.lines, 0, len(c.lines)-1, "run")
+		if ok != c.wantOK || ok && got != c.want {
+			t.Errorf("%s: %d,%v; want %d,%v", c.name, got, ok, c.want, c.wantOK)
+		}
+	}
+}
