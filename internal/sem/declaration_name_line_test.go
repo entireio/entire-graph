@@ -18,6 +18,8 @@ func TestParserNameLineIsTheNameToken(t *testing.T) {
 	}{
 		{"java-multiline-annotation-argument", "a/H.java", "class H {\n  @Policy(\n      run = true,\n      audit = false\n  )\n  public void run() {}\n}\n", "run", "method", 6},
 		{"csharp-property-type-equals-name", "a/C.cs", "class C {\n    public Options Options\n    {\n        get { return _options ??= new Options(); }\n    }\n}\n", "Options", "", 2},
+		{"csharp-property-type-on-line-above", "a/E.cs", "class E {\n    public Options\n        Options { get; }\n}\n", "Options", "", 3},
+		{"java-annotated-field-unquoted-argument", "a/F.java", "class F {\n  @Column(\n      name = retries\n  )\n  private int retries;\n}\n", "retries", "", 5},
 		{"csharp-attributes", "a/D.cs", "class D {\n    [Route(\"Index\")]\n    [HttpGet]\n    public IActionResult Index(int page) { return null; }\n}\n", "Index", "method", 4},
 		{"ruby-self-method-no-parens", "a/x.rb", "class A\n  def self.config\n    @config ||= Config.load(config: path)\n  end\nend\n", "config", "method", 2},
 		{"python-decorator-trailing-comment", "a/x.py", "@retry  # fetch() may raise\n@lru_cache()\ndef fetch(url):\n    return get(url)\n", "fetch", "function", 3},
@@ -152,5 +154,52 @@ func TestSymbolNameLineOmittedWhenUnknown(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "symbol_name_line") {
 		t.Fatalf("unknown name line serialized: %s", encoded)
+	}
+}
+
+// Every place a result takes its symbol identity copies the name line from the same symbol, so no
+// path through search hands a renderer a start line without the matching name line.
+func TestSearchResultSymbolSitesCarryNameLine(t *testing.T) {
+	t.Parallel()
+	lines := []string{"@A", "@B", "func run() {", "  x()", "}"}
+	symbol := SymbolRecord{ID: "run", Name: "run", QualifiedName: "run", FilePath: "a.go", StartLine: 1, EndLine: 5, nameLine: 3}
+
+	sparse := []searchCandidate{{result: SearchResult{FilePath: "a.go", FocusLine: 4}}}
+	attachSparseCandidateSymbols(sparse, map[string][]SymbolRecord{"a.go": {symbol}})
+	if got := sparse[0].result.SymbolNameLine; got != 3 {
+		t.Errorf("sparse candidate name line = %d, want 3", got)
+	}
+
+	if candidate, ok := makeSearchCandidate(buildSearchQuery("run"), "a.go", "Go", lines, 1, 5, symbol, 40); !ok {
+		t.Errorf("makeSearchCandidate declined")
+	} else if got := candidate.result.SymbolNameLine; got != 3 {
+		t.Errorf("symbol candidate name line = %d, want 3", got)
+	}
+
+	target := symbol
+	target.ID, target.FilePath = "target", "target.go"
+	out := expandGraphCandidates(
+		[]searchCandidate{{result: SearchResult{SymbolID: "seed", FilePath: "seed.go"}, score: 5}}, searchQuery{},
+		[]RelationRecord{{FromID: "seed", ToID: "target", Type: "CALLS", Confidence: 1.0}},
+		map[string]SymbolRecord{"seed": {ID: "seed", Name: "Seed", FilePath: "seed.go", StartLine: 1, EndLine: 3}, "target": target},
+		nil, func(path string) (string, bool) { return strings.Join(lines, "\n"), path == "target.go" }, nil,
+		SearchOptions{MaxRegionLines: 40, MaxSnippetLines: 40})
+	found := false
+	for _, candidate := range out {
+		if candidate.result.SymbolID == "target" {
+			found = true
+			if got := candidate.result.SymbolNameLine; got != 3 {
+				t.Errorf("graph neighbor name line = %d, want 3", got)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("graph neighbor not expanded: %+v", out)
+	}
+
+	widened := widenSearchResultToEnclosure(SearchResult{FilePath: "a.go", StartLine: 3, EndLine: 4, FocusLine: 4,
+		SnippetStartLine: 3, SnippetEndLine: 4, Signals: []string{}}, searchEnclosure{start: 1, end: 5, lines: lines, symbol: symbol})
+	if got := widened.SymbolNameLine; got != 3 {
+		t.Errorf("enclosure name line = %d, want 3", got)
 	}
 }
