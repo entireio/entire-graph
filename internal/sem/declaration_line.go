@@ -224,9 +224,11 @@ func declarationSkipLiteral(line string, i int, quote byte) int {
 	return len(line)
 }
 
-// declarationLifetimeEnd recognises a single quote that does not open a literal: a Rust lifetime or
-// label (`'a`, `'static`), an identifier run NOT closed by another quote. It returns the offset after
-// the run, or 0 when line[i] opens a char or string literal.
+// declarationLifetimeEnd recognises a single quote that does not open a literal: a Rust lifetime
+// (`<'a>`, `&'a str`, `<'a, 'b>`, `T: 'static +`). It returns the offset after the lifetime's name,
+// or 0 when line[i] opens a char or string literal. A quote counts as a lifetime only in a lifetime's
+// position — right after `<` or `&`, or after `,` `:` `+` with `>` `,` `+` next — because a Python or
+// SQL string that starts with a word (`'def f(): pass'`) is otherwise indistinguishable from one.
 func declarationLifetimeEnd(line string, i int) int {
 	j := i + 1
 	for j < len(line) && searchIdentifierByte(line[j]) {
@@ -235,7 +237,19 @@ func declarationLifetimeEnd(line string, i int) int {
 	if j == i+1 || j < len(line) && line[j] == '\'' {
 		return 0
 	}
-	return j
+	prev := strings.TrimRight(line[:i], " \t")
+	if prev == "" {
+		return 0
+	}
+	switch prev[len(prev)-1] {
+	case '<', '&':
+		return j
+	case ',', ':', '+':
+		if j < len(line) && strings.IndexByte(">,+", line[j]) >= 0 {
+			return j
+		}
+	}
+	return 0
 }
 
 // declarationShaped reports whether the occurrence of name at line[at] is shaped like a definition:
