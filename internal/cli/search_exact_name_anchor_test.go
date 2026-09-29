@@ -243,6 +243,10 @@ func TestAgentExactNameDefinitionsAreLanguageAware(t *testing.T) {
 		{"    def resolveRef", ".txt", false},
 		{"\tresolveRef = other", ".go", false},
 		{"\t// var resolveRef is gone", ".go", false},
+		// A definition keyword inside a literal of the file's own language is fixture text.
+		{"\tsrc := \"func resolveRef() {}\"", ".go", false},
+		{"\tsrc := `var resolveRef = 1`", ".go", false},
+		{"    fixture = 'def resolveRef(): pass'", ".py", false},
 	}
 	for _, c := range cases {
 		if got := exactNameLineDefines(c.line, "resolveRef", c.ext); got != c.want {
