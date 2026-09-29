@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
@@ -35,7 +37,21 @@ type Options struct {
 }
 
 func Execute(version string, args []string) error {
-	return Run(context.Background(), Options{
+	// Translate SIGINT/SIGTERM into context cancellation. Every Git subprocess
+	// is built with exec.CommandContext, so cancellation kills it; without this
+	// the default signal action ends only this process and leaves a running
+	// `git grep` child orphaned and burning CPU. After the first signal the
+	// default action is restored, so a second one still terminates at once.
+	// SIGKILL cannot be intercepted, and macOS has no parent-death signal, so a
+	// SIGKILLed parent still orphans its children until they next write to the
+	// closed stdout pipe (SIGPIPE).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return Run(ctx, Options{
 		Version: version,
 		Env:     EnvFromOS(),
 		Stdout:  os.Stdout,
