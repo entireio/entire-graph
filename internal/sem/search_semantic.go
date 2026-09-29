@@ -51,7 +51,10 @@ const (
 	// built for.
 	semanticRecipeVersion = 1
 	semanticCacheFamily   = "semantic"
-	semanticCacheVersion  = "v1"
+	// semanticCacheVersion is v2 since the index began recording the Corpus and Profile it was
+	// built from. A v1 index has neither, so a search can no longer prove it describes its corpus;
+	// reading one as "no-index" was the silent version of this bump.
+	semanticCacheVersion = "v2"
 	// semanticTopK is how many nearest symbols the channel contributes. It also bounds nomination:
 	// at most this many files are nominated. On the cold selective path every nomination is spent
 	// INSIDE MaxIndexedFiles, so the channel never raises the cold parse budget; on the warm

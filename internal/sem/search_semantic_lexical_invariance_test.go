@@ -254,3 +254,36 @@ func TestSemanticPlanIsAdditiveWhenWarm(t *testing.T) {
 		t.Fatalf("cold plan: nominated %v evicted %v, want n1.go / l3.go", cold.nominated, cold.evicted)
 	}
 }
+
+// The cache version moved to v2 when the index began recording its Corpus and Profile. A legacy
+// index (no corpus) sitting at the v1 address is never read — it is simply absent — rather than
+// decoded and then rejected as "a different corpus".
+func TestSemanticLegacyV1IndexIsNeverRead(t *testing.T) {
+	t.Parallel()
+	legacy := semanticIndexFile{Recipe: semanticRecipeVersion, Model: "m", Tree: "t", Dimension: 2, Count: 1,
+		Symbols: []semanticIndexSymbol{{FilePath: "a.go", StartLine: 1, Name: "A"}},
+		Vectors: []byte{0, 0, 0x80, 0x3f, 0, 0, 0, 0}} // (1, 0) as little-endian float32
+	current := t.TempDir()
+	entry, err := semanticIndexEntry(current, "t", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := entry.write("semantic", legacy); err != nil {
+		t.Fatal(err)
+	}
+	// Non-vacuity: the same bytes at the current address load.
+	if _, err := loadSemanticIndexContext(t.Context(), current, "t", "m"); err != nil {
+		t.Fatalf("fixture index does not load at the current address: %v", err)
+	}
+	old := t.TempDir()
+	v1, err := newCacheEntry(old, semanticCacheFamily, "v1", semanticIndexKey("t", "m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v1.write("semantic", legacy); err != nil {
+		t.Fatal(err)
+	}
+	if index, err := loadSemanticIndexContext(t.Context(), old, "t", "m"); err == nil {
+		t.Fatalf("a v1 index was read (corpus %q)", index.Corpus)
+	}
+}
