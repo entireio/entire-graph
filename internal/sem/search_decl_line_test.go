@@ -122,3 +122,29 @@ func TestMergedSpanRecordsAbsorbedDeclarations(t *testing.T) {
 		t.Fatal("an unmerged result carries MergedDeclLines")
 	}
 }
+
+// A decorator or annotation ARGUMENT that spells an absorbed member's name is not its declaration:
+// the recorded line is the def/signature below it (DeclarationLineIndex), not `@app.route("/logout")`.
+func TestMergedSpanRecordsDeclarationNotAnnotationArgument(t *testing.T) {
+	t.Parallel()
+	const path = "app/views.py"
+	fileLines := make([]string, 120)
+	for i := range fileLines {
+		fileLines[i] = fmt.Sprintf("    step_%d()", i+1)
+	}
+	fileLines[9] = `@app.route("/login")`   // line 10: the survivor's first line
+	fileLines[10] = "def login():"          // line 11
+	fileLines[39] = `@app.route("/logout")` // line 40: the absorbed member's first line
+	fileLines[40] = "def logout():"         // line 41: its declaration
+	survivor := spanMergeBody(1, path, 10, 30)
+	survivor.SymbolStartLine, survivor.SymbolEndLine, survivor.SymbolName = 10, 30, "login"
+	absorbed := spanMergeBody(2, path, 40, 60)
+	absorbed.SymbolStartLine, absorbed.SymbolEndLine, absorbed.SymbolName = 40, 60, "logout"
+	_, span, ok := mergedSearchSpanResult([]SearchResult{survivor, absorbed}, []int{0, 1}, fileLines)
+	if !ok {
+		t.Fatal("not merged")
+	}
+	if fmt.Sprint(span.MergedDeclLines) != "[41]" {
+		t.Fatalf("MergedDeclLines = %v, want [41] (def logout, not the decorator naming it)", span.MergedDeclLines)
+	}
+}
