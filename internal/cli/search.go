@@ -327,7 +327,10 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if session != nil {
 		out = io.MultiWriter(opts.Stdout, &payload)
 	}
-	if err := writeSearchResponse(out, response, flags.Format, contextBudget); err != nil {
+	exactAnswer, err := writeSearchResponseFor(out, response, flags.Format, contextBudget, agentSearchRender{
+		exactName: true, topK: sem.EffectiveSearchTopK(flags.TopK), sessionCapped: session != nil,
+	})
+	if err != nil {
 		return err
 	}
 	if session != nil {
@@ -348,7 +351,11 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 			})
 			if policyErr == nil {
 				recordScope.PolicyFingerprint = currentPolicy.Fingerprint()
-				replayable = searchResponseCanReplay(flags.Format, response) &&
+				// An exact-name answer (search_exact_name.go) is never the replayed payload. It shows
+				// the named definitions and omits the rest of the ranking, so replaying it for a later,
+				// different question would answer every one of them with names only. It still counts
+				// as a search; the slot stays empty and the task's next search runs and fills it.
+				replayable = !exactAnswer && searchResponseCanReplay(flags.Format, response) &&
 					currentPolicy.Fingerprint() == replayPolicy.Fingerprint() &&
 					currentPolicy.MatchesTree(response.Tree) &&
 					currentPolicy.AllowsReplayPaths(payloadPaths)
@@ -389,19 +396,26 @@ func searchSessionScopeFor(ctx context.Context, repo string) searchSessionScope 
 }
 
 func writeSearchResponse(out io.Writer, response sem.SearchResponse, format string, contextBudget int) error {
+	_, err := writeSearchResponseFor(out, response, format, contextBudget, agentSearchRender{exactName: true})
+	return err
+}
+
+// writeSearchResponseFor is writeSearchResponse with the agent render's context, reporting whether
+// the payload is the exact-name answer.
+func writeSearchResponseFor(out io.Writer, response sem.SearchResponse, format string, contextBudget int, render agentSearchRender) (bool, error) {
 	switch format {
+	case "agent":
+		return writeAgentSearchPayload(out, response, contextBudget, render)
 	case "json":
 		encoder := json.NewEncoder(termsafe.NewJSONWriter(out))
 		encoder.SetEscapeHTML(false)
-		return encoder.Encode(response)
+		return false, encoder.Encode(response)
 	case "ndjson":
-		return writeNdjsonSearch(out, response)
+		return false, writeNdjsonSearch(out, response)
 	case "text":
-		return writeTextSearch(out, response)
-	case "agent":
-		return writeAgentSearch(out, response, contextBudget)
+		return false, writeTextSearch(out, response)
 	default:
-		return fmt.Errorf("search --format must be json, ndjson, text, or agent, got %q", format)
+		return false, fmt.Errorf("search --format must be json, ndjson, text, or agent, got %q", format)
 	}
 }
 
@@ -1459,7 +1473,8 @@ func agentSearchSectionTag(result sem.SearchResult) string {
 type agentSearchFitPass int
 
 const (
-	// agentSearchExactNamePass fits only the exact-name answer (search_exact_name.go).
+	// agentSearchExactNamePass fits only the exact-name answer (search_exact_name.go), and only
+	// with VERIFY in the prefix when the response has one.
 	agentSearchExactNamePass agentSearchFitPass = iota
 	// agentSearchProtectTopHitPass accepts a plan only if the ranking carries source.
 	agentSearchProtectTopHitPass
@@ -1511,6 +1526,25 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 // writeAgentSearchMode is writeAgentSearch with the exact-name answer (search_exact_name.go)
 // switchable, so a test can render the ordinary answer for the same response and compare.
 func writeAgentSearchMode(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, budget int, exactName bool) error {
+	_, err := writeAgentSearchPayload(out, response, budget, agentSearchRender{exactName: exactName})
+	return err
+}
+
+// agentSearchRender is what an agent render needs to know beyond the response and the cap.
+type agentSearchRender struct {
+	// exactName enables the exact-name answer (search_exact_name.go).
+	exactName bool
+	// topK is the --top-k the ranking was cut at, 0 when unknown. It lets the exact answer say
+	// that more exact definitions may exist past the cut.
+	topK int
+	// sessionCapped is set when an EG_SEARCH_SESSION cap is active; the exact answer's omission
+	// line then invites no further search. See agentExactNameOmittedLine.
+	sessionCapped bool
+}
+
+// writeAgentSearchPayload writes the agent payload and reports whether it is the exact-name answer.
+func writeAgentSearchPayload(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, budget int, render agentSearchRender) (bool, error) {
+	exactName := render.exactName
 	// Same sink class as the text renderer, and the format agents are told to
 	// prefer — so it gets the same guard. See writeTextSearch.
 	out = termsafe.NewWriter(out)
@@ -1624,7 +1658,7 @@ func writeAgentSearchMode(out interface{ Write([]byte) (int, error) }, response 
 			payload = append(payload, suffix...)
 		}
 		_, err := out.Write(payload)
-		return err
+		return false, err
 	}
 
 	diagnosticVariants := [][]byte{fullDiagnostics}
@@ -1702,14 +1736,26 @@ func writeAgentSearchMode(out interface{ Write([]byte) (int, error) }, response 
 	// bare locator for an unrelated row beat a rung one step down that showed every exact
 	// declaration, so a larger budget could lose the answer a smaller one had. When no rung can hold
 	// it, the ordinary passes below run untouched and the payload is byte-identical to before.
-	var exactRows []sem.SearchResult
-	exactOmitted := 0
+	//
+	// The exact pass is tried with VERIFY in the prefix only. VERIFY is "never traded for one more
+	// ranked locator", and it is not traded for a body either: an exact answer that cannot hold it
+	// beside every named line is not taken, and the ordinary passes decide, exactly as before. Trying
+	// the VERIFY-less variant at each rung, as the first version did, let the richest header rung
+	// drop VERIFY to fund bodies before any poorer rung was tried with it.
+	var exactAnchors []exactNameAnchor
+	var exactNote []byte
 	if exactName {
-		exactRows, exactOmitted = agentExactNameRows(results, response.Query)
+		var exactOmitted int
+		exactAnchors, exactOmitted = agentExactNameAnchors(results, response.Query)
+		exactNote = agentExactNameOmittedLine(exactOmitted, len(exactAnchors), render.topK, render.sessionCapped)
 	}
 	for _, pass := range []agentSearchFitPass{agentSearchExactNamePass, agentSearchProtectTopHitPass, agentSearchFallbackPass} {
-		if pass == agentSearchExactNamePass && len(exactRows) == 0 {
+		if pass == agentSearchExactNamePass && len(exactAnchors) == 0 {
 			continue
+		}
+		passVerifyVariants := verifyVariants
+		if pass == agentSearchExactNamePass {
+			passVerifyVariants = verifyVariants[:1]
 		}
 		protectTopHit := pass == agentSearchProtectTopHitPass
 		if protectTopHit && len(results) == 0 {
@@ -1726,7 +1772,7 @@ func writeAgentSearchMode(out interface{ Write([]byte) (int, error) }, response 
 				for _, confidence := range confidenceVariants {
 					for _, warning := range closedSetVariants {
 						for _, containerMap := range mapVariants {
-							for _, verify := range verifyVariants {
+							for _, verify := range passVerifyVariants {
 								remaining := budget - len(forgery) - head.reserved - len(diagnostics) - len(confidence) -
 									len(warning) - len(containerMap) - len(verify)
 								if remaining <= 0 {
@@ -1764,27 +1810,24 @@ func writeAgentSearchMode(out interface{ Write([]byte) (int, error) }, response 
 											continue
 										}
 										_, err := out.Write(payload)
-										return err
+										return false, err
 									}
 									continue
 								}
 								if pass == agentSearchExactNamePass {
-									exact := fitAgentExactNameResults(exactRows, exactOmitted, remaining)
+									exact := fitAgentExactNameResults(exactAnchors, exactNote, remaining)
 									if len(exact) == 0 {
 										continue
 									}
-									// The droppable suffixes do not ride along: they are surplus by this
-									// format's own rule, and refilling the cap with them is the cost this
-									// answer exists to remove. VERIFY, if it had to leave the prefix, is
-									// still re-offered first.
-									payload := fitAgentSearchSuffixes(
-										append(prefix(), exact...), agentVerifyFirstSuffixes(verify, verifyBlock, nil), budget-slack,
-									)
+									// No suffix rides along: the droppable ones are surplus by this format's
+									// own rule, and refilling the cap with them is the cost this answer exists
+									// to remove; VERIFY is already in the prefix.
+									payload := append(prefix(), exact...)
 									if !searchPayloadDisclosesItsQuarantine(string(payload), quarantinedLines) {
 										continue
 									}
 									_, err := out.Write(payload)
-									return err
+									return true, err
 								}
 								formatted := fitAgentSearchResults(results, remaining)
 								if protectTopHit && !agentSearchBlockCarriesSource(formatted) {
@@ -1816,7 +1859,7 @@ func writeAgentSearchMode(out interface{ Write([]byte) (int, error) }, response 
 										continue
 									}
 									_, err := out.Write(payload)
-									return err
+									return false, err
 								}
 							}
 						}
@@ -1882,7 +1925,7 @@ func writeAgentSearchMode(out interface{ Write([]byte) (int, error) }, response 
 		payload = payload[:budget]
 	}
 	_, err := out.Write(payload)
-	return err
+	return false, err
 }
 
 // searchLowConfidenceNotices renders the low-confidence marker in a full and a compact

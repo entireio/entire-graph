@@ -353,7 +353,7 @@ func TestAgentSearchExactNameAnswerIsMonotoneInBudget(t *testing.T) {
 		ranks := layout.ranks
 		response := exactNameFixtureBody("resolveMessageRef", layout.body, ranks...)
 		exactRows, omitted := agentExactNameRows(orderAgentSearchResults(response.Results), response.Query)
-		note := string(agentExactNameOmittedLine(omitted))
+		note := string(agentExactNameOmittedLine(omitted, len(exactRows), 0, false))
 		first := 0
 		for budget := 1; budget <= 8192; budget++ {
 			payload := renderAgentSearchForTest(t, response, budget, true)
@@ -399,7 +399,7 @@ func TestAgentSearchExactNameBoundsBodyLines(t *testing.T) {
 	if got := strings.Count(payload, "\tx++\n"); got != exactNameBodyLines {
 		t.Fatalf("body shows %d lines under the declaration, want exactly %d\n%s", got, exactNameBodyLines, payload)
 	}
-	if !strings.Contains(payload, "1. internal/pkg1/file1.go:103-123 recv1.resolveMessageRef [ends:164]") {
+	if !strings.Contains(payload, "1. internal/pkg1/file1.go:100-123 recv1.resolveMessageRef [ends:164]") {
 		t.Fatalf("header does not describe the bounded span\n%s", payload)
 	}
 }
