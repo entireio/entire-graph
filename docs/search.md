@@ -116,6 +116,9 @@ selection, but the evicted files' rows are gone and, with their symbols, so is
 their share of BM25's average document length and any call edges they
 carried, so surviving scores can shift slightly. The fused order is the
 delivered order, so `results` is not necessarily descending by `score`.
+Fusion keeps one row per symbol: rows are deduplicated on the symbol ID, so
+two symbols that start on the same line stay distinct, and file plus line
+stands in only for a row that has no symbol.
 
 `format_version` stays 1: every field above is additive and omitted when the
 channel is not configured.

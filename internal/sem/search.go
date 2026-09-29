@@ -1812,7 +1812,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	selected = promoteFixSiteOverLeadingTest(selected, q)
 	// FUSION, the frozen rule: interleave embedding-first over the PRIMARY ranking only — the
 	// related-site, callee-hop and covering-test sections are built later from this list and are
-	// untouched — dedupe on (file, symbol start), cut to top-k. Ranks are numbered just below, so
+	// untouched — dedupe on the canonical symbol identity (the symbol ID; see semanticKey), cut to top-k. Ranks are numbered just below, so
 	// every later pass sees the fused order. See fuseSemanticCandidates.
 	//
 	// The fix-site promotion above is RE-APPLIED to the fused list, because embedding-first can seat
