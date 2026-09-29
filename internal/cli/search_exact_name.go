@@ -34,9 +34,11 @@ import (
 //   - Anchor: the line the index says a symbol starts on is not always the line that names it. For
 //     Java and C# it is the first annotation (`@Override`, `[Obsolete]`), so an answer anchored there
 //     printed an annotation and lost the signature the ordinary answer had shown. A row is anchored
-//     on the first line at or after the symbol's start, within its span and at most
-//     exactNameAnchorLines down, that contains the name as a whole identifier. A row with no such line
-//     disqualifies the whole mode (see Ambiguity).
+//     on the line sem.DeclarationLineIndex picks between the symbol's start and at most
+//     exactNameAnchorLines down, within its span: the name as a whole identifier OUTSIDE literals and
+//     leading annotations (an annotation argument `@Named("fooBar")` or a decorator
+//     `@app.route("/login")` names the symbol but does not declare it), definition-shaped lines
+//     first. A row with no such line disqualifies the whole mode (see Ambiguity).
 //   - Definitions the index did not surface: a row for ANOTHER symbol whose own span defines the name
 //     in that file's own language (`name := func…` in Go, `const name =` in TS, a nested `def name`
 //     in Python) is a definition too, and the ordinary answer showed it. It is kept as an exact row,
@@ -102,24 +104,6 @@ func exactNameIdentByte(c byte) bool {
 	return c == '_' || c == '$' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
-// exactNameOccurrences returns the byte offsets at which name occurs in line as a whole identifier.
-func exactNameOccurrences(line, name string) []int {
-	var found []int
-	for from := 0; from < len(line); {
-		at := strings.Index(line[from:], name)
-		if at < 0 {
-			break
-		}
-		at += from
-		end := at + len(name)
-		if (at == 0 || !exactNameIdentByte(line[at-1])) && (end == len(line) || !exactNameIdentByte(line[end])) {
-			found = append(found, at)
-		}
-		from = at + 1
-	}
-	return found
-}
-
 // exactNameDefinitionKeywords are, per file extension, the keywords that introduce a definition of
 // the identifier after them. They are per language because a keyword of one language inside another
 // language's file is almost always text: `class Animal {` in a Go test's string literal is fixture
@@ -157,7 +141,7 @@ func exactNameLineDefines(line, name, ext string) bool {
 			return false
 		}
 	}
-	for _, at := range exactNameOccurrences(line, name) {
+	for _, at := range sem.DeclarationNameOccurrences(line, name) {
 		if ext == ".go" && strings.HasPrefix(strings.TrimLeft(line[at+len(name):], " \t"), ":=") {
 			return true
 		}
@@ -230,11 +214,10 @@ func agentExactNameAnchor(result sem.SearchResult, name string) (exactNameAnchor
 	own := result.SymbolName == name
 	named, spanTop := -1, start
 	if own {
-		for i := start; i <= min(end, start+exactNameAnchorLines-1); i++ {
-			if len(exactNameOccurrences(lines[i], name)) > 0 {
-				named = i
-				break
-			}
+		// The shared finder: an annotation, decorator or literal that merely mentions the name
+		// (`@Named("fooBar")`, `@app.route("/login")`) is not the line that declares it.
+		if index, ok := sem.DeclarationLineIndex(lines, start, min(end, start+exactNameAnchorLines-1), name); ok {
+			named = index
 		}
 	} else {
 		for i := start; i <= end; i++ {
