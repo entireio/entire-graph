@@ -163,14 +163,17 @@ func TestAgentSearchExactNameUnanchorableRowFallsBack(t *testing.T) {
 	c := exactNameLangCases[1]
 	response := exactNameLangResponse(c, 1)
 	row := &response.Results[0]
+	// A literal count, not one derived from exactNameAnchorLines: the fixture must not grow with the
+	// bound it tests.
+	const annotations = 18
 	var snippet strings.Builder
-	for i := 0; i < exactNameAnchorLines+2; i++ {
+	for i := 0; i < annotations; i++ {
 		snippet.WriteString("    @Annotation\n")
 	}
 	snippet.WriteString("    public String toString() {\n        return \"\";\n    }\n")
 	row.Snippet = snippet.String()
 	row.SymbolStartLine = row.SnippetStartLine
-	row.SymbolEndLine = row.SnippetStartLine + exactNameAnchorLines + 4
+	row.SymbolEndLine = row.SnippetStartLine + annotations + 2
 	if rows, _ := agentExactNameRows(response.Results, response.Query); rows != nil {
 		t.Fatalf("a row with no named line inside the bounded search was anchored")
 	}
@@ -178,6 +181,33 @@ func TestAgentSearchExactNameUnanchorableRowFallsBack(t *testing.T) {
 		if before, after := renderAgentSearchForTest(t, response, budget, false), renderAgentSearchForTest(t, response, budget, true); before != after {
 			t.Fatalf("budget %d: output changed although the mode must not fire", budget)
 		}
+	}
+}
+
+// A doc comment longer than exactNameDocLines is left out whole, never cut to its last lines, and
+// that costs the annotations between the symbol's start and its signature nothing: they belong to
+// the declaration, not to the comment above it.
+func TestAgentSearchExactNameLongDocLeavesAnnotations(t *testing.T) {
+	t.Parallel()
+	c := exactNameLangCases[1]
+	var doc strings.Builder
+	doc.WriteString("    /**\n")
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&doc, "     * line %d of a long comment.\n", i)
+	}
+	doc.WriteString("     */\n")
+	c.snippet = doc.String() + "    @Override\n    @SuppressWarnings(\"unchecked\")\n    public String toString() {\n        return \"\";\n    }\n"
+	c.symbolStart, c.signature = 23, 25
+	response := exactNameLangResponse(c, 1)
+	got := renderAgentSearchForTest(t, response, 8192, true)
+	file := response.Results[0].FilePath
+	for _, want := range []string{"    @Override", "    @SuppressWarnings(\"unchecked\")", "    public String toString() {"} {
+		if !exactNameLineShown(got, file, want) {
+			t.Fatalf("roomy exact answer lacks %q\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "long comment") {
+		t.Fatalf("a doc comment over the bound was shown (in part)\n%s", got)
 	}
 }
 
