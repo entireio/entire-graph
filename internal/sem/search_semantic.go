@@ -117,6 +117,27 @@ func (config *SemanticConfig) configured() bool {
 	return config != nil && strings.TrimSpace(config.Endpoint) != "" && strings.TrimSpace(config.Model) != ""
 }
 
+// ReplayIdentity is the channel's EFFECTIVE configuration as an opaque identity, for callers that
+// persist a rendered payload and must not replay it under a different configuration (the CLI's
+// search session echo). A payload rendered with the channel on carries its rows and its stats line;
+// one rendered with it off (--no-semantic) carries an off:flag line; an unconfigured one carries
+// neither — so all three are distinct identities, and the endpoint and model are part of "on".
+//
+// Unconfigured is "", so an unconfigured caller's identity is unchanged by the channel's existence.
+// The endpoint is hashed, never echoed: the identity is written to a state file, and an endpoint
+// URL can carry credentials.
+func (config *SemanticConfig) ReplayIdentity() string {
+	if !config.configured() {
+		return ""
+	}
+	if config.Disabled {
+		return "off"
+	}
+	endpoint := sha256.Sum256([]byte(strings.TrimSpace(config.Endpoint)))
+	model := sha256.Sum256([]byte(strings.TrimSpace(config.Model)))
+	return "on;model=" + hex.EncodeToString(model[:8]) + ";endpoint=" + hex.EncodeToString(endpoint[:8])
+}
+
 // semanticUnavailable is a fail-open reason. It is an error type so the embedding client can say
 // WHY it failed in the status vocabulary directly, instead of the caller re-deriving it from text.
 type semanticUnavailable struct {

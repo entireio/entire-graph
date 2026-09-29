@@ -161,6 +161,9 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	// One semantic configuration for the whole call: the replay identity below and the search it
+	// guards must describe the same channel.
+	semanticConfig := searchSemanticConfig(opts.Env, flags.NoSemantic)
 	var (
 		scope               searchSessionScope
 		replayPolicy        sem.SearchReplayPolicy
@@ -168,7 +171,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		forceSessionReplace bool
 	)
 	if session != nil {
-		scope = searchSessionScopeFor(ctx, repo, opts.sessionProducer())
+		scope = searchSessionScopeFor(ctx, repo, opts.sessionProducer(), semanticConfig)
 		scope.Format = flags.Format
 		// A rendered payload is opaque: snippets and reference blocks cannot be safely removed from
 		// it after the fact. Bind it to the semantic layer's effective corpus policy and validate
@@ -223,7 +226,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 					IgnoreFiles:  flags.IgnoreFiles,
 					IncludeFiles: flags.IncludeFiles,
 				})
-				confirmedScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer())
+				confirmedScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer(), semanticConfig)
 				confirmedScope.PolicyFingerprint = confirmedPolicy.Fingerprint()
 				confirmedScope.Format = flags.Format
 				if confirmErr == nil &&
@@ -241,7 +244,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 							IgnoreFiles:  flags.IgnoreFiles,
 							IncludeFiles: flags.IncludeFiles,
 						})
-						finalScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer())
+						finalScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer(), semanticConfig)
 						finalScope.PolicyFingerprint = finalPolicy.Fingerprint()
 						finalScope.Format = flags.Format
 						if finalErr == nil &&
@@ -320,7 +323,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		IncludeContainerMap:   flags.ContainerMap,
 		IncludeSignatureTypes: flags.SignatureTypes,
 		IncludeTypeCard:       flags.TypeCard,
-		Semantic:              searchSemanticConfig(opts.Env, flags.NoSemantic),
+		Semantic:              semanticConfig,
 	})
 	if err != nil {
 		return err
@@ -391,11 +394,11 @@ func searchSemanticConfig(env EntireEnv, disabled bool) *sem.SemanticConfig {
 // zero scope matches nothing, so the echo is refused and the question gets a real answer. The one
 // outcome this must never produce is a confident scope that is wrong.
 //
-// The producer is set HERE, not at call sites: the replay decision rebuilds this scope twice after
-// its policy checks, and an identity field set by only one of three builders silently refused every
-// replay.
-func searchSessionScopeFor(ctx context.Context, repo, producer string) searchSessionScope {
-	scope := searchSessionScope{Repo: repo, Producer: producer}
+// The producer and the semantic identity are set HERE, not at call sites: the replay decision
+// rebuilds this scope twice after its policy checks, and an identity field set by only one of three
+// builders silently refused every replay (or, worse, silently accepted one).
+func searchSessionScopeFor(ctx context.Context, repo, producer string, semantic *sem.SemanticConfig) searchSessionScope {
+	scope := searchSessionScope{Repo: repo, Producer: producer, Semantic: semantic.ReplayIdentity()}
 	if resolved, err := filepath.Abs(repo); err == nil {
 		scope.Repo = resolved
 	}
