@@ -657,7 +657,7 @@ func grepPatternLines(ctx context.Context, repo, treeish string, patterns []stri
 	args = append(args, "--")
 	cmd := newGitCmdWithCallerLocale(ctx, repo, args...)
 	// Pattern data can exceed Windows command-line limits; send it on stdin.
-	cmd.Stdin = strings.NewReader(strings.Join(patterns, "\n") + "\n")
+	cmd.Stdin = strings.NewReader(grepPatternLinesInput(patterns))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -696,6 +696,102 @@ func grepPatternLines(ctx context.Context, repo, treeish string, patterns []stri
 		return fmt.Errorf("git grep pattern lines: %s", strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// grepPatternLinesInput renders the `-f -` stdin for grepPatternLines.
+//
+// Git's multi-pattern line matcher is pathologically slow on large text
+// blobs: it evaluates every pattern per line instead of scanning the buffer
+// once, and in our measurements it does not stop early at `-m`. On a 17 MB
+// JSON blob, three case-folded literals took 19.4s as three patterns and 0.3s
+// as one alternation; twelve took >280s. A single ERE alternation selects
+// exactly the same lines (a line matches iff some branch matches), so the
+// patterns are sent as one line `(p1)|(p2)|...`. That is only sound when each
+// pattern is a self-contained expression: a back-reference would be
+// renumbered by the added groups, and unbalanced parentheses could pair up
+// across branches. Such inputs keep the legacy one-pattern-per-line form.
+//
+// The split, CR strip and empty-line skip mirror how Git reads `-f` itself.
+func grepPatternLinesInput(patterns []string) string {
+	legacy := strings.Join(patterns, "\n") + "\n"
+	var branches []string
+	seen := map[string]bool{}
+	for _, pattern := range patterns {
+		for _, line := range strings.Split(pattern, "\n") {
+			line = strings.TrimSuffix(line, "\r")
+			if line == "" || seen[line] {
+				continue
+			}
+			if !ereSelfContained(line) {
+				return legacy
+			}
+			seen[line] = true
+			branches = append(branches, "("+line+")")
+		}
+	}
+	if len(branches) == 0 {
+		return legacy
+	}
+	return strings.Join(branches, "|") + "\n"
+}
+
+// ereSelfContained reports whether an ERE can be wrapped in a group and
+// alternated with others without changing what it matches: parentheses
+// balance outside bracket expressions, every bracket expression and escape is
+// terminated, and there is no back-reference.
+func ereSelfContained(pattern string) bool {
+	depth := 0
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '\\':
+			i++
+			if i >= len(pattern) || (pattern[i] >= '1' && pattern[i] <= '9') {
+				return false
+			}
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return false
+			}
+		case '[':
+			end := ereBracketEnd(pattern, i)
+			if end < 0 {
+				return false
+			}
+			i = end
+		}
+	}
+	return depth == 0
+}
+
+// ereBracketEnd returns the index of the ']' closing the bracket expression
+// that opens at start, or -1 when it is unterminated.
+func ereBracketEnd(pattern string, start int) int {
+	i := start + 1
+	if i < len(pattern) && pattern[i] == '^' {
+		i++
+	}
+	if i < len(pattern) && pattern[i] == ']' {
+		i++ // A leading ']' is a literal member.
+	}
+	for i < len(pattern) {
+		switch {
+		case pattern[i] == ']':
+			return i
+		case pattern[i] == '[' && i+1 < len(pattern) && strings.IndexByte(":=.", pattern[i+1]) >= 0:
+			closer := string([]byte{pattern[i+1], ']'})
+			end := strings.Index(pattern[i+2:], closer)
+			if end < 0 {
+				return -1
+			}
+			i += 2 + end + 2
+		default:
+			i++
+		}
+	}
+	return -1
 }
 
 func readGrepPatternLines(reader *bufio.Reader, visit func(GrepMatch) error) error {
