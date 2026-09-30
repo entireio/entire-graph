@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +116,19 @@ func review305BindingRoutesWithin(t *testing.T, name string) []goHTTPRouteRegist
 	// Start only this owned child case, with no inherited credentials, product
 	// configuration, or other test helper modes. The executable path is absolute.
 	command.Env = []string{review305BindingChildCaseEnv + "=" + name, "GOMAXPROCS=1", "GOGC=50"}
+	// Portability adaptation of the independent fixture (not part of its
+	// original text): on Windows the re-executed test binary cannot load its
+	// DLLs from a three-variable environment (exit 0xc0000135,
+	// STATUS_DLL_NOT_FOUND, in CI run 36673714080). Pass through only the
+	// loader/temp variables that are set. No assertion and no non-Windows
+	// behavior changes.
+	if runtime.GOOS == "windows" {
+		for _, key := range []string{"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP"} {
+			if value, ok := os.LookupEnv(key); ok {
+				command.Env = append(command.Env, key+"="+value)
+			}
+		}
+	}
 	command.WaitDelay = 250 * time.Millisecond
 	// CombinedOutput waits for/reaps the child. Context cancellation kills the
 	// process instead of abandoning a goroutine stuck in the old helper loop.
