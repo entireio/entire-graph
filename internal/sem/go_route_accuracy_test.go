@@ -1225,6 +1225,11 @@ func TestX(t *testing.T) {
 	mux.Handle("/mux-literal", nil)
 }
 
+func other() {
+	kv := lookup()
+	_ = kv.Get("/kv-unknown")
+}
+
 type store struct{}
 
 func (store) Get(key string) any { return nil }
@@ -1247,6 +1252,9 @@ func (*apiClient) Post(path string, body any) {}
 		if got[externalID("route", path)] {
 			t.Fatalf("non-router literal %s emitted as a route: %v", path, got)
 		}
+	}
+	if !got[externalID("route", "/kv-unknown")] {
+		t.Fatalf("a name also bound to an unknown value must be left to the route literal fallback: %v", got)
 	}
 	if !got[externalID("route", "/unknown-receiver")] {
 		t.Fatalf("a literal on an unknown receiver must be left to the route literal fallback: %v", got)
