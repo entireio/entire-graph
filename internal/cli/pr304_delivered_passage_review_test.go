@@ -68,7 +68,7 @@ func TestReview304DeliveredPassageFollowUpClassification(t *testing.T) {
 				encoded, err := json.Marshal(map[string]any{
 					"type": role, "timestamp": stamp.Format(time.RFC3339),
 					"message": map[string]any{
-						"id": fmt.Sprintf("review-passage-message-%d", tick),
+						"id":   fmt.Sprintf("review-passage-message-%d", tick),
 						"role": role, "content": []any{block},
 					},
 				})
@@ -122,10 +122,10 @@ func TestReview304DeliveredPassageFollowUpClassification(t *testing.T) {
 				t.Fatalf("decode public statistics: %v", err)
 			}
 			want := map[string]int{
-				"sessions":                                    1,
-				"graph_locate_calls":                          1,
-				"credited_graph_calls":                        1,
-				"exploration_calls":                           1,
+				"sessions":                                     1,
+				"graph_locate_calls":                           1,
+				"credited_graph_calls":                         1,
+				"exploration_calls":                            1,
 				"graph_locate_follow_up_read":                  1,
 				"graph_locate_follow_up_read_overlapping":      tc.wantOverlap,
 				"graph_locate_follow_up_read_different_region": tc.wantOther,
