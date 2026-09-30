@@ -136,3 +136,74 @@ func TestResolveTypeReferenceStillBindsTheUniqueSamePackageDeclaration(t *testin
 		t.Fatalf("got (%q, %q, %v), want sym-x-3 name_only once the non-type is dropped", sym.ID, resolution, ok)
 	}
 }
+
+func sameNameCallables(language, name string, n int, samePath bool) []SymbolRecord {
+	records := make([]SymbolRecord, n)
+	for i := range records {
+		path := fmt.Sprintf("include/dir%04d/api.h", i)
+		if samePath {
+			path = "include/overloads.h"
+		}
+		records[i] = SymbolRecord{ID: fmt.Sprintf("fn-%d", i), Name: name, Kind: "function", Language: language, FilePath: path, StartLine: i*10 + 1, EndLine: i*10 + 5}
+	}
+	return records
+}
+
+// TestBareCallResolutionCostDoesNotScaleWithSameNameDeclarations pins the
+// second copy site of the same quadratic: a bare call copied every same-name
+// callable before learning the name was ambiguous, which was 19 GB of the
+// 29 GB node's C++ include tree allocated while indexing.
+func TestBareCallResolutionCostDoesNotScaleWithSameNameDeclarations(t *testing.T) {
+	const declarations = 2000
+	const calls = 2000
+	candidates := sameNameCallables("C++", "Cast", declarations, false)
+	from := SymbolRecord{ID: "caller", Name: "Use", Kind: "function", Language: "C++", FilePath: "src/use.cc", StartLine: 1, EndLine: 9}
+
+	var before, after runtime.MemStats
+	resolved := 0
+	withinDeadline(t, 20*time.Second, func() {
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for range calls {
+			resolved += len(resolveCallTargetsWithRawImportDeclarations("Cast", from, candidates, nil, nil, nil, nil, false))
+		}
+		runtime.ReadMemStats(&after)
+	})
+	if resolved != 0 {
+		t.Fatalf("an ambiguous bare call across %d files resolved %d targets, want 0", declarations, resolved)
+	}
+	if perCall := (after.TotalAlloc - before.TotalAlloc) / calls; perCall > 4096 {
+		t.Fatalf("bare call resolution allocated %d bytes per call over %d same-name declarations, want a constant under 4096", perCall, declarations)
+	}
+}
+
+func TestBareCallResolutionKeepsItsUniqueOverloadAndPHPAnswers(t *testing.T) {
+	t.Parallel()
+	from := SymbolRecord{ID: "caller", Name: "Use", Kind: "function", Language: "C++", FilePath: "src/use.cc", StartLine: 1, EndLine: 9}
+
+	// The non-callable comes first so the answer has to be the surviving
+	// candidate, not merely the first one in the index.
+	unique := append([]SymbolRecord{{ID: "field", Name: "Cast", Kind: "field", Language: "C++", FilePath: "x.h"}}, sameNameCallables("C++", "Cast", 1, false)...)
+	if got := resolveCallTargetsWithRawImportDeclarations("Cast", from, unique, nil, nil, nil, nil, false); len(got) != 1 || got[0].ID != "fn-0" || got[0].Resolution != "name_only" {
+		t.Fatalf("unique callable: got %+v, want fn-0 name_only", got)
+	}
+
+	overloads := sameNameCallables("C++", "Cast", 3, true)
+	got := resolveCallTargetsWithRawImportDeclarations("Cast", from, overloads, nil, nil, nil, nil, false)
+	if len(got) != 3 || got[0].ID != "fn-0" || got[2].ID != "fn-2" {
+		t.Fatalf("one-file overload set: got %d targets %+v, want fn-0..fn-2", len(got), got)
+	}
+	split := append(sameNameCallables("C++", "Cast", 2, true), sameNameCallables("C++", "Cast", 1, false)...)
+	split[2].ID = "elsewhere"
+	if got := resolveCallTargetsWithRawImportDeclarations("Cast", from, split, nil, nil, nil, nil, false); len(got) != 0 {
+		t.Fatalf("overloads split across files: got %+v, want none", got)
+	}
+
+	php := sameNameCallables("PHP", "apply_filters", 6, false)
+	php[4].EndLine = php[4].StartLine + 500
+	phpFrom := SymbolRecord{ID: "caller", Name: "run", Kind: "function", Language: "PHP", FilePath: "wp/run.php", StartLine: 1, EndLine: 9}
+	got = resolveCallTargetsWithRawImportDeclarations("apply_filters", phpFrom, php, nil, nil, nil, nil, false)
+	if len(got) != 4 || got[0].ID != "fn-4" {
+		t.Fatalf("PHP ambiguous call: got %d targets, first %+v, want 4 led by the largest (fn-4)", len(got), got)
+	}
+}
