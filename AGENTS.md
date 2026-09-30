@@ -149,20 +149,22 @@ Local, read-only report over the coding-agent session transcripts already on dis
 (`~/.claude/projects/<path-slug>/*.jsonl`; `--sessions-dir` overrides the lookup). Reports graph
 calls per verb vs. exploration calls (`Read` whole-file / `Read` line-range / `Grep` / `Glob` /
 shell `grep|find|cat|head|tail|sed|awk`), observed result bytes, session tokens reported by transcript
-`usage`, and a signed **observed-displacement** net, explicitly not measured savings.
+`usage`, and **observed follow-up** rates with a signed modeled balance, explicitly not measured savings.
 
 A shell call counts as exploration only when the LEADING stage of one of its pipelines runs a
 locate tool: `grep -rn foo . | head` does, `go test ./... 2>&1 | tail -40` does not, and a write
 (`cat > file`, a here-document, `tee`, `sed -i`) never does. `entire sem edges|symbols` counts as a
 graph call, like `entire graph <verb>`.
 
-The headline classifies each observed `query`/`search`/`neighbors`/`impact` result by the agent's
-next 5 tool calls in the same transcript: another graph lookup, `Grep`, `Glob` or shell search first
-is a RE-QUERY; a read of a file whose path overlaps one the graph output named is READ-ANYWAY; both
-earn no credit and their bytes are a cost. Only the rest (DISPLACED) are credited, at the session's
-average exploration bytes/result. The displaced/re-query/read-anyway rates are always printed
-beside the net (`graph_locate_*`, `*_rate`, `observed_net_*` in JSON). Path overlap is a suffix
-match on extension-bearing paths, and anything outside the 5-call window is invisible.
+The headline reports **observed follow-up**, an observational proxy: each observed
+`query`/`search`/`neighbors`/`impact` result is classified by the next 5 tool calls issued AFTER
+its delivery, in the same transcript — error, ineligible (empty or no file named), re-query
+(graph lookup, `Grep`, `Glob`, shell search), follow-up read of a named file (overlapping lines /
+different region / unknown span), censored (transcript ended first), or no follow-up. Every class
+is counted in one reconcilable denominator (`graph_locate_*`, `*_rate`). The signed
+`modeled_balance_*` credits only no-follow-up results, and only under the stated assumption that
+each replaced one average exploration result; absence of a follow-up is not an observed avoided
+call. Path overlap is a suffix match on extension-bearing paths.
 
 The legacy 1:1 model (`--verbose`, `estimated_savings_*`) assumes each observed locate result replaces ONE
 exploration result, priced using that session's average exploration bytes/result, then subtracts

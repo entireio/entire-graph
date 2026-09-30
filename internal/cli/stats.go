@@ -43,24 +43,30 @@ const savingsModelText = "Model (assumption, not a measurement): assume each obs
 	"are not controlled. Transcripts cannot establish what would have been read instead or causal " +
 	"billed-token savings. Legacy JSON savings fields retain their positive-only floor for " +
 	"compatibility; the status line uses the signed unfloored fields, and the stats headline uses " +
-	"observed displacement instead of this assumption."
+	"observed follow-up rates instead of this assumption."
 
 // bytesPerToken is the standard rough transcript-accounting conversion. Tool results are raw
 // text, so token counts are not recorded per call anywhere; 4 bytes/token is the usual
 // approximation and is stated in the output. Actual ratios depend on the content and tokenizer.
 const bytesPerToken = 4
 
-// observedModelText documents the headline model. Carried verbatim in JSON and --verbose.
-const observedModelText = "Observed displacement (heuristic, not a measurement): each graph locate result " +
-	"(query/search/neighbors/impact) is classified by the agent's next K tool calls in the same transcript. " +
-	"RE-QUERY: another graph lookup, Grep, Glob or shell search came first - no credit. READ-ANYWAY: the agent " +
-	"first read a file whose path overlaps a path the graph output named - no credit. DISPLACED: neither - " +
-	"credited with that session's average exploration bytes/result. Every locate result's bytes are subtracted; " +
-	"the net is signed, summed over sessions with both result types, and converted at ~4 bytes/token. Limits: " +
-	"path overlap is a suffix match on extension-bearing paths, so a read of an extensionless file is missed and " +
-	"a same-named file elsewhere can match; K bounds the window, so a re-query or read after K calls still counts " +
-	"as displaced; work delegated to a subagent is not visible in the caller's window; displaced does not mean " +
-	"the answer was right or that the agent would otherwise have explored."
+// followUpModelText documents the headline. Carried verbatim in JSON and --verbose.
+const followUpModelText = "Observed follow-up (an observational proxy, not a measurement of calls avoided): " +
+	"each graph locate result (query/search/neighbors/impact) is classified by the next K tool calls the agent " +
+	"issued AFTER that result was delivered, in the same transcript. ERROR: the result was an error. INELIGIBLE: " +
+	"it was empty or named no file. RE-QUERY: another graph lookup, Grep, Glob or shell search came first. " +
+	"FOLLOW-UP READ: the agent first read a file whose path overlaps one the result named (overlapping lines, a " +
+	"different region, or unknown span - unknown when a span is not known or the file was edited in between). " +
+	"CENSORED: the transcript ended before K calls and nothing qualified. NO FOLLOW-UP: K calls were observed " +
+	"and none qualified. Absence of a follow-up is not an observed avoided call: the task may have ended, " +
+	"failed, changed direction or used another source. The modeled balance ASSUMES each no-follow-up result " +
+	"replaced one exploration result priced at that session's average exploration bytes/result, subtracts " +
+	"every locate result's bytes (errors, censored and ineligible included), sums signed results over sessions " +
+	"with both result types and converts at ~4 bytes/token; it is not measured savings. Limits: path overlap " +
+	"is a suffix match on extension-bearing paths (extensionless files are missed; a same-named file at a " +
+	"matching suffix can match; a path merely mentioned counts as named); delivered line spans are known only " +
+	"when the whole output parsed as a search response; one read is attributed to at most one result (the " +
+	"latest delivered); work delegated to a subagent is not in the caller's window."
 
 // substitutionRatio is how many exploration calls one graph locate call is assumed to displace.
 // This is an unvalidated counterfactual, not an empirical coefficient for these transcripts.
@@ -219,25 +225,43 @@ type statsResponse struct {
 	// locate result and one observed exploration result. Availability is not causal validity.
 	SessionsWithSavingsComparison int `json:"sessions_with_savings_comparison"`
 
-	// --- observed displacement (replaces the assumed 1:1 substitution in the headline) --------
+	// --- observed follow-up (replaces the assumed 1:1 substitution in the headline) ----------
+	//
+	// Go field names DisplacementWindowCalls, GraphLocateDisplaced, GraphLocateReadAnyway and
+	// ObservedNet* are kept stable because an independently authored review fixture
+	// (stats_observed_independent_review_test.go) binds to them. Their JSON keys and every human
+	// label use the observational names: no_follow_up, follow_up_read, modeled_balance.
 
-	// DisplacementWindowCalls is K: how many following tool calls decide a locate call's class.
-	DisplacementWindowCalls int `json:"displacement_window_calls"`
-	// GraphLocateDisplaced / Requery / ReadAnyway partition the observed locate results
-	// (CreditedGraphCalls) by what the agent did next. Rates divide by their sum, over every
-	// session in the window.
-	GraphLocateDisplaced  int     `json:"graph_locate_displaced"`
-	GraphLocateRequery    int     `json:"graph_locate_requery"`
-	GraphLocateReadAnyway int     `json:"graph_locate_read_anyway"`
-	DisplacedRate         float64 `json:"displaced_rate"`
-	RequeryRate           float64 `json:"requery_rate"`
-	ReadAnywayRate        float64 `json:"read_anyway_rate"`
-	// ObservedNetBytes credits only DISPLACED results at the session's exploration price and
-	// subtracts every locate result's bytes. Signed, summed over the same comparison population as
-	// the unfloored 1:1 fields (SessionsWithSavingsComparison), and unavailable when that is 0.
-	ObservedNetBytes          int64  `json:"observed_net_bytes"`
-	ObservedNetTokens         int64  `json:"observed_net_est_tokens"`
-	ObservedDisplacementModel string `json:"observed_displacement_model"`
+	// DisplacementWindowCalls is K: how many tool calls issued after a locate result's delivery are
+	// inspected to classify it.
+	DisplacementWindowCalls int `json:"follow_up_window_calls"`
+	// The GraphLocate* class counts partition the observed locate results (CreditedGraphCalls)
+	// over EVERY session in the window; each *Rate divides by that same total. FollowUpRead is the
+	// sum of its three span sub-buckets.
+	GraphLocateDisplaced           int     `json:"graph_locate_no_follow_up"`
+	GraphLocateRequery             int     `json:"graph_locate_requery"`
+	GraphLocateReadAnyway          int     `json:"graph_locate_follow_up_read"`
+	GraphLocateReadOverlapping     int     `json:"graph_locate_follow_up_read_overlapping"`
+	GraphLocateReadDifferentRegion int     `json:"graph_locate_follow_up_read_different_region"`
+	GraphLocateReadUnknownSpan     int     `json:"graph_locate_follow_up_read_unknown_span"`
+	GraphLocateCensored            int     `json:"graph_locate_censored"`
+	GraphLocateError               int     `json:"graph_locate_error"`
+	GraphLocateIneligible          int     `json:"graph_locate_ineligible"`
+	NoFollowUpRate                 float64 `json:"no_follow_up_rate"`
+	RequeryRate                    float64 `json:"requery_rate"`
+	FollowUpReadRate               float64 `json:"follow_up_read_rate"`
+	CensoredRate                   float64 `json:"censored_rate"`
+	ErrorRate                      float64 `json:"error_rate"`
+	IneligibleRate                 float64 `json:"ineligible_rate"`
+	// ObservedNetBytes credits only NO FOLLOW-UP results at the session's average exploration
+	// price (an assumption) and subtracts every locate result's bytes. Signed, summed over the
+	// comparison population (SessionsWithSavingsComparison), unavailable when that is 0.
+	// ModeledBalanceCreditedResults is how many no-follow-up results that population credited.
+	ObservedNetBytes              int64  `json:"modeled_balance_bytes"`
+	ObservedNetTokens             int64  `json:"modeled_balance_est_tokens"`
+	ModeledBalanceCreditedResults int    `json:"modeled_balance_credited_results"`
+	ComparableGraphLocateResults  int    `json:"comparable_graph_locate_results"`
+	FollowUpModel                 string `json:"follow_up_model"`
 }
 
 func runStats(ctx context.Context, opts Options, args []string) error {
@@ -300,8 +324,8 @@ func runStats(ctx context.Context, opts Options, args []string) error {
 		SavingsModel:      savingsModelText,
 		SubstitutionRatio: substitutionRatio,
 		// K is reported even when nothing was classified, so a reader can always see the window.
-		DisplacementWindowCalls:   displacementWindow,
-		ObservedDisplacementModel: observedModelText,
+		DisplacementWindowCalls: followUpWindow,
+		FollowUpModel:           followUpModelText,
 		// non-nil so JSON never emits null for the tables
 		GraphByVerb:       []statsCount{},
 		ExplorationByKind: []statsCount{},
@@ -473,6 +497,8 @@ type contentBlock struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
 	Text      string          `json:"text"`
+	// IsError is set on a tool_result the tool reported as failed.
+	IsError bool `json:"is_error"`
 }
 
 // --- one transcript file's contribution -------------------------------------------------
@@ -486,8 +512,8 @@ type summaryCall struct {
 	Kind      string `json:"k,omitempty"`
 	Bytes     int64  `json:"b,omitempty"`
 	HasResult bool   `json:"r,omitempty"`
-	// Disp is the observed-displacement class of a graph locate call with a result
-	// (displacementDisplaced / displacementRequery / displacementReadAnyway); empty otherwise.
+	// Disp is the observed follow-up class (followUp* codes) of a graph locate call with a
+	// result; empty otherwise.
 	Disp string `json:"d,omitempty"`
 }
 
@@ -525,10 +551,12 @@ type fileScanner struct {
 	pending  map[string]int // tool_use id -> index into summary.Calls
 	seenUse  map[string]bool
 	usageIdx map[string]int // message id -> index into summary.Usage
-	// timeline is every distinct tool call in file order, for the displacement window;
-	// locateAt maps a locate call's summary.Calls index to its timeline entry.
-	timeline []timelineEntry
-	locateAt map[int]int
+	// timeline is every distinct tool call in file order, for the follow-up window;
+	// locateAt maps a locate call's summary.Calls index to its timeline entry; deliveries counts
+	// locate results in arrival order.
+	timeline   []timelineEntry
+	locateAt   map[int]int
+	deliveries int
 }
 
 func newFileScanner() *fileScanner {
@@ -648,7 +676,13 @@ func (s *fileScanner) consumeToolResult(block contentBlock) {
 	s.summary.Calls[index].Bytes = int64(len(text))
 	s.summary.Calls[index].HasResult = true
 	if at, ok := s.locateAt[index]; ok {
-		s.timeline[at].paths = graphOutputPaths(text)
+		// The follow-up window starts HERE, at delivery: calls already issued are not reactions.
+		entry := &s.timeline[at]
+		entry.hasResult, entry.isError = true, block.IsError
+		entry.deliveredAt, entry.deliverSeq = len(s.timeline), s.deliveries
+		s.deliveries++
+		entry.paths = graphOutputPaths(text)
+		entry.delivered = graphDeliveredSpans(text)
 	}
 }
 
@@ -679,7 +713,7 @@ func summariseTranscript(path string) (fileSummary, bool) {
 		// A truncated or over-long line is treated like a malformed line, not a hard failure.
 		scanner.summary.Malformed++
 	}
-	scanner.finishDisplacement()
+	scanner.finishFollowUp()
 	return scanner.summary, true
 }
 
@@ -697,7 +731,7 @@ type sessionAcc struct {
 	seenCalls           map[string]summaryCall
 	usageByID           map[string]statsTokens
 	unkeyed             statsTokens
-	// displacement counts observed-displacement classes of locate calls with results.
+	// displacement counts observed follow-up classes of locate calls with results.
 	displacement map[string]int
 }
 
@@ -1671,10 +1705,19 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 		// Preserve the legacy positive-only sum; human output uses the signed model.
 		saved := acc.savingsBytes()
 		report.EstimatedSavingsBytesUnfloored += saved
-		report.ObservedNetBytes += acc.observedSavingsBytes()
-		report.GraphLocateDisplaced += acc.displacement[displacementDisplaced]
-		report.GraphLocateRequery += acc.displacement[displacementRequery]
-		report.GraphLocateReadAnyway += acc.displacement[displacementReadAnyway]
+		report.GraphLocateDisplaced += acc.displacement[followUpNone]
+		report.GraphLocateRequery += acc.displacement[followUpRequery]
+		report.GraphLocateReadOverlapping += acc.displacement[followUpReadOverlapping]
+		report.GraphLocateReadDifferentRegion += acc.displacement[followUpReadDifferent]
+		report.GraphLocateReadUnknownSpan += acc.displacement[followUpReadUnknownSpan]
+		report.GraphLocateCensored += acc.displacement[followUpCensored]
+		report.GraphLocateError += acc.displacement[followUpError]
+		report.GraphLocateIneligible += acc.displacement[followUpIneligible]
+		if locateResults > 0 && sessionExploreResults > 0 {
+			report.ObservedNetBytes += acc.modeledBalanceBytes()
+			report.ModeledBalanceCreditedResults += acc.displacement[followUpNone]
+			report.ComparableGraphLocateResults += locateResults
+		}
 		if saved > 0 {
 			report.EstimatedSavingsBytes += saved
 			report.SessionsWithPositiveSavings++
@@ -1697,10 +1740,16 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 	report.EstimatedSavingsTokens = report.EstimatedSavingsBytes / bytesPerToken
 	report.EstimatedSavingsTokensUnfloored = report.EstimatedSavingsBytesUnfloored / bytesPerToken
 	report.ObservedNetTokens = report.ObservedNetBytes / bytesPerToken
-	if classified := report.GraphLocateDisplaced + report.GraphLocateRequery + report.GraphLocateReadAnyway; classified > 0 {
-		report.DisplacedRate = roundTo(float64(report.GraphLocateDisplaced)/float64(classified), 4)
-		report.RequeryRate = roundTo(float64(report.GraphLocateRequery)/float64(classified), 4)
-		report.ReadAnywayRate = roundTo(float64(report.GraphLocateReadAnyway)/float64(classified), 4)
+	report.GraphLocateReadAnyway = report.GraphLocateReadOverlapping + report.GraphLocateReadDifferentRegion +
+		report.GraphLocateReadUnknownSpan
+	if classified := followUpClassified(*report); classified > 0 {
+		rate := func(count int) float64 { return roundTo(float64(count)/float64(classified), 4) }
+		report.NoFollowUpRate = rate(report.GraphLocateDisplaced)
+		report.RequeryRate = rate(report.GraphLocateRequery)
+		report.FollowUpReadRate = rate(report.GraphLocateReadAnyway)
+		report.CensoredRate = rate(report.GraphLocateCensored)
+		report.ErrorRate = rate(report.GraphLocateError)
+		report.IneligibleRate = rate(report.GraphLocateIneligible)
 	}
 	if report.CreditedGraphCalls > 0 {
 		report.GraphBytesPerLocateCall = roundTo(
@@ -1787,28 +1836,39 @@ func writeStatsSummary(out io.Writer, report statsResponse) {
 			statsPrefix, termsafe.Line(report.Since))
 		return
 	}
-	fmt.Fprintf(out, "%s %s\n", statsPrefix, observedModelSummary(report))
+	fmt.Fprintf(out, "%s %s\n", statsPrefix, followUpSummary(report))
 }
 
-// observedModelSummary is the headline: the signed observed-displacement net, and ALWAYS the
-// displaced rate beside it, so the number is never quoted without how often the graph actually
-// ended a search.
-func observedModelSummary(report statsResponse) string {
-	classified := report.GraphLocateDisplaced + report.GraphLocateRequery + report.GraphLocateReadAnyway
-	rates := fmt.Sprintf("displaced %s of %s graph locate results (re-query %s, read-anyway %s; next %d calls)",
-		percent(report.DisplacedRate), humanInt(int64(classified)),
-		percent(report.RequeryRate), percent(report.ReadAnywayRate), report.DisplacementWindowCalls)
+// followUpClassified is the reconcilable denominator: every observed locate result, in one class.
+func followUpClassified(report statsResponse) int {
+	return report.GraphLocateDisplaced + report.GraphLocateRequery + report.GraphLocateReadAnyway +
+		report.GraphLocateCensored + report.GraphLocateError + report.GraphLocateIneligible
+}
+
+// followUpSummary is the headline. It leads with what was OBSERVED (follow-up rates over every
+// observed locate result), and states the modeled balance only with its assumption and its own
+// population at the point of use, so it never reads as measured savings.
+func followUpSummary(report statsResponse) string {
+	classified := followUpClassified(report)
+	if classified == 0 {
+		return "observed follow-up: no graph locate results"
+	}
+	observed := fmt.Sprintf("observed follow-up of %s graph locate results (next %d calls after delivery): "+
+		"re-query %s, read named file %s, none %s, censored %s, error/ineligible %s",
+		humanInt(int64(classified)), report.DisplacementWindowCalls,
+		percent(report.RequeryRate), percent(report.FollowUpReadRate), percent(report.NoFollowUpRate),
+		percent(report.CensoredRate), percent(report.ErrorRate+report.IneligibleRate))
 	if report.SessionsWithSavingsComparison == 0 {
-		if classified == 0 {
-			return "observed displacement: unavailable (no session has both result types)"
-		}
-		return "observed displacement: net unavailable (no session has both result types); " + rates
+		return observed + "; modeled balance unavailable (no session has both result types)"
 	}
 	signed := humanInt(report.ObservedNetTokens)
 	if report.ObservedNetTokens > 0 {
 		signed = "+" + signed
 	}
-	return "observed displacement: net " + signed + " est. tokens; " + rates + "; not measured savings"
+	return fmt.Sprintf("%s; modeled balance %s est. tokens if each of %s no-follow-up results (of %s in %s sessions "+
+		"with both result types) replaced one average exploration result (assumed; not measured savings)",
+		observed, signed, humanInt(int64(report.ModeledBalanceCreditedResults)),
+		humanInt(int64(report.ComparableGraphLocateResults)), humanInt(int64(report.SessionsWithSavingsComparison)))
 }
 
 func statsModelSummary(report statsResponse) string {
@@ -1894,11 +1954,14 @@ func writeStatsText(out io.Writer, report statsResponse) {
 		strconv.FormatFloat(report.ExplorationBytesPerCall, 'f', -1, 64))
 	fmt.Fprintln(out)
 
-	fmt.Fprintln(out, observedModelSummary(report))
-	fmt.Fprintf(out, "  displaced %s · re-query %s · read-anyway %s (window: next %d tool calls)\n",
+	fmt.Fprintln(out, followUpSummary(report))
+	fmt.Fprintf(out, "  no follow-up %s · re-query %s · read named file %s (overlapping %s, different region %s, unknown span %s) · censored %s · error %s · ineligible %s\n",
 		humanInt(int64(report.GraphLocateDisplaced)), humanInt(int64(report.GraphLocateRequery)),
-		humanInt(int64(report.GraphLocateReadAnyway)), report.DisplacementWindowCalls)
-	for _, line := range wrapText(observedModelText, 88) {
+		humanInt(int64(report.GraphLocateReadAnyway)), humanInt(int64(report.GraphLocateReadOverlapping)),
+		humanInt(int64(report.GraphLocateReadDifferentRegion)), humanInt(int64(report.GraphLocateReadUnknownSpan)),
+		humanInt(int64(report.GraphLocateCensored)), humanInt(int64(report.GraphLocateError)),
+		humanInt(int64(report.GraphLocateIneligible)))
+	for _, line := range wrapText(followUpModelText, 88) {
 		fmt.Fprintf(out, "  %s\n", line)
 	}
 	fmt.Fprintln(out)
