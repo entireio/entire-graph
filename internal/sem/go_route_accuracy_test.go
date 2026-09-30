@@ -177,3 +177,162 @@ func f() { m := &http.ServeMux{}; m.Handle("/lit", http.HandlerFunc(litHandler))
 		},
 	})
 }
+
+// chi: Route closures carry the prefix, Group closures and With keep it, and
+// a router's routes are placed under a Mount only when the router is created
+// in this file, mounted once, unconditionally, with a static prefix, and never
+// handed to anything else that could mount it.
+func TestGoRouteAccuracyChi(t *testing.T) {
+	runGoRouteAccuracyCases(t, []goRouteAccuracyCase{
+		{
+			name: "Route, nested Route, Group and With",
+			content: `package p
+func main() {
+	r := chi.NewRouter()
+	r.Get("/", indexHandler)
+	r.Route("/a", func(r chi.Router) {
+		r.Get("/x", xHandler)
+		r.Route("/b", func(sub chi.Router) {
+			sub.Get("/y", yHandler)
+			sub.With(paginate).Get("/p", pHandler)
+		})
+	})
+	r.Group(func(r chi.Router) {
+		r.Use(auth)
+		r.Get("/g", gHandler)
+	})
+	r.With(mw).Get("/w", wHandler)
+	http.ListenAndServe(":3000", r)
+}
+`,
+			want: []string{"/ -> indexHandler", "/a/x -> xHandler", "/a/b/y -> yHandler", "/a/b/p -> pHandler", "/g -> gHandler", "/w -> wHandler"},
+		},
+		{
+			name: "Route closure of an unclassified parameter type still gets the prefix",
+			content: `package p
+func routes(r Router) {
+	r.Route("/a", func(r Router) { r.Get("/x", xHandler) })
+}
+`,
+			want: []string{"/a/x -> xHandler"},
+		},
+		{
+			name: "Route with a dynamic prefix or a named function",
+			content: `package p
+func main(prefix string) {
+	r := chi.NewRouter()
+	r.Route(prefix, func(r chi.Router) { r.Get("/x", xHandler) })
+	r.Route("/n", named)
+	http.ListenAndServe(":3000", r)
+}
+func named(r chi.Router) { r.Get("/y", yHandler) }
+`,
+			want: nil,
+		},
+		{
+			name: "single composable Mount, nested",
+			content: `package p
+func main() {
+	r := chi.NewRouter()
+	api := chi.NewRouter()
+	admin := chi.NewRouter()
+	api.Get("/users", usersHandler)
+	admin.Get("/audit", auditHandler)
+	api.Route("/v1", func(v chi.Router) { v.Get("/x", xHandler) })
+	r.Mount("/api", api)
+	api.Mount("/admin", admin)
+	srv := &http.Server{Addr: ":80", Handler: r}
+	log.Fatal(srv.ListenAndServe())
+}
+`,
+			want: []string{"/api/users -> usersHandler", "/api/admin/audit -> auditHandler", "/api/v1/x -> xHandler"},
+		},
+		{
+			name: "Mount under a group prefix",
+			content: `package p
+func main() {
+	r := chi.NewRouter()
+	sub := chi.NewRouter()
+	sub.Get("/x", xHandler)
+	r.Route("/v1", func(r chi.Router) { r.Mount("/sub", sub) })
+	http.ListenAndServe(":3000", r)
+}
+`,
+			want: nil,
+		},
+		{
+			name: "Mount twice, conditionally, or with a dynamic prefix",
+			content: `package p
+func main(on bool, p string) {
+	r := chi.NewRouter()
+	twice := chi.NewRouter()
+	twice.Get("/t", tHandler)
+	r.Mount("/a", twice)
+	r.Mount("/b", twice)
+	cond := chi.NewRouter()
+	cond.Get("/c", cHandler)
+	if on {
+		r.Mount("/c", cond)
+	}
+	dyn := chi.NewRouter()
+	dyn.Get("/d", dHandler)
+	r.Mount(p, dyn)
+	http.ListenAndServe(":3000", r)
+}
+`,
+			want: nil,
+		},
+		{
+			name: "returned router (todos-resource shape)",
+			content: `package p
+type todosResource struct{}
+func (rs todosResource) Routes() chi.Router {
+	r := chi.NewRouter()
+	r.Get("/", rs.List)
+	r.Route("/{id}", func(r chi.Router) {
+		r.Get("/", rs.Get)
+	})
+	return r
+}
+func main() {
+	r := chi.NewRouter()
+	r.Mount("/todos", todosResource{}.Routes())
+	r.Get("/", rootHandler)
+	http.ListenAndServe(":3333", r)
+}
+`,
+			want: []string{"/ -> rootHandler"},
+		},
+		{
+			name: "router passed, stored, addressed or package-level",
+			content: `package p
+var pkg = chi.NewRouter()
+var stored chi.Router
+type S struct{ r chi.Router }
+func a() { r := chi.NewRouter(); r.Get("/a", aHandler); register(r) }
+func b(s *S) { r := chi.NewRouter(); r.Get("/b", bHandler); s.r = r }
+func c() { r := chi.NewRouter(); r.Get("/c", cHandler); stored = r }
+func d() { r := chi.NewRouter(); r.Get("/d", dHandler); keep(&r) }
+func e() { pkg.Get("/e", eHandler) }
+func f() { r := chi.NewRouter(); r.Get("/f", fHandler); h := r.ServeHTTP; use(h) }
+func g() { r := chi.NewRouter(); alias := r; alias.Get("/g", gHandler); defer register(alias) }
+func h() { r := chi.NewRouter(); r.Get("/h", hHandler); _ = S{r: r} }
+`,
+			want: nil,
+		},
+		{
+			name: "serving and Handle are not escapes",
+			content: `package p
+func main() {
+	r := chi.NewRouter()
+	r.Get("/a", aHandler)
+	top := http.NewServeMux()
+	top.Handle("/", r)
+	http.ListenAndServe(":80", top)
+	go http.ListenAndServeTLS(":443", "c", "k", r)
+}
+`,
+			want: []string{"/a -> aHandler"},
+		},
+	})
+}
