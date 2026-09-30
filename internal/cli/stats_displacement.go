@@ -251,16 +251,23 @@ func graphOutputPaths(text string) []string {
 }
 
 // graphDeliveredSpans returns, per file, the source lines a search response actually delivered:
-// snippet_start_line plus the number of lines in the snippet text that survived rendering. It
-// returns nil unless the WHOLE output parses as a search response, so clipped output (a `| head`,
-// a truncated body) never yields spans — a header that survived clipping is not delivered source.
-// A result whose snippet is empty (a locator) delivers no lines.
+// each result's primary snippet and every attached passage (kept on the parent by
+// --single-resolution), each from its start line plus the number of lines its snippet text carries.
+// It returns nil unless the WHOLE output parses as a search response, so clipped output (a
+// `| head`, a truncated body) never yields spans — a header that survived clipping is not delivered
+// source. A result whose snippet is empty (a locator) delivers no lines.
 func graphDeliveredSpans(text string) map[string][]lineSpan {
 	var response struct {
 		Results []struct {
 			FilePath         string `json:"file_path"`
 			SnippetStartLine int    `json:"snippet_start_line"`
+			SnippetEndLine   int    `json:"snippet_end_line"`
 			Snippet          string `json:"snippet"`
+			Passages         []struct {
+				StartLine int    `json:"start_line"`
+				EndLine   int    `json:"end_line"`
+				Snippet   string `json:"snippet"`
+			} `json:"passages"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &response); err != nil || len(response.Results) == 0 {
@@ -269,13 +276,34 @@ func graphDeliveredSpans(text string) map[string][]lineSpan {
 	spans := map[string][]lineSpan{}
 	for _, result := range response.Results {
 		path := normaliseOverlapPath(result.FilePath)
-		if path == "" || result.SnippetStartLine < 1 || result.Snippet == "" {
+		if path == "" {
 			continue
 		}
-		lines := strings.Count(strings.TrimRight(result.Snippet, "\n"), "\n") + 1
-		spans[path] = append(spans[path], lineSpan{result.SnippetStartLine, result.SnippetStartLine + lines - 1})
+		if span, ok := snippetSpan(result.SnippetStartLine, result.SnippetEndLine, result.Snippet); ok {
+			spans[path] = append(spans[path], span)
+		}
+		for _, passage := range result.Passages {
+			if span, ok := snippetSpan(passage.StartLine, passage.EndLine, passage.Snippet); ok {
+				spans[path] = append(spans[path], span)
+			}
+		}
 	}
 	return spans
+}
+
+// snippetSpan is the line range a snippet's text covers from start. Every line counts, trailing
+// blank lines included: a snippet is an exact join of source lines, so "x\n\n" is three lines.
+// When the producer states the end line, the span never extends past it, which absorbs a
+// presentation terminator without trusting an end line that exceeds the delivered text.
+func snippetSpan(start, end int, snippet string) (lineSpan, bool) {
+	if start < 1 || snippet == "" {
+		return lineSpan{}, false
+	}
+	last := start + strings.Count(snippet, "\n")
+	if end >= start && end < last {
+		last = end
+	}
+	return lineSpan{start, last}, true
 }
 
 func normaliseOverlapPath(path string) string {

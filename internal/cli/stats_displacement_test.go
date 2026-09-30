@@ -765,3 +765,53 @@ func TestFollowUpCacheNeverMixesClassifierVersions(t *testing.T) {
 		})
 	}
 }
+
+// Passages attached to a result (--single-resolution keeps them on the parent) are delivered
+// source too: a read of a delivered passage line is overlapping, not a different region.
+func TestFollowUpDeliveredPassagesCount(t *testing.T) {
+	t.Parallel()
+	body := `{"results":[{"file_path":"notes.md","snippet_start_line":1,"snippet":"primary","passages":[{"start_line":100,"end_line":100,"focus_line":100,"snippet":"delivered answer"}]}]}`
+	for _, tc := range []struct {
+		name   string
+		offset int
+		edit   bool
+		want   string
+	}{
+		{"passage-line", 100, false, "overlapping"},
+		{"primary-line", 1, false, "overlapping"},
+		{"undelivered-line", 50, false, "different"},
+		{"passage-after-edit", 100, true, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			calls := []dispCall{graphSearch(body)}
+			if tc.edit {
+				calls = append(calls, editPath("/r/notes.md"))
+			}
+			calls = append(calls, readSpan("/r/notes.md", tc.offset, 1, "x"))
+			assertFollowUp(t, sessionOf(t, calls...), map[string]int64{tc.want: 1})
+		})
+	}
+}
+
+// Delivered trailing blank lines keep their coordinates.
+func TestFollowUpDeliveredTrailingBlankLines(t *testing.T) {
+	t.Parallel()
+	body := `{"results":[{"file_path":"a.go","snippet_start_line":10,"snippet_end_line":12,"snippet":"x\n\n"}]}`
+	if got := graphDeliveredSpans(body)["a.go"]; len(got) != 1 || got[0] != (lineSpan{10, 12}) {
+		t.Fatalf("spans = %v, want [10-12]", got)
+	}
+	for _, tc := range []struct {
+		offset int
+		want   string
+	}{{10, "overlapping"}, {11, "overlapping"}, {12, "overlapping"}, {13, "different"}} {
+		assertFollowUp(t, sessionOf(t, graphSearch(body), readSpan("/r/a.go", tc.offset, 1, "x")), map[string]int64{tc.want: 1})
+	}
+	// A stated end line caps a presentation terminator; an end line beyond the text is not trusted.
+	if got := graphDeliveredSpans(`{"results":[{"file_path":"a.go","snippet_start_line":10,"snippet_end_line":10,"snippet":"x\n"}]}`)["a.go"]; got[0] != (lineSpan{10, 10}) {
+		t.Fatalf("terminator not capped: %v", got)
+	}
+	if got := graphDeliveredSpans(`{"results":[{"file_path":"a.go","snippet_start_line":10,"snippet_end_line":30,"snippet":"x\ny"}]}`)["a.go"]; got[0] != (lineSpan{10, 11}) {
+		t.Fatalf("end line beyond the text trusted: %v", got)
+	}
+}
