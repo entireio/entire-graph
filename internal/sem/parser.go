@@ -435,6 +435,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		for index := range entities {
 			entities[index].StartLine -= entityLineOffset
 			entities[index].EndLine -= entityLineOffset
+			if entities[index].nameLine > 0 {
+				entities[index].nameLine -= entityLineOffset
+			}
 			// prepareProtocolBuffersParseSource prepends one synthetic syntax
 			// declaration to both parser and entity views. Byte metadata must point
 			// back into the authored content just like the adjusted line metadata.
@@ -3915,6 +3918,9 @@ func cFamilyTypedefAliasEntities(node *sitter.Node, src []byte, language string,
 		}
 		alias := primary
 		alias.Name = name
+		// Its own declarator's line, never the primary's: `typedef int\n A,\n B;` names A on
+		// line 2 and B on line 3. Unknown (0) when no declarator binds it.
+		alias.nameLine, _ = nameLineFromDeclarators(node, src, name)
 		// Recompute rather than copy: for a single-line declaration the
 		// fingerprint is the signature with the entity's own name blanked out,
 		// so sharing the primary's would make every alias look like the same
@@ -4444,6 +4450,8 @@ func setEntitySourceRange(entity *Entity, node *sitter.Node, language string, sr
 	}
 	entity.sourceStartByte = start
 	entity.sourceEndByte = end
+	// The same node the range comes from names the declaration; see declaration_name_line.go.
+	entity.nameLine = declarationNameLine(node, src, entity.Name)
 }
 
 // swiftExtensionDeclaration reports whether a tree-sitter-swift

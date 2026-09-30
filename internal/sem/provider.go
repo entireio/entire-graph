@@ -360,6 +360,15 @@ type SymbolRecord struct {
 	// frozen provider schema and symbol IDs do not change.
 	sourceStartByte int
 	sourceEndByte   int
+	// nameLine is Entity.nameLine: the parser's line for the declaration's name token, 0 when
+	// unknown. Private for the same reason as the byte range; search carries it to results as
+	// SearchResult.SymbolNameLine. Where it travels: the search snapshot cache keeps it in a side
+	// map (search_cache.go), so cold, complete-cache and selective views agree. The provider
+	// records and their cache are unchanged (it is not a public field). The compact snapshot row
+	// (compact_snapshot.go) does not encode it: symbols restored from a compact snapshot have
+	// none, and consumers use the text fallback for them. Synthetic symbols: a tool keeps its
+	// handler's; routes and workflows, named by path, have none.
+	nameLine int
 	// bodyless: this symbol declares a callable without defining it (a
 	// TypeScript overload signature or ambient declaration; see Entity.bodyless).
 	// Call resolution uses it to tell an overload set apart from genuinely
@@ -2059,6 +2068,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			Local:                   entity.Local,
 			sourceStartByte:         entity.sourceStartByte,
 			sourceEndByte:           entity.sourceEndByte,
+			nameLine:                entityNameLineWithin(entity),
 			bodyless:                entity.bodyless,
 			cPlusPlusOwners:         append([]string(nil), entity.cPlusPlusOwners...),
 			cPlusPlusDefinitionName: entity.cPlusPlusDefinitionName,
@@ -2126,6 +2136,10 @@ func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbo
 			ContainerID:     source.ID,
 			sourceStartByte: source.sourceStartByte,
 			sourceEndByte:   source.sourceEndByte,
+			// A tool keeps its handler's name and coordinates, so the handler's name token is its
+			// name token too. Routes and workflows (above and below) are named by the path, a
+			// spelling no source token carries, and keep no name line.
+			nameLine: source.nameLine,
 		})
 	}
 	if workflow := applicationWorkflowBoundary(path); workflow != "" {
