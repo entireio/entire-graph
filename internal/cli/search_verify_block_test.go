@@ -551,8 +551,8 @@ func TestSearchVerifyBlockReplayScopeSeparatesModes(t *testing.T) {
 
 func TestSearchSessionScopeMatchesVerifyMode(t *testing.T) {
 	t.Parallel()
-	live := searchSessionScope{Repo: "/r", Tree: "t", PolicyFingerprint: "p", Format: "agent"}
-	recorded := searchSessionState{ReplaySchema: searchSessionReplaySchema, Repo: "/r", Tree: "t", PolicyFingerprint: "p", Format: "agent"}
+	live := searchSessionScope{Repo: "/r", Tree: "t", PolicyFingerprint: "p", Format: "agent", Producer: "rev:a"}
+	recorded := searchSessionState{ReplaySchema: searchSessionReplaySchema, Repo: "/r", Tree: "t", PolicyFingerprint: "p", Format: "agent", Producer: "rev:a"}
 	if !recorded.matches(live) {
 		t.Fatal("on state does not match an on scope")
 	}
@@ -561,35 +561,42 @@ func TestSearchSessionScopeMatchesVerifyMode(t *testing.T) {
 	if recorded.matches(offLive) {
 		t.Fatal("a payload recorded with VERIFY matches an omit-verify scope")
 	}
+	// Both modes share one schema; the mode itself is the identity.
 	offRecorded := recorded
 	offRecorded.VerifyOmitted = true
-	if offRecorded.matches(offLive) {
-		t.Fatal("an off state under the on schema matches; a pre-switch build would replay it to an on call")
-	}
-	offRecorded.ReplaySchema = searchSessionReplaySchemaVerifyOmitted
 	if !offRecorded.matches(offLive) {
 		t.Fatal("off state does not match an off scope")
 	}
 	if offRecorded.matches(live) {
 		t.Fatal("a payload recorded without VERIFY matches an on scope")
 	}
-	// A state file written before the switch existed has no verify_omitted member, and every such
-	// payload was rendered with VERIFY on.
+	// A schema-5 reader checked the producer but not the mode, so no schema-5 record may answer
+	// either mode, whatever mode it claims.
+	for _, state := range []searchSessionState{recorded, offRecorded} {
+		legacy := state
+		legacy.ReplaySchema = 5
+		if legacy.matches(live) || legacy.matches(offLive) {
+			t.Fatalf("legacy schema-5 state (verify_omitted=%t) matched: on=%t off=%t",
+				legacy.VerifyOmitted, legacy.matches(live), legacy.matches(offLive))
+		}
+	}
+	// A state file written before the switch existed has no verify_omitted member and an older
+	// schema. It is refused in both modes: it must be recomputed, not read as an on payload.
 	var legacy searchSessionState
-	if err := json.Unmarshal([]byte(`{"searches":1,"replay_schema":3,"policy_fingerprint":"p","format":"agent","repo":"/r","tree":"t","payload":"x","payload_paths":[]}`), &legacy); err != nil {
+	if err := json.Unmarshal([]byte(`{"searches":1,"replay_schema":3,"policy_fingerprint":"p","format":"agent","repo":"/r","tree":"t","producer":"rev:a","payload":"x","payload_paths":[]}`), &legacy); err != nil {
 		t.Fatal(err)
 	}
-	if !legacy.matches(live) || legacy.matches(offLive) {
-		t.Fatalf("legacy state: matches on=%t off=%t, want true false", legacy.matches(live), legacy.matches(offLive))
+	if legacy.matches(live) || legacy.matches(offLive) {
+		t.Fatalf("legacy state: matches on=%t off=%t, want false false", legacy.matches(live), legacy.matches(offLive))
 	}
-	// Record persists the mode.
+	// Record persists the mode under the common schema.
 	session := &searchSession{path: filepath.Join(t.TempDir(), "s.json"), limit: 1}
 	session.record("q", []byte("payload"), []string{}, offLive, false, true)
 	state, err := session.load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.VerifyOmitted || state.ReplaySchema != searchSessionReplaySchemaVerifyOmitted ||
+	if !state.VerifyOmitted || state.ReplaySchema != searchSessionReplaySchema ||
 		!state.matches(offLive) || state.matches(live) {
 		t.Fatalf("recorded off state = %#v", state)
 	}

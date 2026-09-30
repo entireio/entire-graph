@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -219,12 +222,52 @@ func TestAgentBlockUnchangedWhenWindowHoldsDeclaration(t *testing.T) {
 			if !blockShowsLine(plain, decl) {
 				continue
 			}
-			if got := agentSearchPrimaryBlock(result, budget, false); string(got) != string(plain) {
+			got := agentSearchPrimaryBlock(result, budget, false)
+			// A whole, unchanged body is certified ahead of any window when a marked header fits.
+			// That block is checked on its own terms below; only the unmarked fallback must be the
+			// window byte for byte.
+			if bytes.Contains(got, []byte(completeMarker)) {
+				assertTruthfulCompleteBlock(t, fixture.lang, budget, got, view)
+				continue
+			}
+			if string(got) != string(plain) {
 				t.Fatalf("%s budget %d: block changed although the window held the declaration:\nWANT\n%s\nGOT\n%s", fixture.lang, budget, plain, got)
 			}
 		}
 	}
 }
+
+// assertTruthfulCompleteBlock checks a block carrying completeMarker without consulting the
+// renderer that chose it: the marker rides only the header, the body is the whole snippet
+// unchanged, the header's range covers exactly that body, and the block fits the budget.
+func assertTruthfulCompleteBlock(t *testing.T, lang string, budget int, got []byte, view agentSearchBlockView) {
+	t.Helper()
+	if budget > 0 && len(got) > budget {
+		t.Fatalf("%s budget %d: marked block is %d bytes", lang, budget, len(got))
+	}
+	header, body, ok := strings.Cut(string(got), "\n")
+	if !ok || !strings.Contains(header, completeMarker) {
+		t.Fatalf("%s budget %d: marker is not in the header line:\n%s", lang, budget, got)
+	}
+	if strings.Contains(body, completeMarker) {
+		t.Fatalf("%s budget %d: marker appears in the body:\n%s", lang, budget, got)
+	}
+	if want := strings.Join(view.lines, "\n") + "\n"; body != want {
+		t.Fatalf("%s budget %d: marked body is not the whole snippet:\nWANT\n%s\nGOT\n%s", lang, budget, want, body)
+	}
+	match := completeBlockRange.FindStringSubmatch(header)
+	if match == nil {
+		t.Fatalf("%s budget %d: marked header has no line range: %q", lang, budget, header)
+	}
+	start, _ := strconv.Atoi(match[1])
+	end, _ := strconv.Atoi(match[2])
+	if first, last := view.first, view.first+len(view.lines)-1; start != first || end != last {
+		t.Fatalf("%s budget %d: marked header claims %d-%d, body spans %d-%d: %q", lang, budget, start, end, first, last, header)
+	}
+}
+
+// completeBlockRange reads the start-end range of a marked header's location.
+var completeBlockRange = regexp.MustCompile(`^(?:\d+\.\s+)?\S+?:(\d+)-(\d+)(?:\s|$)`)
 
 // TestAgentBlockUnchangedWhenWindowHoldsNamedLineButNotContinuation: the window holds the named
 // line of a multi-line signature but not its continuation, and a long line above the declaration

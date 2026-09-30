@@ -155,7 +155,7 @@ func TestSearchEchoProducerRecordsAreInvisibleToLegacyReaders(t *testing.T) {
 	if persisted.Producer == "" {
 		t.Fatalf("fixture drift: no producer persisted: %s", raw)
 	}
-	for _, legacy := range []int{2, 3} {
+	for _, legacy := range []int{0, 1, 2, 3, 4, 5} {
 		if persisted.ReplaySchema == legacy {
 			t.Fatalf("producer-bound record uses legacy schema %d, which a producer-unaware reader accepts", legacy)
 		}
@@ -168,7 +168,7 @@ func TestSearchEchoProducerRecordsAreInvisibleToLegacyReaders(t *testing.T) {
 	if !state.matches(live) {
 		t.Fatal("fixture drift: the persisted record does not match its own scope")
 	}
-	for _, legacy := range []int{2, 3} {
+	for _, legacy := range []int{0, 1, 2, 3, 4, 5} {
 		old := state
 		old.ReplaySchema = legacy
 		if old.matches(live) {
