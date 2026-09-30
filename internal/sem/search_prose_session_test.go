@@ -615,7 +615,7 @@ func %sDelivery() {}
 	}
 	// Removing only two newly justified complete-symbol signals independently
 	// recovered the full previous JSON digest; source and order are unchanged.
-	assertSearchResultGolden(t, response.Results, "e9210f8962e96fc00a4141dfb3cd01d16bd3afc5a3e75aadb8c2dcd7a4a33647")
+	assertSearchResultGoldenWithoutNameLine(t, response.Results, "e9210f8962e96fc00a4141dfb3cd01d16bd3afc5a3e75aadb8c2dcd7a4a33647")
 	identities := make([][3]any, len(response.Results))
 	for index, result := range response.Results {
 		if len(result.Passages) != 0 {
@@ -777,7 +777,7 @@ func Worker%d() {}
 	}
 	// Removing only two newly justified complete-symbol signals independently
 	// recovered the full previous JSON digest; source and order are unchanged.
-	assertSearchResultGolden(t, response.Results, "76f2907c82b6d8a21d2b1936094e8e647dfeb1142132ec846cae5eee8d0b5d2e")
+	assertSearchResultGoldenWithoutNameLine(t, response.Results, "76f2907c82b6d8a21d2b1936094e8e647dfeb1142132ec846cae5eee8d0b5d2e")
 	for _, result := range response.Results {
 		if containsString(result.Signals, "retrieval_mode=prose-parent") {
 			t.Fatalf("two-thirds prose corpus activated prose-parent mode: %#v", response.Results)
@@ -950,6 +950,24 @@ func assertSearchResultGolden(t *testing.T, results []SearchResult, want string)
 	if got != want {
 		t.Errorf("result JSON SHA-256 = %s, want %s", got, want)
 	}
+}
+
+// assertSearchResultGoldenWithoutNameLine checks a golden recorded before SymbolNameLine existed.
+// That field is omitempty, so zeroing it restores exactly the JSON the golden hashed: any other
+// difference still fails. The full digest is logged so the golden can be rebound to it once this
+// equality has been observed.
+func assertSearchResultGoldenWithoutNameLine(t *testing.T, results []SearchResult, wantWithoutNameLine string) {
+	t.Helper()
+	full, err := json.Marshal(results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := append([]SearchResult(nil), results...)
+	for index := range normalized {
+		normalized[index].SymbolNameLine = 0
+	}
+	assertSearchResultGolden(t, normalized, wantWithoutNameLine)
+	t.Logf("result JSON SHA-256 with SymbolNameLine = %x", sha256.Sum256(full))
 }
 
 func searchCandidateResults(candidates []searchCandidate) []SearchResult {
