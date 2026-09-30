@@ -355,11 +355,6 @@ func (r *goRouteResolver) noteCall(call *ast.CallExpr, scope *goRouteScope) {
 			candidate.handler, candidate.inline = "", true
 		}
 	}
-	if name == "Handle" && candidate.route == r.text(call.Args[0]) && len(call.Args) != 2 {
-		// Handle(pattern, handler) is the only two-argument form this pass
-		// knows for any other router.
-		return
-	}
 	r.regs = append(r.regs, candidate)
 }
 
