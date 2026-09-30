@@ -28,7 +28,9 @@ import (
 //   - The window is NOT part of the key. A summary is a whole-file fact with no notion of
 //     --since; windowing happens after merge, from record timestamps. So one warm cache serves
 //     every window, and no --since can ever read another's answer.
-const statsCacheSchema = "v1"
+//
+// v2: summaryCall carries the observed-displacement class (Disp).
+const statsCacheSchema = "v2"
 
 // Small scopes skip memo overhead only when both their file count and total size are small.
 const statsCacheMinTranscripts = 8

@@ -933,8 +933,9 @@ func TestStatsDefaultOutputIsOneHeadlineLine(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("default output must be exactly one line, got %d:\n%s", len(lines), text)
 	}
-	// (840-40) modeled bytes -> +200 estimated tokens; not measured savings.
-	if lines[0] != "[entire-graph] 1:1 context model: +200 est. tokens; not measured savings" {
+	// The Grep right after the graph search is a re-query, so nothing is displaced: the 40 graph
+	// bytes are pure cost (-10 est. tokens). The 1:1 model (+200) stays one --verbose away.
+	if lines[0] != "[entire-graph] observed displacement: net -10 est. tokens; displaced 0% of 1 graph locate results (re-query 100%, read-anyway 0%; next 5 calls); not measured savings" {
 		t.Fatalf("unexpected model headline = %q", lines[0])
 	}
 	for _, unwanted := range []string{"graph calls by verb", "session tokens (billed", "ESTIMATED SAVINGS", "assumption"} {
