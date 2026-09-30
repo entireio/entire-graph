@@ -1,0 +1,318 @@
+package cli
+
+import (
+	"fmt"
+	"math/rand"
+	"strings"
+	"testing"
+
+	"github.com/entireio/entire-graph/internal/sem"
+)
+
+// declNameLineFixture is a snippet of `pre` lines of an earlier symbol, then the result's symbol:
+// `annos` annotation lines, its name line, and `body` body lines. Every line is unique, so a
+// line's text identifies it in a block.
+func declNameLineFixture(pre, annos, body, first int) ([]string, sem.SearchResult) {
+	var lines []string
+	for i := 0; i < pre; i++ {
+		lines = append(lines, fmt.Sprintf("        earlier_%02d();", i))
+	}
+	for i := 0; i < annos; i++ {
+		lines = append(lines, fmt.Sprintf("    @Policy%02d(mode = \"x%02d\")", i, i))
+	}
+	lines = append(lines, "    public void target(int input) {")
+	for i := 0; i < body; i++ {
+		lines = append(lines, fmt.Sprintf("        step_%02d(input, %d);", i, i))
+	}
+	lines = append(lines, "    }")
+	last := first + len(lines) - 1
+	return lines, sem.SearchResult{
+		Rank: 1, Score: 20, FilePath: "src/main/java/a/Svc.java", StartLine: first, EndLine: last,
+		FocusLine: last - 1, SnippetStartLine: first, SnippetEndLine: last,
+		SymbolStartLine: first + pre, SymbolEndLine: last, SymbolNameLine: first + pre + annos,
+		SymbolName: "target", QualifiedName: "Svc.target", Signals: []string{"complete-symbol"},
+		Snippet: strings.Join(lines, "\n"),
+	}
+}
+
+// NEVER LOCATE LESS, WITH A PARSER NAME LINE, UNBOUNDED. Every line of the declaration region —
+// the symbol's first line down to its name line, annotations included, however many — that the
+// ordinary window showed is shown by the new block, on every budget; and a block that differs from
+// the ordinary one shows the name line and numbers every printed line. Annotation stacks run past
+// the text fallback's 16-line bound, and no annotation mentions the name, so no text heuristic
+// could stand in for the parser's region.
+func TestAgentBlockParserRegionNeverLess(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(20260929))
+	iters := 160
+	if testing.Short() {
+		iters = 40
+	}
+	exercised, changed := 0, 0
+	for iter := 0; iter < iters; iter++ {
+		pre, annos, body := rng.Intn(6), rng.Intn(28), 3+rng.Intn(50)
+		first := 10 + rng.Intn(400)
+		lines, result := declNameLineFixture(pre, annos, body, first)
+		// The focus anywhere in the symbol, annotations included: a window centred in the
+		// annotation stack shows region lines without the name line.
+		result.FocusLine = first + pre + rng.Intn(annos+1+body)
+		name := pre + annos
+		for budget := 40; budget <= 2400; budget += 7 + rng.Intn(9) {
+			tag := fmt.Sprintf("iter %d (pre %d annos %d body %d) budget %d", iter, pre, annos, body, budget)
+			view := agentSearchBlockViewOf(result)
+			plain, _, _ := agentSearchFocusWindow(view, budget)
+			block := agentSearchPrimaryBlock(result, budget)
+			for i := pre; i <= name; i++ {
+				if blockShowsLine(plain, lines[i]) {
+					exercised++
+					if !blockShowsLine(block, lines[i]) {
+						t.Fatalf("%s: the ordinary window showed region line %q; the block does not:\nplain:\n%s\nblock:\n%s", tag, lines[i], plain, block)
+					}
+				}
+			}
+			if string(block) != string(plain) && strings.Contains(strings.TrimSuffix(string(block), "\n"), "\n") {
+				changed++
+				if !blockShowsLine(block, lines[name]) {
+					t.Fatalf("%s: a changed block does not show the name line:\n%s", tag, block)
+				}
+			}
+			declCheckRecoverable(t, tag, result, budget)
+		}
+	}
+	if exercised == 0 || changed == 0 {
+		t.Fatalf("exercised %d region lines, %d changed blocks: the sweep tests nothing", exercised, changed)
+	}
+}
+
+// The parser's name line is the declaration even far below the text fallback's bound: a block cut
+// below a 20-line annotation stack shows the name line.
+func TestAgentBlockParserNameLineBeyondScanBound(t *testing.T) {
+	t.Parallel()
+	lines, result := declNameLineFixture(0, 20, 40, 100)
+	name := lines[20]
+	shown, fallback := 0, 0
+	for budget := 200; budget <= 900; budget += 10 {
+		if blockShowsLine(agentSearchPrimaryBlock(result, budget), name) {
+			shown++
+		}
+		textOnly := result
+		textOnly.SymbolNameLine = 0
+		if blockShowsLine(agentSearchPrimaryBlock(textOnly, budget), name) {
+			fallback++
+		}
+	}
+	if shown == 0 || fallback != 0 {
+		t.Fatalf("name line shown at %d budgets with the parser line, %d without (want >0 and 0)", shown, fallback)
+	}
+}
+
+// An absorbed member whose declaration line is the parser's carries its region start
+// (MergedDeclStarts): every region line the ordinary window showed stays, however far above.
+func TestAgentBlockAbsorbedParserRegionNeverLess(t *testing.T) {
+	t.Parallel()
+	var lines []string
+	lines = append(lines, "    public void load(String path) {")
+	for i := 0; i < 20; i++ {
+		lines = append(lines, fmt.Sprintf("        read_%02d(path);", i))
+	}
+	lines = append(lines, "    }", "")
+	regionTop := len(lines)
+	for i := 0; i < 18; i++ {
+		lines = append(lines, fmt.Sprintf("    @Rule%02d(options = \"o%02d\")", i, i))
+	}
+	declared := len(lines)
+	lines = append(lines, "    public Options options() {", "        return cached;", "    }")
+	for i := 0; i < 10; i++ {
+		lines = append(lines, fmt.Sprintf("    // tail %02d", i))
+	}
+	first := 50
+	exercised := 0
+	for focus := 1; focus < regionTop; focus++ {
+		result := sem.SearchResult{Rank: 1, Score: 50, FilePath: "src/Cfg.java", StartLine: first, EndLine: first + len(lines) - 1,
+			FocusLine: first + focus, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
+			SymbolStartLine: first, SymbolEndLine: first + regionTop - 2, SymbolNameLine: first, SymbolName: "load",
+			QualifiedName: "Cfg.load", Signals: []string{"complete-symbol", "contiguous-span"}, MergedRanks: []int{1, 2},
+			MergedDeclLines: []int{first + declared}, MergedDeclStarts: []int{first + regionTop}, Snippet: strings.Join(lines, "\n")}
+		for budget := 80; budget <= 2600; budget += 13 {
+			view := agentSearchBlockViewOf(result)
+			plain, _, _ := agentSearchFocusWindow(view, budget)
+			block := agentSearchPrimaryBlock(result, budget)
+			for i := regionTop; i <= declared; i++ {
+				if blockShowsLine(plain, lines[i]) {
+					exercised++
+					if !blockShowsLine(block, lines[i]) {
+						t.Fatalf("focus %d budget %d: ordinary window showed %q; block does not:\nplain:\n%s\nblock:\n%s", focus, budget, lines[i], plain, block)
+					}
+				}
+			}
+		}
+	}
+	if exercised == 0 {
+		t.Fatal("no budget showed the absorbed region: the sweep tests nothing")
+	}
+}
+
+// A name line outside the symbol's own span is not trusted: the block falls back to the text
+// finder rather than anchoring on a line that belongs to another symbol.
+func TestAgentBlockNameLineOutsideSpanIsIgnored(t *testing.T) {
+	t.Parallel()
+	_, result := declNameLineFixture(2, 3, 20, 100)
+	view := agentSearchBlockViewOf(result)
+	own, ok, _ := agentSearchDecls(view)
+	if !ok || own.index != 5 {
+		t.Fatalf("own declaration index %d ok=%v; want 5 from the name line", own.index, ok)
+	}
+	result.SymbolNameLine = result.SymbolStartLine - 1 // inside the snippet, above the span
+	own, ok, _ = agentSearchDecls(agentSearchBlockViewOf(result))
+	if ok && own.index == 1 {
+		t.Fatalf("a name line outside the span was used as the declaration")
+	}
+	result.SymbolEndLine = result.SymbolStartLine + 3 // the name line now lies below the span
+	result.SymbolNameLine = result.SymbolStartLine + 5
+	own, ok, _ = agentSearchDecls(agentSearchBlockViewOf(result))
+	if ok && own.index == 7 {
+		t.Fatalf("a name line below the span was used as the declaration")
+	}
+}
+
+// Mentions use Unicode identifier boundaries: a longer identifier does not mention a prefix of it.
+func TestAgentSearchLineMentionsUnicodeBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		line, name string
+		want       bool
+	}{
+		{"func runé() {}", "run", false},
+		{"x := érun", "run", false},
+		{"@Named(\"run\")", "run", true},
+		{"def naïve(x):", "naïve", true},
+		{"naïve2(x)", "naïve", false},
+	} {
+		if got := agentSearchLineMentions(c.line, c.name); got != c.want {
+			t.Errorf("%q mentions %q = %v, want %v", c.line, c.name, got, c.want)
+		}
+	}
+}
+
+// A known name line the snippet does not hold is not replaced by the text finder's guess: the
+// C++ return type spells a call to run, and the declaration (line 11) is outside the snippet.
+// The block has no own declaration and is the ordinary block at every budget.
+func TestAgentBlockKnownNameLineOutsideSnippetIsNotGuessed(t *testing.T) {
+	t.Parallel()
+	result := sem.SearchResult{Rank: 1, Score: 40, FilePath: "src/runner.cpp", Language: "cpp",
+		StartLine: 3, EndLine: 10, FocusLine: 9, SnippetStartLine: 3, SnippetEndLine: 10,
+		SymbolStartLine: 10, SymbolEndLine: 30, SymbolNameLine: 11, SymbolName: "run", QualifiedName: "run",
+		Snippet: "int a();\nint b();\nint c();\nint d();\nint e();\nint f();\nint g();\ndecltype(run())"}
+	view := agentSearchBlockViewOf(result)
+	if _, ok, _ := agentSearchDecls(view); ok {
+		t.Fatal("a same-name call was taken for the declaration the index placed outside the snippet")
+	}
+	for budget := 30; budget <= 400; budget += 3 {
+		plain, _, _ := agentSearchFocusWindow(agentSearchBlockViewOf(result), budget)
+		if got := agentSearchPrimaryBlock(result, budget); string(got) != string(plain) && plain != nil {
+			t.Fatalf("budget %d: block differs from the ordinary one:\n%s\nplain:\n%s", budget, got, plain)
+		}
+	}
+	absent := result
+	absent.SymbolNameLine = 0
+	if _, ok, _ := agentSearchDecls(agentSearchBlockViewOf(absent)); !ok {
+		t.Fatal("control: with no name line the text fallback should find the (call) line")
+	}
+}
+
+// A source line spelled like the gap record — singular or plural — is quarantined; near misses
+// are not record-shaped.
+func TestAgentSearchElisionLookalikesAreQuarantined(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		line string
+		want bool
+	}{
+		{"... 1 line elided", true},
+		{"... 50 lines elided", true},
+		{"... 50 lines elided  ", true},
+		{"... lines elided", false},
+		{"... 5 lines elided extra", false},
+		{" ... 5 lines elided", false},
+	} {
+		if got := agentSearchLineIsElision(strings.TrimRight(c.line, " ")) && searchLineIsRecordShaped(c.line); got != c.want {
+			t.Errorf("%q quarantined = %v, want %v", c.line, got, c.want)
+		}
+	}
+}
+
+// A known name line below the snippet still marks the part of its header region the snippet
+// holds: annotations the ordinary window showed stay when an absorbed member's declaration is
+// added, although none of them mentions the symbol's name.
+func TestAgentBlockKnownElsewhereRegionNeverLess(t *testing.T) {
+	t.Parallel()
+	lines := []string{"    public void load() {"}
+	for i := 0; i < 20; i++ {
+		lines = append(lines, fmt.Sprintf("        read_%02d();", i))
+	}
+	lines = append(lines, "    }", "")
+	regionTop := len(lines)
+	for i := 0; i < 4; i++ {
+		lines = append(lines, fmt.Sprintf("    @Rule%02d(mode = %d)", i, i))
+	}
+	first := 100
+	exercised := 0
+	for focus := regionTop - 3; focus < len(lines); focus++ {
+		result := sem.SearchResult{Rank: 1, Score: 50, FilePath: "src/Cfg.java", StartLine: first, EndLine: first + len(lines) - 1,
+			FocusLine: first + focus, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
+			SymbolStartLine: first + regionTop, SymbolEndLine: first + 60, SymbolNameLine: first + len(lines),
+			SymbolName: "options", QualifiedName: "Cfg.options", Signals: []string{"contiguous-span"},
+			MergedRanks: []int{1, 2}, MergedDeclLines: []int{first}, Snippet: strings.Join(lines, "\n")}
+		for budget := 60; budget <= 1400; budget += 7 {
+			view := agentSearchBlockViewOf(result)
+			plain, _, _ := agentSearchFocusWindow(view, budget)
+			block := agentSearchPrimaryBlock(result, budget)
+			for i := regionTop; i < len(lines); i++ {
+				if blockShowsLine(plain, lines[i]) {
+					exercised++
+					if !blockShowsLine(block, lines[i]) {
+						t.Fatalf("focus %d budget %d: ordinary window showed %q; block does not:\nplain:\n%s\nblock:\n%s", focus, budget, lines[i], plain, block)
+					}
+				}
+			}
+		}
+	}
+	if exercised == 0 {
+		t.Fatal("no budget showed the region: the sweep tests nothing")
+	}
+}
+
+// The block's text fallback lexes with the file's language: in Rust `r"\"` is a complete string,
+// so the declaration after it on the same line is code; with no language the line stays masked.
+func TestAgentBlockFallbackUsesTheFilesLanguage(t *testing.T) {
+	t.Parallel()
+	result := sem.SearchResult{Rank: 1, FilePath: "src/lib.rs", Language: "Rust", StartLine: 1, EndLine: 3, FocusLine: 3,
+		SnippetStartLine: 1, SnippetEndLine: 3, SymbolStartLine: 1, SymbolEndLine: 3, SymbolName: "run",
+		Snippet: "let s = r\"\\\"; fn run() {\n    s.len()\n}"}
+	if own, ok, _ := agentSearchDecls(agentSearchBlockViewOf(result)); !ok || own.index != 0 {
+		t.Fatalf("Rust: own declaration ok=%v index=%d; want line 0", ok, own.index)
+	}
+	result.Language, result.FilePath = "", "src/unknown"
+	if _, ok, _ := agentSearchDecls(agentSearchBlockViewOf(result)); ok {
+		t.Fatal("control: with no language the raw string masks the rest of the line")
+	}
+}
+
+// agentSearchRenderDecls bounds its window like agentSearchBodyLines. Its callers only pass windows
+// inside the snippet (agentSearchWidestWithDecls: right = left+span-1 <= len-1; agentSearchDeclsOnly:
+// no window), so an out-of-range window is not reachable from the renderer; a direct call with one
+// renders the lines that exist instead of panicking.
+func TestAgentSearchRenderDeclsBoundsTheWindow(t *testing.T) {
+	t.Parallel()
+	_, result := declNameLineFixture(0, 1, 3, 10)
+	view := agentSearchBlockViewOf(result)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("out-of-range window panicked: %v", r)
+		}
+	}()
+	block, _ := agentSearchRenderDecls(view, []agentSearchDecl{{index: 1}}, 2, len(view.lines)+5, 0)
+	if !strings.Contains(string(block), view.lines[len(view.lines)-1]) {
+		t.Fatalf("block does not end at the snippet's last line:\n%s", block)
+	}
+}

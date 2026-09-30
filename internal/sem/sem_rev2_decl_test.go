@@ -64,3 +64,52 @@ func TestRev2FinderLanguages(t *testing.T) {
 	}
 	t.Logf("wrong picks: %d of %d", bad, len(cases))
 }
+
+// REV2: the tail tersify replaces a focus window that SHOWED the real declaration with one at a
+// wrongly picked line, so the demoted row no longer prints its declaration (no heads guard here).
+func TestRev2TersifyDropsRealDeclOnWrongPick(t *testing.T) {
+	cases := []struct {
+		name, symbol string
+		src          string
+		real, focus  int // 0-based
+	}{
+		{"py-decorator-trailing-comment", "fetch", "@retry  # fetch() may raise\n@lru_cache()\ndef fetch(url, timeout):\n    r = get(url, timeout)\n    return r.json()\n    # end", 2, 2},
+		{"cs-lazy-property", "Options", "    public Options Options\n    {\n        get { return _options ??= new Options(); }\n    }\n", 0, 0},
+		{"ruby-self-hashkey", "config", "def self.config\n  @config ||= Config.load(config: path)\n  @config.freeze\nend", 0, 0},
+	}
+	for _, c := range cases {
+		lines := strings.Split(strings.TrimSuffix(c.src, "\n"), "\n")
+		first := 100
+		r := SearchResult{FilePath: "x", StartLine: first, EndLine: first + len(lines) - 1, FocusLine: first + c.focus,
+			SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1, SymbolStartLine: first,
+			SymbolEndLine: first + len(lines) - 1, SymbolName: c.symbol, Snippet: strings.Join(lines, "\n")}
+		old := tersifySearchResult(r, 2)
+		neu := tersifySearchResultKeepingDeclaration(r, 2)
+		oldHas := strings.Contains(old.Snippet, lines[c.real])
+		newHas := strings.Contains(neu.Snippet, lines[c.real])
+		t.Logf("%s: old [%d-%d] shows real=%v; new [%d-%d] shows real=%v\n  old: %q\n  new: %q", c.name,
+			old.SnippetStartLine, old.SnippetEndLine, oldHas, neu.SnippetStartLine, neu.SnippetEndLine, newHas, old.Snippet, neu.Snippet)
+		if oldHas && !newHas {
+			t.Errorf("DEFECT %s: demoted row showed its declaration before and drops it now", c.name)
+		}
+	}
+}
+
+// REV2-F premise: sem records the absorbed C# property's declaration at the getter, not the property line.
+func TestRev2MergedDeclLinesCSharpLazyProperty(t *testing.T) {
+	fileLines := make([]string, 80)
+	for i := range fileLines {
+		fileLines[i] = "        x();"
+	}
+	fileLines[9] = "    public void Load(string path)"
+	fileLines[39] = "    public Options Options"
+	fileLines[40] = "    {"
+	fileLines[41] = "        get { return _options ??= new Options(); }"
+	fileLines[42] = "    }"
+	survivor := spanMergeBody(1, "src/Cfg.cs", 10, 30)
+	survivor.SymbolStartLine, survivor.SymbolEndLine, survivor.SymbolName = 10, 30, "Load"
+	absorbed := spanMergeBody(2, "src/Cfg.cs", 40, 43)
+	absorbed.SymbolStartLine, absorbed.SymbolEndLine, absorbed.SymbolName = 40, 43, "Options"
+	_, span, ok := mergedSearchSpanResult([]SearchResult{survivor, absorbed}, []int{0, 1}, fileLines)
+	t.Logf("merged=%v MergedDeclLines=%v (real declaration is line 40)", ok, span.MergedDeclLines)
+}

@@ -1339,7 +1339,7 @@ func planWithDemotionFrom(
 	sizes := make([]int, len(plan))
 	for index := range plan {
 		if index >= cut {
-			plan[index] = tersifySearchResult(plan[index], tailLines)
+			plan[index] = tersifySearchResultKeepingDeclaration(plan[index], tailLines)
 		}
 		sizes[index] = serializedSearchResultBytes(plan[index])
 	}
