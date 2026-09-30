@@ -455,13 +455,19 @@ func TestReview308OneArgumentUnknownMaskKeepsUntrackedAndKnownControls(t *testin
 			if len(got.Registrations) != 0 {
 				t.Fatalf("one-argument calls must not become registrations: %#v", got.Registrations)
 			}
-			want := map[string]bool{"/untracked": true, "/parameter-alias": true, "/known": true}
+			want := map[string]bool{
+				"/explicit-unknown":        true,
+				"/untracked":               true,
+				"/parameter-alias":         true,
+				"/shadow-explicit-unknown": true,
+				"/known":                   true,
+			}
 			if len(got.AfterMask) != len(want) {
-				t.Fatalf("one-argument fallback after masking = %#v, want parameter and known controls", got.AfterMask)
+				t.Fatalf("one-argument fallback after masking = %#v, want unknown and known controls", got.AfterMask)
 			}
 			for _, route := range got.AfterMask {
 				if !want[route] {
-					t.Fatalf("one-argument fallback after masking = %#v, want parameter and known controls", got.AfterMask)
+					t.Fatalf("one-argument fallback after masking = %#v, want unknown and known controls", got.AfterMask)
 				}
 				delete(want, route)
 			}
