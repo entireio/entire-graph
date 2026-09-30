@@ -5,7 +5,6 @@ import (
 	"go/parser"
 	"go/token"
 	"regexp"
-	"strings"
 )
 
 // Go router-group receiver resolution.
@@ -103,6 +102,9 @@ type goRouteReceivers struct {
 	// unparseable file) is omitted when its name is one of these, and treated
 	// as the root router otherwise, exactly as before this resolver existed.
 	groupNames map[string]bool
+	// regs are the route registrations found at real call expressions, with
+	// each receiver's state at its call.
+	regs []goRouteCandidate
 }
 
 func (r goRouteReceivers) at(offset int, name string) goRouteBinding {
@@ -135,10 +137,6 @@ func resolveGoRouteReceiversWithBudget(content string, constants map[string]stri
 			receivers.groupNames[match[1]] = true
 		}
 	}
-	if !strings.Contains(content, "Group") {
-		// No Group call can bind anything: every receiver is untracked.
-		return receivers
-	}
 	fset := token.NewFileSet()
 	shift := 0
 	file, err := parser.ParseFile(fset, "", content, parser.SkipObjectResolution)
@@ -169,6 +167,7 @@ func resolveGoRouteReceiversWithBudget(content string, constants map[string]stri
 	}
 	receivers.parsed = true
 	receivers.uses = resolver.uses
+	receivers.regs = resolver.regs
 	return receivers
 }
 
@@ -181,6 +180,7 @@ type goRouteResolver struct {
 	file      *ast.File
 
 	uses       map[int]goRouteBinding
+	regs       []goRouteCandidate
 	log        []goRouteWrite
 	groupNames map[string]bool
 	// pkgWritten collects package variables assigned from inside a function.
@@ -280,6 +280,7 @@ func (r *goRouteResolver) resolve() (ok bool) {
 
 func (r *goRouteResolver) walkFile() {
 	r.uses = map[int]goRouteBinding{}
+	r.regs = r.regs[:0]
 	r.escaped = map[*goRouteBinding]bool{}
 	r.log = r.log[:0]
 	pkg := r.packageScope()
@@ -786,6 +787,8 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 		case *ast.FuncLit:
 			r.funcLit(node, scope)
 			return false
+		case *ast.CallExpr:
+			r.noteCall(node, scope)
 		case *ast.SelectorExpr:
 			// Sel is a field or method name, not a variable use.
 			r.expr(node.X, scope)
