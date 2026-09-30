@@ -796,6 +796,17 @@ func (r *goRouteResolver) materializeClosureValue(value goRouteBinding) goRouteB
 	return value
 }
 
+// closureMiddlewareValue keeps only the middleware provenance that local
+// closure descriptors model precisely. Router/group writes remain conservative
+// just as they were before descriptors were introduced.
+func closureMiddlewareValue(value goRouteBinding) goRouteBinding {
+	middleware := goRouteUnknownBinding
+	middleware.stripPrefixMiddleware = value.stripPrefixMiddleware
+	middleware.stripPrefixSource = value.stripPrefixSource
+	middleware.stripPrefixJoins = value.stripPrefixJoins
+	return middleware
+}
+
 func (r *goRouteResolver) applyClosureEffect(effect *goRouteClosureEffect) {
 	if effect == nil {
 		return
@@ -813,7 +824,7 @@ func (r *goRouteResolver) applyClosureEffect(effect *goRouteClosureEffect) {
 	writeValues := make([]goRouteBinding, len(effect.writes))
 	for i, write := range effect.writes {
 		r.step(1)
-		writeValues[i] = r.materializeClosureValue(write.value)
+		writeValues[i] = closureMiddlewareValue(r.materializeClosureValue(write.value))
 	}
 	for i, write := range effect.writes {
 		r.step(1)
@@ -1758,10 +1769,17 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 		written := r.writtenNames(lit.Body)
 		for _, capture := range captures {
 			r.step(1)
-			if written[capture.name] {
+			groupish, isWritten := written[capture.name]
+			if isWritten {
 				effect.writes = append(effect.writes, goRouteClosureWrite{
 					name: capture.name, target: capture.outer, value: capture.value,
 				})
+				current := r.read(capture.outer)
+				if current.kind != goRouteUntracked || groupish {
+					// Preserve only middleware facts at declaration. Every other fact
+					// uses the same conservative captured-write criterion as markNames.
+					r.set(capture.name, capture.outer, closureMiddlewareValue(current))
+				}
 			}
 		}
 		r.closureEffects[lit] = effect

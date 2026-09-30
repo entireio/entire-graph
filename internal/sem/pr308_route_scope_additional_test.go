@@ -32,6 +32,22 @@ func register() {
 }
 func accounts(http.ResponseWriter, *http.Request) {}
 `, true
+	case "closure-router-write-never-called":
+		return `package routes
+func register(root *Router) {
+	g := root.Group("/a")
+	rewrite := func() { g = root.Group("/b") }
+	_ = rewrite
+	g.GET("/after", afterHandler)
+	stable := root.Group("/s")
+	stable.GET("/in", inHandler)
+}
+func capturedRoot(root *Router) {
+	rewrite := func() { root = root.Group("/b") }
+	_ = rewrite
+	root.GET("/root-after", rootAfterHandler)
+}
+`, true
 	case "client-shadow-restoration":
 		return `package routes
 import "net/http"
@@ -400,6 +416,13 @@ func TestReview308FrameworkSeededClosureKeepsComposedRoute(t *testing.T) {
 	got := review308FocusedWithin(t, "seeded-route-closure")
 	if len(got.Registrations) != 1 || got.Registrations[0].Route != "/api/accounts" || got.Registrations[0].Handler != "accounts" {
 		t.Fatalf("framework-seeded closure lost its composed route: %#v", got.Registrations)
+	}
+}
+
+func TestReview308RouterCapturedWriteStaysConservativeAtDeclaration(t *testing.T) {
+	got := review308FocusedWithin(t, "closure-router-write-never-called")
+	if len(got.Registrations) != 1 || got.Registrations[0].Route != "/s/in" || got.Registrations[0].Handler != "inHandler" {
+		t.Fatalf("captured router write must stay unknown even when the local closure is never called: %#v", got.Registrations)
 	}
 }
 
