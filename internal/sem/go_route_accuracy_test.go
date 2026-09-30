@@ -1217,8 +1217,8 @@ func TestX(t *testing.T) {
 		t.Fatal()
 	}
 	cache.Get("/unknown-receiver")
-	kv := store{}
-	_ = kv.Get("/store-key")
+	st := store{}
+	_ = st.Get("/store-key")
 	api := &apiClient{}
 	api.Post("/api-client-post", nil)
 	mux := &http.ServeMux{}
@@ -1226,7 +1226,8 @@ func TestX(t *testing.T) {
 }
 
 func other() {
-	kv := lookup()
+	kv := store{}
+	kv = lookup()
 	_ = kv.Get("/kv-unknown")
 }
 
