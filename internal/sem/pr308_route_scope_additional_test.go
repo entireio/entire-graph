@@ -158,6 +158,157 @@ func register(c opaque) {
 		r.Use(mw)
 	}()
 	r.Use(mw)`), true
+	case "middleware-closure-call-during-rewrite":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	use := func() { r.Use(mw) }
+	mw = middleware.StripPrefix("/api")
+	use()
+	mw = middleware.Recoverer`), true
+	case "middleware-closure-call-before-unused-rewrite":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	use := func() { r.Use(mw) }
+	use()
+	mw = middleware.StripPrefix("/unused")`), true
+	case "middleware-closure-alias-transient-rewrite":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	use := func() { r.Use(mw) }
+	alias := use
+	mw = middleware.StripPrefix("/unused")
+	mw = middleware.Recoverer
+	alias()`), true
+	case "middleware-closure-overwrite-kills-descriptor":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	use := func() { r.Use(mw) }
+	use = func() {}
+	mw = middleware.StripPrefix("/unused")
+	use()`), true
+	case "middleware-closure-shadow-keeps-outer-descriptor":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	use := func() { r.Use(mw) }
+	{
+		use := func() {}
+		mw = middleware.StripPrefix("/unused")
+		use()
+	}
+	mw = middleware.Recoverer
+	use()`), true
+	case "middleware-closure-multiwrite-snapshot":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	next := middleware.StripPrefix("/api")
+	copy := func() {
+		mw = next
+		next = middleware.Recoverer
+	}
+	copy()
+	r.Use(mw)`), true
+	case "middleware-closure-nested-immediate-future-rewrite":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	use := func() {
+		func() { r.Use(mw) }()
+	}
+	mw = middleware.StripPrefix("/api")
+	use()`), true
+	case "middleware-closure-nested-immediate-ordinary":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	use := func() {
+		func() { r.Use(mw) }()
+	}
+	mw = middleware.Recoverer
+	use()`), true
+	case "middleware-closure-escape-transient-rewrite":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	use := func() { r.Use(mw) }
+	accept := func(func()) {}
+	accept(use)
+	mw = middleware.StripPrefix("/api")
+	mw = middleware.Recoverer`), true
+	case "middleware-closure-escaped-write-keeps-copied-ordinary-alias":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	alias := mw
+	write := func() { mw = middleware.StripPrefix("/unused") }
+	var accepted func()
+	accept := func(callback func()) { accepted = callback }
+	accept(write)
+	accepted()
+	r.Use(alias)`), true
+	case "middleware-closure-escaped-write-keeps-lexical-shadow":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	write := func() { mw = middleware.StripPrefix("/unused") }
+	var accepted func()
+	accept := func(callback func()) { accepted = callback }
+	accept(write)
+	accepted()
+	{
+		mw := middleware.Recoverer
+		r.Use(mw)
+	}`), true
+	case "middleware-closure-nested-escaped-write-targets-outer-binding":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	var accepted func()
+	accept := func(callback func()) { accepted = callback }
+	use := func() {
+		write := func() { mw = middleware.StripPrefix("/api") }
+		accept(write)
+	}
+	use()
+	mw = middleware.Recoverer
+	accepted()
+	r.Use(mw)`), true
+	case "middleware-closure-go-transient-rewrite":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	use := func() { r.Use(mw) }
+	go use()
+	mw = middleware.StripPrefix("/api")
+	mw = middleware.Recoverer`), true
+	case "middleware-closure-defer-transient-rewrite":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	use := func() { r.Use(mw) }
+	defer use()
+	mw = middleware.StripPrefix("/api")
+	mw = middleware.Recoverer`), true
+	case "middleware-closure-body-use-before-ordinary":
+		return review308FocusedMiddleware(`mw := middleware.StripPrefix("/api")
+	use := func() {
+		r.Use(mw)
+		mw = middleware.Recoverer
+	}
+	use()`), true
+	case "middleware-closure-body-ordinary-before-use":
+		return review308FocusedMiddleware(`mw := middleware.StripPrefix("/unused")
+	use := func() {
+		mw = middleware.Recoverer
+		r.Use(mw)
+	}
+	use()`), true
+	case "middleware-switch-unrelated-nonfallthrough":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	switch {
+	case true:
+		r.Use(mw)
+	default:
+		mw = middleware.StripPrefix("/unused")
+	}`), true
+	case "middleware-switch-successor-ordinary-kill":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	switch {
+	case true:
+		mw = middleware.StripPrefix("/unused")
+		fallthrough
+	default:
+		mw = middleware.Recoverer
+		r.Use(mw)
+	}`), true
+	case "middleware-switch-fallthrough-chain":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	switch {
+	case true:
+		mw = middleware.StripPrefix("/api")
+		fallthrough
+	case false:
+		fallthrough
+	default:
+		r.Use(mw)
+	}`), true
 	default:
 		return "", false
 	}
@@ -344,6 +495,76 @@ func TestReview308MiddlewareClosureBranchDependencyReachesInnerUse(t *testing.T)
 func TestReview308MiddlewareClosureBranchOrdinaryOnlyControl(t *testing.T) {
 	got := review308FocusedWithin(t, "middleware-closure-branch-ordinary-only")
 	review308AssertOrdinaryMiddlewareRoutes(t, got.Registrations)
+}
+
+func TestReview308MiddlewareClosureSynchronousCallTiming(t *testing.T) {
+	review308AssertNoRewrittenBareRoute(t, review308FocusedWithin(t, "middleware-closure-call-during-rewrite").Registrations)
+	for _, name := range []string{
+		"middleware-closure-call-before-unused-rewrite",
+		"middleware-closure-alias-transient-rewrite",
+		"middleware-closure-overwrite-kills-descriptor",
+		"middleware-closure-shadow-keeps-outer-descriptor",
+	} {
+		t.Run(name, func(t *testing.T) {
+			review308AssertOrdinaryMiddlewareRoutes(t, review308FocusedWithin(t, name).Registrations)
+		})
+	}
+}
+
+func TestReview308MiddlewareClosureFinalWritesUseCallSnapshot(t *testing.T) {
+	review308AssertNoRewrittenBareRoute(t, review308FocusedWithin(t, "middleware-closure-multiwrite-snapshot").Registrations)
+}
+
+func TestReview308MiddlewareNestedImmediateClosureTiming(t *testing.T) {
+	t.Run("future-rewrite", func(t *testing.T) {
+		review308AssertNoRewrittenBareRoute(t, review308FocusedWithin(t, "middleware-closure-nested-immediate-future-rewrite").Registrations)
+	})
+	t.Run("ordinary", func(t *testing.T) {
+		review308AssertOrdinaryMiddlewareRoutes(t, review308FocusedWithin(t, "middleware-closure-nested-immediate-ordinary").Registrations)
+	})
+}
+
+func TestReview308MiddlewareClosureAsyncAndEscapeStayConservative(t *testing.T) {
+	for _, name := range []string{
+		"middleware-closure-escape-transient-rewrite",
+		"middleware-closure-go-transient-rewrite",
+		"middleware-closure-defer-transient-rewrite",
+	} {
+		t.Run(name, func(t *testing.T) {
+			review308AssertNoRewrittenBareRoute(t, review308FocusedWithin(t, name).Registrations)
+		})
+	}
+}
+
+func TestReview308MiddlewareEscapedWritePreservesBindingIdentity(t *testing.T) {
+	for _, name := range []string{
+		"middleware-closure-escaped-write-keeps-copied-ordinary-alias",
+		"middleware-closure-escaped-write-keeps-lexical-shadow",
+	} {
+		t.Run(name, func(t *testing.T) {
+			review308AssertOrdinaryMiddlewareRoutes(t, review308FocusedWithin(t, name).Registrations)
+		})
+	}
+	t.Run("nested-capture-target", func(t *testing.T) {
+		review308AssertNoRewrittenBareRoute(t, review308FocusedWithin(t, "middleware-closure-nested-escaped-write-targets-outer-binding").Registrations)
+	})
+}
+
+func TestReview308MiddlewareClosureBodyAssignmentOrder(t *testing.T) {
+	review308AssertNoRewrittenBareRoute(t, review308FocusedWithin(t, "middleware-closure-body-use-before-ordinary").Registrations)
+	review308AssertOrdinaryMiddlewareRoutes(t, review308FocusedWithin(t, "middleware-closure-body-ordinary-before-use").Registrations)
+}
+
+func TestReview308MiddlewareSwitchFallthroughControls(t *testing.T) {
+	for _, name := range []string{
+		"middleware-switch-unrelated-nonfallthrough",
+		"middleware-switch-successor-ordinary-kill",
+	} {
+		t.Run(name, func(t *testing.T) {
+			review308AssertOrdinaryMiddlewareRoutes(t, review308FocusedWithin(t, name).Registrations)
+		})
+	}
+	review308AssertNoRewrittenBareRoute(t, review308FocusedWithin(t, "middleware-switch-fallthrough-chain").Registrations)
 }
 
 func review308AssertOrdinaryMiddlewareRoutes(t *testing.T, registrations []goHTTPRouteRegistration) {
