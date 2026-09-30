@@ -654,8 +654,8 @@ var goRouteClientFuncs = map[string]bool{
 // known not to be a router: request-context methods, HTTP client calls and
 // request constructors, calls on an *http.Client, and same-file request
 // helpers (testRequest, performRequest). Their literals are URLs or keys, so
-// the route literal fallback must not read them. Literals on receivers of
-// unknown type are left alone.
+// the route literal fallback must not read them. Other unknown and untracked
+// receivers retain the generic fallback.
 func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 	var spans [][2]int
 	addStrings := func(call *ast.CallExpr) {
@@ -682,8 +682,6 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 		}
 		return false
 	}
-	clientTypes := map[string]bool{"http.Client": true}
-	clients := map[string]bool{}
 	// Names only ever bound to a composite literal of a type that is not a
 	// framework router (kv := cache{}, api := apiClient{}): a zero value built
 	// here holds no router.
@@ -694,6 +692,12 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 			expr = goRouteUnparen(unary.X)
 		}
 		if lit, ok := expr.(*ast.CompositeLit); ok && lit.Type != nil && !isType(lit.Type, goRouteRouterTypes) {
+			if r.isHTTPClientType(lit.Type) {
+				// HTTP clients are classified by the resolver's lexical binding
+				// at each use, not by this file-global zero-value heuristic.
+				otherValues[name] = true
+				return
+			}
 			literalValues[name] = true
 			return
 		}
@@ -708,25 +712,10 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 				}
 			}
 		case *ast.Field:
-			if isType(n.Type, clientTypes) {
-				for _, name := range n.Names {
-					clients[name.Name] = true
-				}
-			}
 			for _, name := range n.Names {
 				otherValues[name.Name] = true
 			}
 		case *ast.ValueSpec:
-			if n.Type != nil && isType(n.Type, clientTypes) {
-				for _, name := range n.Names {
-					clients[name.Name] = true
-				}
-			}
-			for i, value := range n.Values {
-				if i < len(n.Names) && goRouteIsClientLit(value, isType, clientTypes) {
-					clients[n.Names[i].Name] = true
-				}
-			}
 			for i, name := range n.Names {
 				if len(n.Values) == len(n.Names) {
 					noteValue(name.Name, n.Values[i])
@@ -748,19 +737,11 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 				if !ok {
 					continue
 				}
-				if goRouteIsClientLit(value, isType, clientTypes) {
-					clients[ident.Name] = true
-				}
 				noteValue(ident.Name, value)
 			}
 		}
 		return true
 	})
-	for name := range literalValues {
-		if !otherValues[name] {
-			clients[name] = true
-		}
-	}
 	var visit func(node ast.Node, contexts map[string]bool)
 	visit = func(node ast.Node, contexts map[string]bool) {
 		ast.Inspect(node, func(n ast.Node) bool {
@@ -775,7 +756,9 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 				switch fun := n.Fun.(type) {
 				case *ast.SelectorExpr:
 					if x, ok := fun.X.(*ast.Ident); ok {
-						if contexts[x.Name] || clients[x.Name] || goRouteClientFuncs[r.framework(x.Name)+"."+fun.Sel.Name] {
+						binding := r.uses[r.offset(x.Pos())]
+						builtHere := literalValues[x.Name] && !otherValues[x.Name]
+						if contexts[x.Name] || binding.httpClient || binding.httpClientType || builtHere || goRouteClientFuncs[r.framework(x.Name)+"."+fun.Sel.Name] {
 							addStrings(n)
 						}
 					} else if inner, ok := fun.X.(*ast.SelectorExpr); ok {
@@ -812,13 +795,4 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 	}
 	visit(r.file, map[string]bool{})
 	return spans
-}
-
-func goRouteIsClientLit(expr ast.Expr, isType func(ast.Expr, map[string]bool) bool, table map[string]bool) bool {
-	expr = goRouteUnparen(expr)
-	if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.AND {
-		expr = goRouteUnparen(unary.X)
-	}
-	lit, ok := expr.(*ast.CompositeLit)
-	return ok && isType(lit.Type, table)
 }
