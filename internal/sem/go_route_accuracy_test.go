@@ -1066,3 +1066,29 @@ func TestX(t *testing.T) {
 		},
 	})
 }
+
+// A file that only builds groups (and hands them to helpers elsewhere)
+// registers nothing, and its prefix literals are not routes either.
+func TestGoRouteAccuracySnapshotPrefixOnlyFile(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "main.go", `package main
+
+import "github.com/gin-gonic/gin"
+
+var router = gin.Default()
+
+func getRoutes() {
+	v1 := router.Group("/v1")
+	addUserRoutes(v1)
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "HANDLES_ROUTE" {
+			t.Fatalf("a group prefix was emitted as a route: %#v", relation)
+		}
+	}
+}
