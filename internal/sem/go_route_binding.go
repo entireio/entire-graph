@@ -5,6 +5,8 @@ import (
 	"go/parser"
 	"go/token"
 	"regexp"
+	"strconv"
+	"strings"
 )
 
 // Go router-group receiver resolution.
@@ -20,8 +22,9 @@ import (
 // This resolver walks the syntax tree once, in statement order, and records
 // the prefix state of every identifier at its use site:
 //
-//   - untracked: never bound to a Group value in scope in this file. Treated
-//     as the root router: the same heuristic every receiver had before.
+//   - untracked: a parameter or variable of a local type this pass cannot
+//     see into (func register(root *Router)). Treated as the root router: the
+//     long-standing heuristic, kept only for this case.
 //   - known: bound to a Group call whose prefix and parent are both static. A
 //     known empty prefix is still known; it is not the same state as unknown.
 //   - unknown: the value depends on something this pass models as unknown.
@@ -41,15 +44,15 @@ import (
 // index receiver; field or index receivers of route methods (s.api.GET); and
 // every receiver in a file whose walk exceeds its step budget.
 //
-// KNOWN LIMITATIONS, unchanged from before this resolver (the untracked =
-// root heuristic): a group reaching a receiver through a function parameter,
-// a function result, a struct field or map value, or a package variable
-// declared in a sibling file is treated as the root router, so its routes are
-// emitted without the group's prefix. chi Route/Mount, gorilla Subrouter and
-// http.StripPrefix prefixes are not modelled at all. A Group prefix without a
-// leading slash (gin's Group("v1")) is framework-normalized and is omitted
-// here rather than guessed. No type information, provider or filesystem is
-// involved.
+// A receiver whose origin is not visible is unknown, never the root: a group
+// or sub-router parameter, a call result, a field, and a name this file never
+// declares (see "Router origins" below).
+//
+// KNOWN LIMITATIONS: a parameter of an unclassified local type keeps the root
+// heuristic. chi Route/Mount, gorilla Subrouter and http.StripPrefix prefixes
+// are not modelled at all. A Group prefix without a leading slash (gin's
+// Group("v1")) is framework-normalized and is omitted here rather than
+// guessed. No type information, provider or filesystem is involved.
 
 type goRouteBindingKind uint8
 
@@ -160,6 +163,7 @@ func resolveGoRouteReceiversWithBudget(content string, constants map[string]stri
 		file:       file,
 		groupNames: receivers.groupNames,
 		budget:     budget,
+		imports:    goRouteImports(file),
 	}
 	if !resolver.resolve() {
 		receivers.exhausted = true
@@ -179,8 +183,11 @@ type goRouteResolver struct {
 	constants map[string]string
 	file      *ast.File
 
-	uses       map[int]goRouteBinding
-	regs       []goRouteCandidate
+	uses map[int]goRouteBinding
+	regs []goRouteCandidate
+	// imports maps each import's local name to the router framework it is
+	// (goRouteFrameworkForPath), or "" for any other package.
+	imports    map[string]string
 	log        []goRouteWrite
 	groupNames map[string]bool
 	// pkgWritten collects package variables assigned from inside a function.
@@ -312,6 +319,8 @@ func (r *goRouteResolver) walkFile() {
 // chain declared child-first (legal Go) composes like one declared in order.
 func (r *goRouteResolver) packageScope() *goRouteScope {
 	inits := map[string]ast.Expr{}
+	types := map[string]ast.Expr{}
+	unpaired := map[string]bool{}
 	duplicate := map[string]bool{}
 	declared := map[string]bool{}
 	for _, decl := range r.file.Decls {
@@ -332,8 +341,13 @@ func (r *goRouteResolver) packageScope() *goRouteScope {
 					duplicate[name.Name] = true
 				}
 				declared[name.Name] = true
-				if len(valueSpec.Values) == len(valueSpec.Names) {
+				switch {
+				case len(valueSpec.Values) == len(valueSpec.Names):
 					inits[name.Name] = valueSpec.Values[i]
+				case len(valueSpec.Values) > 0:
+					unpaired[name.Name] = true
+				case valueSpec.Type != nil:
+					types[name.Name] = valueSpec.Type
 				}
 			}
 		}
@@ -341,10 +355,13 @@ func (r *goRouteResolver) packageScope() *goRouteScope {
 	resolved := map[string]goRouteBinding{}
 	visiting := map[string]bool{}
 	var resolveName func(name string) goRouteBinding
-	resolveName = func(name string) goRouteBinding {
+	var lookup goRouteLookup = func(name string) (goRouteBinding, bool) {
 		if !declared[name] {
-			return goRouteBinding{}
+			return r.undeclaredValue(name), false
 		}
+		return resolveName(name), true
+	}
+	resolveName = func(name string) goRouteBinding {
 		if binding, ok := resolved[name]; ok {
 			return binding
 		}
@@ -353,8 +370,14 @@ func (r *goRouteResolver) packageScope() *goRouteScope {
 		}
 		visiting[name] = true
 		binding := goRouteBinding{}
-		if value := inits[name]; value != nil {
-			binding = r.groupValue(value, resolveName)
+		switch {
+		case inits[name] != nil:
+			binding = r.groupValue(inits[name], lookup)
+		case unpaired[name]:
+			// One of several results of a call.
+			binding = goRouteUnknownBinding
+		case types[name] != nil:
+			binding = r.typeValue(types[name])
 		}
 		delete(visiting, name)
 		resolved[name] = binding
@@ -422,29 +445,45 @@ func (r *goRouteResolver) assignTo(name string, binding *goRouteBinding, value g
 	r.set(name, binding, value)
 }
 
-func (r *goRouteResolver) lookupIn(scope *goRouteScope) func(string) goRouteBinding {
-	return func(name string) goRouteBinding {
-		return r.read(r.lookup(scope, name))
+// goRouteLookup returns a name's state and whether a scope declares it.
+type goRouteLookup func(name string) (goRouteBinding, bool)
+
+func (r *goRouteResolver) lookupIn(scope *goRouteScope) goRouteLookup {
+	return func(name string) (goRouteBinding, bool) {
+		binding := r.lookup(scope, name)
+		if binding == nil {
+			return r.undeclaredValue(name), false
+		}
+		return r.read(binding), true
 	}
 }
 
 // groupValue is the prefix state an expression produces when stored.
-func (r *goRouteResolver) groupValue(expr ast.Expr, lookup func(string) goRouteBinding) goRouteBinding {
+func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRouteBinding {
 	r.step(1)
 	switch expr := expr.(type) {
 	case *ast.ParenExpr:
 		return r.groupValue(expr.X, lookup)
 	case *ast.Ident:
-		return lookup(expr.Name)
+		value, _ := lookup(expr.Name)
+		return value
 	case *ast.CallExpr:
 		selector, ok := expr.Fun.(*ast.SelectorExpr)
-		if !ok || selector.Sel.Name != "Group" || len(expr.Args) == 0 || expr.Ellipsis.IsValid() {
-			return goRouteBinding{}
+		if !ok {
+			// The result of a local function: whatever router it returns, its
+			// prefix was set where this pass does not look.
+			return goRouteUnknownBinding
+		}
+		if root, ok := r.constructorValue(selector, lookup); ok {
+			return root
+		}
+		if selector.Sel.Name != "Group" || len(expr.Args) == 0 || expr.Ellipsis.IsValid() {
+			return goRouteUnknownBinding
 		}
 		var parent goRouteBinding
 		switch receiver := selector.X.(type) {
 		case *ast.Ident:
-			parent = lookup(receiver.Name)
+			parent, _ = lookup(receiver.Name)
 		case *ast.CallExpr, *ast.ParenExpr:
 			parent = r.groupValue(receiver, lookup)
 		default:
@@ -469,6 +508,16 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup func(string) goRouteB
 			prefix = joinRoutePaths(parent.prefix, prefix)
 		}
 		return goRouteBinding{kind: goRouteKnown, prefix: prefix}
+	case *ast.UnaryExpr:
+		if expr.Op == token.AND {
+			return r.groupValue(expr.X, lookup)
+		}
+		return goRouteBinding{}
+	case *ast.CompositeLit:
+		if r.isFrameworkType(expr.Type, "http", "ServeMux") {
+			return goRouteBinding{kind: goRouteKnown}
+		}
+		return goRouteUnknownBinding
 	case *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr, *ast.StarExpr, *ast.TypeAssertExpr:
 		// A value read from a field, map, slice, pointer or interface: if it
 		// is a group, its prefix was set somewhere this pass does not follow.
@@ -485,8 +534,9 @@ func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body 
 			continue
 		}
 		for _, field := range fields.List {
+			value := r.typeValue(field.Type)
 			for _, name := range field.Names {
-				r.declare(scope, name.Name, goRouteBinding{})
+				r.declare(scope, name.Name, value)
 			}
 		}
 	}
@@ -523,9 +573,18 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 			}
 			r.exprs(valueSpec.Values, scope)
 			values := make([]goRouteBinding, len(valueSpec.Names))
-			if len(valueSpec.Values) == len(valueSpec.Names) {
+			switch {
+			case len(valueSpec.Values) == len(valueSpec.Names):
 				for i, value := range valueSpec.Values {
 					values[i] = r.groupValue(value, r.lookupIn(scope))
+				}
+			case len(valueSpec.Values) > 0:
+				for i := range values {
+					values[i] = goRouteUnknownBinding
+				}
+			case valueSpec.Type != nil:
+				for i := range values {
+					values[i] = r.typeValue(valueSpec.Type)
 				}
 			}
 			for i, name := range valueSpec.Names {
@@ -707,9 +766,12 @@ func (r *goRouteResolver) assign(stmt *ast.AssignStmt, scope *goRouteScope) {
 	r.exprs(stmt.Rhs, scope)
 	values := make([]goRouteBinding, len(stmt.Lhs))
 	paired := len(stmt.Lhs) == len(stmt.Rhs)
-	if paired {
-		for i, value := range stmt.Rhs {
-			values[i] = r.groupValue(value, r.lookupIn(scope))
+	for i := range values {
+		if paired {
+			values[i] = r.groupValue(stmt.Rhs[i], r.lookupIn(scope))
+		} else {
+			// One of several results of a call (or a comma-ok form).
+			values[i] = goRouteUnknownBinding
 		}
 	}
 	for i, target := range stmt.Lhs {
@@ -738,14 +800,7 @@ func (r *goRouteResolver) assign(stmt *ast.AssignStmt, scope *goRouteScope) {
 			if binding == nil {
 				continue
 			}
-			value := values[i]
-			if !paired {
-				value = goRouteUnknownBinding
-				if binding.kind == goRouteUntracked {
-					value = goRouteBinding{}
-				}
-			}
-			r.assignTo(ident.Name, binding, value)
+			r.assignTo(ident.Name, binding, values[i])
 		default:
 			r.invalidateTarget(ident, scope)
 		}
@@ -945,11 +1000,11 @@ func goRouteGroupish(expr ast.Expr) bool {
 		expr = paren.X
 	}
 	switch expr := expr.(type) {
-	case *ast.Ident:
+	case *ast.Ident, *ast.CallExpr, *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr,
+		*ast.StarExpr, *ast.TypeAssertExpr, *ast.CompositeLit:
 		return true
-	case *ast.CallExpr:
-		selector, ok := expr.Fun.(*ast.SelectorExpr)
-		return ok && selector.Sel.Name == "Group"
+	case *ast.UnaryExpr:
+		return expr.Op == token.AND
 	}
 	return false
 }
@@ -987,4 +1042,157 @@ func goRouteReceiverIsSelector(content string, offset int) bool {
 		}
 	}
 	return false
+}
+
+// Router origins. A receiver the file never binds is not assumed to be the
+// root router: only a value whose origin this pass can see is. The root is
+// what a framework constructor returns (echo.New, gin.Default, chi.NewRouter,
+// ...), the net/http package's DefaultServeMux, or a parameter or variable
+// typed as a framework root (*echo.Echo, *gin.Engine, *http.ServeMux,
+// *httprouter.Router). A parameter or variable typed as a group or sub-router
+// (*echo.Group, *gin.RouterGroup, chi.Router, fiber.Router, *mux.Router, a
+// local type named like a group), the result of any other call, and a name
+// this file never declares (a sibling file's package variable) are unknown.
+// A parameter of any other local type keeps the long-standing root heuristic.
+
+// goRouteFrameworkForPath names the router framework an import path is.
+func goRouteFrameworkForPath(path string) string {
+	switch {
+	case path == "net/http":
+		return "http"
+	case strings.Contains(path, "labstack/echo"):
+		return "echo"
+	case strings.Contains(path, "gin-gonic/gin"):
+		return "gin"
+	case strings.Contains(path, "gofiber/fiber"):
+		return "fiber"
+	case strings.Contains(path, "go-chi/chi"):
+		return "chi"
+	case strings.Contains(path, "gorilla/mux"):
+		return "mux"
+	case strings.Contains(path, "julienschmidt/httprouter"):
+		return "httprouter"
+	}
+	return ""
+}
+
+var goRouteDefaultFrameworkNames = map[string]bool{
+	"http": true, "echo": true, "gin": true, "fiber": true, "chi": true, "mux": true, "httprouter": true,
+}
+
+func goRouteImports(file *ast.File) map[string]string {
+	imports := map[string]string{}
+	for _, spec := range file.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := ""
+		if spec.Name != nil {
+			name = spec.Name.Name
+		} else {
+			parts := strings.Split(path, "/")
+			name = parts[len(parts)-1]
+			if len(parts) > 1 && goRouteVersionSuffixRe.MatchString(name) {
+				name = parts[len(parts)-2]
+			}
+			name = strings.TrimPrefix(name, "go-")
+		}
+		if name == "_" || name == "." || name == "" {
+			continue
+		}
+		imports[name] = goRouteFrameworkForPath(path)
+	}
+	return imports
+}
+
+var goRouteVersionSuffixRe = regexp.MustCompile(`^v[0-9]+$`)
+
+// framework reports which router framework the package name pkg refers to.
+// Callers have already checked that no local variable shadows pkg. Without an
+// import of that name (a fragment), the framework's usual name is trusted.
+func (r *goRouteResolver) framework(pkg string) string {
+	if fw, ok := r.imports[pkg]; ok {
+		return fw
+	}
+	if goRouteDefaultFrameworkNames[pkg] {
+		return pkg
+	}
+	return ""
+}
+
+// undeclaredValue is the state of a name no scope in this file declares.
+func (r *goRouteResolver) undeclaredValue(name string) goRouteBinding {
+	if r.framework(name) == "http" {
+		// http.HandleFunc / http.Handle: the DefaultServeMux.
+		return goRouteBinding{kind: goRouteKnown}
+	}
+	return goRouteUnknownBinding
+}
+
+// goRouteConstructors are the framework calls that return a new root router.
+// The value is whether the framework can mount that router under a prefix
+// elsewhere (chi Mount, fiber Mount).
+var goRouteConstructors = map[string]bool{
+	"echo.New":         false,
+	"gin.New":          false,
+	"gin.Default":      false,
+	"http.NewServeMux": false,
+	"mux.NewRouter":    false,
+	"httprouter.New":   false,
+	"chi.NewRouter":    true,
+	"chi.NewMux":       true,
+	"fiber.New":        true,
+}
+
+func (r *goRouteResolver) constructorValue(selector *ast.SelectorExpr, lookup goRouteLookup) (goRouteBinding, bool) {
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return goRouteBinding{}, false
+	}
+	if _, declared := lookup(pkg.Name); declared {
+		// A variable, not the package.
+		return goRouteBinding{}, false
+	}
+	if _, ok := goRouteConstructors[r.framework(pkg.Name)+"."+selector.Sel.Name]; !ok {
+		return goRouteBinding{}, false
+	}
+	return goRouteBinding{kind: goRouteKnown}, true
+}
+
+func (r *goRouteResolver) isFrameworkType(expr ast.Expr, framework, name string) bool {
+	selector, ok := goRouteUnparen(expr).(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != name {
+		return false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	return ok && r.framework(pkg.Name) == framework
+}
+
+// typeValue is the state of a parameter or variable declared with type expr
+// and no value.
+func (r *goRouteResolver) typeValue(expr ast.Expr) goRouteBinding {
+	expr = goRouteUnparen(expr)
+	if star, ok := expr.(*ast.StarExpr); ok {
+		expr = goRouteUnparen(star.X)
+	}
+	switch expr := expr.(type) {
+	case *ast.Ident:
+		if goRouteGroupishTypeName(expr.Name) {
+			return goRouteUnknownBinding
+		}
+		// A local type this pass cannot see into: the long-standing root
+		// heuristic.
+		return goRouteBinding{}
+	case *ast.SelectorExpr:
+		pkg, ok := expr.X.(*ast.Ident)
+		if ok && goRouteRootTypes[r.framework(pkg.Name)+"."+expr.Sel.Name] {
+			return goRouteBinding{kind: goRouteKnown}
+		}
+		// A framework group or sub-router type, or another package's type.
+		return goRouteUnknownBinding
+	case *ast.Ellipsis, *ast.IndexExpr, *ast.IndexListExpr:
+		return goRouteUnknownBinding
+	}
+	return goRouteBinding{}
 }

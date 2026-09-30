@@ -167,7 +167,7 @@ func (r *goRouteResolver) noteCall(call *ast.CallExpr, scope *goRouteScope) {
 		switch x := receiver.(type) {
 		case *ast.Ident:
 			candidate.order, candidate.evidence = 2, "go_router_method"
-			candidate.receiver = r.read(r.lookup(scope, x.Name))
+			candidate.receiver, _ = r.lookupIn(scope)(x.Name)
 		case *ast.CallExpr:
 			selector, ok := x.Fun.(*ast.SelectorExpr)
 			if !ok || selector.Sel.Name != "Group" {
