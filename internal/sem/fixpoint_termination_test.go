@@ -9,19 +9,17 @@ import (
 	"time"
 )
 
-// terminatesWithin runs fn under a deadline so a loop or recursion that does not
-// terminate fails the test instead of hanging the package.
+// terminatesWithin runs fn in-process and fails if it overran limit. There is
+// deliberately no goroutine: one abandoned at a deadline keeps spinning after
+// the test has failed and burns the runner. Every fn here is bounded by its
+// fix; a regression back to a non-terminating loop is stopped by the package
+// -timeout, which kills the test binary and everything it runs.
 func terminatesWithin(t *testing.T, limit time.Duration, fn func()) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		fn()
-	}()
-	select {
-	case <-done:
-	case <-time.After(limit):
-		t.Fatalf("did not terminate within %s", limit)
+	start := time.Now()
+	fn()
+	if elapsed := time.Since(start); elapsed > limit {
+		t.Fatalf("took %s, want under %s", elapsed, limit)
 	}
 }
 
