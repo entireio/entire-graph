@@ -401,3 +401,70 @@ func b() {
 		},
 	})
 }
+
+// gorilla: PathPrefix(..).Subrouter() is a router under that prefix, and
+// HandleFunc/Handle place their route by their receiver exactly like router
+// methods: an unknown or field receiver is omitted.
+func TestGoRouteAccuracyGorillaAndHandleFuncReceivers(t *testing.T) {
+	runGoRouteAccuracyCases(t, []goRouteAccuracyCase{
+		{
+			name: "Subrouter, nested and inline",
+			content: `package p
+func main() {
+	r := mux.NewRouter()
+	r.HandleFunc("/root", rootHandler)
+	s := r.PathPrefix("/a").Subrouter()
+	s.HandleFunc("/x", xHandler)
+	s.HandleFunc("/y", yHandler).Methods("GET")
+	s.Handle("/w", http.HandlerFunc(wHandler))
+	b := s.PathPrefix("/b").Subrouter()
+	b.HandleFunc("/z", zHandler)
+	r.PathPrefix("/i").Subrouter().HandleFunc("/j", jHandler)
+	http.ListenAndServe(":8080", r)
+}
+`,
+			want: []string{"/root -> rootHandler", "/a/x -> xHandler", "/a/y -> yHandler", "/a/w -> wHandler", "/a/b/z -> zHandler", "/i/j -> jHandler"},
+		},
+		{
+			name: "Subrouter chains this pass cannot place",
+			content: `package p
+func main(p string) {
+	r := mux.NewRouter()
+	h := r.Host("api.example.com").Subrouter()
+	h.HandleFunc("/h", hHandler)
+	d := r.PathPrefix(p).Subrouter()
+	d.HandleFunc("/d", dHandler)
+	m := r.PathPrefix("/m").Methods("GET").Subrouter()
+	m.HandleFunc("/m", mHandler)
+	t := r.PathPrefix("/t/").Subrouter()
+	t.HandleFunc("/t", tHandler)
+}
+`,
+			want: nil,
+		},
+		{
+			name: "HandleFunc receivers: unknown, field, bare, gorilla package",
+			content: `package p
+import "github.com/gorilla/mux"
+type S struct{ mux *http.ServeMux }
+func a(r *mux.Router) { r.HandleFunc("/param", paramHandler) }
+func (s *S) b() { s.mux.HandleFunc("/field", fieldHandler) }
+func c() { HandleFunc("/bare", bareHandler) }
+func d() { router.HandleFunc("/undeclared", undeclaredHandler) }
+func e() { mux.HandleFunc("/pkg", pkgHandler) }
+func f() { r := newRouter(); r.Handle("/call", http.HandlerFunc(callHandler)) }
+`,
+			want: nil,
+		},
+		{
+			name: "HandleFunc receivers that are roots",
+			content: `package p
+import "net/http"
+func a() { http.HandleFunc("/default", defaultHandler) }
+func b() { m := http.NewServeMux(); m.HandleFunc("/local", localHandler); http.ListenAndServe(":80", m) }
+func c(m *http.ServeMux) { m.Handle("/param", http.HandlerFunc(paramHandler)) }
+`,
+			want: []string{"/default -> defaultHandler", "/local -> localHandler", "/param -> paramHandler"},
+		},
+	})
+}
