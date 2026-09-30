@@ -27599,7 +27599,11 @@ const annotationScanLines = 8
 // both in the tens of thousands: indexing @cloudflare/workers-types spent
 // 24.8 GB of its 38 GB of allocation in two of these splits. Finding the
 // window by scanning for newlines instead removed the allocation but kept the
-// S*L scan, so line starts are computed once per file and remembered.
+// S*L scan, so line starts are memoized per file content. The memo is bounded
+// (8 entries, round-robin), so the saving is amortized rather than exactly once
+// per file: eviction, or two workers missing on the same content at the same
+// time, recomputes them. Recomputing yields identical offsets, so output is
+// unaffected either way.
 func splitLineWindow(content string, index, radius int) ([]string, int) {
 	if index < 0 {
 		return nil, index
@@ -27626,6 +27630,12 @@ func splitLineWindow(content string, index, radius int) ([]string, int) {
 // same content string, so a handful of entries covers the relation workers
 // running side by side. Entries hold their content, so an entry can only
 // match a string with identical bytes.
+//
+// All access to entries and next is under mu. The offsets are computed outside
+// the lock, so concurrent misses on one content each compute and insert their
+// own copy (a wasted scan and a duplicate entry, never a wrong answer). A
+// published starts slice is never written again, so callers share it
+// read-only without holding the lock.
 type lineStartsMemo struct {
 	mu      sync.Mutex
 	entries [8]lineStartsEntry
