@@ -5013,13 +5013,19 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 	}
 	if spec.emits("HANDLES_ROUTE") {
-		for _, r := range goHTTPRouteRelations(files, recordsByFile, readContent, constantsByFile) {
+		goRoutes, goWithheld := goHTTPRouteRelations(files, recordsByFile, readContent, constantsByFile)
+		for _, r := range goRoutes {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r.Relation)
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 			handledRoutes[r.Route] = struct{}{}
+		}
+		for _, route := range goWithheld {
+			// A Go registration whose bare path is not its route: the route
+			// literal fallback must not emit that path for it either.
+			handledRoutes[route] = struct{}{}
 		}
 		for _, r := range djangoRouteRelations(files, recordsByFile, readContent) {
 			if shouldStop != nil && shouldStop() {
@@ -24593,8 +24599,11 @@ func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, sy
 	return sortedKeys(seen)
 }
 
-func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, constantsByFile *fileStringConstants) []expressRouteRelation {
+// goHTTPRouteRelations also returns the bare literal paths of registrations
+// (with a local handler) that were omitted or composed under a prefix.
+func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, constantsByFile *fileStringConstants) ([]expressRouteRelation, []string) {
 	var relations []expressRouteRelation
+	var withheld []string
 	seen := map[string]bool{}
 	for _, file := range files {
 		if !strings.EqualFold(filepath.Ext(file.Path), ".go") {
@@ -24618,7 +24627,13 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 				}
 			}
 		}
-		for _, registration := range goHTTPRouteRegistrations(content, constantsByFile.forFile(file.Path, content)) {
+		registrations, bare := goRouteRegistrationsDetailed(content, constantsByFile.forFile(file.Path, content))
+		for _, registration := range bare {
+			if _, ok := resolveRouteHandlerSymbol(handlers, registration.Handler); ok {
+				withheld = append(withheld, registration.Route)
+			}
+		}
+		for _, registration := range registrations {
 			handler, ok := resolveRouteHandlerSymbol(handlers, registration.Handler)
 			if !ok {
 				continue
@@ -24659,7 +24674,7 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		}
 		return relations[i].Handler.ID < relations[j].Handler.ID
 	})
-	return relations
+	return relations, withheld
 }
 
 func goHTTPRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {

@@ -621,3 +621,72 @@ func c() { e := echo.NewWithConfig(cfg); e.GET("/c", cHandler) }
 		},
 	})
 }
+
+// A withheld or composed Go registration must not reappear as a bare path
+// through the pattern-level route literal fallback, and a composed route is
+// emitted exactly. (todos-resource: Routes() returns a router main mounts
+// under /todos, which is not composable, so nothing under it is emitted.)
+func TestGoRouteAccuracySnapshotDoesNotResurrectBarePaths(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "todos.go", `package main
+
+import (
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+)
+
+type todosResource struct{}
+
+func (rs todosResource) Routes() chi.Router {
+	r := chi.NewRouter()
+	r.Get("/list", rs.List)
+	r.Route("/{id}", func(r chi.Router) {
+		r.Get("/sync", rs.Sync)
+	})
+	return r
+}
+
+func (rs todosResource) List(w http.ResponseWriter, r *http.Request) {}
+
+func (rs todosResource) Sync(w http.ResponseWriter, r *http.Request) {}
+`)
+	writeFile(t, repo, "main.go", `package main
+
+import (
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+)
+
+func main() {
+	r := chi.NewRouter()
+	r.Mount("/todos", todosResource{}.Routes())
+	r.Route("/api", func(r chi.Router) {
+		r.Get("/health", health)
+	})
+	http.ListenAndServe(":3333", r)
+}
+
+func health(w http.ResponseWriter, r *http.Request) {}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "HANDLES_ROUTE" {
+			continue
+		}
+		switch relation.ToID {
+		// (A Route/Group prefix literal such as "/{id}" is a separate,
+		// pre-existing pattern-level match and is not asserted here.)
+		case externalID("route", "/list"), externalID("route", "/sync"),
+			externalID("route", "/{id}/sync"), externalID("route", "/health"):
+			t.Fatalf("bare or unmounted path emitted: %#v", relation)
+		}
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "health", "/api/health") {
+		t.Fatalf("missing composed /api/health: %#v", snapshot.Relations)
+	}
+}
