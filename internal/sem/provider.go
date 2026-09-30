@@ -9646,13 +9646,19 @@ func signatureNamesQualifiedMethodPattern(signature, pattern, name string) bool 
 	}
 	for first := 0; first < len(parts); first++ {
 		part := strings.TrimPrefix(parts[first], "\x00")
-		for offset := 0; ; {
+		// A segment can be empty: a global qualifier (`struct ::Foo`, `inline
+		// namespace ::v1`) encodes as `\x00v1::::Foo` or `\x00::v1::Foo`. The empty
+		// string occurs at every offset, so advancing by len(part) left offset
+		// where it was and the scan spun forever on any signature it did not
+		// match at the first position. Stepping at least one byte visits the same
+		// first candidate as before and then every later one exactly once.
+		for offset := 0; offset <= len(signature); {
 			at := strings.Index(signature[offset:], part)
 			if at < 0 {
 				break
 			}
 			start := offset + at
-			offset = start + len(part)
+			offset = start + max(len(part), 1)
 			if start > 0 && isIdentifierByte(signature[start-1]) {
 				continue
 			}

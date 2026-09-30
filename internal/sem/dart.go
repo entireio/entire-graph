@@ -69,8 +69,14 @@ func dartIsSetterAccessor(signature, name string) bool {
 // declared last, so a setter-assignment call resolves through this dedicated
 // lookup to target the setter deterministically. Returns the setter and whether
 // it was found on a base type (inherited).
+//
+// The chain is walked with a visited set, as lookupMethodUpChain walks it: a
+// misparsed header can close the super chain into a cycle, and a setter that
+// is not on the cycle was looked for forever.
 func dartSetterAccessor(start, name string, records []SymbolRecord, superContainerByID map[string]string) (SymbolRecord, bool, bool) {
-	for c := start; c != ""; c = superContainerByID[c] {
+	seen := map[string]bool{}
+	for c := start; c != "" && !seen[c]; c = superContainerByID[c] {
+		seen[c] = true
 		for _, s := range records {
 			if s.Language != "Dart" || s.ContainerID != c {
 				continue
