@@ -1431,6 +1431,9 @@ func (r *goRouteResolver) clauses(scope *goRouteScope, body *ast.BlockStmt, bind
 // are considered only once so a shadowed outer descriptor cannot seed a join;
 // value aliases of the same descriptor are deduplicated by effect identity.
 func (r *goRouteResolver) visibleClosureRewriteTargets(scope *goRouteScope) []goRouteClosureRewriteTarget {
+	if len(r.closureEffects) == 0 {
+		return nil
+	}
 	seenNames := map[string]bool{}
 	seenEffects := map[*goRouteClosureEffect]bool{}
 	seenTargets := map[*goRouteBinding]bool{}
