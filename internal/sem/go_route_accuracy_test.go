@@ -1199,6 +1199,8 @@ func testRequest(t *testing.T, method, path string) {}
 func handler(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/redirect-target")
 	c.Set("/context-key", 1)
+	v, _ := c.Get("/context-get")
+	_ = v
 }
 
 func fiberHandler(c *fiber.Ctx) error {
@@ -1225,7 +1227,7 @@ func TestX(t *testing.T) {
 			got[relation.ToID] = true
 		}
 	}
-	for _, path := range []string{"/redirect-target", "/context-key", "/fiber-client-post", "/fiber-redirect", "/client-get", "/test-request", "/client-var", "/helper-request"} {
+	for _, path := range []string{"/redirect-target", "/context-key", "/context-get", "/fiber-client-post", "/fiber-redirect", "/client-get", "/test-request", "/client-var", "/helper-request"} {
 		if got[externalID("route", path)] {
 			t.Fatalf("non-router literal %s emitted as a route: %v", path, got)
 		}
