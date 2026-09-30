@@ -149,19 +149,29 @@ Local, read-only report over the coding-agent session transcripts already on dis
 (`~/.claude/projects/<path-slug>/*.jsonl`; `--sessions-dir` overrides the lookup). Reports graph
 calls per verb vs. exploration calls (`Read` whole-file / `Read` line-range / `Grep` / `Glob` /
 shell `grep|find|cat|head|tail|sed|awk`), observed result bytes, session tokens reported by transcript
-`usage`, and a signed **1:1 context model**, explicitly not measured savings.
+`usage`, and **observed follow-up** rates with a signed modeled balance, explicitly not measured savings.
 
 A shell call counts as exploration only when the LEADING stage of one of its pipelines runs a
 locate tool: `grep -rn foo . | head` does, `go test ./... 2>&1 | tail -40` does not, and a write
 (`cat > file`, a here-document, `tee`, `sed -i`) never does. `entire sem edges|symbols` counts as a
 graph call, like `entire graph <verb>`.
 
-The model assumes each observed `query`/`search`/`neighbors`/`impact` result replaces ONE
+The headline reports **observed follow-up**, an observational proxy: each observed
+`query`/`search`/`neighbors`/`impact` result is classified by the next 5 tool calls issued AFTER
+its delivery, in the same transcript — error, ineligible (empty or no file named), re-query
+(graph lookup, `Grep`, `Glob`, shell search), follow-up read of a named file (overlapping lines /
+different region / unknown span), censored (transcript ended first), or no follow-up. Every class
+is counted in one reconcilable denominator (`graph_locate_*`, `*_rate`). The signed
+`modeled_balance_*` credits only no-follow-up results, and only under the stated assumption that
+each replaced one average exploration result; absence of a follow-up is not an observed avoided
+call. Path overlap is a suffix match on extension-bearing paths.
+
+The legacy 1:1 model (`--verbose`, `estimated_savings_*`) assumes each observed locate result replaces ONE
 exploration result, priced using that session's average exploration bytes/result, then subtracts
 graph result bytes. The 1:1 substitution is unvalidated; bytes/4 is only a rough token estimate.
 Queries, output truncation and task quality are not controlled, so this does not establish causal
-savings. Human output uses `estimated_savings_est_tokens_unfloored`, including negative sessions,
-and `sessions_with_savings_comparison` distinguishes an available zero from no comparison.
+savings. `estimated_savings_est_tokens_unfloored` keeps negative sessions (the status line reads
+it), and `sessions_with_savings_comparison` distinguishes an available zero from no comparison.
 Legacy positive-only savings, percentage and graph-first JSON fields remain for compatibility;
 they are not human-facing evidence of savings or behavior. No network; local parse-cache writes
 can be disabled with `--no-cache`.

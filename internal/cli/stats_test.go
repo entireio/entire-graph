@@ -933,8 +933,9 @@ func TestStatsDefaultOutputIsOneHeadlineLine(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("default output must be exactly one line, got %d:\n%s", len(lines), text)
 	}
-	// (840-40) modeled bytes -> +200 estimated tokens; not measured savings.
-	if lines[0] != "[entire-graph] 1:1 context model: +200 est. tokens; not measured savings" {
+	// The graph output names no file, so the result is INELIGIBLE and credits nothing: the 40 graph
+	// bytes are pure cost (-10 est. tokens). The 1:1 model (+200) stays one --verbose away.
+	if lines[0] != "[entire-graph] observed follow-up of 1 graph locate results (next 5 calls after delivery): re-query 0%, read named file 0%, none 0%, censored 0%, error/ineligible 100%; modeled balance -10 est. tokens if each of 0 no-follow-up results (of 1 in 1 sessions with both result types) replaced one average exploration result (assumed; not measured savings)" {
 		t.Fatalf("unexpected model headline = %q", lines[0])
 	}
 	for _, unwanted := range []string{"graph calls by verb", "session tokens (billed", "ESTIMATED SAVINGS", "assumption"} {
