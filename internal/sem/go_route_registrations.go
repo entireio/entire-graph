@@ -63,13 +63,22 @@ var goRouteMethodNames = map[string]bool{
 // route is never parsed.
 var goRouteCallHintRe = regexp.MustCompile(`\b(?:HandleFunc|Handle|MethodFunc|Method|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE|Get|Post|Put|Patch|Delete|Head|Options|Connect|Trace|Any|All)\s*\(`)
 
+// goRoutePrefixHintRe finds the prefix calls whose literal is masked even in a
+// file that registers nothing.
+var goRoutePrefixHintRe = regexp.MustCompile(`\.(?:Group|Route|Mount|PathPrefix|StripPrefix)\s*\(`)
+
 func goRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {
 	return goRouteRegistrationsDetailed(content, constants).regs
 }
 
 func goRouteRegistrationsDetailed(content string, constants map[string]string) goRouteDetail {
 	if !goRouteCallHintRe.MatchString(content) {
-		return goRouteDetail{}
+		if !goRoutePrefixHintRe.MatchString(content) {
+			return goRouteDetail{}
+		}
+		// No registration here, but a Group/Route/Mount/PathPrefix/
+		// StripPrefix prefix is still not a route of this file.
+		return goRouteDetail{masks: resolveGoRouteReceivers(content, constants).masks}
 	}
 	receivers := resolveGoRouteReceivers(content, constants)
 	switch {
