@@ -4024,22 +4024,51 @@ func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord,
 		}
 	}
 
-	var remaining []SymbolRecord
-	for _, to := range candidates {
-		if to.ID != from.ID && callableTargetKind(to.Kind) && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) {
-			remaining = append(remaining, to)
+	// Count the survivors before copying any of them. Most lookups end here
+	// with zero or one target, and the slice is only needed by the two
+	// branches below that rank or group several; building it for every call
+	// copied every same-name declaration per call site, which for a name
+	// declared hundreds of times across C++ headers was most of the index's
+	// allocation (19 GB of 29 GB over node's include tree).
+	remainingTarget := func(to SymbolRecord) bool {
+		return to.ID != from.ID && callableTargetKind(to.Kind) && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to)
+	}
+	remainingCount, firstRemaining, remainingOneFile := 0, -1, true
+	for index, to := range candidates {
+		if !remainingTarget(to) {
+			continue
+		}
+		remainingCount++
+		if firstRemaining < 0 {
+			firstRemaining = index
+			continue
+		}
+		first := candidates[firstRemaining]
+		if to.FilePath != first.FilePath || to.Language != first.Language || to.Name != first.Name {
+			remainingOneFile = false
 		}
 	}
-	if len(remaining) == 1 {
+	if remainingCount == 1 {
 		return []resolvedCallTarget{{
-			SymbolRecord: remaining[0],
+			SymbolRecord: candidates[firstRemaining],
 			Confidence:   0.68,
 			Reason:       "direct call expression matched globally unique symbol name",
 			Resolution:   "name_only",
 			Scope:        "workspace",
 		}}
 	}
-	if from.Language == "PHP" && len(remaining) > 1 {
+	phpRanking := from.Language == "PHP" && remainingCount > 1
+	overloadSet := cFamilyOverloadResolutionEnabled(from.Language) && remainingCount > 1 && remainingOneFile
+	if !phpRanking && !overloadSet {
+		return nil
+	}
+	remaining := make([]SymbolRecord, 0, remainingCount)
+	for _, to := range candidates {
+		if remainingTarget(to) {
+			remaining = append(remaining, to)
+		}
+	}
+	if phpRanking {
 		// PHP repos commonly re-declare bare functions (WordPress ships
 		// apply_filters in plugin.php plus compat/noop stubs), and PHP has
 		// no import statements for functions to disambiguate through.
@@ -4065,7 +4094,7 @@ func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord,
 		}
 		return out
 	}
-	if cFamilyOverloadResolutionEnabled(from.Language) {
+	if overloadSet {
 		if overloads, ok := sameFileOverloadSet(remaining); ok {
 			out := make([]resolvedCallTarget, 0, len(overloads))
 			for _, overload := range overloads {
