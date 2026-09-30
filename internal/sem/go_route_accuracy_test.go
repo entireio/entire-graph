@@ -1194,7 +1194,7 @@ import (
 
 var client = &http.Client{}
 
-func testRequest(t *testing.T, method, path string) {}
+func testRequest(t *testing.T, method, path string) *http.Response { return nil }
 
 func handler(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/redirect-target")
@@ -1213,7 +1213,9 @@ func TestX(t *testing.T) {
 	req := httptest.NewRequest("GET", "/test-request", nil)
 	_ = req
 	client.Get("/client-var")
-	testRequest(t, "GET", "/helper-request")
+	if resp := testRequest(t, "HEAD", "/helper-request"); resp.Header.Get("X-A") != "" {
+		t.Fatal()
+	}
 	cache.Get("/unknown-receiver")
 }
 `)
