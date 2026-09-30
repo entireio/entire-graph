@@ -4,9 +4,9 @@ import (
 	"go/ast"
 	"go/scanner"
 	"go/token"
+	"path"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -28,49 +28,65 @@ type goRouteCandidate struct {
 	route    string
 	handler  string
 	evidence string
-	// receiverAware is false for registrations whose receiver is not
-	// consulted.
-	receiverAware bool
-	receiver      goRouteBinding
+	// inline registrations have a handler this pass cannot name as a symbol
+	// (a closure, a call, a middleware chain): their route is attributed to
+	// the enclosing symbol.
+	inline   bool
+	receiver goRouteBinding
+}
+
+// goRouteInline is a registration with an inline handler and its composed
+// route, at a byte offset into the file.
+type goRouteInline struct {
+	Route  string
+	Offset int
+}
+
+// goRouteDetail is everything the Go route pass knows about one file:
+// registrations with a named handler, registrations with an inline handler,
+// and the byte spans of every route argument it processed (placed, omitted or
+// composed). The pattern-level route literal fallback must not read those
+// spans: their route is decided here.
+type goRouteDetail struct {
+	regs   []goHTTPRouteRegistration
+	inline []goRouteInline
+	masks  [][2]int
 }
 
 var goRouteMethodNames = map[string]bool{
 	"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true, "HEAD": true, "OPTIONS": true,
 	"Get": true, "Post": true, "Put": true, "Patch": true, "Delete": true, "Head": true, "Options": true,
+	"CONNECT": true, "TRACE": true, "Connect": true, "Trace": true, "Any": true, "All": true,
 }
 
 // goRouteCallHintRe gates the parse: a file with no call that could register a
 // route is never parsed.
-var goRouteCallHintRe = regexp.MustCompile(`\b(?:HandleFunc|Handle|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(`)
+var goRouteCallHintRe = regexp.MustCompile(`\b(?:HandleFunc|Handle|MethodFunc|Method|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE|Get|Post|Put|Patch|Delete|Head|Options|Connect|Trace|Any|All)\s*\(`)
 
 func goRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {
-	registrations, _ := goRouteRegistrationsDetailed(content, constants)
-	return registrations
+	return goRouteRegistrationsDetailed(content, constants).regs
 }
 
-// goRouteRegistrationsDetailed also returns, for every registration whose
-// literal path is not what was emitted (omitted as unknown, or composed under
-// a prefix), that bare literal with its handler. The pattern-level route
-// literal fallback must not re-emit those bare paths.
-func goRouteRegistrationsDetailed(content string, constants map[string]string) ([]goHTTPRouteRegistration, []goHTTPRouteRegistration) {
+func goRouteRegistrationsDetailed(content string, constants map[string]string) goRouteDetail {
 	if !goRouteCallHintRe.MatchString(content) {
-		return nil, nil
+		return goRouteDetail{}
 	}
 	receivers := resolveGoRouteReceivers(content, constants)
-	var candidates []goRouteCandidate
 	switch {
 	case receivers.exhausted:
-		// No receiver in the file is trusted.
-		return nil, nil
+		// No receiver in the file is trusted; the route arguments are still
+		// known, so the literal fallback does not re-emit them either.
+		return goRouteDetail{masks: receivers.masks}
 	case receivers.parsed:
-		candidates = receivers.regs
+		detail := goRouteEmit(receivers.regs, constants)
+		detail.masks = receivers.masks
+		return detail
 	default:
-		candidates = goRouteFallbackRegistrations(content)
+		return goRouteEmit(goRouteFallbackRegistrations(content), constants)
 	}
-	return goRouteEmit(candidates, constants)
 }
 
-func goRouteEmit(candidates []goRouteCandidate, constants map[string]string) ([]goHTTPRouteRegistration, []goHTTPRouteRegistration) {
+func goRouteEmit(candidates []goRouteCandidate, constants map[string]string) goRouteDetail {
 	sorted := append([]goRouteCandidate(nil), candidates...)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if sorted[i].order != sorted[j].order {
@@ -78,62 +94,140 @@ func goRouteEmit(candidates []goRouteCandidate, constants map[string]string) ([]
 		}
 		return sorted[i].offset < sorted[j].offset
 	})
-	var registrations, bare []goHTTPRouteRegistration
+	var detail goRouteDetail
 	for _, candidate := range sorted {
-		routeExpr := candidate.route
-		literal, literalOK := staticRouteExpressionValue(routeExpr, constants)
-		withhold := func() {
-			if literalOK && candidate.handler != "" {
-				bare = append(bare, goHTTPRouteRegistration{Route: literal, Handler: candidate.handler})
-			}
-		}
-		if candidate.receiverAware {
-			receiver := candidate.receiver
-			if receiver.kind == goRouteUnknown {
-				// The receiver's prefix at this call is not determined: emitting
-				// the bare path, or another binding's prefix, would invent a route.
-				withhold()
-				continue
-			}
-			if receiver.kind == goRouteKnown && receiver.origin != nil {
-				// Where the router instance itself is served: a composed Mount,
-				// or unknown when it escaped to code that may mount it.
-				base, ok := receiver.origin.prefix(0)
-				if !ok {
-					withhold()
-					continue
-				}
-				if base != "" {
-					if len(base)+len(receiver.prefix) > goRouteMaxPrefixBytes {
-						withhold()
-						continue
-					}
-					receiver.prefix = joinRoutePaths(base, receiver.prefix)
-				}
-			}
-			if receiver.kind == goRouteKnown && receiver.prefix != "" {
-				route, ok := staticRouteExpressionValue(routeExpr, constants)
-				if !ok {
-					continue
-				}
-				routeExpr = strconv.Quote(joinRoutePaths(receiver.prefix, route))
-			}
-		}
-		route, ok := staticRouteExpressionValue(routeExpr, constants)
-		if !ok || candidate.handler == "" {
+		route, ok := goRouteCandidateRoute(candidate, constants)
+		if !ok {
+			// The receiver's prefix at this call is not determined: emitting
+			// the bare path, or another binding's prefix, would invent a route.
 			continue
 		}
-		if literalOK && route != literal {
-			withhold()
+		if candidate.inline {
+			detail.inline = append(detail.inline, goRouteInline{Route: route, Offset: candidate.offset})
+			continue
 		}
-		registrations = append(registrations, goHTTPRouteRegistration{
+		if candidate.handler == "" {
+			continue
+		}
+		detail.regs = append(detail.regs, goHTTPRouteRegistration{
 			Route:        route,
 			Handler:      candidate.handler,
 			EvidenceKind: candidate.evidence,
 			Detail:       route + " -> " + candidate.handler,
+			offset:       candidate.offset,
 		})
 	}
-	return registrations, bare
+	return detail
+}
+
+// goRouteCandidateRoute is the full route a registration serves, or false
+// when any part of it (receiver, where the router instance is served, the
+// path argument) is not determined.
+func goRouteCandidateRoute(candidate goRouteCandidate, constants map[string]string) (string, bool) {
+	receiver := candidate.receiver
+	if receiver.kind == goRouteUnknown {
+		return "", false
+	}
+	framework := receiver.framework
+	literal, ok := goRouteLiteral(framework, candidate.route, constants)
+	if !ok {
+		return "", false
+	}
+	prefix := receiver.prefix
+	if receiver.kind == goRouteKnown && receiver.origin != nil {
+		// Where the router instance itself is served: a composed Mount, or
+		// unknown when it escaped to code that may mount it.
+		base, ok := receiver.origin.prefix(0)
+		if !ok {
+			return "", false
+		}
+		if base != "" {
+			if len(base)+len(prefix) > goRouteMaxPrefixBytes {
+				return "", false
+			}
+			prefix = goRouteJoin(framework, base, prefix)
+		}
+	}
+	return goRouteFinal(framework, goRouteJoin(framework, prefix, literal)), true
+}
+
+// goRouteLiteral is a static path argument. gin, echo and fiber accept
+// relative and empty paths (they join or prepend the slash themselves);
+// anything else must be an absolute path.
+func goRouteLiteral(framework, expr string, constants map[string]string) (string, bool) {
+	value, ok := staticStringExpressionValue(expr, constants)
+	if !ok {
+		return "", false
+	}
+	switch framework {
+	case "gin", "echo", "fiber":
+		return value, true
+	}
+	if !strings.HasPrefix(value, "/") {
+		return "", false
+	}
+	return value, true
+}
+
+// goRouteJoin composes a router's prefix with a path the way that framework
+// does ("" prefix is the root):
+//   - gin: path.Join, keeping a trailing slash of the relative path, with ""
+//     meaning the group path itself (gin joinPaths).
+//   - echo: verbatim concatenation (g.prefix + path).
+//   - fiber: TrimRight(prefix, "/") + path, with "" meaning the group path
+//     and a missing leading slash added (fiber getGroupPath).
+//   - gorilla: TrimRight(parent template, "/") + template (mux route.go).
+//   - chi, net/http and unclassified receivers: joinRoutePaths.
+func goRouteJoin(framework, prefix, rel string) string {
+	switch framework {
+	case "gin":
+		abs := prefix
+		if abs == "" {
+			abs = "/"
+		}
+		if rel == "" {
+			return abs
+		}
+		joined := path.Join(abs, rel)
+		if strings.HasSuffix(rel, "/") && !strings.HasSuffix(joined, "/") {
+			joined += "/"
+		}
+		return joined
+	case "echo":
+		return prefix + rel
+	case "fiber":
+		if prefix == "" {
+			return rel
+		}
+		if rel == "" {
+			return prefix
+		}
+		if rel[0] != '/' {
+			rel = "/" + rel
+		}
+		return strings.TrimRight(prefix, "/") + rel
+	case "mux":
+		if prefix == "" {
+			return rel
+		}
+		return strings.TrimRight(prefix, "/") + rel
+	}
+	if prefix == "" {
+		return rel
+	}
+	return joinRoutePaths(prefix, rel)
+}
+
+// goRouteFinal is the route a router registers for a composed path: gin, echo
+// and fiber serve "" at "/" and add a missing leading slash.
+func goRouteFinal(framework, route string) string {
+	if route == "" {
+		route = "/"
+	}
+	if route[0] != '/' {
+		route = "/" + route
+	}
+	return normalizeRouteParamSyntax(route)
 }
 
 // goRouteHandlerText accepts the handler shapes the registration forms always
@@ -172,10 +266,23 @@ func goRouteHandlerFuncArg(expr ast.Expr) string {
 	return goRouteHandlerText(call.Args[0])
 }
 
+// goRouteRouteArgIndex is the index of the path argument of a registration
+// call named name, or -1 when name does not register a route.
+func goRouteRouteArgIndex(name string) int {
+	switch {
+	case name == "HandleFunc" || name == "Handle" || goRouteMethodNames[name]:
+		return 0
+	case name == "Method" || name == "MethodFunc":
+		// chi r.Method("GET", "/x", h).
+		return 1
+	}
+	return -1
+}
+
 // noteCall records call as a route registration candidate when it has one of
 // the registration shapes, with its receiver's state at this point of the walk.
 func (r *goRouteResolver) noteCall(call *ast.CallExpr, scope *goRouteScope) {
-	if len(call.Args) != 2 || call.Ellipsis.IsValid() {
+	if call.Ellipsis.IsValid() {
 		return
 	}
 	// A bare HandleFunc(...) (a local function or a dot import) has no
@@ -185,26 +292,35 @@ func (r *goRouteResolver) noteCall(call *ast.CallExpr, scope *goRouteScope) {
 		return
 	}
 	name := selector.Sel.Name
-	candidate := goRouteCandidate{offset: r.offset(call.Pos()), route: r.text(call.Args[0]), receiverAware: true}
+	index := goRouteRouteArgIndex(name)
+	if index < 0 || len(call.Args) < index+2 {
+		return
+	}
+	candidate := goRouteCandidate{offset: r.offset(call.Pos()), route: r.text(call.Args[index])}
 	chainOrder, chainEvidence := 2, "go_router_method"
+	// Only the two-argument forms name their handler; Method/MethodFunc,
+	// middleware arguments and wrapped handlers are inline.
+	named := index == 0 && len(call.Args) == 2
 	switch {
-	case name == "HandleFunc":
+	case name == "HandleFunc" || name == "MethodFunc":
 		candidate.order, candidate.evidence = 0, "go_http_handle_func"
 		chainOrder, chainEvidence = 0, candidate.evidence
-		candidate.handler = goRouteHandlerText(call.Args[1])
-	case name == "Handle":
+		if named {
+			candidate.handler = goRouteHandlerText(call.Args[1])
+		}
+	case name == "Handle" || name == "Method":
 		candidate.order, candidate.evidence = 1, "go_http_handler_func"
 		chainOrder, chainEvidence = 1, candidate.evidence
-		candidate.handler = goRouteHandlerFuncArg(call.Args[1])
-	case goRouteMethodNames[name]:
-		candidate.order, candidate.evidence = 2, "go_router_method"
-		candidate.handler = goRouteHandlerText(call.Args[1])
+		if named {
+			candidate.handler = goRouteHandlerFuncArg(call.Args[1])
+		}
 	default:
-		return
+		candidate.order, candidate.evidence = 2, "go_router_method"
+		if named {
+			candidate.handler = goRouteHandlerText(call.Args[1])
+		}
 	}
-	if candidate.handler == "" {
-		return
-	}
+	candidate.inline = candidate.handler == ""
 	switch x := selector.X.(type) {
 	case *ast.Ident:
 		candidate.receiver, _ = r.lookupIn(scope)(x.Name)
@@ -222,6 +338,51 @@ func (r *goRouteResolver) noteCall(call *ast.CallExpr, scope *goRouteScope) {
 		return
 	}
 	r.regs = append(r.regs, candidate)
+}
+
+// maskSpans lists the byte spans of every route argument in the file that
+// the route pass decides: each registration-shaped call (whatever its
+// receiver or handler) and each Group/Route/Mount/PathPrefix/StripPrefix
+// prefix (a prefix is not a route). They are keyed by position, so an
+// identical literal elsewhere is unaffected.
+func (r *goRouteResolver) maskSpans() [][2]int {
+	var spans [][2]int
+	add := func(arg ast.Expr) {
+		start, end := r.offset(arg.Pos()), r.offset(arg.End())
+		if start >= 0 && end <= len(r.src) && start < end {
+			spans = append(spans, [2]int{start, end})
+		}
+	}
+	ast.Inspect(r.file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := ""
+		switch fun := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			name = fun.Sel.Name
+		case *ast.Ident:
+			if fun.Name != "HandleFunc" && fun.Name != "Handle" {
+				return true
+			}
+			name = fun.Name
+		default:
+			return true
+		}
+		if index := goRouteRouteArgIndex(name); index >= 0 && len(call.Args) >= index+2 {
+			add(call.Args[index])
+			return true
+		}
+		switch name {
+		case "Group", "Route", "Mount", "PathPrefix", "StripPrefix":
+			if len(call.Args) >= 1 && !goRouteIsFuncLit(call.Args[0]) {
+				add(call.Args[0])
+			}
+		}
+		return true
+	})
+	return spans
 }
 
 // goRouteFallbackRegistrations handles a file go/parser rejects. It scans

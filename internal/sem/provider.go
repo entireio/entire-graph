@@ -5020,6 +5020,9 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 	}
 	handledRoutes := map[string]struct{}{}
+	// goRouteMasks holds, per Go file, the byte spans of route arguments the
+	// Go route pass decided; the route literal fallback never reads them.
+	var goRouteMasks map[string][][2]int
 	// Shared by the route pass below and the per-file loop further down, which
 	// both resolve routes spelled as constants out of the same files.
 	constantsByFile := newFileStringConstants()
@@ -5034,7 +5037,8 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 	}
 	if spec.emits("HANDLES_ROUTE") {
-		goRoutes, goWithheld := goHTTPRouteRelations(files, recordsByFile, readContent, constantsByFile)
+		goRoutes, goInline, masks := goHTTPRouteRelations(files, recordsByFile, readContent, constantsByFile)
+		goRouteMasks = masks
 		for _, r := range goRoutes {
 			if shouldStop != nil && shouldStop() {
 				return
@@ -5043,10 +5047,12 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 			handledRoutes[r.Route] = struct{}{}
 		}
-		for _, route := range goWithheld {
-			// A Go registration whose bare path is not its route: the route
-			// literal fallback must not emit that path for it either.
-			handledRoutes[route] = struct{}{}
+		for _, r := range goInline {
+			// Inline-handler registrations replace the route literal fallback
+			// at their own call sites (masked below), so they claim nothing by
+			// string: an identical literal elsewhere is still scanned.
+			emit(r.Relation)
+			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 		}
 		for _, r := range djangoRouteRelations(files, recordsByFile, readContent) {
 			if shouldStop != nil && shouldStop() {
@@ -5323,7 +5329,11 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			fileStringConstants = constantsByFile.forFile(file.Path, content)
 		}
 		var routeSymbolsByID map[string]SymbolRecord
+		var maskedLines []string
 		if fileNeedsRouteScan {
+			if spans := goRouteMasks[file.Path]; len(spans) > 0 {
+				maskedLines = strings.Split(goRouteMaskContent(content, spans), "\n")
+			}
 			routeSymbolsByID = map[string]SymbolRecord{}
 			for _, symbol := range currentFileSymbols {
 				routeSymbolsByID[symbol.ID] = symbol
@@ -6024,7 +6034,11 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 				}
 			}
 			if fileNeedsRouteScan {
-				for _, route := range routeLiteralsForSymbol(file.Path, content, block, from, routeSymbolsByID, fileStringConstants) {
+				routeBlock := block
+				if maskedLines != nil {
+					routeBlock = symbolBlockFromLines(maskedLines, from)
+				}
+				for _, route := range routeLiteralsForSymbol(file.Path, content, routeBlock, from, routeSymbolsByID, fileStringConstants) {
 					if _, ok := handledRoutes[route]; ok {
 						continue
 					}
@@ -24763,12 +24777,14 @@ func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, sy
 	return sortedKeys(seen)
 }
 
-// goHTTPRouteRelations also returns the bare literal paths of registrations
-// (with a local handler) that were omitted or composed under a prefix.
-func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, constantsByFile *fileStringConstants) ([]expressRouteRelation, []string) {
-	var relations []expressRouteRelation
-	var withheld []string
+// goHTTPRouteRelations returns the Go route relations with a named local
+// handler, the inline-handler relations (attributed to the enclosing symbol),
+// and per file the byte spans of every route argument the pass decided.
+func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, constantsByFile *fileStringConstants) ([]expressRouteRelation, []expressRouteRelation, map[string][][2]int) {
+	var relations, inline []expressRouteRelation
+	masks := map[string][][2]int{}
 	seen := map[string]bool{}
+	inlineSeen := map[string]bool{}
 	for _, file := range files {
 		if !strings.EqualFold(filepath.Ext(file.Path), ".go") {
 			continue
@@ -24791,13 +24807,54 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 				}
 			}
 		}
-		registrations, bare := goRouteRegistrationsDetailed(content, constantsByFile.forFile(file.Path, content))
-		for _, registration := range bare {
-			if _, ok := resolveRouteHandlerSymbol(handlers, registration.Handler); ok {
-				withheld = append(withheld, registration.Route)
+		detail := goRouteRegistrationsDetailed(content, constantsByFile.forFile(file.Path, content))
+		if len(detail.masks) > 0 {
+			masks[file.Path] = detail.masks
+		}
+		inlineRegs := detail.inline
+		for _, registration := range detail.regs {
+			if _, ok := resolveRouteHandlerSymbol(handlers, registration.Handler); !ok {
+				// A named handler that is not a symbol here (a local variable,
+				// another package's function): attributed to the enclosing
+				// symbol like an inline handler, never dropped to the bare path.
+				inlineRegs = append(inlineRegs, goRouteInline{Route: registration.Route, Offset: registration.offset})
 			}
 		}
-		for _, registration := range registrations {
+		for _, registration := range inlineRegs {
+			from, ok := goRouteEnclosingSymbol(recordsByFile[file.Path], 1+strings.Count(content[:registration.Offset], "\n"))
+			if !ok {
+				continue
+			}
+			key := from.ID + "\x00" + registration.Route
+			if inlineSeen[key] {
+				continue
+			}
+			inlineSeen[key] = true
+			inline = append(inline, expressRouteRelation{
+				Route:   registration.Route,
+				Handler: from,
+				Relation: RelationRecord{
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          externalID("route", registration.Route),
+					Type:          "HANDLES_ROUTE",
+					Confidence:    0.7,
+					Reason:        "Go route registration with an inline handler; route composed from its router, attributed to the enclosing symbol",
+					RelationScope: "external",
+					Resolution:    "pattern",
+					TargetKind:    "route",
+					Evidence: []Evidence{{
+						Kind:      "go_router_inline",
+						FilePath:  from.FilePath,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    registration.Route,
+					}},
+					WarningCodes: []string{},
+				},
+			})
+		}
+		for _, registration := range detail.regs {
 			handler, ok := resolveRouteHandlerSymbol(handlers, registration.Handler)
 			if !ok {
 				continue
@@ -24838,7 +24895,35 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		}
 		return relations[i].Handler.ID < relations[j].Handler.ID
 	})
-	return relations, withheld
+	return relations, inline, masks
+}
+
+// goRouteEnclosingSymbol is the innermost non-type symbol spanning line.
+func goRouteEnclosingSymbol(symbols []SymbolRecord, line int) (SymbolRecord, bool) {
+	var best SymbolRecord
+	found := false
+	for _, symbol := range symbols {
+		if typeLikeKind(symbol.Kind) || symbol.StartLine > line || symbol.EndLine < line {
+			continue
+		}
+		if !found || symbol.EndLine-symbol.StartLine < best.EndLine-best.StartLine {
+			best, found = symbol, true
+		}
+	}
+	return best, found
+}
+
+// goRouteMaskContent blanks the given byte spans (newlines kept).
+func goRouteMaskContent(content string, spans [][2]int) string {
+	masked := []byte(content)
+	for _, span := range spans {
+		for i := span[0]; i < span[1] && i < len(masked); i++ {
+			if masked[i] != '\n' {
+				masked[i] = ' '
+			}
+		}
+	}
+	return string(masked)
 }
 
 func goHTTPRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {
@@ -25979,6 +26064,8 @@ type goHTTPRouteRegistration struct {
 	EvidenceKind     string
 	Detail           string
 	AllowTypeHandler bool
+	// offset of the registration call in the file (Go route pass only).
+	offset int
 }
 
 type djangoRouteRegistration struct {
