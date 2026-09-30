@@ -24662,90 +24662,10 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 	return relations
 }
 
-var goHTTPRouteRegistrationsGroupRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)`)
-
 func goHTTPRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {
-	// Group receivers are resolved per use site, not per file-global name: see
-	// go_route_binding.go. Resolution is lazy so files without router method
-	// calls never pay for a parse.
-	var receivers *goRouteReceivers
-	receiverAt := func(offset int, name string) goRouteBinding {
-		if receivers == nil {
-			resolved := resolveGoRouteReceivers(content, constants)
-			receivers = &resolved
-		}
-		return receivers.at(offset, name)
-	}
-	var registrations []goHTTPRouteRegistration
-	add := func(routeExpr, handler, evidence string) {
-		route, ok := staticRouteExpressionValue(routeExpr, constants)
-		if !ok || handler == "" {
-			return
-		}
-		registrations = append(registrations, goHTTPRouteRegistration{
-			Route:        route,
-			Handler:      handler,
-			EvidenceKind: evidence,
-			Detail:       route + " -> " + handler,
-		})
-	}
-	goHandlerExpr := `[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?`
-	handleFuncRe := regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?HandleFunc\s*\(\s*([^,\n]+)\s*,\s*(` + goHandlerExpr + `)\s*\)`)
-	handleFuncWrapperRe := regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?Handle\s*\(\s*([^,\n]+)\s*,\s*(?:http\.)?HandlerFunc\s*\(\s*(` + goHandlerExpr + `)\s*\)\s*\)`)
-	routerMethodRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*(` + goHandlerExpr + `)\s*\)`)
-	chainedGroupMethodRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)\.(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*(` + goHandlerExpr + `)\s*\)`)
-	for _, match := range handleFuncRe.FindAllStringSubmatch(content, -1) {
-		if len(match) == 3 {
-			add(match[1], match[2], "go_http_handle_func")
-		}
-	}
-	for _, match := range handleFuncWrapperRe.FindAllStringSubmatch(content, -1) {
-		if len(match) == 3 {
-			add(match[1], match[2], "go_http_handler_func")
-		}
-	}
-	for _, idx := range routerMethodRe.FindAllStringSubmatchIndex(content, -1) {
-		if len(idx) != 8 {
-			continue
-		}
-		receiver := receiverAt(idx[2], content[idx[2]:idx[3]])
-		if receiver.kind == goRouteUnknown || goRouteReceiverIsSelector(content, idx[2]) {
-			// The receiver's prefix at this call is not determined: emitting the
-			// bare path, or another binding's prefix, would invent a route.
-			continue
-		}
-		routeExpr := content[idx[4]:idx[5]]
-		if receiver.kind == goRouteKnown && receiver.prefix != "" {
-			route, ok := staticRouteExpressionValue(routeExpr, constants)
-			if !ok {
-				continue
-			}
-			routeExpr = strconv.Quote(joinRoutePaths(receiver.prefix, route))
-		}
-		add(routeExpr, content[idx[6]:idx[7]], "go_router_method")
-	}
-	for _, idx := range chainedGroupMethodRe.FindAllStringSubmatchIndex(content, -1) {
-		if len(idx) != 10 {
-			continue
-		}
-		receiver := receiverAt(idx[2], content[idx[2]:idx[3]])
-		if receiver.kind == goRouteUnknown || goRouteReceiverIsSelector(content, idx[2]) {
-			continue
-		}
-		prefix, ok := staticRouteExpressionValue(content[idx[4]:idx[5]], constants)
-		if !ok {
-			continue
-		}
-		if receiver.kind == goRouteKnown && receiver.prefix != "" {
-			prefix = joinRoutePaths(receiver.prefix, prefix)
-		}
-		route, ok := staticRouteExpressionValue(content[idx[6]:idx[7]], constants)
-		if !ok {
-			continue
-		}
-		add(strconv.Quote(joinRoutePaths(prefix, route)), content[idx[8]:idx[9]], "go_router_group_method")
-	}
-	return registrations
+	// Registrations are read from real call expressions with their receiver's
+	// prefix resolved at the call: see go_route_binding.go.
+	return goRouteRegistrations(content, constants)
 }
 
 func resolveRouteHandlerSymbol(handlers map[string]SymbolRecord, expr string) (SymbolRecord, bool) {
