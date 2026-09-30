@@ -24709,7 +24709,7 @@ func goHTTPRouteRegistrations(content string, constants map[string]string) []goH
 			continue
 		}
 		receiver := receiverAt(idx[2], content[idx[2]:idx[3]])
-		if receiver.kind == goRouteUnknown {
+		if receiver.kind == goRouteUnknown || goRouteReceiverIsSelector(content, idx[2]) {
 			// The receiver's prefix at this call is not determined: emitting the
 			// bare path, or another binding's prefix, would invent a route.
 			continue
@@ -24729,7 +24729,7 @@ func goHTTPRouteRegistrations(content string, constants map[string]string) []goH
 			continue
 		}
 		receiver := receiverAt(idx[2], content[idx[2]:idx[3]])
-		if receiver.kind == goRouteUnknown {
+		if receiver.kind == goRouteUnknown || goRouteReceiverIsSelector(content, idx[2]) {
 			continue
 		}
 		prefix, ok := staticRouteExpressionValue(content[idx[4]:idx[5]], constants)
