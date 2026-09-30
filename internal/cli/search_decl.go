@@ -488,12 +488,14 @@ func agentSearchRenderDecls(view agentSearchBlockView, decls []agentSearchDecl, 
 	lines := view.lines
 	shown := make([]bool, len(lines))
 	if left >= 0 {
-		for i := left; i <= right; i++ {
+		// Bounded like agentSearchBodyLines: the window search only passes windows inside the
+		// snippet, so this bound is defensive; a caller passing right past the end must not panic.
+		for i := left; i <= right && i < len(lines); i++ {
 			shown[i] = true
 		}
 	}
 	for _, decl := range decls {
-		for i := decl.index; i <= decl.index+decl.cont && i < len(lines); i++ {
+		for i := max(decl.index, 0); i <= decl.index+decl.cont && i < len(lines); i++ {
 			shown[i] = true
 		}
 	}
