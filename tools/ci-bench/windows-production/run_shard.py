@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -19,6 +20,7 @@ from typing import Any
 PLAN_SCHEMA = "entire-graph.windows-ci.shard-plan.v1"
 RUN_SCHEMA = "entire-graph.windows-ci.shard-run.v1"
 TARGET_ENVIRONMENT = {"CGO_ENABLED": "1", "GOARCH": "amd64", "GOOS": "windows"}
+HEARTBEAT_INTERVAL_SECONDS = 60.0
 
 
 def read_json(path: Path) -> Any:
@@ -184,6 +186,23 @@ def shard_command_arguments(
     return arguments
 
 
+def start_heartbeat(
+    prefix: str, detail: str, started: float, interval: float
+) -> tuple[threading.Event, threading.Thread]:
+    """Print a liveness line to the runner console until the returned event is set."""
+    stop = threading.Event()
+    stream = sys.stderr
+
+    def beat() -> None:
+        while not stop.wait(interval):
+            elapsed = time.monotonic() - started
+            print(f"{prefix} heartbeat {detail} elapsed={elapsed:.1f}s", file=stream, flush=True)
+
+    thread = threading.Thread(target=beat, name="run-shard-heartbeat", daemon=True)
+    thread.start()
+    return stop, thread
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", type=Path, required=True)
@@ -195,7 +214,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
+def run(
+    args: argparse.Namespace,
+    metadata: dict[str, Any],
+    heartbeat_interval: float = HEARTBEAT_INTERVAL_SECONDS,
+) -> int:
     if sys.platform != "win32":
         raise RuntimeError("run_shard.py must run on native Windows")
     repository = args.repository.resolve(strict=True)
@@ -343,17 +366,45 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
             direct_environment = direct_test_environment(
                 environment, package_directory, go_tool_directory
             )
+            prefix = f"shard {args.shard_index} assignment {position + 1}/{len(assignments)}"
+            detail = f"package={json.dumps(package)} roots={len(roots)}"
+            print(f"{prefix} start {detail}", file=sys.stderr, flush=True)
             started = time.monotonic()
             with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-                completed = subprocess.run(
-                    [go, *command_arguments],
-                    cwd=package_directory,
-                    env=direct_environment,
-                    stdout=stdout,
-                    stderr=stderr,
-                    check=False,
+                heartbeat_stop, heartbeat = start_heartbeat(
+                    prefix, detail, started, heartbeat_interval
                 )
+                failure = None
+                try:
+                    completed = subprocess.run(
+                        [go, *command_arguments],
+                        cwd=package_directory,
+                        env=direct_environment,
+                        stdout=stdout,
+                        stderr=stderr,
+                        check=False,
+                    )
+                except BaseException as error:
+                    # Report only the class: the message can carry argv or paths.
+                    failure = type(error).__name__
+                    raise
+                finally:
+                    heartbeat_stop.set()
+                    heartbeat.join()
+                    if failure is not None:
+                        # The heartbeat is joined, so this line is terminal.
+                        print(
+                            f"{prefix} end {detail} elapsed={time.monotonic() - started:.3f}s "
+                            f"exit=exception:{failure}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
             duration = time.monotonic() - started
+            print(
+                f"{prefix} end {detail} elapsed={duration:.3f}s exit={completed.returncode}",
+                file=sys.stderr,
+                flush=True,
+            )
             content = stdout_path.read_bytes()
             with combined_events.open("ab") as combined:
                 combined.write(content)
