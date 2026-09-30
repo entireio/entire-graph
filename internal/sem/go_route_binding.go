@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"regexp"
 	"strings"
 )
 
@@ -17,25 +18,39 @@ import (
 // got a later self-update, one function got another function's `g`, an inner
 // shadow leaked out, and `g = replacement` kept its stale prefix.
 //
-// This resolver instead walks the syntax tree once, in statement order, and
-// records the prefix state of every identifier at its use site:
+// This resolver walks the syntax tree once, in statement order, and records
+// the prefix state of every identifier at its use site:
 //
-//   - untracked: never bound to a Group value in scope. Treated as the root
-//     router, which is the heuristic every receiver had before (e.GET, r.Get).
+//   - untracked: never bound to a Group value in scope in this file. Treated
+//     as the root router: the same heuristic every receiver had before.
 //   - known: bound to a Group call whose prefix and parent are both static. A
 //     known empty prefix is still known; it is not the same state as unknown.
-//   - unknown: the value depends on something this pass does not model. Every
-//     registration on an unknown receiver is omitted, never re-rooted.
+//   - unknown: the value depends on something this pass models as unknown.
+//     A registration on an unknown receiver is omitted, and so are its
+//     descendants and chained Group calls.
 //
-// Supported subset: package-level var initializers (resolved by dependency,
-// independent of textual order; cycles and duplicates become unknown),
+// Tracked subset: package-level var initializers (resolved by dependency,
+// independent of textual order; cycles and duplicates are unknown);
 // straight-line locals in statement order with the RHS evaluated before the
-// LHS, lexical block scopes and shadowing. Everything else is conservative:
-// a tracked variable written inside a branch, loop, switch, select or closure
-// is unknown after it and inside any loop body; closures see outer variables
-// written anywhere in the enclosing function as unknown; a function using goto
-// is opaque; package variables written from any function are unknown in every
-// other function. No type information, provider, or filesystem is involved.
+// LHS; lexical block scopes and shadowing (blocks, if/for/switch inits, range
+// and type-switch bindings, function parameters). Conservatively unknown: a
+// tracked variable written inside a branch, loop, switch, select or closure
+// (after it, and throughout a loop body); outer variables inside a closure
+// when written anywhere in the enclosing function; any variable whose address
+// is taken (from then on); a whole function that uses goto; package variables
+// written from any function (in every other function); Group on a field or
+// index receiver; field or index receivers of route methods (s.api.GET); and
+// every receiver in a file whose walk exceeds its step budget.
+//
+// KNOWN LIMITATIONS, unchanged from before this resolver (the untracked =
+// root heuristic): a group reaching a receiver through a function parameter,
+// a function result, a struct field or map value, or a package variable
+// declared in a sibling file is treated as the root router, so its routes are
+// emitted without the group's prefix. chi Route/Mount, gorilla Subrouter and
+// http.StripPrefix prefixes are not modelled at all. A Group prefix without a
+// leading slash (gin's Group("v1")) is framework-normalized and is omitted
+// here rather than guessed. No type information, provider or filesystem is
+// involved.
 
 type goRouteBindingKind uint8
 
@@ -79,7 +94,10 @@ type goRouteWrite struct {
 // byte offset hold". Offsets are into the original content.
 type goRouteReceivers struct {
 	parsed bool
-	uses   map[int]goRouteBinding
+	// exhausted means the walk ran out of its step budget: no receiver in the
+	// file is trusted, so every group-capable registration is omitted.
+	exhausted bool
+	uses      map[int]goRouteBinding
 	// groupNames are names bound to a Group value anywhere in the file. A
 	// receiver the walk did not visit (text in a comment, a selector field, an
 	// unparseable file) is omitted when its name is one of these, and treated
@@ -88,6 +106,9 @@ type goRouteReceivers struct {
 }
 
 func (r goRouteReceivers) at(offset int, name string) goRouteBinding {
+	if r.exhausted {
+		return goRouteUnknownBinding
+	}
 	if r.parsed {
 		if binding, ok := r.uses[offset]; ok {
 			return binding
@@ -100,9 +121,17 @@ func (r goRouteReceivers) at(offset int, name string) goRouteBinding {
 }
 
 func resolveGoRouteReceivers(content string, constants map[string]string) goRouteReceivers {
+	return resolveGoRouteReceiversWithBudget(content, constants, goRouteStepBudgetBase+goRouteStepBudgetPerByte*len(content))
+}
+
+// goRouteGroupBindingRe finds every name assigned from any .Group( call, with
+// any receiver and any arguments, for the name-based fallback.
+var goRouteGroupBindingRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*[A-Za-z_][A-Za-z0-9_.]*\.Group\s*\(`)
+
+func resolveGoRouteReceiversWithBudget(content string, constants map[string]string, budget int) goRouteReceivers {
 	receivers := goRouteReceivers{groupNames: map[string]bool{}}
-	for _, match := range goHTTPRouteRegistrationsGroupRe.FindAllStringSubmatch(content, -1) {
-		if len(match) == 4 {
+	for _, match := range goRouteGroupBindingRe.FindAllStringSubmatch(content, -1) {
+		if len(match) == 2 {
 			receivers.groupNames[match[1]] = true
 		}
 	}
@@ -132,8 +161,12 @@ func resolveGoRouteReceivers(content string, constants map[string]string) goRout
 		constants:  constants,
 		file:       file,
 		groupNames: receivers.groupNames,
+		budget:     budget,
 	}
-	resolver.resolve()
+	if !resolver.resolve() {
+		receivers.exhausted = true
+		return receivers
+	}
 	receivers.parsed = true
 	receivers.uses = resolver.uses
 	return receivers
@@ -158,6 +191,53 @@ type goRouteResolver struct {
 	// declaration, with whether any such write could carry a group value.
 	fnWritten map[string]bool
 	opaque    int
+	// escaped holds bindings whose address was taken: a write through the
+	// pointer can happen at any later point, so every later read is unknown.
+	escaped map[*goRouteBinding]bool
+	steps   int
+	budget  int
+}
+
+// The walk is linear in the common case but can degrade with nesting depth
+// (scope chains, nested regions and closures re-scan their bodies). The
+// budget is linear in the input; exceeding it abandons resolution for the
+// file and omits its group-capable routes instead of guessing.
+const (
+	goRouteStepBudgetBase    = 1 << 21
+	goRouteStepBudgetPerByte = 64
+	// goRouteMaxPrefixBytes caps a composed prefix. Longer ones are unknown,
+	// which also bounds the memory of pathological self-extending chains.
+	goRouteMaxPrefixBytes = 2048
+)
+
+type goRouteBudgetExceeded struct{}
+
+func (r *goRouteResolver) step(n int) {
+	r.steps += n
+	if r.steps > r.budget {
+		panic(goRouteBudgetExceeded{})
+	}
+}
+
+func (r *goRouteResolver) lookup(scope *goRouteScope, name string) *goRouteBinding {
+	for s := scope; s != nil; s = s.parent {
+		r.step(1)
+		if binding, ok := s.vars[name]; ok {
+			return binding
+		}
+	}
+	return nil
+}
+
+// read is the value a use of binding observes.
+func (r *goRouteResolver) read(binding *goRouteBinding) goRouteBinding {
+	if binding == nil {
+		return goRouteBinding{}
+	}
+	if r.escaped[binding] {
+		return goRouteUnknownBinding
+	}
+	return *binding
 }
 
 func (r *goRouteResolver) offset(pos token.Pos) int {
@@ -172,12 +252,21 @@ func (r *goRouteResolver) text(node ast.Node) string {
 	return r.src[start:end]
 }
 
-func (r *goRouteResolver) resolve() {
+// resolve reports false when the step budget ran out.
+func (r *goRouteResolver) resolve() (ok bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if _, exceeded := recovered.(goRouteBudgetExceeded); !exceeded {
+				panic(recovered)
+			}
+			ok = false
+		}
+	}()
 	r.pkgWritten = map[string]bool{}
 	r.collecting = true
 	r.walkFile()
 	if len(r.pkgWritten) == 0 {
-		return
+		return true
 	}
 	// A package variable written by some function holds whatever the last
 	// executed writer left there; no other function can rely on it. Walk again
@@ -186,10 +275,12 @@ func (r *goRouteResolver) resolve() {
 	r.pkgUnknown = r.pkgWritten
 	r.collecting = false
 	r.walkFile()
+	return true
 }
 
 func (r *goRouteResolver) walkFile() {
 	r.uses = map[int]goRouteBinding{}
+	r.escaped = map[*goRouteBinding]bool{}
 	r.log = r.log[:0]
 	pkg := r.packageScope()
 	for _, decl := range r.file.Decls {
@@ -199,13 +290,13 @@ func (r *goRouteResolver) walkFile() {
 			if decl.Body == nil {
 				continue
 			}
-			r.fnWritten = goRouteWrittenNames(decl.Body)
+			r.fnWritten = r.writtenNames(decl.Body)
 			r.walkFunc(decl.Recv, decl.Type, decl.Body, pkg)
 		case *ast.GenDecl:
 			if decl.Tok != token.VAR {
 				continue
 			}
-			r.fnWritten = goRouteWrittenNames(decl)
+			r.fnWritten = r.writtenNames(decl)
 			for _, spec := range decl.Specs {
 				if valueSpec, ok := spec.(*ast.ValueSpec); ok {
 					r.exprs(valueSpec.Values, pkg)
@@ -332,15 +423,13 @@ func (r *goRouteResolver) assignTo(name string, binding *goRouteBinding, value g
 
 func (r *goRouteResolver) lookupIn(scope *goRouteScope) func(string) goRouteBinding {
 	return func(name string) goRouteBinding {
-		if binding := scope.lookup(name); binding != nil {
-			return *binding
-		}
-		return goRouteBinding{}
+		return r.read(r.lookup(scope, name))
 	}
 }
 
 // groupValue is the prefix state an expression produces when stored.
 func (r *goRouteResolver) groupValue(expr ast.Expr, lookup func(string) goRouteBinding) goRouteBinding {
+	r.step(1)
 	switch expr := expr.(type) {
 	case *ast.ParenExpr:
 		return r.groupValue(expr.X, lookup)
@@ -373,9 +462,16 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup func(string) goRouteB
 			return goRouteUnknownBinding
 		}
 		if parent.kind == goRouteKnown && parent.prefix != "" {
+			if len(parent.prefix)+len(prefix) > goRouteMaxPrefixBytes {
+				return goRouteUnknownBinding
+			}
 			prefix = joinRoutePaths(parent.prefix, prefix)
 		}
 		return goRouteBinding{kind: goRouteKnown, prefix: prefix}
+	case *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr, *ast.StarExpr, *ast.TypeAssertExpr:
+		// A value read from a field, map, slice, pointer or interface: if it
+		// is a group, its prefix was set somewhere this pass does not follow.
+		return goRouteUnknownBinding
 	default:
 		return goRouteBinding{}
 	}
@@ -393,7 +489,7 @@ func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body 
 			}
 		}
 	}
-	if goRouteHasGoto(body) {
+	if r.hasGoto(body) {
 		// Statement order no longer describes execution order.
 		r.markNames(scope, r.fnWritten)
 		r.opaque++
@@ -409,6 +505,7 @@ func (r *goRouteResolver) walkStmts(stmts []ast.Stmt, scope *goRouteScope) {
 }
 
 func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
+	r.step(1)
 	switch stmt := stmt.(type) {
 	case nil:
 	case *ast.AssignStmt:
@@ -456,19 +553,19 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 		ifScope := newGoRouteScope(scope)
 		r.walkStmt(stmt.Init, ifScope)
 		r.expr(stmt.Cond, ifScope)
-		written := goRouteWrittenNames(stmt.Body)
+		written := r.writtenNames(stmt.Body)
 		branches := []func(){func() { r.walkStmts(stmt.Body.List, newGoRouteScope(ifScope)) }}
 		if stmt.Else != nil {
-			mergeGoRouteWritten(written, goRouteWrittenNames(stmt.Else))
+			mergeGoRouteWritten(written, r.writtenNames(stmt.Else))
 			branches = append(branches, func() { r.walkStmt(stmt.Else, ifScope) })
 		}
 		r.branches(ifScope, written, branches)
 	case *ast.ForStmt:
 		forScope := newGoRouteScope(scope)
 		r.walkStmt(stmt.Init, forScope)
-		written := goRouteWrittenNames(stmt.Body)
+		written := r.writtenNames(stmt.Body)
 		if stmt.Post != nil {
-			mergeGoRouteWritten(written, goRouteWrittenNames(stmt.Post))
+			mergeGoRouteWritten(written, r.writtenNames(stmt.Post))
 		}
 		r.branches(forScope, written, []func(){func() {
 			r.expr(stmt.Cond, forScope)
@@ -478,14 +575,16 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 	case *ast.RangeStmt:
 		r.expr(stmt.X, scope)
 		rangeScope := newGoRouteScope(scope)
-		written := goRouteWrittenNames(stmt.Body)
+		written := r.writtenNames(stmt.Body)
 		for _, target := range []ast.Expr{stmt.Key, stmt.Value} {
 			if target == nil {
 				continue
 			}
 			if stmt.Tok == token.DEFINE {
+				// An element of a collection: whatever group it is, its prefix
+				// is not in this statement.
 				if ident, ok := target.(*ast.Ident); ok {
-					r.declare(rangeScope, ident.Name, goRouteBinding{})
+					r.declare(rangeScope, ident.Name, goRouteUnknownBinding)
 				}
 				continue
 			}
@@ -519,7 +618,8 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 		}
 		r.clauses(switchScope, stmt.Body, func(clauseScope *goRouteScope) {
 			if bound != "" {
-				r.declare(clauseScope, bound, goRouteBinding{})
+				// The switched value's prefix is not known either.
+				r.declare(clauseScope, bound, goRouteUnknownBinding)
 			}
 		})
 	case *ast.SelectStmt:
@@ -531,7 +631,7 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 // in fallthrough reaches the next one; the pre-marking in branches already
 // makes anything the previous clause wrote unknown to it.
 func (r *goRouteResolver) clauses(scope *goRouteScope, body *ast.BlockStmt, bind func(*goRouteScope)) {
-	written := goRouteWrittenNames(body)
+	written := r.writtenNames(body)
 	var branches []func()
 	for _, clause := range body.List {
 		switch clause := clause.(type) {
@@ -573,7 +673,8 @@ func (r *goRouteResolver) branches(scope *goRouteScope, written map[string]bool,
 // binding stays untracked unless some write could carry a group value into it.
 func (r *goRouteResolver) markNames(scope *goRouteScope, written map[string]bool) {
 	for name, groupish := range written {
-		binding := scope.lookup(name)
+		r.step(1)
+		binding := r.lookup(scope, name)
 		if binding == nil {
 			// Not declared in this file: a package variable from a sibling file.
 			if r.collecting && groupish {
@@ -627,7 +728,7 @@ func (r *goRouteResolver) assign(stmt *ast.AssignStmt, scope *goRouteScope) {
 				r.declare(scope, ident.Name, values[i])
 			}
 		case token.ASSIGN:
-			binding := scope.lookup(ident.Name)
+			binding := r.lookup(scope, ident.Name)
 			mayCarryGroup := !paired || values[i].kind != goRouteUntracked
 			if r.collecting && (binding == nil || r.isPackageBinding(scope, ident.Name)) &&
 				(mayCarryGroup || (binding != nil && binding.kind != goRouteUntracked)) {
@@ -655,7 +756,7 @@ func (r *goRouteResolver) invalidateTarget(target ast.Expr, scope *goRouteScope)
 	if !ok {
 		return
 	}
-	if binding := scope.lookup(ident.Name); binding != nil && binding.kind != goRouteUntracked {
+	if binding := r.lookup(scope, ident.Name); binding != nil && binding.kind != goRouteUntracked {
 		r.set(ident.Name, binding, goRouteUnknownBinding)
 	}
 }
@@ -672,7 +773,16 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 		return
 	}
 	ast.Inspect(expr, func(node ast.Node) bool {
+		r.step(1)
 		switch node := node.(type) {
+		case *ast.UnaryExpr:
+			if node.Op == token.AND {
+				r.expr(node.X, scope)
+				if ident, ok := goRouteUnparen(node.X).(*ast.Ident); ok {
+					r.escape(scope, ident.Name)
+				}
+				return false
+			}
 		case *ast.FuncLit:
 			r.funcLit(node, scope)
 			return false
@@ -687,11 +797,7 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 			r.expr(node.Value, scope)
 			return false
 		case *ast.Ident:
-			value := goRouteBinding{}
-			if binding := scope.lookup(node.Name); binding != nil {
-				value = *binding
-			}
-			r.uses[r.offset(node.Pos())] = value
+			r.uses[r.offset(node.Pos())] = r.read(r.lookup(scope, node.Name))
 		}
 		return true
 	})
@@ -702,8 +808,14 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 // inside it, and outer variables it writes are unknown once it exists.
 func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope) {
 	closureScope := newGoRouteScope(scope)
-	for name, groupish := range r.fnWritten {
-		binding := scope.lookup(name)
+	// Only names the closure mentions can be read inside it, so iterate those
+	// rather than every name written in the enclosing declaration.
+	for name := range r.mentionedNames(lit.Body) {
+		groupish, written := r.fnWritten[name]
+		if !written {
+			continue
+		}
+		binding := r.lookup(scope, name)
 		if binding == nil || (binding.kind == goRouteUntracked && !groupish) {
 			continue
 		}
@@ -713,14 +825,66 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope) {
 	mark := len(r.log)
 	r.walkFunc(nil, lit.Type, lit.Body, closureScope)
 	r.undo(mark)
-	r.markNames(scope, goRouteWrittenNames(lit.Body))
+	r.markNames(scope, r.writtenNames(lit.Body))
+	for name := range r.addressedNames(lit.Body) {
+		r.escape(scope, name)
+	}
+}
+
+// escape records that name's address was taken: its binding is unknown for
+// every later read, whatever is later assigned to it directly.
+func (r *goRouteResolver) escape(scope *goRouteScope, name string) {
+	binding := r.lookup(scope, name)
+	if r.collecting && (binding == nil || r.isPackageBinding(scope, name)) {
+		r.pkgWritten[name] = true
+	}
+	if binding == nil {
+		return
+	}
+	r.escaped[binding] = true
+}
+
+func (r *goRouteResolver) mentionedNames(node ast.Node) map[string]bool {
+	names := map[string]bool{}
+	ast.Inspect(node, func(n ast.Node) bool {
+		r.step(1)
+		if ident, ok := n.(*ast.Ident); ok {
+			names[ident.Name] = true
+		}
+		return true
+	})
+	return names
+}
+
+func (r *goRouteResolver) addressedNames(node ast.Node) map[string]bool {
+	names := map[string]bool{}
+	ast.Inspect(node, func(n ast.Node) bool {
+		r.step(1)
+		if unary, ok := n.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+			if ident, ok := goRouteUnparen(unary.X).(*ast.Ident); ok {
+				names[ident.Name] = true
+			}
+		}
+		return true
+	})
+	return names
+}
+
+func goRouteUnparen(expr ast.Expr) ast.Expr {
+	for {
+		paren, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			return expr
+		}
+		expr = paren.X
+	}
 }
 
 // goRouteWrittenNames lists identifiers written by plain or compound
 // assignment, increment, range-assign or address-of within node. The value is
 // true when some write could carry a router group (an identifier, a Group call,
 // or an unpaired multi-value assignment).
-func goRouteWrittenNames(node ast.Node) map[string]bool {
+func (r *goRouteResolver) writtenNames(node ast.Node) map[string]bool {
 	written := map[string]bool{}
 	if node == nil {
 		return written
@@ -731,14 +895,17 @@ func goRouteWrittenNames(node ast.Node) map[string]bool {
 		}
 	}
 	ast.Inspect(node, func(n ast.Node) bool {
+		r.step(1)
 		switch n := n.(type) {
 		case *ast.AssignStmt:
-			if n.Tok == token.DEFINE {
+			if n.Tok == token.DEFINE && len(n.Lhs) == 1 {
+				// A single-name := always declares a new variable. With several
+				// names, any of them may redeclare (write) an existing one.
 				return true
 			}
 			for i, target := range n.Lhs {
 				groupish := len(n.Lhs) != len(n.Rhs)
-				if !groupish && n.Tok == token.ASSIGN {
+				if !groupish && (n.Tok == token.ASSIGN || n.Tok == token.DEFINE) {
 					groupish = goRouteGroupish(n.Rhs[i])
 				}
 				note(target, groupish)
@@ -784,9 +951,10 @@ func goRouteGroupish(expr ast.Expr) bool {
 	return false
 }
 
-func goRouteHasGoto(body *ast.BlockStmt) bool {
+func (r *goRouteResolver) hasGoto(body *ast.BlockStmt) bool {
 	found := false
 	ast.Inspect(body, func(n ast.Node) bool {
+		r.step(1)
 		if found {
 			return false
 		}
@@ -799,4 +967,21 @@ func goRouteHasGoto(body *ast.BlockStmt) bool {
 		return !found
 	})
 	return found
+}
+
+// goRouteReceiverIsSelector reports whether the receiver identifier starting
+// at offset is the field or method part of a selector (s.api.GET): a value
+// read from a struct or package whose prefix this pass does not track.
+func goRouteReceiverIsSelector(content string, offset int) bool {
+	for i := offset - 1; i >= 0; i-- {
+		switch content[i] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '.':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }

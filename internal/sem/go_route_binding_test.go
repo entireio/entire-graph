@@ -1,6 +1,10 @@
 package sem
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 // Each case pins the exact route set: a correct route must be present, and a
 // route whose prefix is not determined at its registration must be omitted,
@@ -153,6 +157,135 @@ func b() {
 			want: []string{"/a/x -> aHandler", "/pkg/y -> bHandler"},
 		},
 		{
+			name: "multi-name := redeclaring a captured group is a write",
+			content: `package routes
+func register(e *Echo) {
+	g := e.Group("/a")
+	f := func() { g.GET("/x", closureHandler) }
+	defer func() { g.GET("/d", deferHandler) }()
+	g, err := e.Group("/b"), error(nil)
+	_ = err
+	g.GET("/y", afterHandler)
+	f()
+}
+`,
+			want: []string{"/b/y -> afterHandler"},
+		},
+		{
+			name: "address-taken group is unknown from then on",
+			content: `package routes
+func register(e *Echo) {
+	g := e.Group("/a")
+	g.GET("/pre", preHandler)
+	p := &g
+	*p = e.Group("/b")
+	g.GET("/x", xHandler)
+	g = e.Group("/c")
+	g.GET("/y", yHandler)
+}
+`,
+			want: []string{"/a/pre -> preHandler"},
+		},
+		{
+			name: "address passed to a call or taken in a branch stays unknown",
+			content: `package routes
+func register(e *Echo, c bool) {
+	g := e.Group("/a")
+	set(&g, e)
+	g.GET("/x", xHandler)
+	k := e.Group("/k")
+	if c {
+		keep(&k)
+	}
+	k = e.Group("/k2")
+	k.GET("/y", yHandler)
+}
+`,
+			want: nil,
+		},
+		{
+			name: "address taken inside a closure escapes the outer group",
+			content: `package routes
+func register(e *Echo) {
+	g := e.Group("/a")
+	later := func() { set(&g, e) }
+	g = e.Group("/c")
+	g.GET("/x", xHandler)
+	later()
+}
+`,
+			want: nil,
+		},
+		{
+			name: "type-switch binding does not see the outer group",
+			content: `package routes
+func register(e *Echo, x interface{}) {
+	g := e.Group("/a")
+	switch g := x.(type) {
+	case *Group:
+		g.GET("/x", switchHandler)
+	}
+	g.GET("/y", outerHandler)
+}
+`,
+			want: []string{"/a/y -> outerHandler"},
+		},
+		{
+			name: "range := binding does not see the outer group",
+			content: `package routes
+func register(e *Echo, gs []*Group) {
+	g := e.Group("/a")
+	for _, g := range gs {
+		g.GET("/x", rangeHandler)
+	}
+	g.GET("/y", outerHandler)
+}
+`,
+			want: []string{"/a/y -> outerHandler"},
+		},
+		{
+			name: "returned registration is still walked",
+			content: `package routes
+func register(e *Echo) *Route {
+	g := e.Group("/a")
+	return g.GET("/x", xHandler)
+}
+`,
+			want: []string{"/a/x -> xHandler"},
+		},
+		{
+			name: "field, map and pointer values are unknown groups",
+			content: `package routes
+func register(e *Echo, s *server, m map[string]*Group, p **Group) {
+	a := s.api
+	a.GET("/a", fieldHandler)
+	b := m["b"]
+	b.GET("/b", mapHandler)
+	c := *p
+	c.GET("/c", ptrHandler)
+	s.api.GET("/d", selectorHandler)
+	s.api.Group("/v1").GET("/e", chainedHandler)
+	e.GET("/root", rootHandler)
+}
+`,
+			want: []string{"/root -> rootHandler"},
+		},
+		{
+			name:    "prefix past the size cap is unknown",
+			content: "package routes\nfunc register(e *Echo) {\n\tg := e.Group(\"/" + strings.Repeat("p", 3000) + "\")\n\tg.GET(\"/short\", shortHandler)\n\th := g.Group(\"/child\")\n\th.GET(\"/x\", xHandler)\n}\n",
+			want:    []string{"/" + strings.Repeat("p", 3000) + "/short -> shortHandler"},
+		},
+		{
+			name: "unparseable file omits multi-argument group bindings",
+			content: `package routes
+func register(e *Echo) {
+	g := e.Group("/a", mw)
+	g.GET("/x", xHandler)
+	e.GET("/health", healthHandler)
+`,
+			want: []string{"/health -> healthHandler"},
+		},
+		{
 			name: "closures see outer writes as unknown and invalidate what they write",
 			content: `package routes
 func register(root *Router) {
@@ -294,5 +427,54 @@ func b() {
 		if route != "/a/x -> aHandler" && route != "/y -> bHandler" {
 			t.Fatalf("a's local binding leaked into b: %v", regs)
 		}
+	}
+}
+
+// A closure's parameter shadows an outer group of the same name. (A group
+// passed in as a parameter is treated as the root router: the long-standing
+// heuristic, so /x is allowed; the outer /a prefix is not.)
+func TestGoRouteBindingParameterShadowsOuterGroup(t *testing.T) {
+	regs := goRouteRegistrationsWithin(t, `package routes
+func register(e *Echo) {
+	g := e.Group("/a")
+	f := func(g *Group) { g.GET("/x", paramHandler) }
+	f(e.Group("/b"))
+	g.GET("/y", outerHandler)
+}
+`)
+	routes := goRouteSet(regs)
+	if !routes["/a/y -> outerHandler"] {
+		t.Fatalf("missing outer route: %v", regs)
+	}
+	for route := range routes {
+		if route != "/a/y -> outerHandler" && route != "/x -> paramHandler" {
+			t.Fatalf("outer group leaked into a shadowing parameter: %v", regs)
+		}
+	}
+}
+
+// Past the step budget no receiver in the file is trusted: every group-capable
+// registration is omitted, not guessed. Deep nesting makes each lookup walk a
+// long scope chain, which is the super-linear case the budget exists for.
+func TestGoRouteBindingBudgetExhaustionOmitsEverything(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("package routes\nfunc register(e *Echo) {\n\te.GET(\"/root\", rootHandler)\n\tg := e.Group(\"/a\")\n")
+	const depth = 4000
+	for i := 0; i < depth; i++ {
+		fmt.Fprintf(&b, "{ g.GET(\"/x%d\", h)\n", i)
+	}
+	b.WriteString(strings.Repeat("}\n", depth))
+	b.WriteString("}\n")
+	content := b.String()
+	receivers := resolveGoRouteReceivers(content, nil)
+	if !receivers.exhausted {
+		t.Fatalf("expected the step budget to be exhausted for depth %d", depth)
+	}
+	if regs := goRouteRegistrationsWithin(t, content); len(regs) != 0 {
+		t.Fatalf("exhausted resolution still emitted %d routes, e.g. %v", len(regs), regs[0])
+	}
+	small := resolveGoRouteReceiversWithBudget("package routes\nfunc f(e *Echo) { g := e.Group(\"/a\"); g.GET(\"/x\", h) }\n", nil, 5)
+	if !small.exhausted || small.at(0, "e").kind != goRouteUnknown {
+		t.Fatalf("a tiny budget must exhaust and make every receiver unknown: %+v", small)
 	}
 }
