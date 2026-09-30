@@ -342,3 +342,39 @@ func TestSearchVerifyWorkspaceCoverageAgreesWithReference(t *testing.T) {
 	}
 	t.Logf("checked %d cases, %d covered", checked, covered)
 }
+
+func TestDartSetterAccessorTerminatesOnSuperCycle(t *testing.T) {
+	// A and B name each other as superclass. The chain walk had no visited set,
+	// so a setter found on neither was looked for forever.
+	superContainerByID := map[string]string{"A": "B", "B": "A"}
+	getter := SymbolRecord{ID: "A.x", Language: "Dart", ContainerID: "A", Name: "x", Signature: "int get x => 1"}
+	var found bool
+	terminatesWithin(t, 5*time.Second, func() {
+		_, _, found = dartSetterAccessor("A", "x", []SymbolRecord{getter}, superContainerByID)
+	})
+	if found {
+		t.Fatal("a getter is not a setter")
+	}
+	setter := SymbolRecord{ID: "B.x", Language: "Dart", ContainerID: "B", Name: "x", Signature: "set x(int v)"}
+	var inherited bool
+	var got SymbolRecord
+	terminatesWithin(t, 5*time.Second, func() {
+		got, inherited, found = dartSetterAccessor("A", "x", []SymbolRecord{getter, setter}, superContainerByID)
+	})
+	if !found || !inherited || got.ID != "B.x" {
+		t.Fatalf("setter on the base type not found through the cycle: %#v inherited=%v found=%v", got, inherited, found)
+	}
+}
+
+func TestDartSetterAccessorWalksAnAcyclicChainToItsEnd(t *testing.T) {
+	// No hop cap: every setter an acyclic chain reached before is still reached.
+	superContainerByID := map[string]string{}
+	for i := 0; i < 64; i++ {
+		superContainerByID[fmt.Sprintf("C%d", i)] = fmt.Sprintf("C%d", i+1)
+	}
+	setter := SymbolRecord{ID: "C64.x", Language: "Dart", ContainerID: "C64", Name: "x", Signature: "set x(int v)"}
+	got, inherited, found := dartSetterAccessor("C0", "x", []SymbolRecord{setter}, superContainerByID)
+	if !found || !inherited || got.ID != "C64.x" {
+		t.Fatalf("setter 64 levels up not found: %#v inherited=%v found=%v", got, inherited, found)
+	}
+}
