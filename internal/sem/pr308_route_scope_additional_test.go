@@ -48,6 +48,28 @@ func capturedRoot(root *Router) {
 	root.GET("/root-after", rootAfterHandler)
 }
 `, true
+	case "one-arg-explicit-unknown-mask-control":
+		return `package routes
+import "github.com/go-chi/chi/v5"
+type opaque interface { Get(string) }
+func makeOpaque() opaque { return nil }
+func register(untracked opaque) {
+	known := chi.NewRouter()
+	explicit := makeOpaque()
+	explicit.Get("/explicit-unknown")
+	alias := untracked
+	untracked.Get("/untracked")
+	alias.Get("/parameter-alias")
+	{
+		untracked := makeOpaque()
+		untracked.Get("/shadow-explicit-unknown")
+	}
+	known.Get("/known")
+}
+`, true
+	case "one-arg-explicit-unknown-mask-in-package-control":
+		source, _ := review308FocusedSource("one-arg-explicit-unknown-mask-control")
+		return strings.Replace(source, "package routes", "package http", 1), true
 	case "client-shadow-restoration":
 		return `package routes
 import "net/http"
@@ -423,6 +445,30 @@ func TestReview308RouterCapturedWriteStaysConservativeAtDeclaration(t *testing.T
 	got := review308FocusedWithin(t, "closure-router-write-never-called")
 	if len(got.Registrations) != 1 || got.Registrations[0].Route != "/s/in" || got.Registrations[0].Handler != "inHandler" {
 		t.Fatalf("captured router write must stay unknown even when the local closure is never called: %#v", got.Registrations)
+	}
+}
+
+func TestReview308OneArgumentUnknownMaskKeepsUntrackedAndKnownControls(t *testing.T) {
+	for _, name := range []string{"one-arg-explicit-unknown-mask-control", "one-arg-explicit-unknown-mask-in-package-control"} {
+		t.Run(name, func(t *testing.T) {
+			got := review308FocusedWithin(t, name)
+			if len(got.Registrations) != 0 {
+				t.Fatalf("one-argument calls must not become registrations: %#v", got.Registrations)
+			}
+			want := map[string]bool{"/untracked": true, "/parameter-alias": true, "/known": true}
+			if len(got.AfterMask) != len(want) {
+				t.Fatalf("one-argument fallback after masking = %#v, want parameter and known controls", got.AfterMask)
+			}
+			for _, route := range got.AfterMask {
+				if !want[route] {
+					t.Fatalf("one-argument fallback after masking = %#v, want parameter and known controls", got.AfterMask)
+				}
+				delete(want, route)
+			}
+			if len(want) != 0 {
+				t.Fatalf("one-argument fallback after masking = %#v, missing %#v", got.AfterMask, want)
+			}
+		})
 	}
 }
 

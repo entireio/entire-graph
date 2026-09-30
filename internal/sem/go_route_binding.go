@@ -94,7 +94,10 @@ type goRouteBinding struct {
 	// the same lexical binding walk. They keep masking and middleware
 	// classification attached to a declaration/use, rather than to a bare
 	// name across the whole file.
-	httpClient            bool
+	httpClient bool
+	// legacyUnknownFallback preserves the generic one-argument route fallback
+	// for an otherwise unknown, non-client parameter and its value aliases.
+	legacyUnknownFallback bool
 	stripPrefixMiddleware bool
 	// stripPrefixSource is the outer binding a closure will read when it
 	// eventually runs. It is set only on closure-capture proxies (and aliases
@@ -290,7 +293,9 @@ func resolveGoRouteReceiversWithBudget(content string, constants map[string]stri
 		imports:    goRouteImports(file),
 	}
 	if !resolver.resolve() {
-		receivers.masks = resolver.maskSpans()
+		if len(content) > 0 {
+			receivers.masks = [][2]int{{0, len(content)}}
+		}
 		receivers.exhausted = true
 		return receivers
 	}
@@ -1151,6 +1156,9 @@ func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body 
 				// The router a Route/Group closure is called with.
 				value = *seed
 			}
+			if fields == typ.Params && value.kind == goRouteUnknown && !value.httpClient {
+				value.legacyUnknownFallback = true
+			}
 			for _, name := range field.Names {
 				declared := value
 				if fn != "" && fields == typ.Params && value.kind == goRouteKnown {
@@ -1769,19 +1777,14 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 		written := r.writtenNames(lit.Body)
 		for _, capture := range captures {
 			r.step(1)
-			groupish, isWritten := written[capture.name]
+			_, isWritten := written[capture.name]
 			if isWritten {
 				effect.writes = append(effect.writes, goRouteClosureWrite{
 					name: capture.name, target: capture.outer, value: capture.value,
 				})
-				current := r.read(capture.outer)
-				if current.kind != goRouteUntracked || groupish {
-					// Preserve only middleware facts at declaration. Every other fact
-					// uses the same conservative captured-write criterion as markNames.
-					r.set(capture.name, capture.outer, closureMiddlewareValue(current))
-				}
 			}
 		}
+		r.markNames(scope, written, false)
 		r.closureEffects[lit] = effect
 		if r.immediateClosureLits[lit] {
 			if r.asyncClosureCall || savedCollector != nil {

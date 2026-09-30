@@ -654,8 +654,9 @@ var goRouteClientFuncs = map[string]bool{
 // known not to be a router: request-context methods, HTTP client calls and
 // request constructors, calls on an *http.Client, and same-file request
 // helpers (testRequest, performRequest). Their literals are URLs or keys, so
-// the route literal fallback must not read them. Literals on receivers of
-// unknown type are left alone.
+// the route literal fallback must not read them. A one-argument route-shaped
+// call on an explicitly unknown receiver is also masked; legacy unknown
+// parameters and untracked receivers retain the generic fallback.
 func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 	var spans [][2]int
 	addStrings := func(call *ast.CallExpr) {
@@ -758,7 +759,8 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 					if x, ok := fun.X.(*ast.Ident); ok {
 						binding := r.uses[r.offset(x.Pos())]
 						builtHere := literalValues[x.Name] && !otherValues[x.Name]
-						if contexts[x.Name] || binding.httpClient || builtHere || goRouteClientFuncs[r.framework(x.Name)+"."+fun.Sel.Name] {
+						unknownOneArgRoute := binding.kind == goRouteUnknown && !binding.legacyUnknownFallback && len(n.Args) == 1 && goRouteRouteArgIndex(fun.Sel.Name) == 0
+						if contexts[x.Name] || binding.httpClient || builtHere || unknownOneArgRoute || goRouteClientFuncs[r.framework(x.Name)+"."+fun.Sel.Name] {
 							addStrings(n)
 						}
 					} else if inner, ok := fun.X.(*ast.SelectorExpr); ok {
