@@ -1436,6 +1436,16 @@ func (r *goRouteResolver) typeValue(expr ast.Expr) goRouteBinding {
 	}
 	switch expr := expr.(type) {
 	case *ast.Ident:
+		if r.file.Name != nil && goRouteDefaultFrameworkNames[r.file.Name.Name] {
+			// Inside a framework's own package its types are unqualified:
+			// classify them exactly like pkg.Type (IRoutes in package gin is
+			// gin.IRoutes, a group type).
+			framework := r.file.Name.Name
+			if goRouteRootTypes[framework+"."+expr.Name] {
+				return goRouteBinding{kind: goRouteKnown, framework: framework}
+			}
+			return goRouteUnknownBinding
+		}
 		if goRouteGroupishTypeName(expr.Name) {
 			return goRouteUnknownBinding
 		}
