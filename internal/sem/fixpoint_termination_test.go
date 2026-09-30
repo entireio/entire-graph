@@ -1,6 +1,8 @@
 package sem
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,4 +71,55 @@ func TestCPlusPlusGlobalQualifiedClassSnapshotTerminates(t *testing.T) {
 			t.Error(err)
 		}
 	})
+}
+
+// goAliasFanoutSource declares a chain of n type aliases, each referring to the
+// next `fanout` times through `shape`, ending in leaf, plus an interface and a
+// concrete type whose method signatures both spell A0, and a call through the
+// interface so the implementation hop compares the two signatures.
+func goAliasFanoutSource(n int, shape, leaf string) string {
+	var b strings.Builder
+	b.WriteString("package p\n\n")
+	for i := 0; i < n; i++ {
+		next := fmt.Sprintf("A%d", i+1)
+		fmt.Fprintf(&b, "type A%d = %s\n", i, strings.ReplaceAll(shape, "X", next))
+	}
+	fmt.Fprintf(&b, "type A%d = %s\n\n", n, leaf)
+	b.WriteString("type Store interface {\n\tPut(x A0)\n}\n\ntype S struct{}\n\nfunc (S) Put(x A0) {}\n\n")
+	b.WriteString("func use(s Store) {\n\ts.Put(nil)\n}\n")
+	return b.String()
+}
+
+func TestGoSignatureEvidenceTerminatesOnAliasFanout(t *testing.T) {
+	// Each alias names the next twice, so the evidence walk expanded 2^N nodes
+	// and the depth cap of 64 only stopped N at 32: four billion visits for one
+	// signature. An unresolvable leaf keeps every key empty, so this measures
+	// the walk and not the string it would build.
+	repo := t.TempDir()
+	writeFile(t, repo, "p.go", goAliasFanoutSource(40, "map[X]X", "interface{ M() }"))
+	terminatesWithin(t, 20*time.Second, func() {
+		if _, err := BuildProviderSnapshot(t.Context(), repo, "test-version"); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+func TestGoSignatureEvidenceKeepsKeyWithinBudget(t *testing.T) {
+	// 3^8 alias references is well inside the step budget: the signatures still
+	// compare equal and the call still reaches the implementation.
+	repo := t.TempDir()
+	writeFile(t, repo, "p.go", goAliasFanoutSource(8, "func(X, X, X)", "int"))
+	var snapshot ProviderSnapshot
+	terminatesWithin(t, 20*time.Second, func() {
+		var err error
+		if snapshot, err = BuildProviderSnapshot(t.Context(), repo, "test-version"); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, edge := range runCallsFrom(snapshot, "use") {
+		if strings.HasSuffix(edge.ToID, ":method:S.Put") {
+			return
+		}
+	}
+	t.Fatalf("use no longer reaches S.Put through Store: %#v", runCallsFrom(snapshot, "use"))
 }

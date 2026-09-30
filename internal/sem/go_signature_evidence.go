@@ -205,10 +205,34 @@ func goSignatureEvidenceKey(signature string, scope *goTypeScope) (string, bool)
 	if err != nil {
 		return "", false
 	}
-	return goEvidenceTypeKey(expr, scope, map[string]bool{}, 0)
+	return goEvidenceTypeKey(expr, scope, &goEvidenceWalk{seen: map[string]bool{}}, 0)
 }
-func goEvidenceNamedType(name string, scope *goTypeScope, seen map[string]bool, depth int) (string, bool) {
-	if depth > 64 {
+
+// goEvidenceStepBudget bounds how many type nodes one signature's evidence key
+// may visit. The depth cap alone does not bound the work: an alias reached
+// through several fields is expanded once per reference, so
+// `type A0 = func(A1, A1, A1)`, `type A1 = func(A2, A2, A2)`, ... visits 3^N
+// nodes, and the depth cap only stops N at 32. One such chain in a package with
+// a matching interface stalled the snapshot for good. Past the budget the key
+// is unknown, exactly what the depth cap already answers; a signature that
+// expands within it keeps its key byte for byte.
+const goEvidenceStepBudget = 1 << 16
+
+// goEvidenceWalk is the state shared by one signature's evidence expansion: the
+// alias path being expanded, for cycles, and the steps it has spent.
+type goEvidenceWalk struct {
+	seen  map[string]bool
+	steps int
+}
+
+// step spends one node of the budget and reports whether the walk may go on.
+func (w *goEvidenceWalk) step() bool {
+	w.steps++
+	return w.steps <= goEvidenceStepBudget
+}
+
+func goEvidenceNamedType(name string, scope *goTypeScope, walk *goEvidenceWalk, depth int) (string, bool) {
+	if depth > 64 || !walk.step() {
 		return "", false
 	}
 	if scope != nil {
@@ -224,12 +248,12 @@ func goEvidenceNamedType(name string, scope *goTypeScope, seen map[string]bool, 
 			if !decl.spec.Assign.IsValid() {
 				return "named(" + id + ")", true
 			}
-			if seen[id] {
+			if walk.seen[id] {
 				return "", false
 			}
-			seen[id] = true
-			defer delete(seen, id)
-			return goEvidenceTypeKey(decl.spec.Type, decl.scope, seen, depth+1)
+			walk.seen[id] = true
+			defer delete(walk.seen, id)
+			return goEvidenceTypeKey(decl.spec.Type, decl.scope, walk, depth+1)
 		}
 	}
 	if scope != nil && len(scope.dotImports) > 0 {
@@ -250,7 +274,7 @@ func goEvidenceNamedType(name string, scope *goTypeScope, seen map[string]bool, 
 			}
 		}
 		if found != nil {
-			return goEvidenceNamedType(name, found, seen, depth+1)
+			return goEvidenceNamedType(name, found, walk, depth+1)
 		}
 	}
 
@@ -266,14 +290,14 @@ func goEvidenceNamedType(name string, scope *goTypeScope, seen map[string]bool, 
 	}
 	return "", false
 }
-func goEvidenceTypeKey(expr ast.Expr, scope *goTypeScope, seen map[string]bool, depth int) (string, bool) {
-	if depth > 64 {
+func goEvidenceTypeKey(expr ast.Expr, scope *goTypeScope, walk *goEvidenceWalk, depth int) (string, bool) {
+	if depth > 64 || !walk.step() {
 		return "", false
 	}
-	key := func(e ast.Expr) (string, bool) { return goEvidenceTypeKey(e, scope, seen, depth+1) }
+	key := func(e ast.Expr) (string, bool) { return goEvidenceTypeKey(e, scope, walk, depth+1) }
 	switch e := expr.(type) {
 	case *ast.Ident:
-		return goEvidenceNamedType(e.Name, scope, seen, depth)
+		return goEvidenceNamedType(e.Name, scope, walk, depth)
 	case *ast.SelectorExpr:
 		qualifier, ok := e.X.(*ast.Ident)
 		if !ok || scope == nil {
@@ -288,7 +312,7 @@ func goEvidenceTypeKey(expr ast.Expr, scope *goTypeScope, seen map[string]bool, 
 				if target == nil {
 					return "", false
 				}
-				return goEvidenceNamedType(e.Sel.Name, target, seen, depth+1)
+				return goEvidenceNamedType(e.Sel.Name, target, walk, depth+1)
 			}
 		}
 		return "named(" + importPath + "." + e.Sel.Name + ")", true
