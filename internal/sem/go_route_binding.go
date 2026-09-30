@@ -90,14 +90,15 @@ type goRouteBinding struct {
 	// framework whose path-joining rules apply to this router ("" when
 	// unclassified).
 	framework string
-	// httpClient and stripPrefixMiddleware are non-router facts carried by
-	// the same lexical binding walk. They keep masking and middleware
-	// classification attached to a declaration/use, rather than to a bare
-	// name across the whole file.
+	// httpClient, httpClientType and stripPrefixMiddleware are non-router facts
+	// carried by the same lexical binding walk. They keep masking and middleware
+	// classification attached to a declaration/use, rather than to a bare name
+	// across the whole file.
 	httpClient bool
-	// legacyUnknownFallback preserves the generic one-argument route fallback
-	// for an otherwise unknown, non-client parameter and its value aliases.
-	legacyUnknownFallback bool
+	// httpClientType is true only when this binding's declared or inferred type
+	// is exactly http.Client or *http.Client. Unlike httpClient, assignment does
+	// not change it.
+	httpClientType        bool
 	stripPrefixMiddleware bool
 	// stripPrefixSource is the outer binding a closure will read when it
 	// eventually runs. It is set only on closure-capture proxies (and aliases
@@ -440,7 +441,10 @@ func (r *goRouteResolver) read(binding *goRouteBinding) goRouteBinding {
 	}
 	value := *binding
 	if r.escaped[binding] {
+		clientType := value.httpClientType
 		value = goRouteUnknownBinding
+		value.httpClientType = clientType
+		value.httpClient = clientType
 	}
 	if r.escapedStripPrefixWrites[binding] {
 		value.stripPrefixMiddleware = true
@@ -607,6 +611,9 @@ func (r *goRouteResolver) packageScope() *goRouteScope {
 				if name.Name == "_" {
 					continue
 				}
+				if valueSpec.Type != nil {
+					types[name.Name] = valueSpec.Type
+				}
 				if declared[name.Name] {
 					duplicate[name.Name] = true
 				}
@@ -616,8 +623,6 @@ func (r *goRouteResolver) packageScope() *goRouteScope {
 					inits[name.Name] = valueSpec.Values[i]
 				case len(valueSpec.Values) > 0:
 					unpaired[name.Name] = true
-				case valueSpec.Type != nil:
-					types[name.Name] = valueSpec.Type
 				}
 			}
 		}
@@ -649,6 +654,9 @@ func (r *goRouteResolver) packageScope() *goRouteScope {
 		case types[name] != nil:
 			binding = r.typeValue(types[name])
 		}
+		if types[name] != nil {
+			binding = r.withDeclaredHTTPClientType(binding, types[name])
+		}
 		delete(visiting, name)
 		resolved[name] = binding
 		return binding
@@ -657,7 +665,10 @@ func (r *goRouteResolver) packageScope() *goRouteScope {
 	for name := range declared {
 		binding := resolveName(name)
 		if r.pkgUnknown[name] {
+			clientType := binding.httpClientType
 			binding = goRouteUnknownBinding
+			binding.httpClientType = clientType
+			binding.httpClient = clientType
 		}
 		r.noteGroup(name, binding)
 		scope.vars[name] = &binding
@@ -679,7 +690,12 @@ func (r *goRouteResolver) noteGroup(name string, binding goRouteBinding) {
 
 func (r *goRouteResolver) set(name string, binding *goRouteBinding, value goRouteBinding) {
 	r.log = append(r.log, goRouteWrite{binding: binding, old: *binding})
+	clientType := binding.httpClientType
 	*binding = value
+	binding.httpClientType = clientType
+	if clientType {
+		binding.httpClient = true
+	}
 	value = r.read(binding)
 	for origin := range r.stripPrefixWatchers[binding] {
 		r.step(1)
@@ -1059,7 +1075,7 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 		}
 		if fun, ok := expr.Fun.(*ast.Ident); ok && fun.Name == "new" && len(expr.Args) == 1 && !expr.Ellipsis.IsValid() {
 			if _, declared := lookup(fun.Name); !declared && r.isHTTPClientType(expr.Args[0]) {
-				return goRouteBinding{kind: goRouteUnknown, httpClient: true}
+				return goRouteBinding{kind: goRouteUnknown, httpClient: true, httpClientType: true}
 			}
 		}
 		selector, ok := expr.Fun.(*ast.SelectorExpr)
@@ -1139,7 +1155,7 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 		return goRouteBinding{}
 	case *ast.CompositeLit:
 		if r.isHTTPClientType(expr.Type) {
-			return goRouteBinding{kind: goRouteUnknown, httpClient: true}
+			return goRouteBinding{kind: goRouteUnknown, httpClient: true, httpClientType: true}
 		}
 		if r.isFrameworkType(expr.Type, "http", "ServeMux") {
 			return goRouteBinding{kind: goRouteKnown, origin: r.originAt(expr.Pos(), "http", true), framework: "http"}
@@ -1148,7 +1164,7 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 	case *ast.SelectorExpr:
 		if pkg, ok := expr.X.(*ast.Ident); ok && expr.Sel.Name == "DefaultClient" {
 			if _, declared := lookup(pkg.Name); !declared && r.framework(pkg.Name) == "http" {
-				return goRouteBinding{kind: goRouteUnknown, httpClient: true}
+				return goRouteBinding{kind: goRouteUnknown, httpClient: true, httpClientType: true}
 			}
 		}
 		// A value read from a field or package whose router prefix this pass
@@ -1189,9 +1205,6 @@ func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body 
 			if seed != nil && fields == typ.Params {
 				// The router a Route/Group closure is called with.
 				value = *seed
-			}
-			if fields == typ.Params && value.kind == goRouteUnknown && !value.httpClient {
-				value.legacyUnknownFallback = true
 			}
 			for _, name := range field.Names {
 				declared := value
@@ -1258,6 +1271,11 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 			case valueSpec.Type != nil:
 				for i := range values {
 					values[i] = r.typeValue(valueSpec.Type)
+				}
+			}
+			if valueSpec.Type != nil {
+				for i := range values {
+					values[i] = r.withDeclaredHTTPClientType(values[i], valueSpec.Type)
 				}
 			}
 			for i, name := range valueSpec.Names {
@@ -1802,11 +1820,14 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 		unknown := goRouteUnknownBinding
 		// A proved local closure reads the exact outer binding at its synchronous
 		// call. Unknown callbacks also preserve current MAY evidence because they
-		// may run immediately or later. MUST-client certainty never survives the
-		// ambiguous capture.
+		// may run immediately or later. Current-value client certainty does not
+		// survive the ambiguous capture, but the binding's concrete client type
+		// does.
 		if !deferred {
 			unknown.stripPrefixMiddleware = binding.stripPrefixMiddleware
 		}
+		unknown.httpClientType = binding.httpClientType
+		unknown.httpClient = binding.httpClientType
 		if source, ok := r.ultimateStripPrefixSource(binding); ok {
 			unknown.stripPrefixSource = source
 		} else {
@@ -2222,11 +2243,19 @@ func (r *goRouteResolver) isStripPrefixMiddlewareCall(call *ast.CallExpr, lookup
 	return true
 }
 
+func (r *goRouteResolver) withDeclaredHTTPClientType(value goRouteBinding, expr ast.Expr) goRouteBinding {
+	value.httpClientType = r.isHTTPClientType(expr)
+	if value.httpClientType {
+		value.httpClient = true
+	}
+	return value
+}
+
 // typeValue is the state of a parameter or variable declared with type expr
 // and no value.
 func (r *goRouteResolver) typeValue(expr ast.Expr) goRouteBinding {
 	if r.isHTTPClientType(expr) {
-		return goRouteBinding{kind: goRouteUnknown, httpClient: true}
+		return goRouteBinding{kind: goRouteUnknown, httpClient: true, httpClientType: true}
 	}
 	expr = goRouteUnparen(expr)
 	if star, ok := expr.(*ast.StarExpr); ok {
