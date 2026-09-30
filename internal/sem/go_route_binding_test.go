@@ -323,6 +323,7 @@ var b = a.Group("/b")
 var d = root.Group("/one")
 var d = root.Group("/two")
 var ok = root.Group("/ok")
+var root *Router
 func register() {
 	a.GET("/x", cycleHandler)
 	d.GET("/z", duplicateHandler)
