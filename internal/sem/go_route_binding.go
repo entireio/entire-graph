@@ -48,9 +48,18 @@ import (
 // or sub-router parameter, a call result, a field, and a name this file never
 // declares (see "Router origins" below).
 //
+// Route closures (chi, fiber) are walked with their parameter bound to the
+// parent's prefix plus the Route prefix; chi Group(func) and With keep the
+// parent's prefix. A router instance is served where it is mounted: a single,
+// unconditional chi Mount with a static prefix of an instance created in
+// this file is composed; any other Mount, and any escape of a mountable
+// instance (returned, passed to a call other than a serve or Handle call,
+// stored in a field, composite or package variable, addressed, or declared
+// at package level), makes all of its routes unknown.
+//
 // KNOWN LIMITATIONS: a parameter of an unclassified local type keeps the root
-// heuristic. chi Route/Mount, gorilla Subrouter and http.StripPrefix prefixes
-// are not modelled at all. A Group prefix without a leading slash (gin's
+// heuristic. gorilla Subrouter and http.StripPrefix prefixes are not
+// modelled. A Group prefix without a leading slash (gin's
 // Group("v1")) is framework-normalized and is omitted here rather than
 // guessed. No type information, provider or filesystem is involved.
 
@@ -65,6 +74,55 @@ const (
 type goRouteBinding struct {
 	kind   goRouteBindingKind
 	prefix string
+	// origin is the constructor call a known router value descends from, or
+	// nil for a root that cannot be mounted elsewhere (a framework-root
+	// parameter, the net/http package).
+	origin *goRouteOrigin
+}
+
+// goRouteOrigin is one router instance created by a constructor call. Every
+// value derived from it (aliases, groups, Route closures) shares it, so what
+// happens to the instance anywhere in its lifetime (being mounted under a
+// prefix, escaping to code that may mount it) applies to every registration
+// on it, before or after.
+type goRouteOrigin struct {
+	framework string
+	// mountable routers (chi, fiber) can be mounted under a prefix by
+	// whoever receives them.
+	mountable bool
+	// escaped: returned, passed, stored or captured by address where it may
+	// be mounted. Unknown for a mountable router.
+	escaped bool
+	// opaque: mounted or wrapped in a way this pass cannot compose.
+	opaque bool
+	region int
+	// mounts counts in-file Mount calls with a composable prefix; the prefix
+	// is mountPrefix under mountParent (nil for a root).
+	mounts      int
+	mountParent *goRouteOrigin
+	mountPrefix string
+}
+
+// prefix is the path the instance is served under.
+func (o *goRouteOrigin) prefix(depth int) (string, bool) {
+	if o.opaque || (o.mountable && o.escaped) || o.mounts > 1 || depth > 16 {
+		return "", false
+	}
+	if o.mounts == 0 {
+		return "", true
+	}
+	base := ""
+	if o.mountParent != nil {
+		parent, ok := o.mountParent.prefix(depth + 1)
+		if !ok {
+			return "", false
+		}
+		base = parent
+	}
+	if len(base)+len(o.mountPrefix) > goRouteMaxPrefixBytes {
+		return "", false
+	}
+	return joinRoutePaths(base, o.mountPrefix), true
 }
 
 var goRouteUnknownBinding = goRouteBinding{kind: goRouteUnknown}
@@ -203,6 +261,20 @@ type goRouteResolver struct {
 	escaped map[*goRouteBinding]bool
 	steps   int
 	budget  int
+
+	// origins holds this walk's router instances by constructor call.
+	origins map[token.Pos]*goRouteOrigin
+	// safe identifiers are router uses that cannot mount the router under
+	// another prefix: a method receiver, an alias assignment, a serve or
+	// Handle argument, an http.Server Handler, a Mount argument (composed or
+	// made opaque by noteMount).
+	safe map[*ast.Ident]bool
+	// atPackage is set while package-level initializers are evaluated.
+	atPackage bool
+	// region identifies the straight-line region being walked; branches,
+	// loop bodies and closures each get a fresh one.
+	region     int
+	nextRegion int
 }
 
 // The walk is linear in the common case but can degrade with nesting depth
@@ -269,6 +341,7 @@ func (r *goRouteResolver) resolve() (ok bool) {
 			ok = false
 		}
 	}()
+	r.computeSafe()
 	r.pkgWritten = map[string]bool{}
 	r.collecting = true
 	r.walkFile()
@@ -288,28 +361,35 @@ func (r *goRouteResolver) resolve() (ok bool) {
 func (r *goRouteResolver) walkFile() {
 	r.uses = map[int]goRouteBinding{}
 	r.regs = r.regs[:0]
+	r.origins = map[token.Pos]*goRouteOrigin{}
 	r.escaped = map[*goRouteBinding]bool{}
 	r.log = r.log[:0]
+	r.atPackage = true
 	pkg := r.packageScope()
+	r.atPackage = false
 	for _, decl := range r.file.Decls {
 		mark := len(r.log)
+		r.nextRegion++
+		r.region = r.nextRegion
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
 			if decl.Body == nil {
 				continue
 			}
 			r.fnWritten = r.writtenNames(decl.Body)
-			r.walkFunc(decl.Recv, decl.Type, decl.Body, pkg)
+			r.walkFunc(decl.Recv, decl.Type, decl.Body, pkg, nil)
 		case *ast.GenDecl:
 			if decl.Tok != token.VAR {
 				continue
 			}
 			r.fnWritten = r.writtenNames(decl)
+			r.atPackage = true
 			for _, spec := range decl.Specs {
 				if valueSpec, ok := spec.(*ast.ValueSpec); ok {
 					r.exprs(valueSpec.Values, pkg)
 				}
 			}
+			r.atPackage = false
 		}
 		r.undo(mark)
 	}
@@ -474,10 +554,14 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 			// prefix was set where this pass does not look.
 			return goRouteUnknownBinding
 		}
-		if root, ok := r.constructorValue(selector, lookup); ok {
+		if root, ok := r.constructorValue(expr, selector, lookup); ok {
 			return root
 		}
-		if selector.Sel.Name != "Group" || len(expr.Args) == 0 || expr.Ellipsis.IsValid() {
+		name := selector.Sel.Name
+		if name != "Group" && name != "Route" && name != "With" {
+			return goRouteUnknownBinding
+		}
+		if name != "With" && (len(expr.Args) == 0 || expr.Ellipsis.IsValid()) {
 			return goRouteUnknownBinding
 		}
 		var parent goRouteBinding
@@ -488,6 +572,18 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 			parent = r.groupValue(receiver, lookup)
 		default:
 			// A field or index receiver (s.api.Group) may hold any prefix.
+			return goRouteUnknownBinding
+		}
+		switch {
+		case name == "With":
+			// chi With(middlewares...) is the same router with middleware.
+			return parent
+		case name == "Group" && len(expr.Args) == 1 && goRouteIsFuncLit(expr.Args[0]):
+			// chi Group(func(r chi.Router) {...}): same prefix, new middleware
+			// stack.
+			return parent
+		case name == "Route" && (len(expr.Args) < 2 || !goRouteIsFuncLit(expr.Args[1])):
+			// chi/fiber Route(prefix, func(r Router) {...}) only.
 			return goRouteUnknownBinding
 		}
 		argument := r.text(expr.Args[0])
@@ -507,7 +603,7 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 			}
 			prefix = joinRoutePaths(parent.prefix, prefix)
 		}
-		return goRouteBinding{kind: goRouteKnown, prefix: prefix}
+		return goRouteBinding{kind: goRouteKnown, prefix: prefix, origin: parent.origin}
 	case *ast.UnaryExpr:
 		if expr.Op == token.AND {
 			return r.groupValue(expr.X, lookup)
@@ -527,14 +623,21 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 	}
 }
 
-func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body *ast.BlockStmt, outer *goRouteScope) {
+func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body *ast.BlockStmt, outer *goRouteScope, seed *goRouteBinding) {
 	scope := newGoRouteScope(outer)
+	if seed != nil && (typ.Params == nil || len(typ.Params.List) != 1 || len(typ.Params.List[0].Names) != 1) {
+		seed = nil
+	}
 	for _, fields := range []*ast.FieldList{recv, typ.Params, typ.Results} {
 		if fields == nil {
 			continue
 		}
 		for _, field := range fields.List {
 			value := r.typeValue(field.Type)
+			if seed != nil && fields == typ.Params {
+				// The router a Route/Group closure is called with.
+				value = *seed
+			}
 			for _, name := range field.Names {
 				r.declare(scope, name.Name, value)
 			}
@@ -722,9 +825,13 @@ func (r *goRouteResolver) clauses(scope *goRouteScope, body *ast.BlockStmt, bind
 // branch's own writes are rolled back so siblings never see them.
 func (r *goRouteResolver) branches(scope *goRouteScope, written map[string]bool, branches []func()) {
 	r.markNames(scope, written)
+	savedRegion := r.region
 	for _, branch := range branches {
 		mark := len(r.log)
+		r.nextRegion++
+		r.region = r.nextRegion
 		branch()
+		r.region = savedRegion
 		r.undo(mark)
 	}
 }
@@ -792,6 +899,10 @@ func (r *goRouteResolver) assign(stmt *ast.AssignStmt, scope *goRouteScope) {
 			}
 		case token.ASSIGN:
 			binding := r.lookup(scope, ident.Name)
+			if values[i].origin != nil && (binding == nil || r.isPackageBinding(scope, ident.Name)) {
+				// Stored where a sibling file may mount it.
+				values[i].origin.escaped = true
+			}
 			mayCarryGroup := !paired || values[i].kind != goRouteUntracked
 			if r.collecting && (binding == nil || r.isPackageBinding(scope, ident.Name)) &&
 				(mayCarryGroup || (binding != nil && binding.kind != goRouteUntracked)) {
@@ -840,10 +951,21 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 				return false
 			}
 		case *ast.FuncLit:
-			r.funcLit(node, scope)
+			r.funcLit(node, scope, nil)
 			return false
 		case *ast.CallExpr:
 			r.noteCall(node, scope)
+			r.noteMount(node, scope)
+			if lit, seed, ok := r.routeClosure(node, scope); ok {
+				r.expr(node.Fun, scope)
+				for _, arg := range node.Args {
+					if arg != lit {
+						r.expr(arg, scope)
+					}
+				}
+				r.funcLit(lit, scope, &seed)
+				return false
+			}
 		case *ast.SelectorExpr:
 			// Sel is a field or method name, not a variable use.
 			r.expr(node.X, scope)
@@ -855,7 +977,13 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 			r.expr(node.Value, scope)
 			return false
 		case *ast.Ident:
-			r.uses[r.offset(node.Pos())] = r.read(r.lookup(scope, node.Name))
+			value := r.read(r.lookup(scope, node.Name))
+			r.uses[r.offset(node.Pos())] = value
+			if value.origin != nil && !r.safe[node] {
+				// The router itself is passed, returned or stored: whoever
+				// receives it may mount it under a prefix.
+				value.origin.escaped = true
+			}
 		}
 		return true
 	})
@@ -864,7 +992,7 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 // funcLit walks a closure. It may run at any later point, any number of times,
 // so outer variables written anywhere in the enclosing declaration are unknown
 // inside it, and outer variables it writes are unknown once it exists.
-func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope) {
+func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *goRouteBinding) {
 	closureScope := newGoRouteScope(scope)
 	// Only names the closure mentions can be read inside it, so iterate those
 	// rather than every name written in the enclosing declaration.
@@ -881,7 +1009,11 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope) {
 		closureScope.vars[name] = &unknown
 	}
 	mark := len(r.log)
-	r.walkFunc(nil, lit.Type, lit.Body, closureScope)
+	savedRegion := r.region
+	r.nextRegion++
+	r.region = r.nextRegion
+	r.walkFunc(nil, lit.Type, lit.Body, closureScope, seed)
+	r.region = savedRegion
 	r.undo(mark)
 	r.markNames(scope, r.writtenNames(lit.Body))
 	for name := range r.addressedNames(lit.Body) {
@@ -1145,7 +1277,7 @@ var goRouteConstructors = map[string]bool{
 	"fiber.New":        true,
 }
 
-func (r *goRouteResolver) constructorValue(selector *ast.SelectorExpr, lookup goRouteLookup) (goRouteBinding, bool) {
+func (r *goRouteResolver) constructorValue(call *ast.CallExpr, selector *ast.SelectorExpr, lookup goRouteLookup) (goRouteBinding, bool) {
 	pkg, ok := selector.X.(*ast.Ident)
 	if !ok {
 		return goRouteBinding{}, false
@@ -1154,10 +1286,21 @@ func (r *goRouteResolver) constructorValue(selector *ast.SelectorExpr, lookup go
 		// A variable, not the package.
 		return goRouteBinding{}, false
 	}
-	if _, ok := goRouteConstructors[r.framework(pkg.Name)+"."+selector.Sel.Name]; !ok {
+	framework := r.framework(pkg.Name)
+	mountable, ok := goRouteConstructors[framework+"."+selector.Sel.Name]
+	if !ok {
 		return goRouteBinding{}, false
 	}
-	return goRouteBinding{kind: goRouteKnown}, true
+	origin := r.origins[call.Pos()]
+	if origin == nil {
+		origin = &goRouteOrigin{framework: framework, mountable: mountable, region: r.region}
+		r.origins[call.Pos()] = origin
+	}
+	if r.atPackage {
+		// A package variable: a sibling file may mount or wrap it.
+		origin.escaped = true
+	}
+	return goRouteBinding{kind: goRouteKnown, origin: origin}, true
 }
 
 func (r *goRouteResolver) isFrameworkType(expr ast.Expr, framework, name string) bool {
@@ -1195,4 +1338,145 @@ func (r *goRouteResolver) typeValue(expr ast.Expr) goRouteBinding {
 		return goRouteUnknownBinding
 	}
 	return goRouteBinding{}
+}
+
+func goRouteIsFuncLit(expr ast.Expr) bool {
+	_, ok := goRouteUnparen(expr).(*ast.FuncLit)
+	return ok
+}
+
+// routeClosure recognizes r.Route(prefix, func(sub Router) {...}) and
+// r.Group(func(sub Router) {...}) and returns the closure with the router its
+// parameter is called with.
+func (r *goRouteResolver) routeClosure(call *ast.CallExpr, scope *goRouteScope) (*ast.FuncLit, goRouteBinding, bool) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || call.Ellipsis.IsValid() {
+		return nil, goRouteBinding{}, false
+	}
+	var arg ast.Expr
+	switch {
+	case selector.Sel.Name == "Route" && len(call.Args) >= 2:
+		arg = call.Args[1]
+	case selector.Sel.Name == "Group" && len(call.Args) == 1:
+		arg = call.Args[0]
+	default:
+		return nil, goRouteBinding{}, false
+	}
+	lit, ok := goRouteUnparen(arg).(*ast.FuncLit)
+	if !ok {
+		return nil, goRouteBinding{}, false
+	}
+	return lit, r.groupValue(call, r.lookupIn(scope)), true
+}
+
+// noteMount handles parent.Mount(prefix, sub) on a router instance created in
+// this file. The instance's routes are served under the parent's prefix plus
+// prefix when that is a single, unconditional, composable mount; otherwise
+// they are unknown.
+func (r *goRouteResolver) noteMount(call *ast.CallExpr, scope *goRouteScope) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Mount" || len(call.Args) != 2 || call.Ellipsis.IsValid() {
+		return
+	}
+	ident, ok := goRouteUnparen(call.Args[1]).(*ast.Ident)
+	if !ok {
+		return
+	}
+	lookup := r.lookupIn(scope)
+	sub, _ := lookup(ident.Name)
+	origin := sub.origin
+	if origin == nil {
+		return
+	}
+	if sub.kind != goRouteKnown || sub.prefix != "" || origin.framework != "chi" || origin.region != r.region {
+		// A group of the instance, a router whose framework does not strip
+		// the mount prefix, or a mount that may run zero or many times.
+		origin.opaque = true
+		return
+	}
+	parent := r.groupValue(selector.X, lookup)
+	prefix, ok := staticRouteExpressionValue(r.text(call.Args[0]), r.constants)
+	if !ok || parent.kind == goRouteUnknown {
+		origin.opaque = true
+		return
+	}
+	origin.mounts++
+	origin.mountParent = nil
+	origin.mountPrefix = prefix
+	if parent.kind == goRouteKnown {
+		origin.mountParent = parent.origin
+		origin.mountPrefix = joinRoutePaths(parent.prefix, prefix)
+	}
+}
+
+// computeSafe marks the identifier uses that hand a router to something that
+// cannot mount it under another prefix. Every other use of a router instance
+// is an escape.
+func (r *goRouteResolver) computeSafe() {
+	r.safe = map[*ast.Ident]bool{}
+	mark := func(expr ast.Expr) {
+		if ident, ok := goRouteUnparen(expr).(*ast.Ident); ok {
+			r.safe[ident] = true
+		}
+	}
+	called := map[*ast.SelectorExpr]bool{}
+	ast.Inspect(r.file, func(n ast.Node) bool {
+		r.step(1)
+		switch n := n.(type) {
+		case *ast.CallExpr:
+			selector, ok := n.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			called[selector] = true
+			switch selector.Sel.Name {
+			case "ListenAndServe", "ListenAndServeTLS", "Serve", "ServeTLS", "Handle", "Mount":
+				// Serving a router, or handing it to a mux that matches the
+				// full path (net/http, chi and gorilla Handle do not strip).
+				// Mount is composed or made opaque by noteMount.
+				for _, arg := range n.Args {
+					mark(arg)
+				}
+			}
+		case *ast.SelectorExpr:
+			// r.Get(...), r.Group(...): a method call on the router. A bare
+			// r.ServeHTTP method value hands the router out.
+			if called[n] || n.Sel.Name != "ServeHTTP" {
+				mark(n.X)
+			}
+		case *ast.CompositeLit:
+			if r.isFrameworkType(goRouteUnstar(n.Type), "http", "Server") {
+				for _, elt := range n.Elts {
+					if kv, ok := elt.(*ast.KeyValueExpr); ok {
+						if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "Handler" {
+							mark(kv.Value)
+						}
+					}
+				}
+			}
+		case *ast.AssignStmt:
+			// An alias; a store into a package variable is caught in assign.
+			if len(n.Lhs) == len(n.Rhs) {
+				for i, lhs := range n.Lhs {
+					if _, ok := lhs.(*ast.Ident); ok {
+						mark(n.Rhs[i])
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			if len(n.Names) == len(n.Values) {
+				for _, value := range n.Values {
+					mark(value)
+				}
+			}
+		}
+		return true
+	})
+}
+
+func goRouteUnstar(expr ast.Expr) ast.Expr {
+	if star, ok := expr.(*ast.StarExpr); ok {
+		return star.X
+	}
+	return expr
 }

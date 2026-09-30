@@ -79,6 +79,20 @@ func goRouteEmit(candidates []goRouteCandidate, constants map[string]string) []g
 				// the bare path, or another binding's prefix, would invent a route.
 				continue
 			}
+			if receiver.kind == goRouteKnown && receiver.origin != nil {
+				// Where the router instance itself is served: a composed Mount,
+				// or unknown when it escaped to code that may mount it.
+				base, ok := receiver.origin.prefix(0)
+				if !ok {
+					continue
+				}
+				if base != "" {
+					if len(base)+len(receiver.prefix) > goRouteMaxPrefixBytes {
+						continue
+					}
+					receiver.prefix = joinRoutePaths(base, receiver.prefix)
+				}
+			}
 			if receiver.kind == goRouteKnown && receiver.prefix != "" {
 				route, ok := staticRouteExpressionValue(routeExpr, constants)
 				if !ok {
@@ -169,14 +183,12 @@ func (r *goRouteResolver) noteCall(call *ast.CallExpr, scope *goRouteScope) {
 			candidate.order, candidate.evidence = 2, "go_router_method"
 			candidate.receiver, _ = r.lookupIn(scope)(x.Name)
 		case *ast.CallExpr:
-			selector, ok := x.Fun.(*ast.SelectorExpr)
-			if !ok || selector.Sel.Name != "Group" {
-				return
+			// A chain: g.Group("/v1").GET, r.With(mw).Get,
+			// r.Route("/a", fn).Get.
+			candidate.order, candidate.evidence = 2, "go_router_method"
+			if selector, ok := x.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Group" {
+				candidate.order, candidate.evidence = 3, "go_router_group_method"
 			}
-			if _, ok := selector.X.(*ast.Ident); !ok {
-				return
-			}
-			candidate.order, candidate.evidence = 3, "go_router_group_method"
 			candidate.receiver = r.groupValue(x, r.lookupIn(scope))
 		default:
 			// A field or other selector receiver (s.api.GET) holds a prefix
