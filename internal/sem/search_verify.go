@@ -1311,6 +1311,26 @@ var searchVerifyNodeLockfiles = []struct {
 // that reads and declares nothing reaching the leaf is not a failure to read — that is the reported
 // case, an unrelated project above a standalone package, and it declines.
 func searchVerifyNodeWorkspaceCovers(root, leaf string, evidence *searchVerifyEvidence) bool {
+	return searchVerifyNodeWorkspaceCoversWithin(root, leaf, evidence, map[string]bool{})
+}
+
+// searchVerifyNodeWorkspaceCoversWithin answers searchVerifyNodeWorkspaceCovers for one nested root,
+// once. The descent below tries every ancestor cut and each nested root cuts again, so a root is
+// reached once per way of splitting the path above it: a leaf 30 directories under manifests that
+// all declare `**/d*` was asked ~2^29 times. The answer for a root is a function of the root, the
+// fixed leaf and the manifests read under it, and a manifest's answer never changes once evidence has
+// first been asked for it (cached, recorded as missing, or refused for good once the read budget is
+// spent), so the first answer for a root is every later one.
+func searchVerifyNodeWorkspaceCoversWithin(root, leaf string, evidence *searchVerifyEvidence, decided map[string]bool) bool {
+	if covered, known := decided[root]; known {
+		return covered
+	}
+	covered := searchVerifyNodeWorkspaceCoversOnce(root, leaf, evidence, decided)
+	decided[root] = covered
+	return covered
+}
+
+func searchVerifyNodeWorkspaceCoversOnce(root, leaf string, evidence *searchVerifyEvidence, decided map[string]bool) bool {
 	relative, inside := searchVerifyRelative(root, leaf)
 	if !inside || relative == "" {
 		return false
@@ -1346,7 +1366,7 @@ func searchVerifyNodeWorkspaceCovers(root, leaf string, evidence *searchVerifyEv
 				continue
 			}
 			nested := searchVerifyJoin(root, strings.Join(segments[:cut], "/"))
-			if searchVerifyNodeWorkspaceCovers(nested, leaf, evidence) {
+			if searchVerifyNodeWorkspaceCoversWithin(nested, leaf, evidence, decided) {
 				return true
 			}
 			break

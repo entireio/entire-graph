@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
@@ -224,4 +225,120 @@ func TestSearchVerifyWorkspaceGlobAgreesWithReference(t *testing.T) {
 	if checked < 50000 {
 		t.Fatalf("differential check covered only %d cases", checked)
 	}
+}
+
+func workspaceChainLeaf(depth int) string {
+	parts := make([]string, 0, depth+1)
+	for i := 0; i < depth; i++ {
+		parts = append(parts, fmt.Sprintf("d%d", i))
+	}
+	return strings.Join(append(parts, "x"), "/")
+}
+
+func TestSearchVerifyWorkspaceCoverageTerminatesOnDeepNesting(t *testing.T) {
+	// Every directory above the leaf holds a manifest declaring `**/d*`: each
+	// ancestor cut matches, the leaf itself never does, and every nested root cut
+	// again. The descent was asked ~2^(depth-1) times; at depth 30, minutes.
+	evidence := &searchVerifyEvidence{read: func(filePath string) (string, bool) {
+		if strings.HasSuffix(filePath, "package.json") {
+			return `{"workspaces":["**/d*"]}`, true
+		}
+		return "", false
+	}}
+	var got bool
+	terminatesWithin(t, 10*time.Second, func() {
+		got = searchVerifyNodeWorkspaceCovers("", workspaceChainLeaf(30), evidence)
+	})
+	if got {
+		t.Fatal("no manifest declares the leaf, so it is not covered")
+	}
+}
+
+// searchVerifyWorkspaceCoverageReference is the coverage check as it was before
+// nested roots were decided once: the definition the memoized one must agree with.
+func searchVerifyWorkspaceCoverageReference(root, leaf string, evidence *searchVerifyEvidence) bool {
+	relative, inside := searchVerifyRelative(root, leaf)
+	if !inside || relative == "" {
+		return false
+	}
+	content, ok := evidence.file(searchVerifyJoin(root, "package.json"))
+	if !ok {
+		return false
+	}
+	var parsed struct {
+		Workspaces json.RawMessage `json:"workspaces"`
+	}
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return true
+	}
+	patterns, readable := searchVerifyNodeWorkspacePatterns(parsed.Workspaces)
+	if !readable {
+		return true
+	}
+	segments := strings.Split(relative, "/")
+	for _, pattern := range patterns {
+		if searchVerifyNodeWorkspaceMatches(pattern, segments) {
+			return true
+		}
+	}
+	for cut := 1; cut < len(segments); cut++ {
+		for _, pattern := range patterns {
+			if !searchVerifyNodeWorkspaceMatches(pattern, segments[:cut]) {
+				continue
+			}
+			nested := searchVerifyJoin(root, strings.Join(segments[:cut], "/"))
+			if searchVerifyWorkspaceCoverageReference(nested, leaf, evidence) {
+				return true
+			}
+			break
+		}
+	}
+	return false
+}
+
+func TestSearchVerifyWorkspaceCoverageAgreesWithReference(t *testing.T) {
+	// Manifests chosen per directory from a fixed menu (absent, unparsable, no
+	// workspaces, and several globs), over every leaf of a depth-6 chain, with a
+	// generous and a starved read budget so the refused-read path is compared too.
+	manifests := []string{
+		"", "{", `{}`, `{"workspaces":["**/d*"]}`, `{"workspaces":["d*"]}`,
+		`{"workspaces":["*/x"]}`, `{"workspaces":{"packages":["**"]}}`, `{"workspaces":["d1/**", "[" ]}`,
+	}
+	checked, covered := 0, 0
+	for seed := 0; seed < 400; seed++ {
+		manifestFor := func(filePath string) (string, bool) {
+			if !strings.HasSuffix(filePath, "package.json") {
+				return "", false
+			}
+			pick := (seed*31 + len(filePath)*7 + strings.Count(filePath, "/")*13) % len(manifests)
+			if manifests[pick] == "" {
+				return "", false
+			}
+			return manifests[pick], true
+		}
+		for depth := 1; depth <= 6; depth++ {
+			leaf := workspaceChainLeaf(depth)
+			for _, reads := range []int{0, 2} {
+				fresh := func() *searchVerifyEvidence {
+					evidence := &searchVerifyEvidence{read: manifestFor}
+					if reads > 0 {
+						evidence.reads = searchVerifyMaxReads - reads
+					}
+					return evidence
+				}
+				want := searchVerifyWorkspaceCoverageReference("", leaf, fresh())
+				if got := searchVerifyNodeWorkspaceCovers("", leaf, fresh()); got != want {
+					t.Fatalf("seed %d depth %d reads %d: got %v, reference %v", seed, depth, reads, got, want)
+				}
+				checked++
+				if want {
+					covered++
+				}
+			}
+		}
+	}
+	if checked != 400*6*2 || covered == 0 || covered == checked {
+		t.Fatalf("checked %d cases, %d covered: the comparison must see both answers", checked, covered)
+	}
+	t.Logf("checked %d cases, %d covered", checked, covered)
 }
