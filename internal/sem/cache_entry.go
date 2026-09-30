@@ -1,11 +1,13 @@
 package sem
 
 import (
+	"bufio"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math/rand/v2"
 	"os"
@@ -253,24 +255,35 @@ func (entry cacheEntry) open() (*os.File, error) {
 // portable os.Root cannot also pin the object's lexical ancestry, and that process already has the
 // authority needed to move existing cache artifacts through the same namespace.
 func (entry cacheEntry) write(temporaryPrefix string, value any) error {
+	_, err := entry.writeDigest(temporaryPrefix, value)
+	return err
+}
+
+// cacheDigest is the SHA-256 of an artifact's bytes as stored: the gzip stream, not the JSON.
+type cacheDigest [sha256.Size]byte
+
+// writeDigest is write, also returning the digest of the bytes it installed. A caller that must
+// know its artifact landed intact compares that with entry.digest instead of decoding the file
+// back, which would hold a second copy of the value in memory beside the one it just wrote.
+func (entry cacheEntry) writeDigest(temporaryPrefix string, value any) (cacheDigest, error) {
 	if err := os.MkdirAll(entry.root, 0o700); err != nil {
-		return err
+		return cacheDigest{}, err
 	}
 	root, err := os.OpenRoot(entry.root)
 	if err != nil {
-		return err
+		return cacheDigest{}, err
 	}
 	defer root.Close()
 
 	directory, err := openCacheDirectory(root, filepath.Dir(entry.relative))
 	if err != nil {
-		return err
+		return cacheDigest{}, err
 	}
 	defer directory.Close()
 
 	temporary, temporaryName, err := createRootTemp(directory, temporaryPrefix)
 	if err != nil {
-		return err
+		return cacheDigest{}, err
 	}
 	removeTemporary := true
 	defer func() {
@@ -282,31 +295,56 @@ func (entry cacheEntry) write(temporaryPrefix string, value any) error {
 	// content, so set the mode explicitly rather than inheriting whatever the umask allowed.
 	if err := temporary.Chmod(0o600); err != nil {
 		_ = temporary.Close()
-		return err
+		return cacheDigest{}, err
 	}
-	writer := gzip.NewWriter(temporary)
-	encoder := json.NewEncoder(writer)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
+	// The digest covers exactly the bytes handed to the file. The gzip stream is buffered on the
+	// way in so the encoder's many small flushes do not each become a write system call.
+	hash := sha256.New()
+	buffered := bufio.NewWriterSize(io.MultiWriter(temporary, hash), 1<<16)
+	writer := gzip.NewWriter(buffered)
+	if err := encodeCacheValue(writer, value); err != nil {
 		_ = writer.Close()
 		_ = temporary.Close()
-		return err
+		return cacheDigest{}, err
 	}
 	if err := writer.Close(); err != nil {
 		_ = temporary.Close()
-		return err
+		return cacheDigest{}, err
+	}
+	if err := buffered.Flush(); err != nil {
+		_ = temporary.Close()
+		return cacheDigest{}, err
 	}
 	if err := temporary.Close(); err != nil {
-		return err
+		return cacheDigest{}, err
 	}
 	// Rename, not a write through the destination: renameat replaces a symlink sitting at the
 	// artifact name instead of following it, so the one component an attacker can predict without
 	// planting a directory cannot redirect the bytes either.
 	if err := directory.Rename(temporaryName, filepath.Base(entry.relative)); err != nil {
-		return err
+		return cacheDigest{}, err
 	}
 	removeTemporary = false
-	return nil
+	var digest cacheDigest
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
+}
+
+// digest streams the artifact as a reader sees it, through the same confined open, and returns
+// the SHA-256 of its bytes. Memory is one copy buffer whatever the artifact's size.
+func (entry cacheEntry) digest() (cacheDigest, error) {
+	file, err := entry.open()
+	if err != nil {
+		return cacheDigest{}, err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return cacheDigest{}, err
+	}
+	var digest cacheDigest
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
 }
 
 // openCacheDirectory creates and opens each component of the entry's directory beneath root,
