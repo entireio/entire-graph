@@ -13,6 +13,10 @@ const (
 	// interactive user does not have to add flags to every call. Its value is a comma-separated list
 	// of `container-map`, `signature-types`, `type-card`, or `all`. See searchReferenceBlocks.
 	envReferenceBlocks = "ENTIRE_GRAPH_REFERENCE_BLOCKS"
+	// envVerifyBlock is the session-wide default for `--verify-block on|off`. An explicit flag wins.
+	// It exists so an A/B harness can suppress the VERIFY block for a whole arm without editing the
+	// agent's command line. See searchVerifyBlock.
+	envVerifyBlock = "ENTIRE_GRAPH_VERIFY_BLOCK"
 	// envPresearch names a file holding the payload for this session, computed BEFORE the agent
 	// started. When it is set, `search` echoes those bytes instead of querying — see
 	// echoPresearchPayload for the measurement that motivates it.
@@ -74,6 +78,8 @@ type EntireEnv struct {
 	PluginDataDir string
 	// ReferenceBlocks is the session-wide default for the off-by-default search reference blocks.
 	ReferenceBlocks string
+	// VerifyBlock is the session-wide default for whether search emits its VERIFY block ("on"/"off").
+	VerifyBlock string
 	// PresearchPath is the file holding this session's pre-computed search payload, or "" when the
 	// caller has not pre-delivered one. See envPresearch.
 	PresearchPath string
@@ -93,6 +99,7 @@ func EnvFromOS() EntireEnv {
 		RepoRoot:        os.Getenv(envRepoRoot),
 		PluginDataDir:   os.Getenv(envPluginDataDir),
 		ReferenceBlocks: os.Getenv(envReferenceBlocks),
+		VerifyBlock:     os.Getenv(envVerifyBlock),
 		PresearchPath:   presearch,
 		SearchSession:   os.Getenv(envSearchSession),
 		MaxSearches:     os.Getenv(envMaxSearches),
