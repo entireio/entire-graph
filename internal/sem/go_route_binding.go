@@ -90,6 +90,12 @@ type goRouteBinding struct {
 	// framework whose path-joining rules apply to this router ("" when
 	// unclassified).
 	framework string
+	// httpClient and stripPrefixMiddleware are non-router facts carried by
+	// the same lexical binding walk. They keep masking and middleware
+	// classification attached to a declaration/use, rather than to a bare
+	// name across the whole file.
+	httpClient            bool
+	stripPrefixMiddleware bool
 }
 
 // goRouteOrigin is one router instance created by a constructor call. Every
@@ -242,11 +248,12 @@ func resolveGoRouteReceiversWithBudget(content string, constants map[string]stri
 		budget:     budget,
 		imports:    goRouteImports(file),
 	}
-	receivers.masks = resolver.maskSpans()
 	if !resolver.resolve() {
+		receivers.masks = resolver.maskSpans()
 		receivers.exhausted = true
 		return receivers
 	}
+	receivers.masks = resolver.maskSpans()
 	receivers.parsed = true
 	receivers.uses = resolver.uses
 	receivers.regs = resolver.regs
@@ -647,6 +654,14 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 		value, _ := lookup(expr.Name)
 		return value
 	case *ast.CallExpr:
+		if r.isStripPrefixMiddlewareCall(expr, lookup) {
+			return goRouteBinding{kind: goRouteUnknown, stripPrefixMiddleware: true}
+		}
+		if fun, ok := expr.Fun.(*ast.Ident); ok && fun.Name == "new" && len(expr.Args) == 1 && !expr.Ellipsis.IsValid() {
+			if _, declared := lookup(fun.Name); !declared && r.isHTTPClientType(expr.Args[0]) {
+				return goRouteBinding{kind: goRouteUnknown, httpClient: true}
+			}
+		}
 		selector, ok := expr.Fun.(*ast.SelectorExpr)
 		if !ok {
 			if root, ok := r.inPackageConstructorValue(expr, lookup); ok {
@@ -723,11 +738,23 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 		}
 		return goRouteBinding{}
 	case *ast.CompositeLit:
+		if r.isHTTPClientType(expr.Type) {
+			return goRouteBinding{kind: goRouteUnknown, httpClient: true}
+		}
 		if r.isFrameworkType(expr.Type, "http", "ServeMux") {
 			return goRouteBinding{kind: goRouteKnown, origin: r.originAt(expr.Pos(), "http", true), framework: "http"}
 		}
 		return goRouteUnknownBinding
-	case *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr, *ast.StarExpr, *ast.TypeAssertExpr:
+	case *ast.SelectorExpr:
+		if pkg, ok := expr.X.(*ast.Ident); ok && expr.Sel.Name == "DefaultClient" {
+			if _, declared := lookup(pkg.Name); !declared && r.framework(pkg.Name) == "http" {
+				return goRouteBinding{kind: goRouteUnknown, httpClient: true}
+			}
+		}
+		// A value read from a field or package whose router prefix this pass
+		// does not follow.
+		return goRouteUnknownBinding
+	case *ast.IndexExpr, *ast.IndexListExpr, *ast.StarExpr, *ast.TypeAssertExpr:
 		// A value read from a field, map, slice, pointer or interface: if it
 		// is a group, its prefix was set somewhere this pass does not follow.
 		return goRouteUnknownBinding
@@ -750,13 +777,14 @@ func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body 
 		index := 0
 		for _, field := range fields.List {
 			value := r.typeValue(field.Type)
-			if fn == "" && value.kind == goRouteUntracked {
+			if fn == "" {
 				// A function literal's parameter is bound by whoever calls it
 				// (a go/defer statement, an immediate call, a callback). The
-				// long-standing root heuristic for unclassified local types is
-				// kept only for top-level declarations; here the parameter
-				// shadows the outer name and holds an unknown value.
-				value = goRouteUnknownBinding
+				// long-standing root heuristic and framework-root type facts are
+				// kept only for top-level declarations. Preserve non-router type
+				// facts, but do not give a closure parameter a root route origin.
+				value.kind = goRouteUnknown
+				value.prefix, value.origin, value.framework = "", nil, ""
 			}
 			if seed != nil && fields == typ.Params {
 				// The router a Route/Group closure is called with.
@@ -1448,9 +1476,47 @@ func (r *goRouteResolver) isFrameworkType(expr ast.Expr, framework, name string)
 	return ok && r.framework(pkg.Name) == framework
 }
 
+func (r *goRouteResolver) isHTTPClientType(expr ast.Expr) bool {
+	expr = goRouteUnstar(goRouteUnparen(expr))
+	switch expr := expr.(type) {
+	case *ast.SelectorExpr:
+		if expr.Sel.Name != "Client" {
+			return false
+		}
+		pkg, ok := expr.X.(*ast.Ident)
+		return ok && r.framework(pkg.Name) == "http"
+	case *ast.Ident:
+		return r.file.Name != nil && r.file.Name.Name == "http" && expr.Name == "Client"
+	}
+	return false
+}
+
+func (r *goRouteResolver) isStripPrefixMiddlewareCall(call *ast.CallExpr, lookup goRouteLookup) bool {
+	if len(call.Args) != 1 || call.Ellipsis.IsValid() {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "StripPrefix" {
+		return false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if _, declared := lookup(pkg.Name); declared {
+		return false
+	}
+	// Keep the existing name-based direct-call contract for fragments without
+	// imports. This fact only has an effect when the value is passed to Use.
+	return true
+}
+
 // typeValue is the state of a parameter or variable declared with type expr
 // and no value.
 func (r *goRouteResolver) typeValue(expr ast.Expr) goRouteBinding {
+	if r.isHTTPClientType(expr) {
+		return goRouteBinding{kind: goRouteUnknown, httpClient: true}
+	}
 	expr = goRouteUnparen(expr)
 	if star, ok := expr.(*ast.StarExpr); ok {
 		expr = goRouteUnparen(star.X)
@@ -2027,13 +2093,10 @@ func (r *goRouteResolver) noteUseStripPrefix(call *ast.CallExpr, scope *goRouteS
 	if !ok || selector.Sel.Name != "Use" {
 		return
 	}
+	lookup := r.lookupIn(scope)
 	for _, arg := range call.Args {
-		inner, ok := goRouteUnparen(arg).(*ast.CallExpr)
-		if !ok {
-			continue
-		}
-		if fun, ok := inner.Fun.(*ast.SelectorExpr); ok && fun.Sel.Name == "StripPrefix" {
-			if value := r.groupValue(selector.X, r.lookupIn(scope)); value.origin != nil {
+		if r.groupValue(arg, lookup).stripPrefixMiddleware {
+			if value := r.groupValue(selector.X, lookup); value.origin != nil {
 				value.origin.opaque = true
 			}
 		}
