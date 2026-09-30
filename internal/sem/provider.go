@@ -3958,7 +3958,7 @@ func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord,
 			if to.ID == from.ID || (to.Kind != "function" && !typeLikeKind(to.Kind)) || !localReachable(from, to) {
 				continue
 			}
-			if filepath.ToSlash(filepath.Dir(to.FilePath)) == fromDir {
+			if inSlashDir(to.FilePath, fromDir) {
 				samePkg = append(samePkg, to)
 			}
 		}
@@ -3988,7 +3988,7 @@ func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord,
 			if to.ID == from.ID || (to.Kind != "function" && !typeLikeKind(to.Kind)) || !localReachable(from, to) {
 				continue
 			}
-			if filepath.ToSlash(filepath.Dir(to.FilePath)) == fromDir {
+			if inSlashDir(to.FilePath, fromDir) {
 				sameDir = append(sameDir, to)
 			}
 		}
@@ -4003,22 +4003,51 @@ func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord,
 		}
 	}
 
-	var remaining []SymbolRecord
-	for _, to := range candidates {
-		if to.ID != from.ID && callableTargetKind(to.Kind) && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) {
-			remaining = append(remaining, to)
+	// Count the survivors before copying any of them. Most lookups end here
+	// with zero or one target, and the slice is only needed by the two
+	// branches below that rank or group several; building it for every call
+	// copied every same-name declaration per call site, which for a name
+	// declared hundreds of times across C++ headers was most of the index's
+	// allocation (19 GB of 29 GB over node's include tree).
+	remainingTarget := func(to SymbolRecord) bool {
+		return to.ID != from.ID && callableTargetKind(to.Kind) && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to)
+	}
+	remainingCount, firstRemaining, remainingOneFile := 0, -1, true
+	for index, to := range candidates {
+		if !remainingTarget(to) {
+			continue
+		}
+		remainingCount++
+		if firstRemaining < 0 {
+			firstRemaining = index
+			continue
+		}
+		first := candidates[firstRemaining]
+		if to.FilePath != first.FilePath || to.Language != first.Language || to.Name != first.Name {
+			remainingOneFile = false
 		}
 	}
-	if len(remaining) == 1 {
+	if remainingCount == 1 {
 		return []resolvedCallTarget{{
-			SymbolRecord: remaining[0],
+			SymbolRecord: candidates[firstRemaining],
 			Confidence:   0.68,
 			Reason:       "direct call expression matched globally unique symbol name",
 			Resolution:   "name_only",
 			Scope:        "workspace",
 		}}
 	}
-	if from.Language == "PHP" && len(remaining) > 1 {
+	phpRanking := from.Language == "PHP" && remainingCount > 1
+	overloadSet := cFamilyOverloadResolutionEnabled(from.Language) && remainingCount > 1 && remainingOneFile
+	if !phpRanking && !overloadSet {
+		return nil
+	}
+	remaining := make([]SymbolRecord, 0, remainingCount)
+	for _, to := range candidates {
+		if remainingTarget(to) {
+			remaining = append(remaining, to)
+		}
+	}
+	if phpRanking {
 		// PHP repos commonly re-declare bare functions (WordPress ships
 		// apply_filters in plugin.php plus compat/noop stubs), and PHP has
 		// no import statements for functions to disambiguate through.
@@ -4044,7 +4073,7 @@ func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord,
 		}
 		return out
 	}
-	if cFamilyOverloadResolutionEnabled(from.Language) {
+	if overloadSet {
 		if overloads, ok := sameFileOverloadSet(remaining); ok {
 			out := make([]resolvedCallTarget, 0, len(overloads))
 			for _, overload := range overloads {
@@ -12472,7 +12501,6 @@ func typeNameOccursBare(signature, name string) bool {
 // removes those impossible declarations from the ambiguity count, so a foreign
 // same-name declaration no longer suppresses the real, resolvable edge.
 func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecord, symbolsByShortName map[string][]SymbolRecord, importsByName, qualifiedImportsByName map[string][]string) (SymbolRecord, string, string, float64, bool) {
-	var candidates []SymbolRecord
 	// The language filter is sharedTypeCandidates' job and only its job. Repeating
 	// languagesShareTypes here re-asked the LANGUAGE-pair question about a list
 	// already filtered by candidateSharesDeclarations, which is the finer of the
@@ -12481,11 +12509,7 @@ func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecor
 	// C++-labelled header passed the candidate filter and was then dropped again
 	// here, so `C/renderWidget -> C++/Widget` was missing while the CALLS edge to
 	// the function beside it resolved.
-	for _, sym := range sharedTypeCandidates(from, symbolsByShortName[name]) {
-		if sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind) {
-			candidates = append(candidates, sym)
-		}
-	}
+	candidates := typeReferenceCandidates(name, from, sharedTypeCandidates(from, symbolsByShortName[name]))
 	if modules := qualifiedImportsByName[name]; len(modules) > 0 {
 		for _, sym := range candidates {
 			if importedNameMatchesFile(modules, from.FilePath, sym.FilePath) {
@@ -12513,17 +12537,57 @@ func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecor
 	if len(candidates) == 1 {
 		return candidates[0], "name_only", "module", 0.75, true
 	}
+	// Only the count matters and at most one match is returned, so remember
+	// the first rather than collecting them. inSlashDir keeps the per-candidate
+	// directory check allocation-free on Windows too; see its comment.
 	fromDir := filepath.ToSlash(filepath.Dir(from.FilePath))
-	var sameDir []SymbolRecord
-	for _, sym := range candidates {
-		if filepath.ToSlash(filepath.Dir(sym.FilePath)) == fromDir {
-			sameDir = append(sameDir, sym)
+	sameDirCount, sameDirIndex := 0, -1
+	for index, sym := range candidates {
+		if inSlashDir(sym.FilePath, fromDir) {
+			sameDirCount++
+			if sameDirCount > 1 {
+				break
+			}
+			sameDirIndex = index
 		}
 	}
-	if len(sameDir) == 1 {
-		return sameDir[0], "package", "module", 0.75, true
+	if sameDirCount == 1 {
+		return candidates[sameDirIndex], "package", "module", 0.75, true
 	}
 	return SymbolRecord{}, "", "", 0, false
+}
+
+// typeReferenceCandidates keeps the declarations a type reference named name
+// can bind to: type-like symbols of that exact name other than the referrer.
+//
+// Like sharedTypeCandidates it returns its input unchanged when every entry
+// qualifies, and resolveTypeReference only reads the result. As there, the
+// cap stops appends from reaching the index but not element writes: the result
+// may alias symbolsByShortName and must be treated as read-only. Copying here was
+// the second half of the same quadratic: one resolution per reference, each
+// copying every same-name declaration, so a name declared in every file of a
+// generated package cost references times declarations in allocations.
+func typeReferenceCandidates(name string, from SymbolRecord, shared []SymbolRecord) []SymbolRecord {
+	keep := func(sym SymbolRecord) bool {
+		return sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind)
+	}
+	for index, sym := range shared {
+		if keep(sym) {
+			continue
+		}
+		var filtered []SymbolRecord
+		if index > 0 {
+			filtered = make([]SymbolRecord, index, len(shared)-1)
+			copy(filtered, shared[:index])
+		}
+		for _, rest := range shared[index+1:] {
+			if keep(rest) {
+				filtered = append(filtered, rest)
+			}
+		}
+		return filtered
+	}
+	return shared[:len(shared):len(shared)]
 }
 
 func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
