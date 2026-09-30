@@ -186,3 +186,17 @@ func TestMergedDeclLinesCSharpLazyPropertyAsserted(t *testing.T) {
 		t.Fatalf("with a name line: MergedDeclLines=%v MergedDeclStarts=%v; want [40] [40]", span.MergedDeclLines, span.MergedDeclStarts)
 	}
 }
+
+// The sem fallback lexes with the file's language (see TestAgentBlockFallbackUsesTheFilesLanguage).
+func TestSymbolDeclarationLineFallbackUsesTheFilesLanguage(t *testing.T) {
+	t.Parallel()
+	lines := []string{`let s = r"\"; fn run() {`, "}"}
+	r := SearchResult{SymbolStartLine: 5, SymbolEndLine: 6, SymbolName: "run", Language: "Rust", FilePath: "src/lib.rs"}
+	if line, ok, _ := searchSymbolDeclarationLine(lines, 5, r); !ok || line != 5 {
+		t.Fatalf("Rust: %d,%v; want 5", line, ok)
+	}
+	r.Language, r.FilePath = "", ""
+	if _, ok, _ := searchSymbolDeclarationLine(lines, 5, r); ok {
+		t.Fatal("control: with no language the raw string masks the rest of the line")
+	}
+}

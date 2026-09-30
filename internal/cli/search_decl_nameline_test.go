@@ -219,3 +219,81 @@ func TestAgentBlockKnownNameLineOutsideSnippetIsNotGuessed(t *testing.T) {
 		t.Fatal("control: with no name line the text fallback should find the (call) line")
 	}
 }
+
+// A source line spelled like the gap record — singular or plural — is quarantined; near misses
+// are not record-shaped.
+func TestAgentSearchElisionLookalikesAreQuarantined(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		line string
+		want bool
+	}{
+		{"... 1 line elided", true},
+		{"... 50 lines elided", true},
+		{"... 50 lines elided  ", true},
+		{"... lines elided", false},
+		{"... 5 lines elided extra", false},
+		{" ... 5 lines elided", false},
+	} {
+		if got := agentSearchLineIsElision(strings.TrimRight(c.line, " ")) && searchLineIsRecordShaped(c.line); got != c.want {
+			t.Errorf("%q quarantined = %v, want %v", c.line, got, c.want)
+		}
+	}
+}
+
+// A known name line below the snippet still marks the part of its header region the snippet
+// holds: annotations the ordinary window showed stay when an absorbed member's declaration is
+// added, although none of them mentions the symbol's name.
+func TestAgentBlockKnownElsewhereRegionNeverLess(t *testing.T) {
+	t.Parallel()
+	lines := []string{"    public void load() {"}
+	for i := 0; i < 20; i++ {
+		lines = append(lines, fmt.Sprintf("        read_%02d();", i))
+	}
+	lines = append(lines, "    }", "")
+	regionTop := len(lines)
+	for i := 0; i < 4; i++ {
+		lines = append(lines, fmt.Sprintf("    @Rule%02d(mode = %d)", i, i))
+	}
+	first := 100
+	exercised := 0
+	for focus := regionTop - 3; focus < len(lines); focus++ {
+		result := sem.SearchResult{Rank: 1, Score: 50, FilePath: "src/Cfg.java", StartLine: first, EndLine: first + len(lines) - 1,
+			FocusLine: first + focus, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
+			SymbolStartLine: first + regionTop, SymbolEndLine: first + 60, SymbolNameLine: first + len(lines),
+			SymbolName: "options", QualifiedName: "Cfg.options", Signals: []string{"contiguous-span"},
+			MergedRanks: []int{1, 2}, MergedDeclLines: []int{first}, Snippet: strings.Join(lines, "\n")}
+		for budget := 60; budget <= 1400; budget += 7 {
+			view := agentSearchBlockViewOf(result)
+			plain, _, _ := agentSearchFocusWindow(view, budget)
+			block := agentSearchPrimaryBlock(result, budget)
+			for i := regionTop; i < len(lines); i++ {
+				if blockShowsLine(plain, lines[i]) {
+					exercised++
+					if !blockShowsLine(block, lines[i]) {
+						t.Fatalf("focus %d budget %d: ordinary window showed %q; block does not:\nplain:\n%s\nblock:\n%s", focus, budget, lines[i], plain, block)
+					}
+				}
+			}
+		}
+	}
+	if exercised == 0 {
+		t.Fatal("no budget showed the region: the sweep tests nothing")
+	}
+}
+
+// The block's text fallback lexes with the file's language: in Rust `r"\"` is a complete string,
+// so the declaration after it on the same line is code; with no language the line stays masked.
+func TestAgentBlockFallbackUsesTheFilesLanguage(t *testing.T) {
+	t.Parallel()
+	result := sem.SearchResult{Rank: 1, FilePath: "src/lib.rs", Language: "Rust", StartLine: 1, EndLine: 3, FocusLine: 3,
+		SnippetStartLine: 1, SnippetEndLine: 3, SymbolStartLine: 1, SymbolEndLine: 3, SymbolName: "run",
+		Snippet: "let s = r\"\\\"; fn run() {\n    s.len()\n}"}
+	if own, ok, _ := agentSearchDecls(agentSearchBlockViewOf(result)); !ok || own.index != 0 {
+		t.Fatalf("Rust: own declaration ok=%v index=%d; want line 0", ok, own.index)
+	}
+	result.Language, result.FilePath = "", "src/unknown"
+	if _, ok, _ := agentSearchDecls(agentSearchBlockViewOf(result)); ok {
+		t.Fatal("control: with no language the raw string masks the rest of the line")
+	}
+}
