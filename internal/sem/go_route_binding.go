@@ -297,8 +297,9 @@ type goRouteResolver struct {
 	nextRegion int
 
 	// paramFunc names the top-level function whose parameters walkFunc is
-	// about to declare ("" for closures).
+	// about to declare ("" for closures), and paramRecv its receiver type.
 	paramFunc string
+	paramRecv string
 	// paramOrigins are the router instances of framework-root-typed
 	// parameters, keyed by function name and parameter index; paramArgs are
 	// the values same-file call sites pass for them. A parameter any caller
@@ -316,7 +317,11 @@ type goRouteResolver struct {
 	readOnlyParams map[string][]bool
 }
 
+// goRouteParamKey names a parameter: the receiver type of a method ("" for a
+// package-level function, "*" at a call site whose receiver type is not
+// visible), the function name, and the parameter index.
 type goRouteParamKey struct {
+	recv  string
 	fn    string
 	index int
 }
@@ -416,7 +421,13 @@ func (r *goRouteResolver) taintParams() {
 				continue
 			}
 			bad := r.paramValueUse[key.fn]
-			for _, arg := range r.paramArgs[key] {
+			args := r.paramArgs[key]
+			if key.recv != "" {
+				// Method calls whose receiver type is not visible may reach
+				// any method of that name.
+				args = append(append([]goRouteBinding(nil), args...), r.paramArgs[goRouteParamKey{recv: "*", fn: key.fn, index: key.index}]...)
+			}
+			for _, arg := range args {
 				if !goRouteIsServedRoot(arg) {
 					bad = true
 				}
@@ -464,6 +475,7 @@ func (r *goRouteResolver) walkFile() {
 			}
 			r.fnWritten = r.writtenNames(decl.Body)
 			r.paramFunc = decl.Name.Name
+			r.paramRecv = goRouteRecvTypeName(decl.Recv)
 			r.walkFunc(decl.Recv, decl.Type, decl.Body, pkg, nil)
 		case *ast.GenDecl:
 			if decl.Tok != token.VAR {
@@ -738,6 +750,14 @@ func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body 
 		index := 0
 		for _, field := range fields.List {
 			value := r.typeValue(field.Type)
+			if fn == "" && value.kind == goRouteUntracked {
+				// A function literal's parameter is bound by whoever calls it
+				// (a go/defer statement, an immediate call, a callback). The
+				// long-standing root heuristic for unclassified local types is
+				// kept only for top-level declarations; here the parameter
+				// shadows the outer name and holds an unknown value.
+				value = goRouteUnknownBinding
+			}
 			if seed != nil && fields == typ.Params {
 				// The router a Route/Group closure is called with.
 				value = *seed
@@ -747,7 +767,7 @@ func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body 
 				if fn != "" && fields == typ.Params && value.kind == goRouteKnown {
 					// A framework-root-typed parameter: its callers in this file
 					// decide whether it is really served at the root.
-					declared.origin = r.paramOriginAt(goRouteParamKey{fn: fn, index: index}, value.framework)
+					declared.origin = r.paramOriginAt(goRouteParamKey{recv: r.paramRecv, fn: fn, index: index}, value.framework)
 				}
 				r.declare(scope, name.Name, declared)
 				index++
@@ -1071,6 +1091,7 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 			r.noteCall(node, scope)
 			r.noteMount(node, scope)
 			r.noteStripPrefix(node, scope)
+			r.noteUseStripPrefix(node, scope)
 			r.noteServe(node, scope)
 			r.noteParamArgs(node, scope)
 			if lit, seed, ok := r.routeClosure(node, scope); ok {
@@ -1835,21 +1856,33 @@ func (r *goRouteResolver) paramOriginAt(key goRouteParamKey, framework string) *
 // noteParamArgs records what a same-file call passes for framework-root-typed
 // parameters.
 func (r *goRouteResolver) noteParamArgs(call *ast.CallExpr, scope *goRouteScope) {
-	name := ""
+	name, recv := "", ""
+	lookup := r.lookupIn(scope)
 	switch fun := call.Fun.(type) {
 	case *ast.Ident:
 		name = fun.Name
 	case *ast.SelectorExpr:
 		name = fun.Sel.Name
+		if pkg, ok := fun.X.(*ast.Ident); ok {
+			if _, declared := lookup(pkg.Name); !declared {
+				if _, imported := r.imports[pkg.Name]; imported {
+					// Another package's function, not one declared here.
+					return
+				}
+			}
+		}
+		recv = goRouteExprTypeName(fun.X)
+		if recv == "" {
+			recv = "*"
+		}
 	default:
 		return
 	}
 	if !r.rootParamFuncs[name] {
 		return
 	}
-	lookup := r.lookupIn(scope)
 	for index, arg := range call.Args {
-		key := goRouteParamKey{fn: name, index: index}
+		key := goRouteParamKey{recv: recv, fn: name, index: index}
 		value := r.groupValue(arg, lookup)
 		if call.Ellipsis.IsValid() && index == len(call.Args)-1 {
 			value = goRouteUnknownBinding
@@ -1938,4 +1971,71 @@ func (r *goRouteResolver) onlyReceiverUses(body *ast.BlockStmt, name string) boo
 		return true
 	})
 	return ok
+}
+
+// goRouteRecvTypeName is the receiver type name of a method declaration
+// ("" for a function).
+func goRouteRecvTypeName(recv *ast.FieldList) string {
+	if recv == nil || len(recv.List) == 0 {
+		return ""
+	}
+	return goRouteTypeName(recv.List[0].Type)
+}
+
+func goRouteTypeName(expr ast.Expr) string {
+	expr = goRouteUnparen(expr)
+	if star, ok := expr.(*ast.StarExpr); ok {
+		expr = goRouteUnparen(star.X)
+	}
+	switch expr := expr.(type) {
+	case *ast.IndexExpr:
+		return goRouteTypeName(expr.X)
+	case *ast.IndexListExpr:
+		return goRouteTypeName(expr.X)
+	case *ast.Ident:
+		return expr.Name
+	}
+	return ""
+}
+
+// goRouteExprTypeName is the type of a method call's receiver expression when
+// it is syntactically visible (T{}, &T{}, (*T)(nil)); "" otherwise.
+func goRouteExprTypeName(expr ast.Expr) string {
+	expr = goRouteUnparen(expr)
+	if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+		expr = goRouteUnparen(unary.X)
+	}
+	switch expr := expr.(type) {
+	case *ast.CompositeLit:
+		return goRouteTypeName(expr.Type)
+	case *ast.CallExpr:
+		// A conversion (*T)(x) or T(x).
+		if len(expr.Args) == 1 {
+			if paren, ok := expr.Fun.(*ast.ParenExpr); ok {
+				return goRouteTypeName(paren.X)
+			}
+		}
+	}
+	return ""
+}
+
+// noteUseStripPrefix handles r.Use(middleware.StripPrefix("/api")): the
+// router's requests are rewritten before routing, so none of its routes is
+// served at its registered path.
+func (r *goRouteResolver) noteUseStripPrefix(call *ast.CallExpr, scope *goRouteScope) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Use" {
+		return
+	}
+	for _, arg := range call.Args {
+		inner, ok := goRouteUnparen(arg).(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		if fun, ok := inner.Fun.(*ast.SelectorExpr); ok && fun.Sel.Name == "StripPrefix" {
+			if value := r.groupValue(selector.X, r.lookupIn(scope)); value.origin != nil {
+				value.origin.opaque = true
+			}
+		}
+	}
 }
