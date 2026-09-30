@@ -390,6 +390,10 @@ type goRouteResolver struct {
 	safeClosureUses       map[*ast.Ident]bool
 	closureCollector      *goRouteClosureEffect
 	asyncClosureCall      bool
+	// Callback-local writes are undone after analysis, but a descriptor defined
+	// outside that callback can write an outer binding directly. Its invocation
+	// must therefore retain MAY evidence through the conservative escape path.
+	inNonDeferredCallback bool
 }
 
 // goRouteParamKey names a parameter: the receiver type of a method ("" for a
@@ -555,6 +559,7 @@ func (r *goRouteResolver) walkFile() {
 	r.safeClosureUses = map[*ast.Ident]bool{}
 	r.closureCollector = nil
 	r.asyncClosureCall = false
+	r.inNonDeferredCallback = false
 	r.log = r.log[:0]
 	r.atPackage = true
 	pkg := r.packageScope()
@@ -1735,7 +1740,7 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 				value := r.read(r.lookup(scope, ident.Name))
 				if value.closure != nil {
 					r.safeClosureUses[ident] = true
-					if r.asyncClosureCall || r.closureCollector != nil {
+					if r.asyncClosureCall || r.closureCollector != nil || r.inNonDeferredCallback {
 						r.escapeClosureEffect(value.closure)
 					} else {
 						r.applyClosureEffect(value.closure)
@@ -1845,17 +1850,22 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 	mark := len(r.log)
 	savedRegion := r.region
 	savedCollector := r.closureCollector
+	savedInNonDeferredCallback := r.inNonDeferredCallback
 	switch {
 	case deferred:
 		r.closureCollector = effect
 	case seed == nil:
 		r.closureCollector = nil
 	}
+	if !deferred {
+		r.inNonDeferredCallback = true
+	}
 	r.nextRegion++
 	r.region = r.nextRegion
 	r.walkFunc(nil, lit.Type, lit.Body, closureScope, seed)
 	r.region = savedRegion
 	r.closureCollector = savedCollector
+	r.inNonDeferredCallback = savedInNonDeferredCallback
 	for i := range captures {
 		r.step(1)
 		captures[i].value = *captures[i].proxy
@@ -1877,7 +1887,7 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 		r.markNames(scope, written, false)
 		r.closureEffects[lit] = effect
 		if r.immediateClosureLits[lit] {
-			if r.asyncClosureCall || savedCollector != nil {
+			if r.asyncClosureCall || savedCollector != nil || savedInNonDeferredCallback {
 				r.escapeClosureEffect(effect)
 			} else {
 				r.applyClosureEffect(effect)
