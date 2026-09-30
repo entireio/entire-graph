@@ -175,7 +175,8 @@ func agentSearchDecls(view agentSearchBlockView) (agentSearchDecl, bool, []agent
 type agentSearchNameLineState int
 
 const (
-	// agentSearchNameLineAbsent: no name line (0). Only this state uses the text finder.
+	// agentSearchNameLineAbsent: no name line (0). Only this state uses the text finder to CHOOSE a
+	// declaration. (agentSearchPlainHeads' protection set is different: see there.)
 	agentSearchNameLineAbsent agentSearchNameLineState = iota
 	// agentSearchNameLinePrinted: valid (inside the symbol's span) and inside the snippet.
 	agentSearchNameLinePrinted
@@ -183,7 +184,7 @@ const (
 	// not printable here; the text finder must not substitute a same-name call or mention for it.
 	agentSearchNameLineElsewhere
 	// agentSearchNameLineInvalid: outside the symbol's span. Corrupt or stale metadata fails
-	// closed the same way.
+	// closed the same way when choosing a declaration: no text-finder substitute is promoted.
 	agentSearchNameLineInvalid
 )
 
@@ -284,6 +285,13 @@ func agentSearchDeclarationBlock(view agentSearchBlockView, plain []byte, left, 
 //
 // Only these lines, not every line the old window showed near a symbol's start: forcing arbitrary
 // body lines printed them as lone islands between elision lines and bought nothing a reader locates by.
+//
+// This is a PROTECTION set, not a declaration choice: it only keeps lines the old window already
+// printed. So for an invalid name line (as for an absent one) it deliberately falls back to the
+// mention rule — untrusted metadata cannot bound the region, and a false mention only keeps an
+// already-shown line visible. Failing closed here (protecting nothing) would weaken "never locate
+// less"; failing closed in the declaration CHOICE (agentSearchNameLineIndex callers) is what the
+// invalid state requires, and there no text-finder substitute is promoted.
 func agentSearchPlainHeads(view agentSearchBlockView, absorbed []agentSearchDecl, plain []byte, left, right int) []agentSearchDecl {
 	if plain == nil || left < 0 {
 		return nil
