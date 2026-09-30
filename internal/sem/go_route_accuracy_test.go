@@ -757,10 +757,11 @@ func main() {
 	h := app.Group("/h")
 	h.Get("x", relHandler)
 	h.Get("", emptyHandler)
+	h.Get("/", slashHandler)
 	app.Listen(":1")
 }
 `,
-			want: []string{"/g/x -> xHandler", "/h/x -> relHandler", "/h -> emptyHandler"},
+			want: []string{"/g/x -> xHandler", "/h/x -> relHandler", "/h -> emptyHandler", "/h/ -> slashHandler"},
 		},
 		{
 			name: "gorilla slash-terminated prefix is composable",
@@ -770,10 +771,12 @@ func main() {
 	s := r.PathPrefix("/sub/").Subrouter()
 	s.HandleFunc("/", slashHandler)
 	s.HandleFunc("/x", xHandler)
+	a := r.PathPrefix("/a").Subrouter()
+	a.HandleFunc("/", aSlashHandler)
 	http.ListenAndServe(":1", r)
 }
 `,
-			want: []string{"/sub/ -> slashHandler", "/sub/x -> xHandler"},
+			want: []string{"/sub/ -> slashHandler", "/sub/x -> xHandler", "/a/ -> aSlashHandler"},
 		},
 		{
 			name: "unclassified routers still need an absolute path",
