@@ -390,6 +390,7 @@ func (r *goRouteResolver) maskSpans() [][2]int {
 			}
 		}
 	}
+	spans = append(spans, r.nonRouterStringSpans()...)
 	ast.Inspect(r.file, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -630,4 +631,144 @@ func goRouteGroupishTypeName(name string) bool {
 func goRouteIsPathLiteral(expr ast.Expr) bool {
 	lit, ok := goRouteUnparen(expr).(*ast.BasicLit)
 	return ok && lit.Kind == token.STRING && len(lit.Value) > 1 && lit.Value[1] == '/'
+}
+
+// goRouteContextTypes are request-context types: their methods (c.Get,
+// c.Redirect, c.Param, ...) take keys and URLs, never routes.
+var goRouteContextTypes = map[string]bool{"gin.Context": true, "fiber.Ctx": true, "echo.Context": true}
+
+// goRouteClientFuncs are package-level HTTP client and request constructors.
+var goRouteClientFuncs = map[string]bool{
+	"http.Get": true, "http.Post": true, "http.Head": true, "http.PostForm": true,
+	"http.NewRequest": true, "http.NewRequestWithContext": true,
+	"httptest.NewRequest": true, "httptest.NewRequestWithContext": true,
+	"fiber.Get": true, "fiber.Post": true, "fiber.Head": true, "fiber.Put": true,
+	"fiber.Patch": true, "fiber.Delete": true,
+}
+
+// nonRouterStringSpans lists the string arguments of calls whose receiver is
+// known not to be a router: request-context methods, HTTP client calls and
+// request constructors, calls on an *http.Client, and same-file request
+// helpers (testRequest, performRequest). Their literals are URLs or keys, so
+// the route literal fallback must not read them. Literals on receivers of
+// unknown type are left alone.
+func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
+	var spans [][2]int
+	addStrings := func(call *ast.CallExpr) {
+		for _, arg := range call.Args {
+			if lit, ok := goRouteUnparen(arg).(*ast.BasicLit); ok && lit.Kind == token.STRING {
+				start, end := r.offset(lit.Pos()), r.offset(lit.End())
+				if start >= 0 && end <= len(r.src) && start < end {
+					spans = append(spans, [2]int{start, end})
+				}
+			}
+		}
+	}
+	isType := func(expr ast.Expr, table map[string]bool) bool {
+		expr = goRouteUnstar(goRouteUnparen(expr))
+		switch t := expr.(type) {
+		case *ast.SelectorExpr:
+			if pkg, ok := t.X.(*ast.Ident); ok {
+				return table[r.framework(pkg.Name)+"."+t.Sel.Name]
+			}
+		case *ast.Ident:
+			if r.file.Name != nil {
+				return table[r.file.Name.Name+"."+t.Name]
+			}
+		}
+		return false
+	}
+	clientTypes := map[string]bool{"http.Client": true}
+	clients := map[string]bool{}
+	ast.Inspect(r.file, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.Field:
+			if isType(n.Type, clientTypes) {
+				for _, name := range n.Names {
+					clients[name.Name] = true
+				}
+			}
+		case *ast.ValueSpec:
+			if n.Type != nil && isType(n.Type, clientTypes) {
+				for _, name := range n.Names {
+					clients[name.Name] = true
+				}
+			}
+			for i, value := range n.Values {
+				if i < len(n.Names) && goRouteIsClientLit(value, isType, clientTypes) {
+					clients[n.Names[i].Name] = true
+				}
+			}
+		case *ast.AssignStmt:
+			if len(n.Lhs) != len(n.Rhs) {
+				return true
+			}
+			for i, value := range n.Rhs {
+				if ident, ok := n.Lhs[i].(*ast.Ident); ok && goRouteIsClientLit(value, isType, clientTypes) {
+					clients[ident.Name] = true
+				}
+			}
+		}
+		return true
+	})
+	var visit func(node ast.Node, contexts map[string]bool)
+	visit = func(node ast.Node, contexts map[string]bool) {
+		ast.Inspect(node, func(n ast.Node) bool {
+			var fnType *ast.FuncType
+			var body *ast.BlockStmt
+			switch n := n.(type) {
+			case *ast.FuncDecl:
+				fnType, body = n.Type, n.Body
+			case *ast.FuncLit:
+				fnType, body = n.Type, n.Body
+			case *ast.CallExpr:
+				switch fun := n.Fun.(type) {
+				case *ast.SelectorExpr:
+					if x, ok := fun.X.(*ast.Ident); ok {
+						if contexts[x.Name] || clients[x.Name] || goRouteClientFuncs[r.framework(x.Name)+"."+fun.Sel.Name] {
+							addStrings(n)
+						}
+					} else if inner, ok := fun.X.(*ast.SelectorExpr); ok {
+						if pkg, ok := inner.X.(*ast.Ident); ok && r.framework(pkg.Name) == "http" && inner.Sel.Name == "DefaultClient" {
+							addStrings(n)
+						}
+					}
+				case *ast.Ident:
+					if strings.HasSuffix(fun.Name, "Request") {
+						addStrings(n)
+					}
+				}
+				return true
+			default:
+				return true
+			}
+			if body == nil {
+				return false
+			}
+			inner := map[string]bool{}
+			for name := range contexts {
+				inner[name] = true
+			}
+			if fnType.Params != nil {
+				for _, field := range fnType.Params.List {
+					for _, name := range field.Names {
+						inner[name.Name] = isType(field.Type, goRouteContextTypes)
+					}
+				}
+			}
+			visit(body, inner)
+			return false
+		})
+	}
+	visit(r.file, map[string]bool{})
+	return spans
+}
+
+func goRouteIsClientLit(expr ast.Expr, isType func(ast.Expr, map[string]bool) bool, table map[string]bool) bool {
+	expr = goRouteUnparen(expr)
+	if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+		expr = goRouteUnparen(unary.X)
+	}
+	lit, ok := expr.(*ast.CompositeLit)
+	return ok && isType(lit.Type, table)
 }

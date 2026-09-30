@@ -1092,3 +1092,145 @@ func getRoutes() {
 		}
 	}
 }
+
+// A function literal's parameter shadows the outer router name whatever its
+// type, and whoever calls the literal (go, defer, an immediate call, a
+// callback argument) decides its value.
+func TestGoRouteAccuracyFuncLitParamsShadow(t *testing.T) {
+	content := `package p
+type client struct{}
+func (client) Get(p string, h any) {}
+func main() {
+	r := chi.NewRouter()
+	func(r client) { r.Get("/param-shadow", hA) }(client{})
+	go func(r client) { r.Get("/go-shadow", nil) }(client{})
+	defer func(r client) { r.Get("/defer-shadow", hA) }(client{})
+	register(func(r client) { r.Get("/callback-shadow", hA) })
+	r.Get("/outer", hA)
+	http.ListenAndServe(":1", r)
+}
+`
+	assertGoRouteSet(t, goRouteRegistrationsWithin(t, content), "/outer -> hA")
+	if inline := goRouteRegistrationsDetailed(content, nil).inline; len(inline) != 0 {
+		t.Fatalf("shadowed func-literal parameter produced inline routes: %v", inline)
+	}
+}
+
+// The F1 taint is keyed by receiver type and name: a StripPrefix'd argument
+// to (A).register does not make (B).register unknown. A call whose receiver
+// type is not visible still reaches every method of that name.
+func TestGoRouteAccuracyRootParamTaintByReceiverType(t *testing.T) {
+	runGoRouteAccuracyCases(t, []goRouteAccuracyCase{
+		{
+			name: "composite receivers",
+			content: `package p
+type A struct{}
+type B struct{}
+func (A) register(e *gin.Engine) { e.GET("/t3a", hA) }
+func (B) register(e *gin.Engine) { e.GET("/t3b", hB) }
+func register(e *gin.Engine) { e.GET("/pkg", hP) }
+func main() {
+	root := gin.New()
+	sub := gin.New()
+	A{}.register(sub)
+	(&B{}).register(root)
+	register(root)
+	root.Any("/api/*p", gin.WrapH(http.StripPrefix("/api", sub)))
+	root.Run(":1")
+}
+`,
+			want: []string{"/t3b -> hB", "/pkg -> hP"},
+		},
+		{
+			name: "receiver type not visible reaches every method of the name",
+			content: `package p
+type A struct{}
+type B struct{}
+func (A) register(e *gin.Engine) { e.GET("/t3a", hA) }
+func (B) register(e *gin.Engine) { e.GET("/t3b", hB) }
+func main() {
+	root := gin.New()
+	sub := gin.New()
+	var a A
+	a.register(sub)
+	B{}.register(root)
+	root.Any("/api/*p", gin.WrapH(http.StripPrefix("/api", sub)))
+	root.Run(":1")
+}
+`,
+			want: nil,
+		},
+		{
+			name: "chi Use(middleware.StripPrefix) rewrites every route",
+			content: `package p
+func main() {
+	r := chi.NewRouter()
+	r.Use(middleware.StripPrefix("/api"))
+	r.Get("/accounts", hA)
+	http.ListenAndServe(":1", r)
+}
+`,
+			want: nil,
+		},
+	})
+}
+
+// String arguments of calls whose receiver is known not to be a router
+// (request contexts, HTTP clients and request constructors, request helpers)
+// never reach the route literal fallback; a literal on a receiver of unknown
+// type is left to it.
+func TestGoRouteAccuracySnapshotNonRouterLiterals(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "main.go", `package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gofiber/fiber/v2"
+)
+
+var client = &http.Client{}
+
+func testRequest(t *testing.T, method, path string) {}
+
+func handler(c *gin.Context) {
+	c.Redirect(http.StatusFound, "/redirect-target")
+	c.Set("/context-key", 1)
+}
+
+func fiberHandler(c *fiber.Ctx) error {
+	fiber.Post("/fiber-client-post")
+	return c.Redirect("/fiber-redirect")
+}
+
+func TestX(t *testing.T) {
+	http.Get("/client-get")
+	req := httptest.NewRequest("GET", "/test-request", nil)
+	_ = req
+	client.Get("/client-var")
+	testRequest(t, "GET", "/helper-request")
+	cache.Get("/unknown-receiver")
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "HANDLES_ROUTE" {
+			got[relation.ToID] = true
+		}
+	}
+	for _, path := range []string{"/redirect-target", "/context-key", "/fiber-client-post", "/fiber-redirect", "/client-get", "/test-request", "/client-var", "/helper-request"} {
+		if got[externalID("route", path)] {
+			t.Fatalf("non-router literal %s emitted as a route: %v", path, got)
+		}
+	}
+	if !got[externalID("route", "/unknown-receiver")] {
+		t.Fatalf("a literal on an unknown receiver must be left to the route literal fallback: %v", got)
+	}
+}
