@@ -3,7 +3,9 @@ package sem
 import (
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -127,15 +129,65 @@ func finishesWithin(t *testing.T, limit time.Duration, fn func()) {
 	}
 }
 
-// TestSplitLineWindowComputesLineStartsOncePerContent pins the memo: without
+// TestSplitLineWindowReusesLineStartsForTheSameContent pins the memo: without
 // it every per-symbol scan walks the file from the top to find its window,
-// which keeps the S*L cost the window was introduced to remove.
-func TestSplitLineWindowComputesLineStartsOncePerContent(t *testing.T) {
+// which keeps the S*L cost the window was introduced to remove. It uses its own
+// memo so parallel tests sharing recentLineStarts cannot evict the entry
+// between the two lookups.
+func TestSplitLineWindowReusesLineStartsForTheSameContent(t *testing.T) {
 	t.Parallel()
-	content := strings.Repeat("memo line\n", 64) + fmt.Sprint(time.Now().UnixNano())
-	first := recentLineStarts.lookup(content)
-	again := recentLineStarts.lookup(strings.Clone(content))
+	memo := &lineStartsMemo{}
+	content := strings.Repeat("memo line\n", 64) + "tail"
+	first := memo.lookup(content)
+	again := memo.lookup(strings.Clone(content))
 	if len(first) != 65 || len(again) != 65 || &first[0] != &again[0] {
 		t.Fatalf("second lookup of the same content recomputed its line starts (%d then %d entries, shared=%v)", len(first), len(again), len(first) > 0 && len(again) > 0 && &first[0] == &again[0])
+	}
+}
+
+// TestLineStartsMemoIsSafeUnderConcurrentLookupsAndEviction runs lookups for
+// more distinct contents than the memo holds from many goroutines at once, so
+// hits, concurrent misses of the same content and evictions all interleave.
+// Run under -race it checks the memo is guarded; either way every lookup must
+// return exactly the line starts of the content it was given, since a miss
+// may recompute but must never hand back another content's offsets.
+func TestLineStartsMemoIsSafeUnderConcurrentLookupsAndEviction(t *testing.T) {
+	t.Parallel()
+	memo := &lineStartsMemo{}
+	const distinct = 3 * len(memo.entries)
+	contents := make([]string, distinct)
+	want := make([][]int, distinct)
+	for i := range contents {
+		contents[i] = strings.Repeat(strings.Repeat("x", i+1)+"\n", i+2) + fmt.Sprint(i)
+		want[i] = []int{0}
+		for offset, r := range contents[i] {
+			if r == '\n' {
+				want[i] = append(want[i], offset+1)
+			}
+		}
+	}
+	var wg sync.WaitGroup
+	errs := make(chan string, 16)
+	for worker := range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for round := range 200 {
+				i := (worker*7 + round) % distinct
+				got := memo.lookup(contents[i])
+				if !slices.Equal(got, want[i]) {
+					select {
+					case errs <- fmt.Sprintf("content %d: got %v, want %v", i, got, want[i]):
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
