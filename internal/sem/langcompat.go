@@ -212,14 +212,34 @@ func LanguagesMayShareRelations(left, right string) bool {
 // bare `compute()` in resolveCallTargets -- and both apply the same rule: prefer
 // these candidates, and consult the unfiltered set only when it names exactly
 // one target.
+//
+// The result aliases the index whenever the filter keeps every candidate,
+// which is the normal case in a single-language repository. Copying instead
+// made every lookup cost a fresh slice of full SymbolRecord values, so a name
+// declared N times and looked up M times allocated N*M records: generated
+// protobuf code, where every file declares its own `type x struct{}` and
+// every method looks the name up, allocated hundreds of gigabytes in
+// minutes and indexing google.golang.org/api never finished. Returning the
+// input is as safe as reading symbolsByShortName directly, which callers
+// already do: the index is shared read-only by every relation worker, so
+// writing through either slice would already be a data race. The result is
+// capped at its length so a caller that appends to it reallocates rather
+// than writing past the end into the index's spare capacity.
 func sharedTypeCandidates(from SymbolRecord, candidates []SymbolRecord) []SymbolRecord {
-	filtered := candidates[:0:0]
-	for _, candidate := range candidates {
+	for index, candidate := range candidates {
 		if candidateSharesDeclarations(from, candidate) {
-			filtered = append(filtered, candidate)
+			continue
 		}
+		filtered := make([]SymbolRecord, index, len(candidates)-1)
+		copy(filtered, candidates[:index])
+		for _, rest := range candidates[index+1:] {
+			if candidateSharesDeclarations(from, rest) {
+				filtered = append(filtered, rest)
+			}
+		}
+		return filtered
 	}
-	return filtered
+	return candidates[:len(candidates):len(candidates)]
 }
 
 // clojurePortableExt is the only Clojure source extension both readers accept.

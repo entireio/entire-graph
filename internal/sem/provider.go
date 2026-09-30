@@ -12607,7 +12607,6 @@ func typeNameOccursBare(signature, name string) bool {
 // removes those impossible declarations from the ambiguity count, so a foreign
 // same-name declaration no longer suppresses the real, resolvable edge.
 func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecord, symbolsByShortName map[string][]SymbolRecord, importsByName, qualifiedImportsByName map[string][]string) (SymbolRecord, string, string, float64, bool) {
-	var candidates []SymbolRecord
 	// The language filter is sharedTypeCandidates' job and only its job. Repeating
 	// languagesShareTypes here re-asked the LANGUAGE-pair question about a list
 	// already filtered by candidateSharesDeclarations, which is the finer of the
@@ -12616,11 +12615,7 @@ func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecor
 	// C++-labelled header passed the candidate filter and was then dropped again
 	// here, so `C/renderWidget -> C++/Widget` was missing while the CALLS edge to
 	// the function beside it resolved.
-	for _, sym := range sharedTypeCandidates(from, symbolsByShortName[name]) {
-		if sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind) {
-			candidates = append(candidates, sym)
-		}
-	}
+	candidates := typeReferenceCandidates(name, from, sharedTypeCandidates(from, symbolsByShortName[name]))
 	if modules := qualifiedImportsByName[name]; len(modules) > 0 {
 		for _, sym := range candidates {
 			if importedNameMatchesFile(modules, from.FilePath, sym.FilePath) {
@@ -12659,6 +12654,37 @@ func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecor
 		return sameDir[0], "package", "module", 0.75, true
 	}
 	return SymbolRecord{}, "", "", 0, false
+}
+
+// typeReferenceCandidates keeps the declarations a type reference named name
+// can bind to: type-like symbols of that exact name other than the referrer.
+//
+// Like sharedTypeCandidates it returns its input unchanged when every entry
+// qualifies, and resolveTypeReference only reads the result. Copying here was
+// the second half of the same quadratic: one resolution per reference, each
+// copying every same-name declaration, so a name declared in every file of a
+// generated package cost references times declarations in allocations.
+func typeReferenceCandidates(name string, from SymbolRecord, shared []SymbolRecord) []SymbolRecord {
+	keep := func(sym SymbolRecord) bool {
+		return sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind)
+	}
+	for index, sym := range shared {
+		if keep(sym) {
+			continue
+		}
+		var filtered []SymbolRecord
+		if index > 0 {
+			filtered = make([]SymbolRecord, index, len(shared)-1)
+			copy(filtered, shared[:index])
+		}
+		for _, rest := range shared[index+1:] {
+			if keep(rest) {
+				filtered = append(filtered, rest)
+			}
+		}
+		return filtered
+	}
+	return shared[:len(shared):len(shared)]
 }
 
 func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
