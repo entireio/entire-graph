@@ -524,3 +524,100 @@ func main() {
 		},
 	})
 }
+
+// Recall without guessing: a router this file serves itself is the top-level
+// router, so handing it to read-only helpers does not make it unknown; a
+// framework's own package constructs routers unqualified; new(T) of a router
+// whose zero value works is a root.
+func TestGoRouteAccuracyServedAndInPackageRoots(t *testing.T) {
+	runGoRouteAccuracyCases(t, []goRouteAccuracyCase{
+		{
+			name: "served routers survive read-only escapes",
+			content: `package p
+func a() {
+	r := chi.NewRouter()
+	r.Get("/a", aHandler)
+	fmt.Println(docgen.MarkdownRoutesDoc(r))
+	http.ListenAndServe(":80", r)
+}
+func b(t *testing.T) {
+	r := chi.NewRouter()
+	r.Get("/b", bHandler)
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+	check(t, r)
+}
+func c() {
+	app := fiber.New()
+	app.Get("/c", cHandler)
+	helper(app)
+	app.Test(req)
+}
+func d() {
+	r := chi.NewRouter()
+	r.Put("/d", dHandler)
+	chi.Walk(r, walkFn)
+}
+`,
+			want: []string{"/a -> aHandler", "/b -> bHandler", "/c -> cHandler", "/d -> dHandler"},
+		},
+		{
+			name: "unserved escapes and served-and-mounted stay unknown",
+			content: `package p
+func a() {
+	r := chi.NewRouter()
+	r.Get("/a", aHandler)
+	helper(r)
+}
+func b() {
+	top := chi.NewRouter()
+	sub := chi.NewRouter()
+	sub.Get("/b", bHandler)
+	top.Mount("/sub", sub)
+	http.ListenAndServe(":80", sub)
+	http.ListenAndServe(":81", top)
+}
+func c() {
+	app := fiber.New()
+	app.Get("/c", cHandler)
+	app2 := buildApp()
+	app2.Test(req)
+	helper(app)
+}
+`,
+			want: nil,
+		},
+		{
+			name: "in-package constructors",
+			content: `package chi
+func TestX(t *testing.T) {
+	r := NewRouter()
+	r.Get("/x", xHandler)
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+}
+`,
+			want: []string{"/x -> xHandler"},
+		},
+		{
+			name: "in-package constructor names outside the framework package are unknown",
+			content: `package server
+func main() {
+	r := NewRouter()
+	r.Get("/x", xHandler)
+	http.ListenAndServe(":80", r)
+}
+`,
+			want: nil,
+		},
+		{
+			name: "new of a router type",
+			content: `package p
+func a() { r := new(mux.Router); r.HandleFunc("/a", aHandler) }
+func b() { r := new(Thing); r.HandleFunc("/b", bHandler) }
+func c() { e := echo.NewWithConfig(cfg); e.GET("/c", cHandler) }
+`,
+			want: []string{"/a -> aHandler", "/c -> cHandler"},
+		},
+	})
+}

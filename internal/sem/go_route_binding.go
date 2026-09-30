@@ -104,6 +104,11 @@ type goRouteOrigin struct {
 	escaped bool
 	// opaque: mounted or wrapped in a way this pass cannot compose.
 	opaque bool
+	// served: this file serves the instance itself (ListenAndServe, an
+	// http.Server Handler, app.Listen, r.Run, e.Start). A served top-level
+	// router is not also mounted, so its escapes to read-only helpers (route
+	// docs, walkers, test requests) do not make it unknown.
+	served bool
 	region int
 	// mounts counts in-file Mount calls with a composable prefix; the prefix
 	// is mountPrefix under mountParent (nil for a root).
@@ -114,7 +119,7 @@ type goRouteOrigin struct {
 
 // prefix is the path the instance is served under.
 func (o *goRouteOrigin) prefix(depth int) (string, bool) {
-	if o.opaque || (o.mountable && o.escaped) || o.mounts > 1 || depth > 16 {
+	if o.opaque || (o.mountable && o.escaped && !o.served) || o.mounts > 1 || (o.served && o.mounts > 0) || depth > 16 {
 		return "", false
 	}
 	if o.mounts == 0 {
@@ -559,6 +564,12 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 	case *ast.CallExpr:
 		selector, ok := expr.Fun.(*ast.SelectorExpr)
 		if !ok {
+			if root, ok := r.inPackageConstructorValue(expr, lookup); ok {
+				return root
+			}
+			if root, ok := r.newRouterValue(expr, lookup); ok {
+				return root
+			}
 			// The result of a local function: whatever router it returns, its
 			// prefix was set where this pass does not look.
 			return goRouteUnknownBinding
@@ -969,6 +980,7 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 			r.noteCall(node, scope)
 			r.noteMount(node, scope)
 			r.noteStripPrefix(node, scope)
+			r.noteServe(node, scope)
 			if lit, seed, ok := r.routeClosure(node, scope); ok {
 				r.expr(node.Fun, scope)
 				for _, arg := range node.Args {
@@ -983,6 +995,8 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 			// Sel is a field or method name, not a variable use.
 			r.expr(node.X, scope)
 			return false
+		case *ast.CompositeLit:
+			r.noteServerLiteral(node, scope)
 		case *ast.KeyValueExpr:
 			if _, ok := node.Key.(*ast.Ident); !ok {
 				r.expr(node.Key, scope)
@@ -1205,6 +1219,8 @@ func goRouteFrameworkForPath(path string) string {
 	switch {
 	case path == "net/http":
 		return "http"
+	case path == "net/http/httptest":
+		return "httptest"
 	case strings.Contains(path, "labstack/echo"):
 		return "echo"
 	case strings.Contains(path, "gin-gonic/gin"):
@@ -1223,6 +1239,7 @@ func goRouteFrameworkForPath(path string) string {
 
 var goRouteDefaultFrameworkNames = map[string]bool{
 	"http": true, "echo": true, "gin": true, "fiber": true, "chi": true, "mux": true, "httprouter": true,
+	"httptest": true,
 }
 
 func goRouteImports(file *ast.File) map[string]string {
@@ -1280,15 +1297,16 @@ func (r *goRouteResolver) undeclaredValue(name string) goRouteBinding {
 // under a prefix (chi Mount, fiber Mount, http.StripPrefix around a
 // ServeMux), which makes an escape of the instance unknown.
 var goRouteConstructors = map[string]bool{
-	"echo.New":         false,
-	"gin.New":          false,
-	"gin.Default":      false,
-	"http.NewServeMux": true,
-	"mux.NewRouter":    false,
-	"httprouter.New":   false,
-	"chi.NewRouter":    true,
-	"chi.NewMux":       true,
-	"fiber.New":        true,
+	"echo.New":           false,
+	"echo.NewWithConfig": false,
+	"gin.New":            false,
+	"gin.Default":        false,
+	"http.NewServeMux":   true,
+	"mux.NewRouter":      false,
+	"httprouter.New":     false,
+	"chi.NewRouter":      true,
+	"chi.NewMux":         true,
+	"fiber.New":          true,
 }
 
 func (r *goRouteResolver) constructorValue(call *ast.CallExpr, selector *ast.SelectorExpr, lookup goRouteLookup) (goRouteBinding, bool) {
@@ -1439,10 +1457,11 @@ func (r *goRouteResolver) computeSafe() {
 			}
 			called[selector] = true
 			switch selector.Sel.Name {
-			case "ListenAndServe", "ListenAndServeTLS", "Serve", "ServeTLS", "Handle", "Mount":
+			case "ListenAndServe", "ListenAndServeTLS", "Serve", "ServeTLS", "Handle", "Mount", "Walk":
 				// Serving a router, or handing it to a mux that matches the
 				// full path (net/http, chi and gorilla Handle do not strip).
-				// Mount is composed or made opaque by noteMount.
+				// Mount is composed or made opaque by noteMount. chi.Walk
+				// only reads the routes.
 				for _, arg := range n.Args {
 					mark(arg)
 				}
@@ -1563,4 +1582,132 @@ func (r *goRouteResolver) noteStripPrefix(call *ast.CallExpr, scope *goRouteScop
 		}
 		return true
 	})
+}
+
+// inPackageConstructorValue recognizes a framework's own constructor called
+// unqualified inside that framework's package (New() in package gin).
+func (r *goRouteResolver) inPackageConstructorValue(call *ast.CallExpr, lookup goRouteLookup) (goRouteBinding, bool) {
+	fun, ok := call.Fun.(*ast.Ident)
+	if !ok || r.file.Name == nil || !goRouteDefaultFrameworkNames[r.file.Name.Name] {
+		return goRouteBinding{}, false
+	}
+	if _, declared := lookup(fun.Name); declared {
+		return goRouteBinding{}, false
+	}
+	framework := r.file.Name.Name
+	mountable, ok := goRouteConstructors[framework+"."+fun.Name]
+	if !ok {
+		return goRouteBinding{}, false
+	}
+	return goRouteBinding{kind: goRouteKnown, origin: r.originAt(call.Pos(), framework, mountable)}, true
+}
+
+// goRouteServeMethods are router methods that serve the router itself: fiber
+// Listen and Test, gin Run, echo Start.
+var goRouteServeMethods = map[string]bool{
+	"Listen": true, "ListenTLS": true, "ListenMutualTLS": true, "Listener": true, "Test": true,
+	"Run": true, "RunTLS": true, "RunUnix": true, "RunListener": true,
+	"Start": true, "StartTLS": true, "StartAutoTLS": true, "StartServer": true,
+}
+
+// noteServe marks router instances this file serves itself.
+func (r *goRouteResolver) noteServe(call *ast.CallExpr, scope *goRouteScope) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	lookup := r.lookupIn(scope)
+	markServed := func(expr ast.Expr) {
+		ident, ok := goRouteUnparen(expr).(*ast.Ident)
+		if !ok {
+			return
+		}
+		if value, _ := lookup(ident.Name); value.kind == goRouteKnown && value.origin != nil && value.prefix == "" {
+			value.origin.served = true
+		}
+	}
+	switch selector.Sel.Name {
+	case "ListenAndServe", "ListenAndServeTLS", "Serve", "ServeTLS":
+		pkg, ok := selector.X.(*ast.Ident)
+		if !ok {
+			return
+		}
+		if _, declared := lookup(pkg.Name); declared || r.framework(pkg.Name) != "http" {
+			return
+		}
+		for _, arg := range call.Args {
+			markServed(arg)
+		}
+	case "NewServer", "NewTLSServer", "NewUnstartedServer":
+		// httptest.NewServer(r) serves r at the root of a test server.
+		pkg, ok := selector.X.(*ast.Ident)
+		if !ok || len(call.Args) != 1 {
+			return
+		}
+		if _, declared := lookup(pkg.Name); declared || r.framework(pkg.Name) != "httptest" {
+			return
+		}
+		markServed(call.Args[0])
+	default:
+		if goRouteServeMethods[selector.Sel.Name] {
+			markServed(selector.X)
+		}
+	}
+}
+
+// noteServerLiteral marks the Handler of an http.Server literal as served.
+func (r *goRouteResolver) noteServerLiteral(lit *ast.CompositeLit, scope *goRouteScope) {
+	if !r.isFrameworkType(goRouteUnstar(lit.Type), "http", "Server") {
+		return
+	}
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || key.Name != "Handler" {
+			continue
+		}
+		if ident, ok := goRouteUnparen(kv.Value).(*ast.Ident); ok {
+			if value, _ := r.lookupIn(scope)(ident.Name); value.kind == goRouteKnown && value.origin != nil && value.prefix == "" {
+				value.origin.served = true
+			}
+		}
+	}
+}
+
+// goRouteNewableRouters are router types whose zero value is a usable root
+// router, so new(T) constructs one.
+var goRouteNewableRouters = map[string]bool{"mux.Router": true, "http.ServeMux": true, "httprouter.Router": true}
+
+// newRouterValue recognizes new(mux.Router) (or new(Router) inside package mux).
+func (r *goRouteResolver) newRouterValue(call *ast.CallExpr, lookup goRouteLookup) (goRouteBinding, bool) {
+	fun, ok := call.Fun.(*ast.Ident)
+	if !ok || fun.Name != "new" || len(call.Args) != 1 {
+		return goRouteBinding{}, false
+	}
+	if _, declared := lookup("new"); declared {
+		return goRouteBinding{}, false
+	}
+	framework, name := "", ""
+	switch typ := goRouteUnparen(call.Args[0]).(type) {
+	case *ast.SelectorExpr:
+		pkg, ok := typ.X.(*ast.Ident)
+		if !ok {
+			return goRouteBinding{}, false
+		}
+		framework, name = r.framework(pkg.Name), typ.Sel.Name
+	case *ast.Ident:
+		if r.file.Name == nil {
+			return goRouteBinding{}, false
+		}
+		framework, name = r.file.Name.Name, typ.Name
+	default:
+		return goRouteBinding{}, false
+	}
+	if !goRouteNewableRouters[framework+"."+name] {
+		return goRouteBinding{}, false
+	}
+	return goRouteBinding{kind: goRouteKnown, origin: r.originAt(call.Pos(), framework, framework == "http")}, true
 }
