@@ -44,15 +44,24 @@ var goRouteMethodNames = map[string]bool{
 var goRouteCallHintRe = regexp.MustCompile(`\b(?:HandleFunc|Handle|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(`)
 
 func goRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {
+	registrations, _ := goRouteRegistrationsDetailed(content, constants)
+	return registrations
+}
+
+// goRouteRegistrationsDetailed also returns, for every registration whose
+// literal path is not what was emitted (omitted as unknown, or composed under
+// a prefix), that bare literal with its handler. The pattern-level route
+// literal fallback must not re-emit those bare paths.
+func goRouteRegistrationsDetailed(content string, constants map[string]string) ([]goHTTPRouteRegistration, []goHTTPRouteRegistration) {
 	if !goRouteCallHintRe.MatchString(content) {
-		return nil
+		return nil, nil
 	}
 	receivers := resolveGoRouteReceivers(content, constants)
 	var candidates []goRouteCandidate
 	switch {
 	case receivers.exhausted:
 		// No receiver in the file is trusted.
-		return nil
+		return nil, nil
 	case receivers.parsed:
 		candidates = receivers.regs
 	default:
@@ -61,7 +70,7 @@ func goRouteRegistrations(content string, constants map[string]string) []goHTTPR
 	return goRouteEmit(candidates, constants)
 }
 
-func goRouteEmit(candidates []goRouteCandidate, constants map[string]string) []goHTTPRouteRegistration {
+func goRouteEmit(candidates []goRouteCandidate, constants map[string]string) ([]goHTTPRouteRegistration, []goHTTPRouteRegistration) {
 	sorted := append([]goRouteCandidate(nil), candidates...)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if sorted[i].order != sorted[j].order {
@@ -69,14 +78,21 @@ func goRouteEmit(candidates []goRouteCandidate, constants map[string]string) []g
 		}
 		return sorted[i].offset < sorted[j].offset
 	})
-	var registrations []goHTTPRouteRegistration
+	var registrations, bare []goHTTPRouteRegistration
 	for _, candidate := range sorted {
 		routeExpr := candidate.route
+		literal, literalOK := staticRouteExpressionValue(routeExpr, constants)
+		withhold := func() {
+			if literalOK && candidate.handler != "" {
+				bare = append(bare, goHTTPRouteRegistration{Route: literal, Handler: candidate.handler})
+			}
+		}
 		if candidate.receiverAware {
 			receiver := candidate.receiver
 			if receiver.kind == goRouteUnknown {
 				// The receiver's prefix at this call is not determined: emitting
 				// the bare path, or another binding's prefix, would invent a route.
+				withhold()
 				continue
 			}
 			if receiver.kind == goRouteKnown && receiver.origin != nil {
@@ -84,10 +100,12 @@ func goRouteEmit(candidates []goRouteCandidate, constants map[string]string) []g
 				// or unknown when it escaped to code that may mount it.
 				base, ok := receiver.origin.prefix(0)
 				if !ok {
+					withhold()
 					continue
 				}
 				if base != "" {
 					if len(base)+len(receiver.prefix) > goRouteMaxPrefixBytes {
+						withhold()
 						continue
 					}
 					receiver.prefix = joinRoutePaths(base, receiver.prefix)
@@ -105,6 +123,9 @@ func goRouteEmit(candidates []goRouteCandidate, constants map[string]string) []g
 		if !ok || candidate.handler == "" {
 			continue
 		}
+		if literalOK && route != literal {
+			withhold()
+		}
 		registrations = append(registrations, goHTTPRouteRegistration{
 			Route:        route,
 			Handler:      candidate.handler,
@@ -112,7 +133,7 @@ func goRouteEmit(candidates []goRouteCandidate, constants map[string]string) []g
 			Detail:       route + " -> " + candidate.handler,
 		})
 	}
-	return registrations
+	return registrations, bare
 }
 
 // goRouteHandlerText accepts the handler shapes the registration forms always
