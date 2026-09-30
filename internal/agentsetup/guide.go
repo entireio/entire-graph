@@ -81,7 +81,33 @@ inspection FOR THAT QUERY ONLY. One failure does not retire the tool: ask the ne
 question through it. Do not automatically install, configure, or repair tools.
 `
 
-const verificationGuide = `Read focused source around useful locations before editing. Check related contracts
+// THE READ IS CONDITIONAL, AND THAT CONDITION IS THE WHOLE POINT OF THE TOOL.
+//
+// This sentence used to mandate the pre-edit read unconditionally, in every guide and
+// in both modes. Combined with the obligation to query first, that made a Graph call
+// purely ADDITIVE: it displaced the cheap grep and left the expensive read in place.
+// Measured, and already committed in this repository: the tool makes +19.6% MORE Read
+// calls than the no-tool baseline while total tool calls fall 14.5%
+// (internal/sem/search_span_merge.go:20-23, n=55 paired), and re-reading a file the
+// payload already printed is 10.1% of post-payload tool calls
+// (internal/cli/search.go:1245). "Bodies removed greps and added reads."
+//
+// The engine had already built the way out. complete-symbol means, verbatim, "you need
+// no follow-up read" (internal/sem/search_enclosure.go:775). It simply never reached
+// the agent: it was absent from --format agent and documented elsewhere as
+// ranking-audit metadata. It is now printed as [complete].
+//
+// So the exception is narrow and checkable: skip the read only for a result the payload
+// itself marked whole. Everything else still gets read, which is why this is not the
+// permissive "sufficiency is self-assessed" wording that guide.go's header warns about
+// -- the agent is not judging whether it knows enough, it is reading a marker the tool
+// either printed or did not.
+const verificationGuide = `Read focused source around useful locations before editing, with one exception:
+a Graph result marked [complete] is the whole symbol and is already in front of you,
+so opening that file to look at the same lines again buys nothing. Read when you need
+what the result does NOT carry -- surrounding context, a caller, a contract, a second
+site -- never to re-confirm what it already showed you. An unmarked body is a fragment;
+read it. Check related contracts
 and make the smallest complete change. VERIFY before stopping: execute focused tests,
 a reproduction, or the most relevant build. If execution is unavailable, disclose
 that limit and perform a bounded source check. Prefer precise queries and line ranges,
