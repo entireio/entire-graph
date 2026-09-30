@@ -2,6 +2,7 @@ package sem
 
 import (
 	"fmt"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -122,4 +123,105 @@ func TestGoSignatureEvidenceKeepsKeyWithinBudget(t *testing.T) {
 		}
 	}
 	t.Fatalf("use no longer reaches S.Put through Store: %#v", runCallsFrom(snapshot, "use"))
+}
+
+func TestSearchVerifyWorkspaceGlobTerminatesOnManyDoubleStars(t *testing.T) {
+	// Every `**` retried every split of the path beneath it: 24 of them against a
+	// 16-deep path is ~2.5e10 attempts. The pattern is a `workspaces` entry, so the
+	// repository chooses it.
+	pattern := strings.Repeat("**/", 24) + "zz"
+	segments := strings.Split(strings.Repeat("a/", 15)+"b", "/")
+	var got bool
+	terminatesWithin(t, 5*time.Second, func() {
+		got = searchVerifyNodeWorkspaceMatchesExpanded(pattern, segments)
+	})
+	if got {
+		t.Fatal("no segment is zz, so the glob must not match")
+	}
+	terminatesWithin(t, 5*time.Second, func() {
+		got = searchVerifyNodeWorkspaceMatchesExpanded(pattern, append(segments, "zz"))
+	})
+	if !got {
+		t.Fatal("a path ending in zz must match")
+	}
+}
+
+// searchVerifyWorkspaceGlobReference is the matcher as it was before failed
+// states were remembered: the definition the memoized one must agree with.
+func searchVerifyWorkspaceGlobReference(pattern string, segments []string) bool {
+	if searchVerifyNodeWorkspacePatternIsUnreadable(pattern) {
+		return true
+	}
+	patternSegments := strings.Split(pattern, "/")
+	for len(patternSegments) > 0 {
+		if patternSegments[0] == "**" {
+			if len(patternSegments) == 1 {
+				return true
+			}
+			for skip := 0; skip <= len(segments); skip++ {
+				if searchVerifyWorkspaceGlobReference(strings.Join(patternSegments[1:], "/"), segments[skip:]) {
+					return true
+				}
+			}
+			return false
+		}
+		if len(segments) == 0 {
+			return false
+		}
+		matched, err := path.Match(patternSegments[0], segments[0])
+		if err != nil {
+			return true
+		}
+		if !matched {
+			return false
+		}
+		patternSegments, segments = patternSegments[1:], segments[1:]
+	}
+	return len(segments) == 0
+}
+
+func TestSearchVerifyWorkspaceGlobAgreesWithReference(t *testing.T) {
+	// Every pattern of up to four segments over these atoms, against every path of
+	// up to four segments over {a, b}: `[` is a malformed class (the permissive
+	// error answer) and `?(x` the unreadable extglob.
+	atoms := []string{"**", "*", "a", "b", "a*", "[", "?(x"}
+	var patterns []string
+	var grow func(prefix []string)
+	grow = func(prefix []string) {
+		if len(prefix) > 0 {
+			patterns = append(patterns, strings.Join(prefix, "/"))
+		}
+		if len(prefix) == 4 {
+			return
+		}
+		for _, atom := range atoms {
+			grow(append(append([]string(nil), prefix...), atom))
+		}
+	}
+	grow(nil)
+	var paths [][]string
+	var walk func(prefix []string)
+	walk = func(prefix []string) {
+		paths = append(paths, prefix)
+		if len(prefix) == 4 {
+			return
+		}
+		for _, segment := range []string{"a", "b"} {
+			walk(append(append([]string(nil), prefix...), segment))
+		}
+	}
+	walk([]string{})
+	checked := 0
+	for _, pattern := range patterns {
+		for _, segments := range paths {
+			want := searchVerifyWorkspaceGlobReference(pattern, segments)
+			if got := searchVerifyNodeWorkspaceMatchesExpanded(pattern, segments); got != want {
+				t.Fatalf("pattern %q against %q: got %v, reference %v", pattern, segments, got, want)
+			}
+			checked++
+		}
+	}
+	if checked < 50000 {
+		t.Fatalf("differential check covered only %d cases", checked)
+	}
 }
