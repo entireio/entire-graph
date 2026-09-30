@@ -78,6 +78,86 @@ func register(c opaque) {
 		r.Use(mw)
 	}
 	r.Use(mw)`), true
+	case "middleware-loop-future-rewrite":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	for i := 0; i < 2; i++ {
+		r.Use(mw)
+		mw = middleware.StripPrefix("/api")
+	}`), true
+	case "middleware-loop-ordinary-only":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	for i := 0; i < 2; i++ {
+		r.Use(mw)
+		mw = middleware.Recoverer
+	}`), true
+	case "middleware-loop-later-unused-rewrite":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	for i := 0; i < 2; i++ {
+		r.Use(mw)
+		mw = middleware.Recoverer
+	}
+	mw = middleware.StripPrefix("/unused")`), true
+	case "middleware-loop-copied-ordinary-alias":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	alias := mw
+	for i := 0; i < 2; i++ {
+		r.Use(alias)
+		mw = middleware.StripPrefix("/unused")
+	}`), true
+	case "middleware-loop-entry-alias":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	for i := 0; i < 2; i++ {
+		alias := mw
+		r.Use(alias)
+		mw = middleware.StripPrefix("/api")
+	}`), true
+	case "middleware-loop-entry-alias-escapes":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	alias := mw
+	for i := 0; i < 2; i++ {
+		alias = mw
+		mw = middleware.StripPrefix("/api")
+	}
+	r.Use(alias)`), true
+	case "middleware-loop-definite-ordinary-before-use":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	for i := 0; i < 2; i++ {
+		mw = middleware.Recoverer
+		r.Use(mw)
+		mw = middleware.StripPrefix("/unused")
+	}`), true
+	case "middleware-branch-use-before-rewrite":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	if true {
+		r.Use(mw)
+		mw = middleware.StripPrefix("/unused")
+	}`), true
+	case "middleware-closure-branch-rewrite-outer-use":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	use := func() {
+		if true {
+			mw = middleware.StripPrefix("/api")
+		}
+	}
+	use()
+	r.Use(mw)`), true
+	case "middleware-closure-branch-rewrite-inner-use":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	func() {
+		if true {
+			mw = middleware.StripPrefix("/api")
+		}
+		r.Use(mw)
+	}()`), true
+	case "middleware-closure-branch-ordinary-only":
+		return review308FocusedMiddleware(`mw := middleware.Recoverer
+	func() {
+		if true {
+			mw = middleware.Recoverer
+		}
+		r.Use(mw)
+	}()
+	r.Use(mw)`), true
 	default:
 		return "", false
 	}
@@ -209,6 +289,61 @@ func TestReview308MiddlewareInnerShadowDoesNotLeak(t *testing.T) {
 func TestReview308MiddlewareOuterAliasRestoredAfterShadow(t *testing.T) {
 	got := review308FocusedWithin(t, "middleware-outer-restored")
 	review308AssertNoRewrittenBareRoute(t, got.Registrations)
+}
+
+func TestReview308MiddlewareLoopObservesPossibleNextIterationRewrite(t *testing.T) {
+	got := review308FocusedWithin(t, "middleware-loop-future-rewrite")
+	review308AssertNoRewrittenBareRoute(t, got.Registrations)
+}
+
+func TestReview308MiddlewareLoopOrdinaryOnlyControl(t *testing.T) {
+	got := review308FocusedWithin(t, "middleware-loop-ordinary-only")
+	review308AssertOrdinaryMiddlewareRoutes(t, got.Registrations)
+}
+
+func TestReview308MiddlewareLoopWatcherDoesNotOutliveRegion(t *testing.T) {
+	got := review308FocusedWithin(t, "middleware-loop-later-unused-rewrite")
+	review308AssertOrdinaryMiddlewareRoutes(t, got.Registrations)
+}
+
+func TestReview308MiddlewareLoopDoesNotTaintCopiedOrdinaryAlias(t *testing.T) {
+	got := review308FocusedWithin(t, "middleware-loop-copied-ordinary-alias")
+	review308AssertOrdinaryMiddlewareRoutes(t, got.Registrations)
+}
+
+func TestReview308MiddlewareLoopEntryDependencyFollowsAlias(t *testing.T) {
+	got := review308FocusedWithin(t, "middleware-loop-entry-alias")
+	review308AssertNoRewrittenBareRoute(t, got.Registrations)
+}
+
+func TestReview308MiddlewareLoopEntryDependencySurvivesOuterAlias(t *testing.T) {
+	got := review308FocusedWithin(t, "middleware-loop-entry-alias-escapes")
+	review308AssertNoRewrittenBareRoute(t, got.Registrations)
+}
+
+func TestReview308MiddlewareLoopDefiniteOrdinaryOverwriteKillsDependency(t *testing.T) {
+	got := review308FocusedWithin(t, "middleware-loop-definite-ordinary-before-use")
+	review308AssertOrdinaryMiddlewareRoutes(t, got.Registrations)
+}
+
+func TestReview308MiddlewareNonRepeatingUseIgnoresLaterRewrite(t *testing.T) {
+	got := review308FocusedWithin(t, "middleware-branch-use-before-rewrite")
+	review308AssertOrdinaryMiddlewareRoutes(t, got.Registrations)
+}
+
+func TestReview308MiddlewareClosureBranchDependencyReachesOuterUse(t *testing.T) {
+	got := review308FocusedWithin(t, "middleware-closure-branch-rewrite-outer-use")
+	review308AssertNoRewrittenBareRoute(t, got.Registrations)
+}
+
+func TestReview308MiddlewareClosureBranchDependencyReachesInnerUse(t *testing.T) {
+	got := review308FocusedWithin(t, "middleware-closure-branch-rewrite-inner-use")
+	review308AssertNoRewrittenBareRoute(t, got.Registrations)
+}
+
+func TestReview308MiddlewareClosureBranchOrdinaryOnlyControl(t *testing.T) {
+	got := review308FocusedWithin(t, "middleware-closure-branch-ordinary-only")
+	review308AssertOrdinaryMiddlewareRoutes(t, got.Registrations)
 }
 
 func review308AssertOrdinaryMiddlewareRoutes(t *testing.T, registrations []goHTTPRouteRegistration) {
