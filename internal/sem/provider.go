@@ -24737,9 +24737,15 @@ var goHTTPRouteRegistrationsGroupRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9
 func goHTTPRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {
 	groupPrefixes := map[string]string{}
 	groupMatches := goHTTPRouteRegistrationsGroupRe.FindAllStringSubmatch(content, -1)
-	changed := true
-	for changed {
-		changed = false
+	// Group prefixes are keyed by variable name across the whole file, so the
+	// fixed point is not guaranteed to exist: two functions that each bind
+	// `g := e.Group("/a")` / `g := e.Group("/b")` flip g forever, and a naming
+	// cycle (`a := b.Group(..)`, `b := a.Group(..)`) grows the prefix forever.
+	// Each pass propagates at least one more link of any acyclic parent chain,
+	// and such a chain has at most len(groupMatches) links, so len+1 passes
+	// reach every fixed point that exists and bound the ones that do not.
+	for pass := 0; pass <= len(groupMatches); pass++ {
+		changed := false
 		for _, match := range groupMatches {
 			if len(match) != 4 {
 				continue
@@ -24756,6 +24762,9 @@ func goHTTPRouteRegistrations(content string, constants map[string]string) []goH
 			}
 			groupPrefixes[match[1]] = prefix
 			changed = true
+		}
+		if !changed {
+			break
 		}
 	}
 	for _, match := range groupMatches {
