@@ -23,14 +23,14 @@ const review307GroupedCaseEnv = "EG_REVIEW307_GROUPED_CASE"
 const review307GroupedResultPrefix = "EG_REVIEW307_GROUPED_RESULT="
 
 type review307GroupedResult struct {
-	Depth                  int  `json:"depth"`
-	GroupedInputBytes      int  `json:"grouped_input_bytes"`
-	SeparateInputBytes     int  `json:"separate_input_bytes"`
-	GroupedKnown           bool `json:"grouped_known"`
-	SeparateKnown          bool `json:"separate_known"`
-	GroupedReturnedBytes   int  `json:"grouped_returned_bytes"`
-	SeparateReturnedBytes  int  `json:"separate_returned_bytes"`
-	EqualWhenBothKnown     bool `json:"equal_when_both_known"`
+	Depth                 int  `json:"depth"`
+	GroupedInputBytes     int  `json:"grouped_input_bytes"`
+	SeparateInputBytes    int  `json:"separate_input_bytes"`
+	GroupedKnown          bool `json:"grouped_known"`
+	SeparateKnown         bool `json:"separate_known"`
+	GroupedReturnedBytes  int  `json:"grouped_returned_bytes"`
+	SeparateReturnedBytes int  `json:"separate_returned_bytes"`
+	EqualWhenBothKnown    bool `json:"equal_when_both_known"`
 }
 
 func review307GroupedSource(t *testing.T, depth int, grouped bool) string {
