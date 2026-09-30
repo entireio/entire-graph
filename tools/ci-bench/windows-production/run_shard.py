@@ -374,6 +374,7 @@ def run(
                 heartbeat_stop, heartbeat = start_heartbeat(
                     prefix, detail, started, heartbeat_interval
                 )
+                failure = None
                 try:
                     completed = subprocess.run(
                         [go, *command_arguments],
@@ -383,9 +384,21 @@ def run(
                         stderr=stderr,
                         check=False,
                     )
+                except BaseException as error:
+                    # Report only the class: the message can carry argv or paths.
+                    failure = type(error).__name__
+                    raise
                 finally:
                     heartbeat_stop.set()
                     heartbeat.join()
+                    if failure is not None:
+                        # The heartbeat is joined, so this line is terminal.
+                        print(
+                            f"{prefix} end {detail} elapsed={time.monotonic() - started:.3f}s "
+                            f"exit=exception:{failure}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
             duration = time.monotonic() - started
             print(
                 f"{prefix} end {detail} elapsed={duration:.3f}s exit={completed.returncode}",

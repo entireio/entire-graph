@@ -31,14 +31,22 @@ class Console(io.StringIO):
 
     def __init__(self):
         super().__init__()
-        self.lock = threading.Lock()
-        self.heartbeat_seen = threading.Event()
+        self.lock = threading.Condition()
+        self.heartbeat_lines = []
 
     def write(self, text):
         with self.lock:
             if " heartbeat " in text:
-                self.heartbeat_seen.set()
+                self.heartbeat_lines.append(text)
+                self.lock.notify_all()
             return super().write(text)
+
+    def wait_for_heartbeat(self, fragment, timeout):
+        """Wait until a heartbeat line containing fragment has been written."""
+        with self.lock:
+            return self.lock.wait_for(
+                lambda: any(fragment in line for line in self.heartbeat_lines), timeout
+            )
 
 
 def heartbeat_threads():
@@ -213,7 +221,12 @@ class RunShardProgressTests(unittest.TestCase):
 
         def child(argv, kwargs, index):
             observed.append(bool(heartbeat_threads()))
-            self.assertTrue(console.heartbeat_seen.wait(5), "no heartbeat while child ran")
+            # Each assignment must produce its own beat: wait for this assignment's
+            # prefix, not merely any earlier heartbeat.
+            self.assertTrue(
+                console.wait_for_heartbeat(f"assignment {index + 1}/2 heartbeat", 5),
+                f"no heartbeat while assignment {index + 1} ran",
+            )
             kwargs["stdout"].write(STDOUT_SENTINEL)
             kwargs["stderr"].write(STDERR_SENTINEL)
             return subprocess.CompletedProcess(argv, 0)
@@ -229,7 +242,8 @@ class RunShardProgressTests(unittest.TestCase):
         text = console.getvalue()
         beats = [line for line in text.splitlines() if " heartbeat " in line]
         self.assertTrue(beats)
-        self.assertTrue(any("shard 1 assignment 1/2" in line for line in beats))
+        for position in (1, 2):
+            self.assertTrue(any(f"shard 1 assignment {position}/2 heartbeat" in line for line in beats))
         for line in beats:
             self.assertRegex(line, r"^shard 1 assignment [12]/2 heartbeat package=\"[^\n]*\" roots=\d+ elapsed=\d+\.\d+s$")
         self.assertEqual(heartbeat_threads(), [])
@@ -325,6 +339,44 @@ class RunShardProgressTests(unittest.TestCase):
                         with self.assertRaises(type(error)):
                             run_shard.run(args, {"invocations": []}, heartbeat_interval=60.0)
                 self.assertEqual(alive_during, [1])
+                self.assertEqual(heartbeat_threads(), [])
+
+    def test_raising_child_still_prints_one_terminal_end_line(self):
+        for error in (
+            subprocess.TimeoutExpired(["go", "SECRET-ARGV"], 1),
+            RuntimeError("SECRET-EXCEPTION-PAYLOAD"),
+        ):
+            with self.subTest(error=type(error).__name__):
+
+                def child(argv, kwargs, index, error=error):
+                    raise error
+
+                fake = FakeGo(self.go, self.tool_directory, child)
+                console = Console()
+                with mock.patch.object(run_shard.sys, "platform", "win32"), mock.patch.object(
+                    run_shard.shutil, "which", return_value=self.go
+                ), mock.patch.object(run_shard.subprocess, "run", side_effect=fake):
+                    args = run_shard.parse_args(self.argv)
+                    with redirect_stderr(console):
+                        with self.assertRaises(type(error)) as raised:
+                            run_shard.run(args, {"invocations": []}, heartbeat_interval=60.0)
+                # The original exception object propagates unchanged.
+                self.assertIs(raised.exception, error)
+                lines = console.getvalue().splitlines()
+                starts = [line for line in lines if " start " in line]
+                ends = [line for line in lines if " end " in line]
+                self.assertEqual(len(starts), 1)
+                self.assertEqual(len(ends), 1)
+                self.assertRegex(
+                    ends[0],
+                    r"^shard 1 assignment 1/2 end package=\"[^\n]*\" roots=\d+ "
+                    rf"elapsed=\d+\.\d{{3}}s exit=exception:{type(error).__name__}$",
+                )
+                # The end line is terminal: it follows the start and nothing follows it.
+                self.assertEqual(lines[-1], ends[0])
+                self.assertLess(lines.index(starts[0]), lines.index(ends[0]))
+                # Only the exception class is reported; no payload or argv leaks.
+                self.assertNotIn("SECRET", console.getvalue())
                 self.assertEqual(heartbeat_threads(), [])
 
     def test_heartbeat_thread_is_joined_after_nonzero_exit(self):
