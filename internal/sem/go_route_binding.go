@@ -87,6 +87,9 @@ type goRouteBinding struct {
 	// nil for a root that cannot be mounted elsewhere (a framework-root
 	// parameter, the net/http package).
 	origin *goRouteOrigin
+	// framework whose path-joining rules apply to this router ("" when
+	// unclassified).
+	framework string
 }
 
 // goRouteOrigin is one router instance created by a constructor call. Every
@@ -136,7 +139,7 @@ func (o *goRouteOrigin) prefix(depth int) (string, bool) {
 	if len(base)+len(o.mountPrefix) > goRouteMaxPrefixBytes {
 		return "", false
 	}
-	return joinRoutePaths(base, o.mountPrefix), true
+	return goRouteJoin(o.framework, base, o.mountPrefix), true
 }
 
 var goRouteUnknownBinding = goRouteBinding{kind: goRouteUnknown}
@@ -180,6 +183,8 @@ type goRouteReceivers struct {
 	// regs are the route registrations found at real call expressions, with
 	// each receiver's state at its call.
 	regs []goRouteCandidate
+	// masks are the byte spans of every route argument the pass decides.
+	masks [][2]int
 }
 
 func (r goRouteReceivers) at(offset int, name string) goRouteBinding {
@@ -237,6 +242,7 @@ func resolveGoRouteReceiversWithBudget(content string, constants map[string]stri
 		budget:     budget,
 		imports:    goRouteImports(file),
 	}
+	receivers.masks = resolver.maskSpans()
 	if !resolver.resolve() {
 		receivers.exhausted = true
 		return receivers
@@ -289,6 +295,30 @@ type goRouteResolver struct {
 	// loop bodies and closures each get a fresh one.
 	region     int
 	nextRegion int
+
+	// paramFunc names the top-level function whose parameters walkFunc is
+	// about to declare ("" for closures).
+	paramFunc string
+	// paramOrigins are the router instances of framework-root-typed
+	// parameters, keyed by function name and parameter index; paramArgs are
+	// the values same-file call sites pass for them. A parameter any caller
+	// passes a non-root value (a StripPrefix'd or mounted router, a group, an
+	// unknown value) is unknown.
+	paramOrigins map[goRouteParamKey]*goRouteOrigin
+	paramArgs    map[goRouteParamKey][]goRouteBinding
+	// paramValueUse names functions referenced other than as a call: their
+	// callers' arguments are not visible.
+	paramValueUse map[string]bool
+	// rootParamFuncs names functions with a framework-root-typed parameter.
+	rootParamFuncs map[string]bool
+	// readOnlyParams: per top-level function, the parameters used only as a
+	// method receiver or field base. Passing a router there is not an escape.
+	readOnlyParams map[string][]bool
+}
+
+type goRouteParamKey struct {
+	fn    string
+	index int
 }
 
 // The walk is linear in the common case but can degrade with nesting depth
@@ -360,6 +390,7 @@ func (r *goRouteResolver) resolve() (ok bool) {
 	r.collecting = true
 	r.walkFile()
 	if len(r.pkgWritten) == 0 {
+		r.taintParams()
 		return true
 	}
 	// A package variable written by some function holds whatever the last
@@ -369,13 +400,54 @@ func (r *goRouteResolver) resolve() (ok bool) {
 	r.pkgUnknown = r.pkgWritten
 	r.collecting = false
 	r.walkFile()
+	r.taintParams()
 	return true
+}
+
+// taintParams makes a framework-root-typed parameter unknown when a same-file
+// caller passes it anything but a root router served at "/" (for example a
+// router it wraps in http.StripPrefix), or when the function is used as a
+// value. Parameters forwarded to other functions propagate, so this iterates.
+func (r *goRouteResolver) taintParams() {
+	for changed, rounds := true, 0; changed && rounds < 16; rounds++ {
+		changed = false
+		for key, origin := range r.paramOrigins {
+			if origin.opaque {
+				continue
+			}
+			bad := r.paramValueUse[key.fn]
+			for _, arg := range r.paramArgs[key] {
+				if !goRouteIsServedRoot(arg) {
+					bad = true
+				}
+			}
+			if bad {
+				origin.opaque = true
+				changed = true
+			}
+		}
+	}
+}
+
+// goRouteIsServedRoot reports a known router value with no prefix whose
+// instance is served at the root.
+func goRouteIsServedRoot(value goRouteBinding) bool {
+	if value.kind != goRouteKnown || value.prefix != "" {
+		return false
+	}
+	if value.origin == nil {
+		return true
+	}
+	base, ok := value.origin.prefix(0)
+	return ok && base == ""
 }
 
 func (r *goRouteResolver) walkFile() {
 	r.uses = map[int]goRouteBinding{}
 	r.regs = r.regs[:0]
 	r.origins = map[token.Pos]*goRouteOrigin{}
+	r.paramOrigins = map[goRouteParamKey]*goRouteOrigin{}
+	r.paramArgs = map[goRouteParamKey][]goRouteBinding{}
 	r.escaped = map[*goRouteBinding]bool{}
 	r.log = r.log[:0]
 	r.atPackage = true
@@ -391,6 +463,7 @@ func (r *goRouteResolver) walkFile() {
 				continue
 			}
 			r.fnWritten = r.writtenNames(decl.Body)
+			r.paramFunc = decl.Name.Name
 			r.walkFunc(decl.Recv, decl.Type, decl.Body, pkg, nil)
 		case *ast.GenDecl:
 			if decl.Tok != token.VAR {
@@ -581,7 +654,7 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 		if name == "Subrouter" {
 			return r.subrouterValue(expr, selector, lookup)
 		}
-		if name != "Group" && name != "Route" && name != "With" {
+		if name != "Group" && name != "Route" && name != "With" && name != "Host" {
 			return goRouteUnknownBinding
 		}
 		if name != "With" && (len(expr.Args) == 0 || expr.Ellipsis.IsValid()) {
@@ -601,6 +674,13 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 		case name == "With":
 			// chi With(middlewares...) is the same router with middleware.
 			return parent
+		case name == "Host":
+			// echo e.Host(name) is a group with an empty prefix on that host:
+			// the path is unchanged. Any other framework's Host is unknown.
+			if parent.kind != goRouteKnown || parent.framework != "echo" {
+				return goRouteUnknownBinding
+			}
+			return parent
 		case name == "Group" && len(expr.Args) == 1 && goRouteIsFuncLit(expr.Args[0]):
 			// chi Group(func(r chi.Router) {...}): same prefix, new middleware
 			// stack.
@@ -610,7 +690,7 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 			return goRouteUnknownBinding
 		}
 		argument := r.text(expr.Args[0])
-		prefix, ok := staticRouteExpressionValue(argument, r.constants)
+		prefix, ok := goRouteLiteral(parent.framework, argument, r.constants)
 		if !ok {
 			// Group("") is the parent itself: a known empty prefix, not unknown.
 			if value, isStatic := staticStringExpressionValue(argument, r.constants); isStatic && value == "" {
@@ -620,13 +700,11 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 		if !ok || parent.kind == goRouteUnknown {
 			return goRouteUnknownBinding
 		}
-		if parent.kind == goRouteKnown && parent.prefix != "" {
-			if len(parent.prefix)+len(prefix) > goRouteMaxPrefixBytes {
-				return goRouteUnknownBinding
-			}
-			prefix = joinRoutePaths(parent.prefix, prefix)
+		if parent.kind == goRouteKnown && parent.prefix != "" && len(parent.prefix)+len(prefix) > goRouteMaxPrefixBytes {
+			return goRouteUnknownBinding
 		}
-		return goRouteBinding{kind: goRouteKnown, prefix: prefix, origin: parent.origin}
+		prefix = goRouteJoin(parent.framework, parent.prefix, prefix)
+		return goRouteBinding{kind: goRouteKnown, prefix: prefix, origin: parent.origin, framework: parent.framework}
 	case *ast.UnaryExpr:
 		if expr.Op == token.AND {
 			return r.groupValue(expr.X, lookup)
@@ -634,7 +712,7 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 		return goRouteBinding{}
 	case *ast.CompositeLit:
 		if r.isFrameworkType(expr.Type, "http", "ServeMux") {
-			return goRouteBinding{kind: goRouteKnown, origin: r.originAt(expr.Pos(), "http", true)}
+			return goRouteBinding{kind: goRouteKnown, origin: r.originAt(expr.Pos(), "http", true), framework: "http"}
 		}
 		return goRouteUnknownBinding
 	case *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr, *ast.StarExpr, *ast.TypeAssertExpr:
@@ -648,6 +726,8 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 
 func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body *ast.BlockStmt, outer *goRouteScope, seed *goRouteBinding) {
 	scope := newGoRouteScope(outer)
+	fn := r.paramFunc
+	r.paramFunc = ""
 	if seed != nil && (typ.Params == nil || len(typ.Params.List) != 1 || len(typ.Params.List[0].Names) != 1) {
 		seed = nil
 	}
@@ -655,6 +735,7 @@ func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body 
 		if fields == nil {
 			continue
 		}
+		index := 0
 		for _, field := range fields.List {
 			value := r.typeValue(field.Type)
 			if seed != nil && fields == typ.Params {
@@ -662,7 +743,17 @@ func (r *goRouteResolver) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body 
 				value = *seed
 			}
 			for _, name := range field.Names {
-				r.declare(scope, name.Name, value)
+				declared := value
+				if fn != "" && fields == typ.Params && value.kind == goRouteKnown {
+					// A framework-root-typed parameter: its callers in this file
+					// decide whether it is really served at the root.
+					declared.origin = r.paramOriginAt(goRouteParamKey{fn: fn, index: index}, value.framework)
+				}
+				r.declare(scope, name.Name, declared)
+				index++
+			}
+			if len(field.Names) == 0 {
+				index++
 			}
 		}
 	}
@@ -981,6 +1072,7 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 			r.noteMount(node, scope)
 			r.noteStripPrefix(node, scope)
 			r.noteServe(node, scope)
+			r.noteParamArgs(node, scope)
 			if lit, seed, ok := r.routeClosure(node, scope); ok {
 				r.expr(node.Fun, scope)
 				for _, arg := range node.Args {
@@ -1287,7 +1379,7 @@ func (r *goRouteResolver) framework(pkg string) string {
 func (r *goRouteResolver) undeclaredValue(name string) goRouteBinding {
 	if r.framework(name) == "http" {
 		// http.HandleFunc / http.Handle: the DefaultServeMux.
-		return goRouteBinding{kind: goRouteKnown}
+		return goRouteBinding{kind: goRouteKnown, framework: "http"}
 	}
 	return goRouteUnknownBinding
 }
@@ -1323,7 +1415,7 @@ func (r *goRouteResolver) constructorValue(call *ast.CallExpr, selector *ast.Sel
 	if !ok {
 		return goRouteBinding{}, false
 	}
-	return goRouteBinding{kind: goRouteKnown, origin: r.originAt(call.Pos(), framework, mountable)}, true
+	return goRouteBinding{kind: goRouteKnown, origin: r.originAt(call.Pos(), framework, mountable), framework: framework}, true
 }
 
 func (r *goRouteResolver) isFrameworkType(expr ast.Expr, framework, name string) bool {
@@ -1353,7 +1445,7 @@ func (r *goRouteResolver) typeValue(expr ast.Expr) goRouteBinding {
 	case *ast.SelectorExpr:
 		pkg, ok := expr.X.(*ast.Ident)
 		if ok && goRouteRootTypes[r.framework(pkg.Name)+"."+expr.Sel.Name] {
-			return goRouteBinding{kind: goRouteKnown}
+			return goRouteBinding{kind: goRouteKnown, framework: r.framework(pkg.Name)}
 		}
 		// A framework group or sub-router type, or another package's type.
 		return goRouteUnknownBinding
@@ -1422,7 +1514,7 @@ func (r *goRouteResolver) noteMount(call *ast.CallExpr, scope *goRouteScope) {
 		return
 	}
 	parent := r.groupValue(selector.X, lookup)
-	prefix, ok := staticRouteExpressionValue(r.text(call.Args[0]), r.constants)
+	prefix, ok := goRouteLiteral(origin.framework, r.text(call.Args[0]), r.constants)
 	if !ok || parent.kind == goRouteUnknown {
 		origin.opaque = true
 		return
@@ -1432,7 +1524,7 @@ func (r *goRouteResolver) noteMount(call *ast.CallExpr, scope *goRouteScope) {
 	origin.mountPrefix = prefix
 	if parent.kind == goRouteKnown {
 		origin.mountParent = parent.origin
-		origin.mountPrefix = joinRoutePaths(parent.prefix, prefix)
+		origin.mountPrefix = goRouteJoin(origin.framework, parent.prefix, prefix)
 	}
 }
 
@@ -1446,11 +1538,21 @@ func (r *goRouteResolver) computeSafe() {
 			r.safe[ident] = true
 		}
 	}
+	r.computeParamFacts()
 	called := map[*ast.SelectorExpr]bool{}
 	ast.Inspect(r.file, func(n ast.Node) bool {
 		r.step(1)
 		switch n := n.(type) {
 		case *ast.CallExpr:
+			if fun, ok := n.Fun.(*ast.Ident); ok && !n.Ellipsis.IsValid() {
+				// A same-file helper that only calls methods on a parameter
+				// cannot mount or wrap what it is given there.
+				for index, readOnly := range r.readOnlyParams[fun.Name] {
+					if readOnly && index < len(n.Args) {
+						mark(n.Args[index])
+					}
+				}
+			}
 			selector, ok := n.Fun.(*ast.SelectorExpr)
 			if !ok {
 				return true
@@ -1534,18 +1636,16 @@ func (r *goRouteResolver) subrouterValue(call *ast.CallExpr, selector *ast.Selec
 	default:
 		return goRouteUnknownBinding
 	}
-	prefix, ok := staticRouteExpressionValue(r.text(pathPrefix.Args[0]), r.constants)
-	if !ok || parent.kind == goRouteUnknown || (len(prefix) > 1 && strings.HasSuffix(prefix, "/")) {
-		// gorilla concatenates templates: "/a/" + "/x" is "/a//x".
+	prefix, ok := goRouteLiteral("mux", r.text(pathPrefix.Args[0]), r.constants)
+	if !ok || parent.kind == goRouteUnknown {
 		return goRouteUnknownBinding
 	}
-	if parent.kind == goRouteKnown && parent.prefix != "" {
-		if len(parent.prefix)+len(prefix) > goRouteMaxPrefixBytes {
-			return goRouteUnknownBinding
-		}
-		prefix = joinRoutePaths(parent.prefix, prefix)
+	if len(parent.prefix)+len(prefix) > goRouteMaxPrefixBytes {
+		return goRouteUnknownBinding
 	}
-	return goRouteBinding{kind: goRouteKnown, prefix: prefix, origin: parent.origin}
+	// gorilla composes TrimRight(parent template, "/") + template, so a
+	// slash-terminated prefix is composable ("/a/" + "/x" is "/a/x").
+	return goRouteBinding{kind: goRouteKnown, prefix: goRouteJoin("mux", parent.prefix, prefix), origin: parent.origin, framework: "mux"}
 }
 
 // originAt returns this walk's router instance for the constructor at pos.
@@ -1599,7 +1699,7 @@ func (r *goRouteResolver) inPackageConstructorValue(call *ast.CallExpr, lookup g
 	if !ok {
 		return goRouteBinding{}, false
 	}
-	return goRouteBinding{kind: goRouteKnown, origin: r.originAt(call.Pos(), framework, mountable)}, true
+	return goRouteBinding{kind: goRouteKnown, origin: r.originAt(call.Pos(), framework, mountable), framework: framework}, true
 }
 
 // goRouteServeMethods are router methods that serve the router itself: fiber
@@ -1709,5 +1809,122 @@ func (r *goRouteResolver) newRouterValue(call *ast.CallExpr, lookup goRouteLooku
 	if !goRouteNewableRouters[framework+"."+name] {
 		return goRouteBinding{}, false
 	}
-	return goRouteBinding{kind: goRouteKnown, origin: r.originAt(call.Pos(), framework, framework == "http")}, true
+	return goRouteBinding{kind: goRouteKnown, origin: r.originAt(call.Pos(), framework, framework == "http"), framework: framework}, true
+}
+
+func (r *goRouteResolver) paramOriginAt(key goRouteParamKey, framework string) *goRouteOrigin {
+	origin := r.paramOrigins[key]
+	if origin == nil {
+		origin = &goRouteOrigin{framework: framework, region: r.region}
+		r.paramOrigins[key] = origin
+	}
+	return origin
+}
+
+// noteParamArgs records what a same-file call passes for framework-root-typed
+// parameters.
+func (r *goRouteResolver) noteParamArgs(call *ast.CallExpr, scope *goRouteScope) {
+	name := ""
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		name = fun.Name
+	case *ast.SelectorExpr:
+		name = fun.Sel.Name
+	default:
+		return
+	}
+	if !r.rootParamFuncs[name] {
+		return
+	}
+	lookup := r.lookupIn(scope)
+	for index, arg := range call.Args {
+		key := goRouteParamKey{fn: name, index: index}
+		value := r.groupValue(arg, lookup)
+		if call.Ellipsis.IsValid() && index == len(call.Args)-1 {
+			value = goRouteUnknownBinding
+		}
+		r.paramArgs[key] = append(r.paramArgs[key], value)
+	}
+}
+
+// computeParamFacts finds functions with framework-root-typed parameters,
+// functions referenced other than as a call, and parameters a top-level
+// function uses only as a method receiver or field base.
+func (r *goRouteResolver) computeParamFacts() {
+	r.rootParamFuncs = map[string]bool{}
+	r.paramValueUse = map[string]bool{}
+	r.readOnlyParams = map[string][]bool{}
+	declNames := map[*ast.Ident]bool{}
+	for _, decl := range r.file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		declNames[fn.Name] = true
+		var names []*ast.Ident
+		for _, field := range fn.Type.Params.List {
+			if r.typeValue(field.Type).kind == goRouteKnown {
+				r.rootParamFuncs[fn.Name.Name] = true
+			}
+			if len(field.Names) == 0 {
+				names = append(names, nil)
+			}
+			names = append(names, field.Names...)
+		}
+		if fn.Recv != nil || len(names) == 0 {
+			continue
+		}
+		if _, dup := r.readOnlyParams[fn.Name.Name]; dup {
+			// Two top-level functions of one name do not compile; trust neither.
+			r.readOnlyParams[fn.Name.Name] = nil
+			continue
+		}
+		readOnly := make([]bool, len(names))
+		for i, name := range names {
+			readOnly[i] = name != nil && name.Name != "_" && r.onlyReceiverUses(fn.Body, name.Name)
+		}
+		r.readOnlyParams[fn.Name.Name] = readOnly
+	}
+	calledIdents := map[*ast.Ident]bool{}
+	ast.Inspect(r.file, func(n ast.Node) bool {
+		r.step(1)
+		if call, ok := n.(*ast.CallExpr); ok {
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				calledIdents[fun] = true
+			case *ast.SelectorExpr:
+				calledIdents[fun.Sel] = true
+			}
+		}
+		if ident, ok := n.(*ast.Ident); ok && r.rootParamFuncs[ident.Name] && !calledIdents[ident] && !declNames[ident] {
+			r.paramValueUse[ident.Name] = true
+		}
+		return true
+	})
+}
+
+// onlyReceiverUses reports whether every use of name in body is the base of a
+// selector (a method call or field read), never a value handed elsewhere, an
+// assignment target or an address.
+func (r *goRouteResolver) onlyReceiverUses(body *ast.BlockStmt, name string) bool {
+	bases := map[*ast.Ident]bool{}
+	ok := true
+	ast.Inspect(body, func(n ast.Node) bool {
+		r.step(1)
+		if !ok {
+			return false
+		}
+		switch n := n.(type) {
+		case *ast.SelectorExpr:
+			if ident, isIdent := n.X.(*ast.Ident); isIdent && n.Sel.Name != "ServeHTTP" {
+				bases[ident] = true
+			}
+		case *ast.Ident:
+			if n.Name == name && !bases[n] {
+				ok = false
+			}
+		}
+		return true
+	})
+	return ok
 }

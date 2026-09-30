@@ -1,6 +1,9 @@
 package sem
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 type goRouteAccuracyCase struct {
 	name    string
@@ -450,8 +453,6 @@ func main(p string) {
 	d.HandleFunc("/d", dHandler)
 	m := r.PathPrefix("/m").Methods("GET").Subrouter()
 	m.HandleFunc("/m", mHandler)
-	t := r.PathPrefix("/t/").Subrouter()
-	t.HandleFunc("/t", tHandler)
 }
 `,
 			want: nil,
@@ -702,5 +703,276 @@ func health(w http.ResponseWriter, r *http.Request) {}
 	}
 	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "health", "/api/health") {
 		t.Fatalf("missing composed /api/health: %#v", snapshot.Relations)
+	}
+}
+
+// Each framework joins a prefix and a path its own way: gin path.Join with ""
+// and "/" distinct, echo verbatim concatenation, fiber TrimRight+path with a
+// slash added, gorilla TrimRight(parent, "/")+template.
+func TestGoRouteAccuracyPerFrameworkJoin(t *testing.T) {
+	runGoRouteAccuracyCases(t, []goRouteAccuracyCase{
+		{
+			name: "gin",
+			content: `package p
+func main() {
+	r := gin.New()
+	g := r.Group("/g/")
+	g.GET("/x", xHandler)
+	h := r.Group("/h")
+	h.GET("x", relHandler)
+	h.GET("", emptyHandler)
+	h.GET("/", slashHandler)
+	v1 := r.Group("v1")
+	v1.GET("users/add", addHandler)
+	r.GET("admin", adminHandler)
+	r.Run(":1")
+}
+`,
+			want: []string{"/g/x -> xHandler", "/h/x -> relHandler", "/h -> emptyHandler", "/h/ -> slashHandler", "/v1/users/add -> addHandler", "/admin -> adminHandler"},
+		},
+		{
+			name: "echo",
+			content: `package p
+func main() {
+	e := echo.New()
+	g := e.Group("/g/")
+	g.GET("/x", xHandler)
+	h := e.Group("/h")
+	h.GET("x", relHandler)
+	h.GET("", emptyHandler)
+	h.GET("/", slashHandler)
+	e.GET("unrelated", unrelatedHandler)
+	e.Start(":1")
+}
+`,
+			want: []string{"/g//x -> xHandler", "/hx -> relHandler", "/h -> emptyHandler", "/h/ -> slashHandler", "/unrelated -> unrelatedHandler"},
+		},
+		{
+			name: "fiber",
+			content: `package p
+func main() {
+	app := fiber.New()
+	g := app.Group("/g/")
+	g.Get("/x", xHandler)
+	h := app.Group("/h")
+	h.Get("x", relHandler)
+	h.Get("", emptyHandler)
+	app.Listen(":1")
+}
+`,
+			want: []string{"/g/x -> xHandler", "/h/x -> relHandler", "/h -> emptyHandler"},
+		},
+		{
+			name: "gorilla slash-terminated prefix is composable",
+			content: `package p
+func main() {
+	r := mux.NewRouter()
+	s := r.PathPrefix("/sub/").Subrouter()
+	s.HandleFunc("/", slashHandler)
+	s.HandleFunc("/x", xHandler)
+	http.ListenAndServe(":1", r)
+}
+`,
+			want: []string{"/sub/ -> slashHandler", "/sub/x -> xHandler"},
+		},
+		{
+			name: "unclassified routers still need an absolute path",
+			content: `package p
+func register(root *Router) {
+	g := root.Group("v1")
+	g.GET("/x", xHandler)
+	root.GET("rel", relHandler)
+}
+`,
+			want: nil,
+		},
+	})
+}
+
+// A framework-root-typed parameter is root only if every same-file caller
+// passes a router served at the root.
+func TestGoRouteAccuracyRootParamsFollowSameFileCallers(t *testing.T) {
+	runGoRouteAccuracyCases(t, []goRouteAccuracyCase{
+		{
+			name: "caller StripPrefix-mounts the argument",
+			content: `package p
+func ginRoutes(e *gin.Engine) { e.GET("/g", gHandler) }
+func echoRoutes(e *echo.Echo) { e.GET("/e", eHandler) }
+func muxRoutes(mux *http.ServeMux) { mux.HandleFunc("/m", mHandler) }
+func forward(e *gin.Engine) { ginRoutes2(e) }
+func ginRoutes2(e *gin.Engine) { e.GET("/f", fHandler) }
+func main() {
+	root := gin.New()
+	sub := gin.New()
+	ginRoutes(sub)
+	forward(sub)
+	root.Any("/api/*p", gin.WrapH(http.StripPrefix("/api", sub)))
+	eroot := echo.New()
+	esub := echo.New()
+	echoRoutes(esub)
+	eroot.Any("/api/*", echo.WrapHandler(http.StripPrefix("/api", esub)))
+	api := http.NewServeMux()
+	muxRoutes(api)
+	http.Handle("/api/", http.StripPrefix("/api", api))
+	root.Run(":1")
+}
+`,
+			want: nil,
+		},
+		{
+			name: "caller passes the served root",
+			content: `package p
+func ginRoutes(e *gin.Engine) { e.GET("/g", gHandler) }
+func muxRoutes(mux *http.ServeMux) { mux.HandleFunc("/m", mHandler) }
+func main() {
+	r := gin.Default()
+	ginRoutes(r)
+	r.Run(":1")
+	m := http.NewServeMux()
+	muxRoutes(m)
+	http.ListenAndServe(":2", m)
+}
+`,
+			want: []string{"/g -> gHandler", "/m -> mHandler"},
+		},
+		{
+			name: "caller passes a group, or the function is used as a value",
+			content: `package p
+func ginRoutes(e *gin.Engine) { e.GET("/g", gHandler) }
+func valueRoutes(e *gin.Engine) { e.GET("/v", vHandler) }
+func main() {
+	r := gin.Default()
+	ginRoutes(pick(r))
+	register(valueRoutes)
+	r.Run(":1")
+}
+`,
+			want: nil,
+		},
+	})
+}
+
+// Cheap, sound recall: a same-file helper that only calls methods on the
+// router does not make it escape; echo Host keeps the path; echo virtual-host
+// map values are ordinary roots.
+func TestGoRouteAccuracyReadOnlyHelpersAndHosts(t *testing.T) {
+	runGoRouteAccuracyCases(t, []goRouteAccuracyCase{
+		{
+			name: "fiber app handed to a read-only helper",
+			content: `package p
+func check(t *testing.T, app *fiber.App, path string) { resp, _ := app.Test(req(path)); _ = resp }
+func TestX(t *testing.T) {
+	app := fiber.New()
+	app.Get("/x", xHandler)
+	check(t, app, "/x")
+}
+`,
+			want: []string{"/x -> xHandler"},
+		},
+		{
+			name: "helpers that return, pass on or mount the app are escapes",
+			content: `package p
+func keep(app *fiber.App) *fiber.App { return app }
+func pass(app *fiber.App) { other(app) }
+func mountIt(app *fiber.App) { parent.Mount("/p", app) }
+func a() { app := fiber.New(); app.Get("/a", aHandler); keep(app) }
+func b() { app := fiber.New(); app.Get("/b", bHandler); pass(app) }
+func c() { app := fiber.New(); app.Get("/c", cHandler); mountIt(app) }
+`,
+			want: nil,
+		},
+		{
+			name: "echo Host and virtual hosts",
+			content: `package p
+func main() {
+	e := echo.New()
+	teapot := e.Host("teapot.example")
+	teapot.GET("/brew", brewHandler)
+	ok := echo.New()
+	ok.GET("/ok", okHandler)
+	vh := echo.NewVirtualHostHandler(map[string]*echo.Echo{"ok.com": ok})
+	vh.GET("/vh", vhHandler)
+	e.Start(":1")
+}
+`,
+			want: []string{"/brew -> brewHandler", "/ok -> okHandler"},
+		},
+		{
+			name: "gorilla Host is not path-preserving here",
+			content: `package p
+func main() {
+	r := mux.NewRouter()
+	h := r.Host("x.example")
+	h.HandleFunc("/h", hHandler)
+}
+`,
+			want: nil,
+		},
+	})
+}
+
+// At the edges level an inline or local-variable handler gets the composed
+// route from its enclosing function, and the bare literal of any
+// registration the Go pass decided is never re-emitted by the route literal
+// fallback. The claim is by position: an identical literal registered
+// correctly elsewhere is still emitted.
+func TestGoRouteAccuracySnapshotInlineHandlersAndPositions(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "main.go", `package main
+
+import (
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+)
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {}
+
+func adminRoutes() chi.Router {
+	sub := chi.NewRouter()
+	sub.Get("/health", healthHandler)
+	sub.Get("/stats", func(w http.ResponseWriter, r *http.Request) {})
+	return sub
+}
+
+func main() {
+	r := chi.NewRouter()
+	local := func(w http.ResponseWriter, r *http.Request) {}
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {})
+	r.Route("/api", func(r chi.Router) {
+		r.Get("/users", local)
+		r.Get("/items", func(w http.ResponseWriter, r *http.Request) {})
+	})
+	r.Mount("/admin", adminRoutes())
+	m := http.NewServeMux()
+	m.HandleFunc("/x", healthHandler)
+	http.Handle("/a/", http.StripPrefix("/a", m))
+	http.ListenAndServe(":1", r)
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "HANDLES_ROUTE" {
+			got[lastSegment(relation.FromID)+" "+relation.ToID] = true
+		}
+	}
+	for _, want := range []string{"main /health", "main /api/users", "main /api/items", "main /a/"} {
+		if !got[strings.Replace(want, " ", " "+externalID("route", ""), 1)] {
+			t.Fatalf("missing %s: %v", want, got)
+		}
+	}
+	for key := range got {
+		for _, bare := range []string{"/users", "/items", "/stats", "/x", "/a", "/api", "/admin"} {
+			if strings.HasSuffix(key, " "+externalID("route", bare)) {
+				t.Fatalf("bare or undetermined path emitted: %s (all: %v)", key, got)
+			}
+		}
+		if strings.HasPrefix(key, "adminRoutes ") || strings.HasPrefix(key, "healthHandler ") {
+			t.Fatalf("route of a returned or StripPrefix'd router emitted: %s (all: %v)", key, got)
+		}
 	}
 }
