@@ -16,10 +16,19 @@ import (
 
 const goEvidenceBudgetCaseEnv = "EG_GO_EVIDENCE_BUDGET_CASE"
 const goEvidenceBudgetResultPrefix = "EG_GO_EVIDENCE_BUDGET_RESULT="
+const goNormalizationBudgetCaseEnv = "EG_GO_NORMALIZATION_BUDGET_CASE"
+const goNormalizationBudgetResultPrefix = "EG_GO_NORMALIZATION_BUDGET_RESULT="
 
 type goEvidenceBudgetResult struct {
 	Known         bool `json:"known"`
 	ReturnedBytes int  `json:"returned_bytes"`
+}
+
+type goNormalizationBudgetResult struct {
+	Case            string `json:"case"`
+	InputBytes      int    `json:"input_bytes"`
+	Known           bool   `json:"known"`
+	NormalizedBytes int    `json:"normalized_bytes"`
 }
 
 func goEvidenceBudgetGroupedSource(t *testing.T) string {
@@ -92,6 +101,154 @@ func TestGoEvidenceKeyBudgetRejectsFixedGroupedExpansion(t *testing.T) {
 	result := goEvidenceBudgetWithin(t)
 	if result.Known || result.ReturnedBytes != 0 {
 		t.Fatalf("n11 grouped expansion must be unknown with an empty key, got %+v", result)
+	}
+}
+
+func goNormalizationBudgetSignature(t *testing.T, name string) string {
+	t.Helper()
+	const groupedNames = 512
+	const typeBytes = 2048
+	names := make([]string, groupedNames)
+	for i := range names {
+		names[i] = fmt.Sprintf("p%d", i)
+	}
+	grouped := strings.Join(names, ", ") + " " + strings.Repeat("T", typeBytes)
+	var signature string
+	switch name {
+	case "params":
+		signature = "Run(" + grouped + ")"
+	case "results":
+		signature = "Run() (" + grouped + ")"
+	default:
+		t.Fatalf("unknown authored normalization fixture %q", name)
+	}
+	if len(signature) > 8<<10 {
+		t.Fatalf("authored normalization input exceeded the 8 KiB fixture guard: %d", len(signature))
+	}
+	return signature
+}
+
+func TestGoSignatureNormalizationBudgetChild(t *testing.T) {
+	name := os.Getenv(goNormalizationBudgetCaseEnv)
+	if name == "" {
+		t.Skip("test-owned subprocess entry")
+	}
+	signature := goNormalizationBudgetSignature(t, name)
+	normalized, known := goNormalizedMethodSignature(signature)
+	if len(normalized) > 2<<20 {
+		t.Fatalf("normalization output exceeded the 2 MiB fixture guard: %d", len(normalized))
+	}
+	encoded, err := json.Marshal(goNormalizationBudgetResult{
+		Case:            name,
+		InputBytes:      len(signature),
+		Known:           known,
+		NormalizedBytes: len(normalized),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Printf("%s%s\n", goNormalizationBudgetResultPrefix, encoded)
+}
+
+func goNormalizationBudgetWithin(t *testing.T, name string) goNormalizationBudgetResult {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, executable,
+		"-test.run=^TestGoSignatureNormalizationBudgetChild$", "-test.count=1", "-test.timeout=4s")
+	command.Env = []string{goNormalizationBudgetCaseEnv + "=" + name, "GOMAXPROCS=1", "GOGC=50"}
+	for _, key := range []string{"SystemRoot", "WINDIR", "SystemDrive", "PATH", "PATHEXT", "TEMP", "TMP", "TMPDIR"} {
+		if value, ok := os.LookupEnv(key); ok {
+			command.Env = append(command.Env, key+"="+value)
+		}
+	}
+	command.WaitDelay = 250 * time.Millisecond
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("grouped-normalization fixture exceeded the external 5s deadline; owned child killed and waited: %v", ctx.Err())
+	}
+	if err != nil {
+		t.Fatalf("grouped-normalization child failed: %v\n%s", err, output)
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		encoded, ok := strings.CutPrefix(line, goNormalizationBudgetResultPrefix)
+		if !ok {
+			continue
+		}
+		var result goNormalizationBudgetResult
+		if err := json.Unmarshal([]byte(encoded), &result); err != nil {
+			t.Fatalf("invalid grouped-normalization child result: %v", err)
+		}
+		return result
+	}
+	t.Fatalf("grouped-normalization child emitted no result: %s", output)
+	return goNormalizationBudgetResult{}
+}
+
+func TestGoSignatureNormalizationBudgetRejectsGroupedJoinBeforeAllocation(t *testing.T) {
+	const preRepairExpandedBytes = 1_049_091
+	for _, name := range []string{"params", "results"} {
+		t.Run(name, func(t *testing.T) {
+			result := goNormalizationBudgetWithin(t, name)
+			if result.Known || result.NormalizedBytes != 0 {
+				t.Fatalf("%s grouped normalization must be unknown with empty output; pre-repair output was %d bytes, got %+v",
+					name, preRepairExpandedBytes, result)
+			}
+		})
+	}
+}
+
+func TestGoSignatureNormalizationSharesConstructionBudget(t *testing.T) {
+	cases := []struct {
+		name, signature, normalized    string
+		canonicalBytes, aggregateBytes int
+	}{
+		{name: "params", signature: "M(a,b T)", normalized: "(T,T)()", canonicalBytes: 1, aggregateBytes: 8},
+		{name: "results", signature: "M() (a,b T)", normalized: "()(T,T)", canonicalBytes: 1, aggregateBytes: 8},
+		{name: "params and results", signature: "M(a,b T) (c,d U)", normalized: "(T,T)(U,U)", canonicalBytes: 2, aggregateBytes: 12},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			exact := &goEvidenceWalk{constructed: goEvidenceKeyByteBudget - test.aggregateBytes}
+			if got, ok := goNormalizedMethodSignatureWithWalk(test.signature, exact); !ok || got != test.normalized {
+				t.Fatalf("exact shared budget rejected: got %q, known=%v", got, ok)
+			}
+			if exact.constructed != goEvidenceKeyByteBudget || exact.exhausted {
+				t.Fatalf("exact shared accounting = %d, exhausted=%v", exact.constructed, exact.exhausted)
+			}
+
+			short := &goEvidenceWalk{constructed: goEvidenceKeyByteBudget - test.aggregateBytes + 1}
+			if got, ok := goNormalizedMethodSignatureWithWalk(test.signature, short); ok || got != "" {
+				t.Fatalf("one-byte-short shared budget returned partial normalization: got %q, known=%v", got, ok)
+			}
+			wantSpent := goEvidenceKeyByteBudget - test.aggregateBytes + 1 + test.canonicalBytes
+			if !short.exhausted || short.constructed != wantSpent {
+				t.Fatalf("refused normalized join spent beyond canonical text: got %+v, want constructed=%d", short, wantSpent)
+			}
+		})
+	}
+}
+
+func TestGoSignatureNormalizationPreservesOrdinaryControls(t *testing.T) {
+	cases := []struct {
+		name, signature, normalized string
+		known                       bool
+	}{
+		{name: "whitespace", signature: "  M ( a , b map[string] int ) ( x chan int ) {", normalized: "(map[string]int,map[string]int)(chan int)", known: true},
+		{name: "empty", signature: "M()", normalized: "()()", known: true},
+		{name: "generic remains unknown", signature: "M[T any](value T)", known: false},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			got, known := goNormalizedMethodSignature(test.signature)
+			if known != test.known || got != test.normalized {
+				t.Fatalf("normalization = %q, known=%v; want %q, known=%v", got, known, test.normalized, test.known)
+			}
+		})
 	}
 }
 

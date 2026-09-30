@@ -197,11 +197,11 @@ func compareGoSignatures(want, got string, a, b *goTypeScope) goTypeComparison {
 	return goTypeMatch
 }
 func goSignatureEvidenceKey(signature string, scope *goTypeScope) (string, bool) {
-	normalized, ok := goNormalizedMethodSignature(signature)
+	walk := &goEvidenceWalk{seen: map[string]bool{}}
+	normalized, ok := goNormalizedMethodSignatureWithWalk(signature, walk)
 	if !ok {
 		return "", false
 	}
-	walk := &goEvidenceWalk{seen: map[string]bool{}}
 	expression, ok := walk.build("func", normalized)
 	if !ok {
 		return "", false
