@@ -212,10 +212,11 @@ type goRouteClosureWrite struct {
 }
 
 type goRouteClosureEffect struct {
-	uses     []goRouteClosureUse
-	writes   []goRouteClosureWrite
-	escaped  bool
-	applying bool
+	uses             []goRouteClosureUse
+	writes           []goRouteClosureWrite
+	creationCallback *ast.FuncLit
+	escaped          bool
+	applying         bool
 }
 
 type goRouteClosureRewriteTarget struct {
@@ -393,7 +394,7 @@ type goRouteResolver struct {
 	// Callback-local writes are undone after analysis, but a descriptor defined
 	// outside that callback can write an outer binding directly. Its invocation
 	// must therefore retain MAY evidence through the conservative escape path.
-	inNonDeferredCallback bool
+	currentNonDeferredCallback *ast.FuncLit
 }
 
 // goRouteParamKey names a parameter: the receiver type of a method ("" for a
@@ -559,7 +560,7 @@ func (r *goRouteResolver) walkFile() {
 	r.safeClosureUses = map[*ast.Ident]bool{}
 	r.closureCollector = nil
 	r.asyncClosureCall = false
-	r.inNonDeferredCallback = false
+	r.currentNonDeferredCallback = nil
 	r.log = r.log[:0]
 	r.atPackage = true
 	pkg := r.packageScope()
@@ -725,7 +726,7 @@ func (r *goRouteResolver) ultimateStripPrefixSource(binding *goRouteBinding) (*g
 		if binding == nil {
 			return nil, false
 		}
-		if binding.stripPrefixSource == nil {
+		if r.escapedStripPrefixWrites[binding] || binding.stripPrefixSource == nil {
 			return binding, true
 		}
 		binding = binding.stripPrefixSource
@@ -749,28 +750,38 @@ func (r *goRouteResolver) ultimateClosureCaptureTarget(binding *goRouteBinding) 
 }
 
 func (r *goRouteResolver) watchStripPrefixSource(source *goRouteBinding, origin *goRouteOrigin) {
-	source, ok := r.ultimateStripPrefixSource(source)
-	if !ok {
-		// A malformed dependency cannot justify a bare public route.
-		origin.opaque = true
-		return
-	}
-	value := r.read(source)
-	if value.stripPrefixMiddleware {
-		origin.opaque = true
-		return
-	}
-	for _, join := range value.stripPrefixJoins {
+	for depth := 0; depth < goRouteStripSourceMaxDepth; depth++ {
 		r.step(1)
-		r.observeStripPrefixJoin(join, origin)
+		if source == nil {
+			origin.opaque = true
+			return
+		}
+		value := r.read(source)
+		if value.stripPrefixMiddleware {
+			origin.opaque = true
+			return
+		}
+		for _, join := range value.stripPrefixJoins {
+			r.step(1)
+			r.observeStripPrefixJoin(join, origin)
+		}
+		watchers := r.stripPrefixWatchers[source]
+		if watchers == nil {
+			watchers = map[*goRouteOrigin]bool{}
+			r.stripPrefixWatchers[source] = watchers
+		}
+		r.step(1)
+		watchers[origin] = true
+		// An escaped callback can run after any binding in its live capture
+		// chain changes. Watch each exact lexical source, while keeping the
+		// traversal bounded and separate from ordinary value-copy identity.
+		if value.stripPrefixSource == nil {
+			return
+		}
+		source = value.stripPrefixSource
 	}
-	watchers := r.stripPrefixWatchers[source]
-	if watchers == nil {
-		watchers = map[*goRouteOrigin]bool{}
-		r.stripPrefixWatchers[source] = watchers
-	}
-	r.step(1)
-	watchers[origin] = true
+	// A malformed or cyclic dependency cannot justify a bare public route.
+	origin.opaque = true
 }
 
 func (r *goRouteResolver) observeStripPrefixValue(value goRouteBinding, origin *goRouteOrigin, future bool) {
@@ -1743,7 +1754,8 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 				value := r.read(r.lookup(scope, ident.Name))
 				if value.closure != nil {
 					r.safeClosureUses[ident] = true
-					if r.asyncClosureCall || r.closureCollector != nil || r.inNonDeferredCallback {
+					if r.asyncClosureCall || r.closureCollector != nil ||
+						value.closure.creationCallback != r.currentNonDeferredCallback {
 						r.escapeClosureEffect(value.closure)
 					} else {
 						r.applyClosureEffect(value.closure)
@@ -1812,7 +1824,7 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 		(r.localClosureLits[lit] || r.immediateClosureLits[lit])
 	var effect *goRouteClosureEffect
 	if deferred {
-		effect = &goRouteClosureEffect{}
+		effect = &goRouteClosureEffect{creationCallback: r.currentNonDeferredCallback}
 	}
 	// Only names the closure mentions can be read inside it, so iterate those
 	// rather than every name written in the enclosing declaration.
@@ -1836,11 +1848,10 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 		}
 		unknown.httpClientType = binding.httpClientType
 		unknown.httpClient = binding.httpClientType
-		if source, ok := r.ultimateStripPrefixSource(binding); ok {
-			unknown.stripPrefixSource = source
-		} else {
-			unknown.stripPrefixMiddleware = true
-		}
+		// Preserve the exact lexical binding. A later escaped write to this
+		// binding must remain visible even when its current value points farther
+		// outward through another captured source.
+		unknown.stripPrefixSource = binding
 		proxy := &unknown
 		captureTarget := binding
 		if outerTarget := r.closureCaptureTargets[binding]; outerTarget != nil {
@@ -1853,7 +1864,7 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 	mark := len(r.log)
 	savedRegion := r.region
 	savedCollector := r.closureCollector
-	savedInNonDeferredCallback := r.inNonDeferredCallback
+	savedNonDeferredCallback := r.currentNonDeferredCallback
 	switch {
 	case deferred:
 		r.closureCollector = effect
@@ -1861,14 +1872,14 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 		r.closureCollector = nil
 	}
 	if !deferred {
-		r.inNonDeferredCallback = true
+		r.currentNonDeferredCallback = lit
 	}
 	r.nextRegion++
 	r.region = r.nextRegion
 	r.walkFunc(nil, lit.Type, lit.Body, closureScope, seed)
 	r.region = savedRegion
 	r.closureCollector = savedCollector
-	r.inNonDeferredCallback = savedInNonDeferredCallback
+	r.currentNonDeferredCallback = savedNonDeferredCallback
 	for i := range captures {
 		r.step(1)
 		captures[i].value = *captures[i].proxy
@@ -1890,7 +1901,10 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 		r.markNames(scope, written, false)
 		r.closureEffects[lit] = effect
 		if r.immediateClosureLits[lit] {
-			if r.asyncClosureCall || savedCollector != nil || savedInNonDeferredCallback {
+			// An eligible IIFE is created and called in this same callback;
+			// enclosing-callback capture merging preserves its lexical writes.
+			// Inherited named descriptors still use the identity gate above.
+			if r.asyncClosureCall || savedCollector != nil {
 				r.escapeClosureEffect(effect)
 			} else {
 				r.applyClosureEffect(effect)
