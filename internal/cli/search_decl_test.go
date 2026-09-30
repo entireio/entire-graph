@@ -209,7 +209,9 @@ func TestAgentBlockDeclarationStepsOverAnnotations(t *testing.T) {
 }
 
 // TestAgentBlockUnchangedWhenWindowHoldsDeclaration: a block whose focus window already shows the
-// declaration is the focus window, byte for byte.
+// declaration is the focus window, byte for byte, whenever the block is unmarked. When the whole,
+// unchanged body fits under a header carrying completeMarker, that certified block is chosen ahead
+// of the window instead, and it must be exactly the whole body under a truthful header.
 func TestAgentBlockUnchangedWhenWindowHoldsDeclaration(t *testing.T) {
 	t.Parallel()
 	for _, fixture := range declFixtures {
