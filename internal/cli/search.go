@@ -1461,6 +1461,35 @@ func agentSearchSectionTag(result sem.SearchResult) string {
 type agentSearchPrefixHead struct {
 	notice []byte
 	header []byte
+	// reserved is the width the fitter charges for header: the same rung rendered with every
+	// latency at agentLatencyCeilingMS. Never less than len(header).
+	reserved int
+}
+
+// agentSearchHeaderRungs renders the header ladder, widest first, each rung as printed (latencies
+// saturated) and as charged (latencies at the ceiling). See agent_latency.go.
+//
+// The full telemetry header is preferred, but a compact equivalent leaves room for the top-ranked
+// location at budgets where the expanded diagnostic otherwise crowds out every result. Two further
+// rungs between the compact header and the legacy one shed the latency fields in order of least
+// diagnostic value (preselect, then query, then total) while keeping the "I:<state>/<index-ms>"
+// shape every consumer keys off. Without these the only way to buy bytes back for the ranking was
+// the legacy "Index: cache-miss (113ms)" form, which changes the prefix — so a slow machine had to
+// choose between losing the snippet and losing the machine-readable header. It now loses neither.
+// The legacy form stays last: the no-plan fallback prints it.
+func agentSearchHeaderRungs(cacheState string, index, query, preselect, total int64) []latencyRung {
+	return []latencyRung{
+		renderLatencyRung("Index: cache-%s (%dms) | Query: %dms | Preselect: %dms | Total: %dms\n",
+			cacheState, index, query, preselect, total),
+		renderLatencyRung("I:%s/%d Q:%d P:%d T:%d\n", cacheState, index, query, preselect, total),
+		renderLatencyRung("I:%s/%d T:%d\n", cacheState, index, total),
+		renderLatencyRung("I:%s/%d\n", cacheState, index),
+		// Latency elided. Charging every rung at its reserved width costs the tightest budgets the
+		// digits a fast machine used not to print; this rung buys them back for the ranking with a
+		// width that no measurement can change, keeping the "I:<state>/" prefix.
+		renderLatencyRung("I:%s/-\n", cacheState),
+		renderLatencyRung("Index: cache-%s (%dms)\n", cacheState, index),
+	}
 }
 
 func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, budget int) error {
@@ -1473,14 +1502,23 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	if stats.IndexCacheHit {
 		cacheState = "hit"
 	}
-	fullHeader := []byte(fmt.Sprintf(
-		"Index: cache-%s (%dms) | Query: %dms | Preselect: %dms | Total: %dms\n",
-		cacheState,
-		stats.IndexLatencyMS,
-		stats.QueryLatencyMS,
-		stats.PreselectLatencyMS,
-		stats.TotalLatencyMS,
-	))
+	// THE RENDERED ANSWER MUST NOT DEPEND ON THE WALL CLOCK. Every header rung carries measured
+	// latencies, so its printed width varies with machine load, and the fitter below charges the
+	// header to the same cap as the ranking. Charged at its ACTUAL width, a query that took 1905ms
+	// rather than 750ms handed the ranking two fewer bytes and row 10 of a 4096-byte answer degraded
+	// from a full header to a bare locator — same cache, same query, different answer. So every rung
+	// is rendered twice: once with the measured values saturated at agentLatencyCeilingMS (what is
+	// printed), and once with every field AT that ceiling (what the fitter is charged). The printed
+	// rung is never wider than the reserved one, so the cap still holds, and every fitting decision
+	// is a function of the reserved widths alone. See agentSearchHeaderRungs and agent_latency.go.
+	rungs := agentSearchHeaderRungs(cacheState, stats.IndexLatencyMS, stats.QueryLatencyMS,
+		stats.PreselectLatencyMS, stats.TotalLatencyMS)
+	headers := make([][]byte, len(rungs))
+	reserved := make([][]byte, len(rungs))
+	for i, rung := range rungs {
+		headers[i], reserved[i] = rung.printed, rung.reserved
+	}
+	fullHeader, legacyHeader := headers[0], headers[len(headers)-1]
 	// EVERY block below is measured against the caller's byte cap, so every block
 	// is escaped BEFORE it is measured. The terminal-safety rewrite turns one ESC
 	// into four printed bytes and one C1 byte into six, so fitting the raw bytes
@@ -1571,27 +1609,6 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		return err
 	}
 
-	// Preserve retrieval usefulness under tight budgets. The full telemetry
-	// header is preferred, but a compact equivalent leaves room for the
-	// top-ranked location at budgets where the expanded diagnostic otherwise
-	// crowds out every result.
-	compactHeader := []byte(fmt.Sprintf(
-		"I:%s/%d Q:%d P:%d T:%d\n",
-		cacheState,
-		stats.IndexLatencyMS,
-		stats.QueryLatencyMS,
-		stats.PreselectLatencyMS,
-		stats.TotalLatencyMS,
-	))
-	// Two further rungs between the compact header and the legacy one, shedding the latency
-	// fields in order of least diagnostic value (preselect, then query, then total) while
-	// keeping the "I:<state>/<index-ms>" shape every consumer keys off. Without these the only
-	// way to buy bytes back for the ranking was the legacy "Index: cache-miss (113ms)" form,
-	// which changes the prefix — so a slow machine had to choose between losing the snippet and
-	// losing the machine-readable header. It now loses neither.
-	timedHeader := []byte(fmt.Sprintf("I:%s/%d T:%d\n", cacheState, stats.IndexLatencyMS, stats.TotalLatencyMS))
-	terseHeader := []byte(fmt.Sprintf("I:%s/%d\n", cacheState, stats.IndexLatencyMS))
-	legacyHeader := []byte(fmt.Sprintf("Index: cache-%s (%dms)\n", cacheState, stats.IndexLatencyMS))
 	diagnosticVariants := [][]byte{fullDiagnostics}
 	if !bytes.Equal(fullDiagnostics, compactDiagnostics) {
 		diagnosticVariants = append(diagnosticVariants, compactDiagnostics)
@@ -1652,14 +1669,13 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// varies SLOWEST, so every header rung is tried with the notice present before any rung is
 	// tried without it, which makes the notice the last prefix block the fitter gives up. A rung
 	// without it is offered only when there is a notice at all, so an honest payload adds none.
-	headers := [][]byte{fullHeader, compactHeader, timedHeader, terseHeader, legacyHeader}
 	heads := make([]agentSearchPrefixHead, 0, 2*len(headers))
-	for _, header := range headers {
-		heads = append(heads, agentSearchPrefixHead{notice: forgeryNotice, header: header})
+	for i, header := range headers {
+		heads = append(heads, agentSearchPrefixHead{notice: forgeryNotice, header: header, reserved: len(reserved[i])})
 	}
 	if len(forgeryNotice) > 0 {
-		for _, header := range headers {
-			heads = append(heads, agentSearchPrefixHead{header: header})
+		for i, header := range headers {
+			heads = append(heads, agentSearchPrefixHead{header: header, reserved: len(reserved[i])})
 		}
 	}
 	for _, protectTopHit := range []bool{true, false} {
@@ -1668,12 +1684,17 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		}
 		for _, head := range heads {
 			forgery, header := head.notice, head.header
+			// The bytes the reserved rung would have spent and the printed one did not. Suffix fitting
+			// measures the ASSEMBLED payload, which holds the printed rung, so it is handed a cap
+			// shrunk by exactly this slack: its decisions then equal those it would make over the
+			// reserved rung, and never depend on how wide the measured latencies happened to be.
+			slack := head.reserved - len(header)
 			for _, diagnostics := range diagnosticVariants {
 				for _, confidence := range confidenceVariants {
 					for _, warning := range closedSetVariants {
 						for _, containerMap := range mapVariants {
 							for _, verify := range verifyVariants {
-								remaining := budget - len(forgery) - len(header) - len(diagnostics) - len(confidence) -
+								remaining := budget - len(forgery) - head.reserved - len(diagnostics) - len(confidence) -
 									len(warning) - len(containerMap) - len(verify)
 								if remaining <= 0 {
 									continue
@@ -1700,7 +1721,7 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 									noResults := []byte("No search results.\n")
 									if len(noResults) <= remaining {
 										payload := fitAgentSearchSuffixes(
-											append(prefix(), noResults...), agentVerifyFirstSuffixes(verify, verifyBlock, suffixes), budget,
+											append(prefix(), noResults...), agentVerifyFirstSuffixes(verify, verifyBlock, suffixes), budget-slack,
 										)
 										// A result-less plan can still carry quarantined source: the literal
 										// cluster is a suffix and its renderer quarantines it. The produced
@@ -1723,7 +1744,7 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 								}
 								if len(formatted) > 0 {
 									payload := fitAgentSearchSuffixes(
-										append(prefix(), formatted...), agentVerifyFirstSuffixes(verify, verifyBlock, suffixes), budget,
+										append(prefix(), formatted...), agentVerifyFirstSuffixes(verify, verifyBlock, suffixes), budget-slack,
 									)
 									// THE NOTICE IS NOT DROPPABLE WHILE THE INDENT IT EXPLAINS SURVIVES.
 									// The notice-free rungs above exist so a tight cap can still buy a
@@ -1758,6 +1779,12 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// a degraded-coverage marker ahead of telemetry when one is required, and
 	// never exceed the caller's exact byte cap.
 	payload := legacyHeader
+	if len(reserved[len(reserved)-1]) > budget {
+		// Whether the latency survives must not depend on how many digits it has, or the truncation
+		// below would print "Index: cache-hit (13ms)" on a fast run and "Index: cache-hit (1" on a
+		// slow one. Below the reserved width the latency is dropped whole.
+		payload = []byte(fmt.Sprintf("Index: cache-%s\n", cacheState))
+	}
 	if len(compactDiagnostics) > 0 {
 		marker := "!N"
 		if len(response.PartialFailures) > 0 {

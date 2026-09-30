@@ -682,7 +682,12 @@ func impactSectionOf(entries []impactEntry, limit int) impactSection {
 func writeImpactBounded(out io.Writer, response impactResponse, budget int) error {
 	var full bytes.Buffer
 	writeImpactText(&full, response)
-	if budget <= 0 || full.Len() <= budget {
+	// Every decision below is charged the header's reserved width, not its printed one: which
+	// rendering fits, and where the hard cut lands, must not depend on how many digits the measured
+	// latencies have. See agent_latency.go.
+	slack := relationLatencyHeader(response.IndexCacheHit, response.IndexLatencyMS, response.QueryLatencyMS,
+		response.TotalLatencyMS).slack()
+	if budget <= 0 || full.Len()+slack <= budget {
 		_, err := out.Write(full.Bytes())
 		return err
 	}
@@ -690,7 +695,7 @@ func writeImpactBounded(out io.Writer, response impactResponse, budget int) erro
 	for _, sectionCap := range []int{8, 5, 3} {
 		var reduced bytes.Buffer
 		writeImpactText(&reduced, capImpactSections(response, sectionCap))
-		if reduced.Len() <= budget {
+		if reduced.Len()+slack <= budget {
 			_, err := out.Write(reduced.Bytes())
 			return err
 		}
@@ -701,7 +706,12 @@ func writeImpactBounded(out io.Writer, response impactResponse, budget int) erro
 		_, err := out.Write([]byte(marker[:budget]))
 		return err
 	}
-	cut := bytes.LastIndexByte(rendered[:budget-len(marker)], '\n')
+	// The cut is searched over the window the reserved-width rendering would offer; every newline
+	// after the header sits exactly slack bytes earlier in the printed one.
+	cut := -1
+	if window := budget - len(marker) - slack; window > 0 {
+		cut = bytes.LastIndexByte(rendered[:window], '\n')
+	}
 	if cut < 0 {
 		cut = 0
 	} else {
@@ -736,13 +746,8 @@ func capImpactSections(response impactResponse, limit int) impactResponse {
 func writeImpactText(out io.Writer, response impactResponse) {
 	// Every section here names repository paths and symbols. See writeTextSearch.
 	out = termsafe.NewWriter(out)
-	cacheState := "miss"
-	if response.IndexCacheHit {
-		cacheState = "hit"
-	}
-	fmt.Fprintf(out, "Index: cache-%s (%dms) | Query: %dms | Total: %dms\n",
-		cacheState, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS,
-	)
+	out.Write(relationLatencyHeader(response.IndexCacheHit, response.IndexLatencyMS, response.QueryLatencyMS,
+		response.TotalLatencyMS).printed)
 	writeIndexCostNotice(out, response.IndexCacheHit, response.IndexCacheDisabled)
 	writeScopedCompletenessBlock(out,
 		completenessScopeOrAll(response.CompletenessScope, response.Warnings, response.PartialFailures, response.Stats),
