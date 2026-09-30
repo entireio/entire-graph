@@ -36,7 +36,9 @@ func TestCacheEntryWriteStreamsEncoding(t *testing.T) {
 	}
 	runtime.ReadMemStats(&after)
 	allocated := after.TotalAlloc - before.TotalAlloc
-	if allocated > encodedSize/4 {
+	// Only a jsonv2 toolchain has a streaming marshaler; the !goexperiment.jsonv2 fallback buffers
+	// by design, so the bound applies there alone. The decode check below runs on both.
+	if cacheEncodeStreams && allocated > encodedSize/4 {
 		t.Fatalf("cache write allocated %d bytes for a %d-byte encoding; it buffers instead of streaming", allocated, encodedSize)
 	}
 
