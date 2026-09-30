@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/entireio/entire-graph/internal/filedigest"
 )
@@ -657,7 +658,7 @@ func grepPatternLines(ctx context.Context, repo, treeish string, patterns []stri
 	args = append(args, "--")
 	cmd := newGitCmdWithCallerLocale(ctx, repo, args...)
 	// Pattern data can exceed Windows command-line limits; send it on stdin.
-	cmd.Stdin = strings.NewReader(strings.Join(patterns, "\n") + "\n")
+	cmd.Stdin = strings.NewReader(grepPatternLinesInput(patterns))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -696,6 +697,102 @@ func grepPatternLines(ctx context.Context, repo, treeish string, patterns []stri
 		return fmt.Errorf("git grep pattern lines: %s", strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// grepPatternLinesInput renders the `-f -` stdin for grepPatternLines.
+//
+// Git's multi-pattern line matcher is pathologically slow on large text
+// blobs: it evaluates every pattern per line instead of scanning the buffer
+// once, and in our measurements it does not stop early at `-m`. On a 17 MB
+// JSON blob, three case-folded literals took 19.4s as three patterns and 0.3s
+// as one alternation; twelve took >280s. A single ERE alternation selects
+// exactly the same lines (a line matches iff some branch matches), so the
+// patterns are sent as one line `(p1)|(p2)|...`. That is only sound when each
+// pattern is a self-contained expression: a back-reference would be
+// renumbered by the added groups, and unbalanced parentheses could pair up
+// across branches. Such inputs keep the legacy one-pattern-per-line form.
+//
+// The split, CR strip and empty-line skip mirror how Git reads `-f` itself.
+func grepPatternLinesInput(patterns []string) string {
+	legacy := strings.Join(patterns, "\n") + "\n"
+	var branches []string
+	seen := map[string]bool{}
+	for _, pattern := range patterns {
+		for _, line := range strings.Split(pattern, "\n") {
+			line = strings.TrimSuffix(line, "\r")
+			if line == "" || seen[line] {
+				continue
+			}
+			if !ereSelfContained(line) {
+				return legacy
+			}
+			seen[line] = true
+			branches = append(branches, "("+line+")")
+		}
+	}
+	if len(branches) == 0 {
+		return legacy
+	}
+	return strings.Join(branches, "|") + "\n"
+}
+
+// ereSelfContained reports whether an ERE can be wrapped in a group and
+// alternated with others without changing what it matches: parentheses
+// balance outside bracket expressions, every bracket expression and escape is
+// terminated, and there is no back-reference.
+func ereSelfContained(pattern string) bool {
+	depth := 0
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '\\':
+			i++
+			if i >= len(pattern) || (pattern[i] >= '1' && pattern[i] <= '9') {
+				return false
+			}
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return false
+			}
+		case '[':
+			end := ereBracketEnd(pattern, i)
+			if end < 0 {
+				return false
+			}
+			i = end
+		}
+	}
+	return depth == 0
+}
+
+// ereBracketEnd returns the index of the ']' closing the bracket expression
+// that opens at start, or -1 when it is unterminated.
+func ereBracketEnd(pattern string, start int) int {
+	i := start + 1
+	if i < len(pattern) && pattern[i] == '^' {
+		i++
+	}
+	if i < len(pattern) && pattern[i] == ']' {
+		i++ // A leading ']' is a literal member.
+	}
+	for i < len(pattern) {
+		switch {
+		case pattern[i] == ']':
+			return i
+		case pattern[i] == '[' && i+1 < len(pattern) && strings.IndexByte(":=.", pattern[i+1]) >= 0:
+			closer := string([]byte{pattern[i+1], ']'})
+			end := strings.Index(pattern[i+2:], closer)
+			if end < 0 {
+				return -1
+			}
+			i += 2 + end + 2
+		default:
+			i++
+		}
+	}
+	return -1
 }
 
 func readGrepPatternLines(reader *bufio.Reader, visit func(GrepMatch) error) error {
@@ -889,6 +986,90 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 	if maxPerFile <= 0 {
 		maxPerFile = 32
 	}
+	var fixed []string
+	for _, pattern := range patterns {
+		if pattern != "" {
+			fixed = append(fixed, "-e", pattern)
+		}
+	}
+	if len(fixed) == 0 {
+		return []GrepMatch{}, nil
+	}
+	if alternation, ok := grepFixedStringAlternation(patterns); ok {
+		matches, err := runGrepFixedStringMatches(ctx, repo, treeish, maxPerFile, []string{"-P", "-e", alternation})
+		if !errors.Is(err, errGrepWithoutPCRE) {
+			return matches, err
+		}
+		// Git without PCRE2 compiles -F with the platform regcomp instead;
+		// only the legacy invocation reproduces that exactly.
+	}
+	return runGrepFixedStringMatches(ctx, repo, treeish, maxPerFile, append([]string{"-F"}, fixed...))
+}
+
+// errGrepWithoutPCRE reports a Git built without PCRE2, which rejects -P.
+var errGrepWithoutPCRE = errors.New("git grep: built without PCRE2")
+
+// grepFixedStringAlternation renders fixed strings as the single `-P -i`
+// pattern `\Qp1\E|\Qp2\E|...`, or reports false when that is not provably
+// equivalent to passing each string as `-F -i -e p`.
+//
+// Git's multi-pattern -o matcher is pathologically slow on large text blobs:
+// every -o step evaluates every pattern. Thirteen words took 30-38s on a repo
+// with a 17 MB JSON file; the one alternation below took 0.13s with
+// byte-identical output (git 2.54.0, macOS).
+//
+// Equivalence, from git grep.c (v2.54.0) compile_regexp: in a PCRE2 build a
+// -F pattern is compiled by compile_pcre2_pattern, verbatim when it has no
+// regex metacharacter and wrapped in \Q...\E otherwise. With -i the options
+// are PCRE2_CASELESS plus, under a UTF-8 locale, PCRE2_UTF|PCRE2_UCP; a -P
+// pattern goes through the same function with the same options (literal is
+// false for both once -i is set), so each \Q...\E branch folds exactly as the
+// -F pattern does, including non-ASCII text such as U+212A KELVIN SIGN for k
+// and U+017F LONG S for s. ASCII-only folding ([kK]...) would not, and -E -i
+// uses regcomp, which folds differently again. Custom character tables are
+// only built for a non-ASCII pattern, so non-ASCII input keeps the legacy form.
+//
+// Match selection: for -o, Git's match_next_pattern takes the leftmost match
+// over all patterns and, at equal start, the longest. PCRE2 alternation takes
+// the leftmost start and, there, the first branch that matches. Caseless
+// PCRE2 matches one text character per pattern character, so two literals
+// matching at one offset overlap as prefix and extension; ordering branches
+// by length, longest first, makes the first match at an offset the longest.
+// Line selection and -m counting follow, since a line matches iff a branch
+// does. A backslash (a \E would end the quoting early) or newline (Git splits
+// -e patterns on it) keeps the legacy form.
+func grepFixedStringAlternation(patterns []string) (string, bool) {
+	seen := map[string]bool{}
+	var literals []string
+	for _, pattern := range patterns {
+		if pattern == "" || seen[pattern] {
+			continue
+		}
+		for i := 0; i < len(pattern); i++ {
+			if c := pattern[i]; c >= utf8.RuneSelf || c == '\\' || c == '\n' || c == 0 {
+				return "", false
+			}
+		}
+		seen[pattern] = true
+		literals = append(literals, pattern)
+	}
+	if len(literals) == 0 {
+		return "", false
+	}
+	sort.SliceStable(literals, func(i, j int) bool { return len(literals[i]) > len(literals[j]) })
+	var out strings.Builder
+	for i, literal := range literals {
+		if i > 0 {
+			out.WriteByte('|')
+		}
+		out.WriteString(`\Q`)
+		out.WriteString(literal)
+		out.WriteString(`\E`)
+	}
+	return out.String(), true
+}
+
+func runGrepFixedStringMatches(ctx context.Context, repo, treeish string, maxPerFile int, patternArgs []string) ([]GrepMatch, error) {
 	args := []string{
 		"grep",
 		"--no-recurse-submodules",
@@ -896,18 +1077,9 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 		"--no-column",
 		"--no-color",
 		"--no-full-name",
-		"-z", "-I", "-i", "-F", "-o", "-m", strconv.Itoa(maxPerFile),
+		"-z", "-I", "-i", "-o", "-m", strconv.Itoa(maxPerFile),
 	}
-	patternCount := 0
-	for _, pattern := range patterns {
-		if pattern != "" {
-			args = append(args, "-e", pattern)
-			patternCount++
-		}
-	}
-	if patternCount == 0 {
-		return []GrepMatch{}, nil
-	}
+	args = append(args, patternArgs...)
 	if treeish != "" {
 		args = append(args, treeish)
 	}
@@ -927,6 +1099,9 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 			return []GrepMatch{}, nil
 		}
 		message := strings.TrimSpace(stderr.String())
+		if errors.As(err, &exitError) && exitError.ExitCode() == 128 && strings.Contains(message, "not compiled with USE_LIBPCRE") {
+			return nil, errGrepWithoutPCRE
+		}
 		if message == "" {
 			message = err.Error()
 		}

@@ -20,6 +20,14 @@ import (
 	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
+// EffectiveSearchTopK is the number of results a search with SearchOptions.TopK = topK is cut at.
+func EffectiveSearchTopK(topK int) int {
+	if topK <= 0 {
+		return defaultSearchTopK
+	}
+	return topK
+}
+
 const (
 	// Keep default search responses compact enough for agent context. Larger top-k and snippet
 	// defaults produced ~15KB responses that are repeatedly carried through later turns; this
@@ -159,6 +167,17 @@ type SearchOptions struct {
 	// VerifyPreFixStatus is one caller-computed line rendered verbatim as `PRE-FIX:` under the emitted
 	// command, capped at searchVerifyPreFixStatusMaxBytes.
 	VerifyPreFixStatus string
+	// OmitVerifyCommand suppresses the VERIFY block at its producer: no command is derived, the
+	// response carries no VerifyCommand (the JSON `verify_command` member is ABSENT, not null), and
+	// Stats.VerifyOmitted says so, so a structured consumer can tell "suppressed on request" from
+	// "nothing derivable". Off (the default) is byte-for-byte the payload without this field.
+	//
+	// It exists for fair A/B comparisons. The block is not retrieval: it carries a runnable test
+	// command plus run-once/fix/stop instructions that would help an arm with NO tool just as much,
+	// and the benchmark fairness rule is "both arms or neither". Suppressing it here, rather than
+	// scraping `VERIFY:` lines out of the rendered payload, cannot touch retrieved source text that
+	// happens to look like a VERIFY record.
+	OmitVerifyCommand bool
 	// CalleeHop admits the top hit's OUTGOING CALLS targets as candidate fix sites — up to three,
 	// same-repo and resolved only. Off by default.
 	//
@@ -271,6 +290,12 @@ type SearchResult struct {
 	QualifiedName   string   `json:"qualified_name,omitempty"`
 	Signature       string   `json:"signature,omitempty"`
 	Signals         []string `json:"signals"`
+	// SymbolNameLine is the line of the token that NAMES the enclosing symbol, as the parser saw
+	// it (see declaration_name_line.go). It differs from SymbolStartLine whenever annotations,
+	// attributes, decorators or a multi-line header precede the name. Absent (0) when the symbol
+	// came from an extractor with no parse tree; a consumer then falls back to
+	// DeclarationLineIndex. Additive: set only alongside SymbolStartLine, from the same symbol.
+	SymbolNameLine int `json:"symbol_name_line,omitempty"`
 	// Section groups a result for presentation. Empty (omitted) means the primary list of
 	// candidate fix sites; see search_section.go for the other values and why the grouping is
 	// a label rather than a filter.
@@ -286,6 +311,17 @@ type SearchResult struct {
 	// case; when it is present the snippet is the verbatim, unelided text of the whole range,
 	// which is the fact that stops a reader spending a turn bridging the gap itself.
 	MergedRanks []int `json:"merged_ranks,omitempty"`
+	// MergedDeclLines are the declaration lines (the line that names the symbol) of the members a
+	// merged span absorbed, ascending, when they lie inside the span. The survivor's own is not
+	// listed; its symbol fields carry it. They exist so a renderer that windows a merged span can
+	// still show the reader where each absorbed callable starts (search_decl_line.go). Present only
+	// on a merged span. Schema 1.x additive.
+	MergedDeclLines []int `json:"merged_decl_lines,omitempty"`
+	// MergedDeclStarts is parallel to MergedDeclLines: for each, the first line of that absorbed
+	// member's declaration region (its first line, clamped to the span) when the declaration line is
+	// the parser's name line, 0 when the text fallback found it. Absent when no entry is the
+	// parser's. A renderer keeps every line of a region it would otherwise have shown.
+	MergedDeclStarts []int `json:"merged_decl_starts,omitempty"`
 	// UnitStartLine/UnitEndLine are the TRUE span of the enclosing unit when --full-unit-top asked
 	// for that unit whole and searchFullUnitMaxLines clipped it. They are set ONLY on a clipped
 	// forced unit — their absence is the ordinary case and means the printed span IS the unit — and
@@ -429,6 +465,9 @@ type SearchStats struct {
 	FileOutlineBytes   int `json:"file_outline_bytes,omitempty"`
 	FileOutlineRows    int `json:"file_outline_rows,omitempty"`
 	VerifyCommandBytes int `json:"verify_command_bytes,omitempty"`
+	// VerifyOmitted is true when the caller suppressed the VERIFY block (SearchOptions.OmitVerifyCommand),
+	// so an absent verify_command is attributable to the request rather than to a failed derivation.
+	VerifyOmitted bool `json:"verify_omitted,omitempty"`
 	// VerifyExplainSuffixBytes is the caller-configured `| <explain cmd>` tail appended to the verify
 	// command. It is reported separately because it is fixed overhead the caller opted into, so it is
 	// added to the block's allowance instead of competing with the command the ranking derived.
@@ -1899,7 +1938,12 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			}
 		}
 	}
-	verifyCommand := buildSearchVerifyCommand(results, verifyEvidence)
+	var verifyCommand *SearchVerifyCommand
+	if options.OmitVerifyCommand {
+		stats.VerifyOmitted = true
+	} else {
+		verifyCommand = buildSearchVerifyCommand(results, verifyEvidence)
+	}
 	if verifyCommand != nil && options.VerifyExplainCommand != "" {
 		// Compose here, in the emitted string, rather than asking the agent to compose. `explain`
 		// passes the build output through before appending declarations, so this stays a superset of
@@ -3681,6 +3725,7 @@ func attachSparseCandidateSymbols(candidates []searchCandidate, symbolsByFile ma
 		candidate.aliases = append([]string(nil), symbol.Aliases...)
 		candidate.result.SymbolStartLine = symbol.StartLine
 		candidate.result.SymbolEndLine = symbol.EndLine
+		candidate.result.SymbolNameLine = symbol.nameLine
 	}
 }
 
@@ -3937,6 +3982,7 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 			Signature:        symbol.Signature,
 			SymbolStartLine:  symbol.StartLine,
 			SymbolEndLine:    symbol.EndLine,
+			SymbolNameLine:   symbol.nameLine,
 			Signals:          appendUnique(nil, signals...),
 			Snippet:          snippet,
 		},
@@ -4804,6 +4850,7 @@ func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []R
 					Signature:        symbol.Signature,
 					SymbolStartLine:  symbol.StartLine,
 					SymbolEndLine:    symbol.EndLine,
+					SymbolNameLine:   symbol.nameLine,
 					Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
 				},
 				aliases: append([]string(nil), symbol.Aliases...),

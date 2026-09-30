@@ -58,8 +58,19 @@ type searchSession struct {
 // searchSessionReplaySchema changes whenever the persisted replay-safety contract changes. A
 // session written without the current schema must run a real search: its opaque payload cannot be
 // upgraded or inspected safely after the fact.
+//
+// 4: the payload is bound to the binary that rendered it (Producer); see searchSessionProducer.
+//
+// 5: additionally, an exact-name agent answer (search_exact_name.go) is never stored for replay.
+// A schema-4 file may hold one, written by a build that recorded it, whose omission line invites a
+// phrase search that the replay would then answer with the same names-only payload.
+//
+// 6: additionally, the payload is bound to the VERIFY mode it was rendered in (VerifyOmitted), in
+// BOTH modes under this one number. No earlier schema is accepted: a schema-4 or schema-5 reader
+// checks the producer but not the mode, and a schema-4 number was also once used for an off-mode
+// payload with no producer at all, so neither number can safely carry a mode-bound payload.
 const (
-	searchSessionReplaySchema = 4
+	searchSessionReplaySchema = 6
 	// A normal search payload is budgeted in kilobytes. Keep a generous ceiling for callers that
 	// deliberately widen it, but never let an untrusted/stale session file allocate without bound.
 	maxSearchSessionStateBytes = 8 << 20
@@ -76,6 +87,10 @@ type searchSessionState struct {
 	PolicyFingerprint string   `json:"policy_fingerprint,omitempty"`
 	PayloadPaths      []string `json:"payload_paths"`
 	Format            string   `json:"format,omitempty"`
+	// VerifyOmitted records that the payload was rendered with the VERIFY block suppressed. It is
+	// omitted when false, so a schema-6 record without it is an on-mode payload. A record from before
+	// schema 6 is refused on its schema, so a missing field there is never read as a mode.
+	VerifyOmitted bool `json:"verify_omitted,omitempty"`
 	// Repo and Tree are the scope the payload was recorded against. See searchSessionScope: the
 	// state file is what makes an echo possible, and these are what stop it answering for the
 	// wrong repository.
@@ -116,6 +131,10 @@ type searchSessionScope struct {
 	// snippets and budget are the RECORDING binary's; replaying it after an upgrade serves the old
 	// ranking under a header saying the question was already answered.
 	Producer string
+	// OmitVerify is the resolved `--verify-block off`. It is part of the identity for the same
+	// reason Format is: the payload is opaque rendered bytes, so a payload recorded with VERIFY must
+	// never answer an omit-verify call (it would hand the no-VERIFY arm the block) and vice versa.
+	OmitVerify bool
 }
 
 // matches reports whether a recorded scope may answer for the live one.
@@ -134,7 +153,8 @@ func (recorded searchSessionState) matches(live searchSessionScope) bool {
 		recorded.Format != live.Format ||
 		recorded.Producer == "" ||
 		live.Producer == "" ||
-		recorded.Producer != live.Producer {
+		recorded.Producer != live.Producer ||
+		recorded.VerifyOmitted != live.OmitVerify {
 		return false
 	}
 	// The tree hash alone is not a repository identity: sibling --repo subdirectories share the
@@ -283,6 +303,7 @@ func (s *searchSession) record(
 	state.PolicyFingerprint = live.PolicyFingerprint
 	state.Repo, state.Tree, state.Format = live.Repo, live.Tree, live.Format
 	state.Producer = live.Producer
+	state.VerifyOmitted = live.OmitVerify
 	if state.Payload == "" && replayable && len(payload) <= maxSearchSessionStateBytes {
 		state.Query = query
 		state.Payload = string(payload)

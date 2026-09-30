@@ -1320,6 +1320,26 @@ var searchVerifyNodeLockfiles = []struct {
 // that reads and declares nothing reaching the leaf is not a failure to read — that is the reported
 // case, an unrelated project above a standalone package, and it declines.
 func searchVerifyNodeWorkspaceCovers(root, leaf string, evidence *searchVerifyEvidence) bool {
+	return searchVerifyNodeWorkspaceCoversWithin(root, leaf, evidence, map[string]bool{})
+}
+
+// searchVerifyNodeWorkspaceCoversWithin answers searchVerifyNodeWorkspaceCovers for one nested root,
+// once. The descent below tries every ancestor cut and each nested root cuts again, so a root is
+// reached once per way of splitting the path above it: a leaf 30 directories under manifests that
+// all declare `**/d*` was asked ~2^29 times. The answer for a root is a function of the root, the
+// fixed leaf and the manifests read under it, and a manifest's answer never changes once evidence has
+// first been asked for it (cached, recorded as missing, or refused for good once the read budget is
+// spent), so the first answer for a root is every later one.
+func searchVerifyNodeWorkspaceCoversWithin(root, leaf string, evidence *searchVerifyEvidence, decided map[string]bool) bool {
+	if covered, known := decided[root]; known {
+		return covered
+	}
+	covered := searchVerifyNodeWorkspaceCoversOnce(root, leaf, evidence, decided)
+	decided[root] = covered
+	return covered
+}
+
+func searchVerifyNodeWorkspaceCoversOnce(root, leaf string, evidence *searchVerifyEvidence, decided map[string]bool) bool {
 	relative, inside := searchVerifyRelative(root, leaf)
 	if !inside || relative == "" {
 		return false
@@ -1355,7 +1375,7 @@ func searchVerifyNodeWorkspaceCovers(root, leaf string, evidence *searchVerifyEv
 				continue
 			}
 			nested := searchVerifyJoin(root, strings.Join(segments[:cut], "/"))
-			if searchVerifyNodeWorkspaceCovers(nested, leaf, evidence) {
+			if searchVerifyNodeWorkspaceCoversWithin(nested, leaf, evidence, decided) {
 				return true
 			}
 			break
@@ -1430,38 +1450,51 @@ func searchVerifyNodeWorkspaceMatches(pattern string, segments []string) bool {
 }
 
 // searchVerifyNodeWorkspaceMatchesExpanded is the matcher proper, over a pattern whose brace groups
-// are already gone. It recurses only on its own tail, for `**`.
+// are already gone.
 func searchVerifyNodeWorkspaceMatchesExpanded(pattern string, segments []string) bool {
 	if searchVerifyNodeWorkspacePatternIsUnreadable(pattern) {
 		return true
 	}
-	patternSegments := strings.Split(pattern, "/")
-	for len(patternSegments) > 0 {
-		if patternSegments[0] == "**" {
-			if len(patternSegments) == 1 {
+	return searchVerifyNodeWorkspaceMatchesFrom(strings.Split(pattern, "/"), segments, 0, 0, map[[2]int]bool{})
+}
+
+// searchVerifyNodeWorkspaceMatchesFrom matches patternSegments[p:] against segments[s:]. A `**`
+// tries every split of the remaining segments, so re-deriving each (p, s) state is exponential in
+// the number of `**`: sixteen of them against a sixteen-deep path is ~6e8 attempts, and the pattern
+// comes from a manifest in the repository. The answer for a state depends on nothing but (p, s), so
+// a `**` state that failed once is recorded and never retried; every state is decided at most once.
+// A success returns straight up the stack, so only failures need remembering.
+func searchVerifyNodeWorkspaceMatchesFrom(patternSegments, segments []string, p, s int, failed map[[2]int]bool) bool {
+	for p < len(patternSegments) {
+		if patternSegments[p] == "**" {
+			if p == len(patternSegments)-1 {
 				return true
 			}
-			for skip := 0; skip <= len(segments); skip++ {
-				if searchVerifyNodeWorkspaceMatchesExpanded(
-					strings.Join(patternSegments[1:], "/"), segments[skip:]) {
+			state := [2]int{p, s}
+			if failed[state] {
+				return false
+			}
+			for skip := s; skip <= len(segments); skip++ {
+				if searchVerifyNodeWorkspaceMatchesFrom(patternSegments, segments, p+1, skip, failed) {
 					return true
 				}
 			}
+			failed[state] = true
 			return false
 		}
-		if len(segments) == 0 {
+		if s == len(segments) {
 			return false
 		}
-		matched, err := path.Match(patternSegments[0], segments[0])
+		matched, err := path.Match(patternSegments[p], segments[s])
 		if err != nil {
 			return true
 		}
 		if !matched {
 			return false
 		}
-		patternSegments, segments = patternSegments[1:], segments[1:]
+		p, s = p+1, s+1
 	}
-	return len(segments) == 0
+	return s == len(segments)
 }
 
 // searchVerifyNodeWorkspacePatternIsUnreadable reports whether a workspaces glob uses micromatch

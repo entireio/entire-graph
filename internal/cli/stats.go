@@ -42,12 +42,31 @@ const savingsModelText = "Model (assumption, not a measurement): assume each obs
 	"token approximation. Unmatched queries, transformed or truncated outputs, and task quality " +
 	"are not controlled. Transcripts cannot establish what would have been read instead or causal " +
 	"billed-token savings. Legacy JSON savings fields retain their positive-only floor for " +
-	"compatibility; the headline uses the signed unfloored fields."
+	"compatibility; the status line uses the signed unfloored fields, and the stats headline uses " +
+	"observed follow-up rates instead of this assumption."
 
 // bytesPerToken is the standard rough transcript-accounting conversion. Tool results are raw
 // text, so token counts are not recorded per call anywhere; 4 bytes/token is the usual
 // approximation and is stated in the output. Actual ratios depend on the content and tokenizer.
 const bytesPerToken = 4
+
+// followUpModelText documents the headline. Carried verbatim in JSON and --verbose.
+const followUpModelText = "Observed follow-up (an observational proxy, not a measurement of calls avoided): " +
+	"each graph locate result (query/search/neighbors/impact) is classified by the next K tool calls the agent " +
+	"issued AFTER that result was delivered, in the same transcript. ERROR: the result was an error. INELIGIBLE: " +
+	"it was empty or named no file. RE-QUERY: another graph lookup, Grep, Glob or shell search came first. " +
+	"FOLLOW-UP READ: the agent first read a file whose path overlaps one the result named (overlapping lines, a " +
+	"different region, or unknown span - unknown when a span is not known or the file was edited in between). " +
+	"CENSORED: the transcript ended before K calls and nothing qualified. NO FOLLOW-UP: K calls were observed " +
+	"and none qualified. Absence of a follow-up is not an observed avoided call: the task may have ended, " +
+	"failed, changed direction or used another source. The modeled balance ASSUMES each no-follow-up result " +
+	"replaced one exploration result priced at that session's average exploration bytes/result, subtracts " +
+	"every locate result's bytes (errors, censored and ineligible included), sums signed results over sessions " +
+	"with both result types and converts at ~4 bytes/token; it is not measured savings. Limits: path overlap " +
+	"is a suffix match on extension-bearing paths (extensionless files are missed; a same-named file at a " +
+	"matching suffix can match; a path merely mentioned counts as named); delivered line spans are known only " +
+	"when the whole output parsed as a search response; one read is attributed to at most one result (the " +
+	"latest delivered); work delegated to a subagent is not in the caller's window."
 
 // substitutionRatio is how many exploration calls one graph locate call is assumed to displace.
 // This is an unvalidated counterfactual, not an empirical coefficient for these transcripts.
@@ -205,6 +224,44 @@ type statsResponse struct {
 	// SessionsWithSavingsComparison counts sessions containing at least one observed graph
 	// locate result and one observed exploration result. Availability is not causal validity.
 	SessionsWithSavingsComparison int `json:"sessions_with_savings_comparison"`
+
+	// --- observed follow-up (replaces the assumed 1:1 substitution in the headline) ----------
+	//
+	// Go field names DisplacementWindowCalls, GraphLocateDisplaced, GraphLocateReadAnyway and
+	// ObservedNet* are kept stable because an independently authored review fixture
+	// (stats_observed_independent_review_test.go) binds to them. Their JSON keys and every human
+	// label use the observational names: no_follow_up, follow_up_read, modeled_balance.
+
+	// DisplacementWindowCalls is K: how many tool calls issued after a locate result's delivery are
+	// inspected to classify it.
+	DisplacementWindowCalls int `json:"follow_up_window_calls"`
+	// The GraphLocate* class counts partition the observed locate results (CreditedGraphCalls)
+	// over EVERY session in the window; each *Rate divides by that same total. FollowUpRead is the
+	// sum of its three span sub-buckets.
+	GraphLocateDisplaced           int     `json:"graph_locate_no_follow_up"`
+	GraphLocateRequery             int     `json:"graph_locate_requery"`
+	GraphLocateReadAnyway          int     `json:"graph_locate_follow_up_read"`
+	GraphLocateReadOverlapping     int     `json:"graph_locate_follow_up_read_overlapping"`
+	GraphLocateReadDifferentRegion int     `json:"graph_locate_follow_up_read_different_region"`
+	GraphLocateReadUnknownSpan     int     `json:"graph_locate_follow_up_read_unknown_span"`
+	GraphLocateCensored            int     `json:"graph_locate_censored"`
+	GraphLocateError               int     `json:"graph_locate_error"`
+	GraphLocateIneligible          int     `json:"graph_locate_ineligible"`
+	NoFollowUpRate                 float64 `json:"no_follow_up_rate"`
+	RequeryRate                    float64 `json:"requery_rate"`
+	FollowUpReadRate               float64 `json:"follow_up_read_rate"`
+	CensoredRate                   float64 `json:"censored_rate"`
+	ErrorRate                      float64 `json:"error_rate"`
+	IneligibleRate                 float64 `json:"ineligible_rate"`
+	// ObservedNetBytes credits only NO FOLLOW-UP results at the session's average exploration
+	// price (an assumption) and subtracts every locate result's bytes. Signed, summed over the
+	// comparison population (SessionsWithSavingsComparison), unavailable when that is 0.
+	// ModeledBalanceCreditedResults is how many no-follow-up results that population credited.
+	ObservedNetBytes              int64  `json:"modeled_balance_bytes"`
+	ObservedNetTokens             int64  `json:"modeled_balance_est_tokens"`
+	ModeledBalanceCreditedResults int    `json:"modeled_balance_credited_results"`
+	ComparableGraphLocateResults  int    `json:"comparable_graph_locate_results"`
+	FollowUpModel                 string `json:"follow_up_model"`
 }
 
 func runStats(ctx context.Context, opts Options, args []string) error {
@@ -266,6 +323,9 @@ func runStats(ctx context.Context, opts Options, args []string) error {
 		Since:             flags.Since,
 		SavingsModel:      savingsModelText,
 		SubstitutionRatio: substitutionRatio,
+		// K is reported even when nothing was classified, so a reader can always see the window.
+		DisplacementWindowCalls: followUpWindow,
+		FollowUpModel:           followUpModelText,
 		// non-nil so JSON never emits null for the tables
 		GraphByVerb:       []statsCount{},
 		ExplorationByKind: []statsCount{},
@@ -437,6 +497,8 @@ type contentBlock struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
 	Text      string          `json:"text"`
+	// IsError is set on a tool_result the tool reported as failed.
+	IsError bool `json:"is_error"`
 }
 
 // --- one transcript file's contribution -------------------------------------------------
@@ -450,6 +512,9 @@ type summaryCall struct {
 	Kind      string `json:"k,omitempty"`
 	Bytes     int64  `json:"b,omitempty"`
 	HasResult bool   `json:"r,omitempty"`
+	// Disp is the observed follow-up class (followUp* codes) of a graph locate call with a
+	// result; empty otherwise.
+	Disp string `json:"d,omitempty"`
 }
 
 // summaryUsage is one assistant message's billed usage, kept per message.id so the same message
@@ -486,6 +551,12 @@ type fileScanner struct {
 	pending  map[string]int // tool_use id -> index into summary.Calls
 	seenUse  map[string]bool
 	usageIdx map[string]int // message id -> index into summary.Usage
+	// timeline is every distinct tool call in file order, for the follow-up window;
+	// locateAt maps a locate call's summary.Calls index to its timeline entry; deliveries counts
+	// locate results in arrival order.
+	timeline   []timelineEntry
+	locateAt   map[int]int
+	deliveries int
 }
 
 func newFileScanner() *fileScanner {
@@ -493,6 +564,7 @@ func newFileScanner() *fileScanner {
 		pending:  map[string]int{},
 		seenUse:  map[string]bool{},
 		usageIdx: map[string]int{},
+		locateAt: map[int]int{},
 	}
 }
 
@@ -562,15 +634,23 @@ func (s *fileScanner) consumeToolUse(block contentBlock) {
 		}
 		s.seenUse[block.ID] = true
 	}
+	entry := timelineFromToolUse(block)
 	call, ok := classifyToolUse(block)
 	if !ok {
+		s.timeline = append(s.timeline, entry)
 		return
 	}
 	call.ID = block.ID
 	s.summary.Calls = append(s.summary.Calls, call)
+	index := len(s.summary.Calls) - 1
 	if block.ID != "" {
-		s.pending[block.ID] = len(s.summary.Calls) - 1
+		s.pending[block.ID] = index
 	}
+	if entry.kind == timelineLocate {
+		entry.callIndex = index
+		s.locateAt[index] = len(s.timeline)
+	}
+	s.timeline = append(s.timeline, entry)
 }
 
 // classifyToolUse puts a tool_use in the graph bucket, the exploration bucket, or neither.
@@ -592,8 +672,18 @@ func (s *fileScanner) consumeToolResult(block contentBlock) {
 	// Dropping the pending entry is what stops a repeated tool_result from being billed twice
 	// against the same call: the second one finds nothing pending.
 	delete(s.pending, block.ToolUseID)
-	s.summary.Calls[index].Bytes = int64(len(toolResultText(block.Content)))
+	text := toolResultText(block.Content)
+	s.summary.Calls[index].Bytes = int64(len(text))
 	s.summary.Calls[index].HasResult = true
+	if at, ok := s.locateAt[index]; ok {
+		// The follow-up window starts HERE, at delivery: calls already issued are not reactions.
+		entry := &s.timeline[at]
+		entry.hasResult, entry.isError = true, block.IsError
+		entry.deliveredAt, entry.deliverSeq = len(s.timeline), s.deliveries
+		s.deliveries++
+		entry.paths = graphOutputPaths(text)
+		entry.delivered = graphDeliveredSpans(text)
+	}
 }
 
 func summariseTranscript(path string) (fileSummary, bool) {
@@ -623,6 +713,7 @@ func summariseTranscript(path string) (fileSummary, bool) {
 		// A truncated or over-long line is treated like a malformed line, not a hard failure.
 		scanner.summary.Malformed++
 	}
+	scanner.finishFollowUp()
 	return scanner.summary, true
 }
 
@@ -640,18 +731,21 @@ type sessionAcc struct {
 	seenCalls           map[string]summaryCall
 	usageByID           map[string]statsTokens
 	unkeyed             statsTokens
+	// displacement counts observed follow-up classes of locate calls with results.
+	displacement map[string]int
 }
 
 func newSessionAcc() *sessionAcc {
 	return &sessionAcc{
-		verbCalls:   map[string]int{},
-		verbResults: map[string]int{},
-		verbBytes:   map[string]int64{},
-		kindCalls:   map[string]int{},
-		kindResults: map[string]int{},
-		kindBytes:   map[string]int64{},
-		seenCalls:   map[string]summaryCall{},
-		usageByID:   map[string]statsTokens{},
+		verbCalls:    map[string]int{},
+		verbResults:  map[string]int{},
+		verbBytes:    map[string]int64{},
+		kindCalls:    map[string]int{},
+		kindResults:  map[string]int{},
+		kindBytes:    map[string]int64{},
+		seenCalls:    map[string]summaryCall{},
+		usageByID:    map[string]statsTokens{},
+		displacement: map[string]int{},
 	}
 }
 
@@ -671,11 +765,12 @@ func (a *sessionAcc) merge(summary fileSummary) {
 				// A replay can complete a call whose first copy had no result.
 				// Keep its original classification and count the result only once.
 				if !previous.HasResult && call.HasResult {
-					previous.HasResult, previous.Bytes = true, call.Bytes
+					previous.HasResult, previous.Bytes, previous.Disp = true, call.Bytes, call.Disp
 					a.seenCalls[call.ID] = previous
 					if previous.Verb != "" {
 						a.verbResults[previous.Verb]++
 						a.verbBytes[previous.Verb] += call.Bytes
+						a.countDisplacement(previous)
 					} else {
 						a.kindResults[previous.Kind]++
 						a.kindBytes[previous.Kind] += call.Bytes
@@ -690,6 +785,7 @@ func (a *sessionAcc) merge(summary fileSummary) {
 			if call.HasResult {
 				a.verbResults[call.Verb]++
 				a.verbBytes[call.Verb] += call.Bytes
+				a.countDisplacement(call)
 			}
 			if a.firstLocate == "" {
 				a.firstLocate = "graph"
@@ -720,6 +816,14 @@ func (a *sessionAcc) merge(summary fileSummary) {
 	a.unkeyed.CacheWrite += summary.Unkeyed.CacheWrite
 	a.unkeyed.CacheRead += summary.Unkeyed.CacheRead
 	a.unkeyed.Output += summary.Unkeyed.Output
+}
+
+// countDisplacement records a locate result's class. A class-less locate result (which the scanner
+// never produces) is left out of every class and therefore never credited.
+func (a *sessionAcc) countDisplacement(call summaryCall) {
+	if graphLocateVerbs[call.Verb] && call.HasResult && call.Disp != "" {
+		a.displacement[call.Disp]++
+	}
 }
 
 // tokens folds the per-message usage into the session's billed total. Integer addition is
@@ -1601,6 +1705,19 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 		// Preserve the legacy positive-only sum; human output uses the signed model.
 		saved := acc.savingsBytes()
 		report.EstimatedSavingsBytesUnfloored += saved
+		report.GraphLocateDisplaced += acc.displacement[followUpNone]
+		report.GraphLocateRequery += acc.displacement[followUpRequery]
+		report.GraphLocateReadOverlapping += acc.displacement[followUpReadOverlapping]
+		report.GraphLocateReadDifferentRegion += acc.displacement[followUpReadDifferent]
+		report.GraphLocateReadUnknownSpan += acc.displacement[followUpReadUnknownSpan]
+		report.GraphLocateCensored += acc.displacement[followUpCensored]
+		report.GraphLocateError += acc.displacement[followUpError]
+		report.GraphLocateIneligible += acc.displacement[followUpIneligible]
+		if locateResults > 0 && sessionExploreResults > 0 {
+			report.ObservedNetBytes += acc.modeledBalanceBytes()
+			report.ModeledBalanceCreditedResults += acc.displacement[followUpNone]
+			report.ComparableGraphLocateResults += locateResults
+		}
 		if saved > 0 {
 			report.EstimatedSavingsBytes += saved
 			report.SessionsWithPositiveSavings++
@@ -1622,6 +1739,18 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 	report.ExplorationReturnedTokens = report.ExplorationReturnedBytes / bytesPerToken
 	report.EstimatedSavingsTokens = report.EstimatedSavingsBytes / bytesPerToken
 	report.EstimatedSavingsTokensUnfloored = report.EstimatedSavingsBytesUnfloored / bytesPerToken
+	report.ObservedNetTokens = report.ObservedNetBytes / bytesPerToken
+	report.GraphLocateReadAnyway = report.GraphLocateReadOverlapping + report.GraphLocateReadDifferentRegion +
+		report.GraphLocateReadUnknownSpan
+	if classified := followUpClassified(*report); classified > 0 {
+		rate := func(count int) float64 { return roundTo(float64(count)/float64(classified), 4) }
+		report.NoFollowUpRate = rate(report.GraphLocateDisplaced)
+		report.RequeryRate = rate(report.GraphLocateRequery)
+		report.FollowUpReadRate = rate(report.GraphLocateReadAnyway)
+		report.CensoredRate = rate(report.GraphLocateCensored)
+		report.ErrorRate = rate(report.GraphLocateError)
+		report.IneligibleRate = rate(report.GraphLocateIneligible)
+	}
 	if report.CreditedGraphCalls > 0 {
 		report.GraphBytesPerLocateCall = roundTo(
 			float64(report.GraphLocateReturnedBytes)/float64(report.CreditedGraphCalls), 2)
@@ -1707,7 +1836,39 @@ func writeStatsSummary(out io.Writer, report statsResponse) {
 			statsPrefix, termsafe.Line(report.Since))
 		return
 	}
-	fmt.Fprintf(out, "%s %s\n", statsPrefix, statsModelSummary(report))
+	fmt.Fprintf(out, "%s %s\n", statsPrefix, followUpSummary(report))
+}
+
+// followUpClassified is the reconcilable denominator: every observed locate result, in one class.
+func followUpClassified(report statsResponse) int {
+	return report.GraphLocateDisplaced + report.GraphLocateRequery + report.GraphLocateReadAnyway +
+		report.GraphLocateCensored + report.GraphLocateError + report.GraphLocateIneligible
+}
+
+// followUpSummary is the headline. It leads with what was OBSERVED (follow-up rates over every
+// observed locate result), and states the modeled balance only with its assumption and its own
+// population at the point of use, so it never reads as measured savings.
+func followUpSummary(report statsResponse) string {
+	classified := followUpClassified(report)
+	if classified == 0 {
+		return "observed follow-up: no graph locate results"
+	}
+	observed := fmt.Sprintf("observed follow-up of %s graph locate results (next %d calls after delivery): "+
+		"re-query %s, read named file %s, none %s, censored %s, error/ineligible %s",
+		humanInt(int64(classified)), report.DisplacementWindowCalls,
+		percent(report.RequeryRate), percent(report.FollowUpReadRate), percent(report.NoFollowUpRate),
+		percent(report.CensoredRate), percent(report.ErrorRate+report.IneligibleRate))
+	if report.SessionsWithSavingsComparison == 0 {
+		return observed + "; modeled balance unavailable (no session has both result types)"
+	}
+	signed := humanInt(report.ObservedNetTokens)
+	if report.ObservedNetTokens > 0 {
+		signed = "+" + signed
+	}
+	return fmt.Sprintf("%s; modeled balance %s est. tokens if each of %s no-follow-up results (of %s in %s sessions "+
+		"with both result types) replaced one average exploration result (assumed; not measured savings)",
+		observed, signed, humanInt(int64(report.ModeledBalanceCreditedResults)),
+		humanInt(int64(report.ComparableGraphLocateResults)), humanInt(int64(report.SessionsWithSavingsComparison)))
 }
 
 func statsModelSummary(report statsResponse) string {
@@ -1718,7 +1879,7 @@ func statsModelSummary(report statsResponse) string {
 	if report.EstimatedSavingsTokensUnfloored > 0 {
 		signed = "+" + signed
 	}
-	return "1:1 context model: " + signed + " est. tokens; not measured savings"
+	return "1:1 context model: " + signed + " est. tokens; not measured savings; assumes 100% displaced"
 }
 
 // statsGreen styles the headline for a terminal and degrades to plain text everywhere else,
@@ -1791,6 +1952,18 @@ func writeStatsText(out io.Writer, report statsResponse) {
 	fmt.Fprintf(out, "  graph locate %s bytes/call · exploration %s bytes/call\n",
 		strconv.FormatFloat(report.GraphBytesPerLocateCall, 'f', -1, 64),
 		strconv.FormatFloat(report.ExplorationBytesPerCall, 'f', -1, 64))
+	fmt.Fprintln(out)
+
+	fmt.Fprintln(out, followUpSummary(report))
+	fmt.Fprintf(out, "  no follow-up %s · re-query %s · read named file %s (overlapping %s, different region %s, unknown span %s) · censored %s · error %s · ineligible %s\n",
+		humanInt(int64(report.GraphLocateDisplaced)), humanInt(int64(report.GraphLocateRequery)),
+		humanInt(int64(report.GraphLocateReadAnyway)), humanInt(int64(report.GraphLocateReadOverlapping)),
+		humanInt(int64(report.GraphLocateReadDifferentRegion)), humanInt(int64(report.GraphLocateReadUnknownSpan)),
+		humanInt(int64(report.GraphLocateCensored)), humanInt(int64(report.GraphLocateError)),
+		humanInt(int64(report.GraphLocateIneligible)))
+	for _, line := range wrapText(followUpModelText, 88) {
+		fmt.Fprintf(out, "  %s\n", line)
+	}
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, statsModelSummary(report))
