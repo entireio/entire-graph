@@ -225,6 +225,22 @@ func loadOrBuildSearchSnapshot(
 	disableCache bool,
 	preloadedFull *preloadedCompleteSnapshot,
 ) (ProviderSnapshot, bool, error) {
+	return loadOrBuildSearchSnapshotPersisting(ctx, repo, providerVersion, options, cacheDir, disableCache, preloadedFull, true)
+}
+
+// loadOrBuildSearchSnapshotPersisting is loadOrBuildSearchSnapshot with the best-effort store of a
+// freshly BUILT snapshot made optional. Preindex turns it off because it persists the complete
+// entry itself, with its errors surfaced and its bytes verified; storing it here as well wrote the
+// same gigabyte-scale artifact twice.
+func loadOrBuildSearchSnapshotPersisting(
+	ctx context.Context,
+	repo, providerVersion string,
+	options ProviderSnapshotOptions,
+	cacheDir string,
+	disableCache bool,
+	preloadedFull *preloadedCompleteSnapshot,
+	persistBuilt bool,
+) (ProviderSnapshot, bool, error) {
 	if options.Profile == "" {
 		options.Profile = ProfileFull
 	}
@@ -386,11 +402,10 @@ func loadOrBuildSearchSnapshot(
 	// returned snapshot reports the commit this call is serving, not whatever
 	// HEAD happened to be mid-build.
 	snapshot.Header.Commit = commit
-	cache := newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot)
 	// Cache persistence is best effort. Retrieval correctness never depends on
 	// a writable cache directory.
-	if generationKnown {
-		_ = writeSearchSnapshot(entry, cache)
+	if generationKnown && persistBuilt {
+		_ = writeSearchSnapshot(entry, newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot))
 	}
 	return snapshot, false, nil
 }
@@ -424,17 +439,19 @@ func PreindexProviderSnapshot(
 	options ProviderSnapshotOptions,
 	cacheDir string,
 ) (ProviderSnapshot, bool, error) {
-	return preindexProviderSnapshotWithPersistenceReader(
-		ctx, repo, providerVersion, options, cacheDir, readSearchSnapshot,
+	return preindexProviderSnapshotWithPersistenceVerifier(
+		ctx, repo, providerVersion, options, cacheDir, cacheEntry.digest,
 	)
 }
 
-func preindexProviderSnapshotWithPersistenceReader(
+// preindexProviderSnapshotWithPersistenceVerifier takes the function that re-reads a persisted
+// entry's digest as a parameter so tests can observe or fail that read.
+func preindexProviderSnapshotWithPersistenceVerifier(
 	ctx context.Context,
 	repo, providerVersion string,
 	options ProviderSnapshotOptions,
 	cacheDir string,
-	readPersisted func(cacheEntry) (cachedSearchSnapshot, error),
+	readPersistedDigest func(cacheEntry) (cacheDigest, error),
 ) (ProviderSnapshot, bool, error) {
 	if options.Worktree {
 		return ProviderSnapshot{}, false, errors.New("preindex requires a committed HEAD snapshot")
@@ -467,7 +484,8 @@ func preindexProviderSnapshotWithPersistenceReader(
 		// snapshot overwrites that entry below so later queries serve it.
 		snapshot, err = BuildProviderSnapshotWithOptions(ctx, absRepo, providerVersion, options)
 	} else {
-		snapshot, cacheHit, err = loadOrBuildSearchSnapshot(ctx, absRepo, providerVersion, options, cacheDir, false, nil)
+		// The complete entry is persisted below, verified, rather than best effort here.
+		snapshot, cacheHit, err = loadOrBuildSearchSnapshotPersisting(ctx, absRepo, providerVersion, options, cacheDir, false, nil, false)
 	}
 	if err != nil {
 		return ProviderSnapshot{}, false, err
@@ -490,9 +508,9 @@ func preindexProviderSnapshotWithPersistenceReader(
 		snapshot.Header.Commit = commit
 	}
 	// Query-time caching is deliberately best effort, but an explicit preindex
-	// command promises a durable artifact. Verify that the entry exists and, if
-	// the best-effort write failed (or --force asked for a rewrite), persist while
-	// surfacing any persistence error.
+	// command promises a durable artifact: persist it here with any error
+	// surfaced, then prove the entry a later query will open holds exactly those
+	// bytes.
 	key, err := searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree, options)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
@@ -501,12 +519,9 @@ func preindexProviderSnapshotWithPersistenceReader(
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	persisted, readErr := readPersisted(entry)
-	if options.ForceRebuild || readErr != nil || !validCachedSearchSnapshot(persisted, repositoryKey, providerVersion, tree, options) {
-		cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot)
-		if err := writeSearchSnapshot(entry, cache); err != nil {
-			return ProviderSnapshot{}, false, fmt.Errorf("persist preindex snapshot: %w", err)
-		}
+	cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot)
+	if err := persistVerifiedSearchSnapshot(entry, cache, readPersistedDigest); err != nil {
+		return ProviderSnapshot{}, false, fmt.Errorf("persist preindex snapshot: %w", err)
 	}
 	if options.ForceRebuild {
 		// Refreshing the complete entry is not what --force promises. A selective
@@ -534,6 +549,44 @@ func preindexProviderSnapshotWithPersistenceReader(
 		}
 	}
 	return snapshot, cacheHit, nil
+}
+
+// persistVerifiedSearchSnapshot writes a preindex entry and proves it landed.
+//
+// It replaces decoding the whole entry back. That read-back held a second, fully materialized
+// snapshot beside the one just written (about 1.2 GB of a 4.7 GB peak on node's include tree) to
+// answer two questions: did the write happen, and can a reader open what is there. The first is
+// now answered by the write's own error, since this path no longer goes through the best-effort
+// store that discarded it. The second is answered by re-reading the file through the same
+// confined open every reader uses and comparing its SHA-256 with the digest of the bytes handed
+// to it. Equal digests mean the stored bytes are exactly the encoding of a cache envelope built
+// from a snapshot validateBuiltSearchSnapshot already accepted. A truncated, corrupted,
+// unreadable, or missing file, or one replaced after the rename, cannot match.
+//
+// A mismatch is retried once, because a concurrent `index` of the same tree may legitimately
+// have replaced the entry between rename and re-read; a second mismatch is reported.
+func persistVerifiedSearchSnapshot(
+	entry cacheEntry,
+	cache cachedSearchSnapshot,
+	readPersistedDigest func(cacheEntry) (cacheDigest, error),
+) error {
+	var verifyErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		written, err := entry.writeDigest("snapshot", cache)
+		if err != nil {
+			return err
+		}
+		stored, err := readPersistedDigest(entry)
+		switch {
+		case err != nil:
+			verifyErr = fmt.Errorf("re-read persisted entry: %w", err)
+		case stored != written:
+			verifyErr = errors.New("persisted entry does not match the bytes written")
+		default:
+			return nil
+		}
+	}
+	return verifyErr
 }
 
 // validateBuiltSearchSnapshot closes the transaction between cache keying and

@@ -133,21 +133,23 @@ func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
 		t.Fatal("full-cache fallback followed a symlink outside the opened root")
 	}
 
-	// Force a build so preindex reaches its separate durability read. That READ must reject the
-	// escaping symlink, because it is what decides whether outside content is treated as this
-	// cache's own. The WRITE that follows must be refused for the same reason and say so: an entry
-	// this reader cannot see is one preindex cannot promise, so reporting the refusal is the only
-	// honest outcome. Persisting anyway is what wrote the artifact through a symlink the
-	// repository could have planted.
+	// Force a build so preindex reaches its durable persist. The WRITE must be refused and say so:
+	// an entry this cache's readers cannot see is one preindex cannot promise, so reporting the
+	// refusal is the only honest outcome. Persisting anyway is what wrote the artifact through a
+	// symlink the repository could have planted. The verifying re-read comes after a successful
+	// write only; if it is ever reached here it must reject the escaping symlink too, because it
+	// is what decides whether outside content is treated as this cache's own.
+	verifyCalled := false
 	var persistenceReadErr error
 	forced := options
 	forced.ForceRebuild = true
-	_, _, persistErr := preindexProviderSnapshotWithPersistenceReader(
+	_, _, persistErr := preindexProviderSnapshotWithPersistenceVerifier(
 		t.Context(), repo, "test-version", forced, cacheDir,
-		func(entry cacheEntry) (cachedSearchSnapshot, error) {
-			cached, err := readSearchSnapshot(entry)
+		func(entry cacheEntry) (cacheDigest, error) {
+			verifyCalled = true
+			digest, err := entry.digest()
 			persistenceReadErr = err
-			return cached, err
+			return digest, err
 		},
 	)
 	if persistErr == nil {
@@ -156,7 +158,7 @@ func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
 	if !strings.Contains(persistErr.Error(), "is a symlink") {
 		t.Fatalf("preindex failure does not name the symlinked component: %v", persistErr)
 	}
-	if persistenceReadErr == nil {
+	if verifyCalled && persistenceReadErr == nil {
 		t.Fatal("preindex persistence read followed a symlink outside the opened root")
 	}
 }
@@ -1120,11 +1122,11 @@ func TestPreindexWarmCacheHitDoesNotRevalidatePersistedSnapshot(t *testing.T) {
 	}
 
 	persistenceReads := 0
-	warm, cacheHit, err := preindexProviderSnapshotWithPersistenceReader(
+	warm, cacheHit, err := preindexProviderSnapshotWithPersistenceVerifier(
 		t.Context(), repo, "test-version", options, cacheDir,
-		func(entry cacheEntry) (cachedSearchSnapshot, error) {
+		func(entry cacheEntry) (cacheDigest, error) {
 			persistenceReads++
-			return readSearchSnapshot(entry)
+			return entry.digest()
 		},
 	)
 	if err != nil {
