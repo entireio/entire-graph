@@ -157,48 +157,47 @@ func (r *goRouteResolver) noteCall(call *ast.CallExpr, scope *goRouteScope) {
 	if len(call.Args) != 2 || call.Ellipsis.IsValid() {
 		return
 	}
-	var name string
-	var receiver ast.Expr
-	switch fun := call.Fun.(type) {
-	case *ast.SelectorExpr:
-		name, receiver = fun.Sel.Name, fun.X
-	case *ast.Ident:
-		name = fun.Name
-	default:
+	// A bare HandleFunc(...) (a local function or a dot import) has no
+	// receiver this pass can place.
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
 		return
 	}
-	candidate := goRouteCandidate{offset: r.offset(call.Pos()), route: r.text(call.Args[0])}
+	name := selector.Sel.Name
+	candidate := goRouteCandidate{offset: r.offset(call.Pos()), route: r.text(call.Args[0]), receiverAware: true}
+	chainOrder, chainEvidence := 2, "go_router_method"
 	switch {
 	case name == "HandleFunc":
 		candidate.order, candidate.evidence = 0, "go_http_handle_func"
+		chainOrder, chainEvidence = 0, candidate.evidence
 		candidate.handler = goRouteHandlerText(call.Args[1])
 	case name == "Handle":
 		candidate.order, candidate.evidence = 1, "go_http_handler_func"
+		chainOrder, chainEvidence = 1, candidate.evidence
 		candidate.handler = goRouteHandlerFuncArg(call.Args[1])
-	case goRouteMethodNames[name] && receiver != nil:
+	case goRouteMethodNames[name]:
+		candidate.order, candidate.evidence = 2, "go_router_method"
 		candidate.handler = goRouteHandlerText(call.Args[1])
-		candidate.receiverAware = true
-		switch x := receiver.(type) {
-		case *ast.Ident:
-			candidate.order, candidate.evidence = 2, "go_router_method"
-			candidate.receiver, _ = r.lookupIn(scope)(x.Name)
-		case *ast.CallExpr:
-			// A chain: g.Group("/v1").GET, r.With(mw).Get,
-			// r.Route("/a", fn).Get.
-			candidate.order, candidate.evidence = 2, "go_router_method"
-			if selector, ok := x.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Group" {
-				candidate.order, candidate.evidence = 3, "go_router_group_method"
-			}
-			candidate.receiver = r.groupValue(x, r.lookupIn(scope))
-		default:
-			// A field or other selector receiver (s.api.GET) holds a prefix
-			// this pass does not track.
-			return
-		}
 	default:
 		return
 	}
 	if candidate.handler == "" {
+		return
+	}
+	switch x := selector.X.(type) {
+	case *ast.Ident:
+		candidate.receiver, _ = r.lookupIn(scope)(x.Name)
+	case *ast.CallExpr:
+		// A chain: g.Group("/v1").GET, r.With(mw).Get,
+		// r.PathPrefix("/a").Subrouter().HandleFunc.
+		candidate.order, candidate.evidence = chainOrder, chainEvidence
+		if inner, ok := x.Fun.(*ast.SelectorExpr); ok && inner.Sel.Name == "Group" && goRouteMethodNames[name] {
+			candidate.order, candidate.evidence = 3, "go_router_group_method"
+		}
+		candidate.receiver = r.groupValue(x, r.lookupIn(scope))
+	default:
+		// A field or other selector receiver (s.api.GET, s.mux.HandleFunc)
+		// holds a prefix this pass does not track.
 		return
 	}
 	r.regs = append(r.regs, candidate)

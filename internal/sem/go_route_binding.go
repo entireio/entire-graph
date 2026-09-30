@@ -57,9 +57,11 @@ import (
 // stored in a field, composite or package variable, addressed, or declared
 // at package level), makes all of its routes unknown.
 //
+// gorilla r.PathPrefix("/a").Subrouter() is a router under /a. HandleFunc
+// and Handle(p, HandlerFunc(h)) resolve their receiver like router methods.
+//
 // KNOWN LIMITATIONS: a parameter of an unclassified local type keeps the root
-// heuristic. gorilla Subrouter and http.StripPrefix prefixes are not
-// modelled. A Group prefix without a leading slash (gin's
+// heuristic. http.StripPrefix prefixes are not modelled. A Group prefix without a leading slash (gin's
 // Group("v1")) is framework-normalized and is omitted here rather than
 // guessed. No type information, provider or filesystem is involved.
 
@@ -558,6 +560,9 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 			return root
 		}
 		name := selector.Sel.Name
+		if name == "Subrouter" {
+			return r.subrouterValue(expr, selector, lookup)
+		}
 		if name != "Group" && name != "Route" && name != "With" {
 			return goRouteUnknownBinding
 		}
@@ -1483,4 +1488,43 @@ func goRouteUnstar(expr ast.Expr) ast.Expr {
 		return star.X
 	}
 	return expr
+}
+
+// subrouterValue is gorilla's r.PathPrefix("/a").Subrouter(): a router whose
+// routes are served under the parent's prefix plus /a. Any other Subrouter
+// chain (Host, Methods, Headers, a dynamic or slash-terminated prefix) is
+// unknown.
+func (r *goRouteResolver) subrouterValue(call *ast.CallExpr, selector *ast.SelectorExpr, lookup goRouteLookup) goRouteBinding {
+	if len(call.Args) != 0 {
+		return goRouteUnknownBinding
+	}
+	pathPrefix, ok := selector.X.(*ast.CallExpr)
+	if !ok || len(pathPrefix.Args) != 1 || pathPrefix.Ellipsis.IsValid() {
+		return goRouteUnknownBinding
+	}
+	prefixSelector, ok := pathPrefix.Fun.(*ast.SelectorExpr)
+	if !ok || prefixSelector.Sel.Name != "PathPrefix" {
+		return goRouteUnknownBinding
+	}
+	var parent goRouteBinding
+	switch receiver := prefixSelector.X.(type) {
+	case *ast.Ident:
+		parent, _ = lookup(receiver.Name)
+	case *ast.CallExpr, *ast.ParenExpr:
+		parent = r.groupValue(receiver, lookup)
+	default:
+		return goRouteUnknownBinding
+	}
+	prefix, ok := staticRouteExpressionValue(r.text(pathPrefix.Args[0]), r.constants)
+	if !ok || parent.kind == goRouteUnknown || (len(prefix) > 1 && strings.HasSuffix(prefix, "/")) {
+		// gorilla concatenates templates: "/a/" + "/x" is "/a//x".
+		return goRouteUnknownBinding
+	}
+	if parent.kind == goRouteKnown && parent.prefix != "" {
+		if len(parent.prefix)+len(prefix) > goRouteMaxPrefixBytes {
+			return goRouteUnknownBinding
+		}
+		prefix = joinRoutePaths(parent.prefix, prefix)
+	}
+	return goRouteBinding{kind: goRouteKnown, prefix: prefix, origin: parent.origin}
 }
