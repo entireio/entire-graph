@@ -60,8 +60,15 @@ import (
 // gorilla r.PathPrefix("/a").Subrouter() is a router under /a. HandleFunc
 // and Handle(p, HandlerFunc(h)) resolve their receiver like router methods.
 //
-// KNOWN LIMITATIONS: a parameter of an unclassified local type keeps the root
-// heuristic. http.StripPrefix prefixes are not modelled. A Group prefix without a leading slash (gin's
+// http.StripPrefix is never composed: every router instance inside its
+// handler argument is unknown, and a ServeMux instance that escapes (the usual
+// way it reaches a StripPrefix elsewhere) is unknown too.
+//
+// KNOWN LIMITATIONS: a parameter of an unclassified local type, or of a
+// framework root type (*http.ServeMux, *gin.Engine, *echo.Echo), keeps the
+// root heuristic: a StripPrefix in its caller is not visible. A gin, echo,
+// gorilla or httprouter instance that escapes stays root unless this file
+// wraps it in StripPrefix. A Group prefix without a leading slash (gin's
 // Group("v1")) is framework-normalized and is omitted here rather than
 // guessed. No type information, provider or filesystem is involved.
 
@@ -616,7 +623,7 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 		return goRouteBinding{}
 	case *ast.CompositeLit:
 		if r.isFrameworkType(expr.Type, "http", "ServeMux") {
-			return goRouteBinding{kind: goRouteKnown}
+			return goRouteBinding{kind: goRouteKnown, origin: r.originAt(expr.Pos(), "http", true)}
 		}
 		return goRouteUnknownBinding
 	case *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr, *ast.StarExpr, *ast.TypeAssertExpr:
@@ -961,6 +968,7 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 		case *ast.CallExpr:
 			r.noteCall(node, scope)
 			r.noteMount(node, scope)
+			r.noteStripPrefix(node, scope)
 			if lit, seed, ok := r.routeClosure(node, scope); ok {
 				r.expr(node.Fun, scope)
 				for _, arg := range node.Args {
@@ -1268,13 +1276,14 @@ func (r *goRouteResolver) undeclaredValue(name string) goRouteBinding {
 }
 
 // goRouteConstructors are the framework calls that return a new root router.
-// The value is whether the framework can mount that router under a prefix
-// elsewhere (chi Mount, fiber Mount).
+// The value is whether whoever receives that router conventionally serves it
+// under a prefix (chi Mount, fiber Mount, http.StripPrefix around a
+// ServeMux), which makes an escape of the instance unknown.
 var goRouteConstructors = map[string]bool{
 	"echo.New":         false,
 	"gin.New":          false,
 	"gin.Default":      false,
-	"http.NewServeMux": false,
+	"http.NewServeMux": true,
 	"mux.NewRouter":    false,
 	"httprouter.New":   false,
 	"chi.NewRouter":    true,
@@ -1296,16 +1305,7 @@ func (r *goRouteResolver) constructorValue(call *ast.CallExpr, selector *ast.Sel
 	if !ok {
 		return goRouteBinding{}, false
 	}
-	origin := r.origins[call.Pos()]
-	if origin == nil {
-		origin = &goRouteOrigin{framework: framework, mountable: mountable, region: r.region}
-		r.origins[call.Pos()] = origin
-	}
-	if r.atPackage {
-		// A package variable: a sibling file may mount or wrap it.
-		origin.escaped = true
-	}
-	return goRouteBinding{kind: goRouteKnown, origin: origin}, true
+	return goRouteBinding{kind: goRouteKnown, origin: r.originAt(call.Pos(), framework, mountable)}, true
 }
 
 func (r *goRouteResolver) isFrameworkType(expr ast.Expr, framework, name string) bool {
@@ -1527,4 +1527,40 @@ func (r *goRouteResolver) subrouterValue(call *ast.CallExpr, selector *ast.Selec
 		prefix = joinRoutePaths(parent.prefix, prefix)
 	}
 	return goRouteBinding{kind: goRouteKnown, prefix: prefix, origin: parent.origin}
+}
+
+// originAt returns this walk's router instance for the constructor at pos.
+func (r *goRouteResolver) originAt(pos token.Pos, framework string, mountable bool) *goRouteOrigin {
+	origin := r.origins[pos]
+	if origin == nil {
+		origin = &goRouteOrigin{framework: framework, mountable: mountable, region: r.region}
+		r.origins[pos] = origin
+	}
+	if r.atPackage {
+		// A package variable: a sibling file may mount or wrap it.
+		origin.escaped = true
+	}
+	return origin
+}
+
+// noteStripPrefix handles http.StripPrefix(prefix, handler): every router
+// instance reachable in handler (directly, wrapped in middleware, or as a
+// ServeHTTP method value) is served under a prefix its own registrations do
+// not show, so all of its routes are unknown.
+func (r *goRouteResolver) noteStripPrefix(call *ast.CallExpr, scope *goRouteScope) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "StripPrefix" || len(call.Args) != 2 {
+		return
+	}
+	ast.Inspect(call.Args[1], func(n ast.Node) bool {
+		r.step(1)
+		ident, ok := n.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if binding := r.lookup(scope, ident.Name); binding != nil && binding.origin != nil {
+			binding.origin.opaque = true
+		}
+		return true
+	})
 }

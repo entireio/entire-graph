@@ -468,3 +468,59 @@ func c(m *http.ServeMux) { m.Handle("/param", http.HandlerFunc(paramHandler)) }
 		},
 	})
 }
+
+// http.StripPrefix serves a handler under a prefix its registrations do not
+// show. It is never composed: routers inside it are omitted, and a ServeMux
+// that escapes (where a StripPrefix usually happens) is omitted too.
+func TestGoRouteAccuracyStripPrefixIsNotGuessed(t *testing.T) {
+	runGoRouteAccuracyCases(t, []goRouteAccuracyCase{
+		{
+			name: "stripped ServeMux, wrapped engine, method value",
+			content: `package p
+func main() {
+	top := http.NewServeMux()
+	api := http.NewServeMux()
+	top.Handle("/api/", http.StripPrefix("/api", api))
+	api.HandleFunc("/x", xHandler)
+	top.HandleFunc("/health", healthHandler)
+	g := gin.New()
+	g.GET("/g", gHandler)
+	top.Handle("/g/", http.StripPrefix("/g", logging(g)))
+	r := mux.NewRouter()
+	r.HandleFunc("/r", rHandler)
+	top.Handle("/r/", http.StripPrefix("/r", http.HandlerFunc(r.ServeHTTP)))
+	lit := &http.ServeMux{}
+	lit.HandleFunc("/l", lHandler)
+	top.Handle("/l/", http.StripPrefix("/l", lit))
+	e := echo.New()
+	e.GET("/e", eHandler)
+	top.Handle("/e/", http.StripPrefix("/e", e))
+	http.ListenAndServe(":80", top)
+}
+`,
+			want: []string{"/health -> healthHandler"},
+		},
+		{
+			name: "escaped ServeMux",
+			content: `package p
+func apiRoutes() *http.ServeMux {
+	m := http.NewServeMux()
+	m.HandleFunc("/users", usersHandler)
+	return m
+}
+func other() {
+	m := http.NewServeMux()
+	m.HandleFunc("/o", oHandler)
+	wrap(m)
+}
+func main() {
+	mux := http.NewServeMux()
+	mux.Handle("/api/", http.StripPrefix("/api", apiRoutes()))
+	mux.HandleFunc("/", rootHandler)
+	http.ListenAndServe(":80", mux)
+}
+`,
+			want: []string{"/ -> rootHandler"},
+		},
+	})
+}
