@@ -337,6 +337,29 @@ func (r *goRouteResolver) noteCall(call *ast.CallExpr, scope *goRouteScope) {
 		// holds a prefix this pass does not track.
 		return
 	}
+	switch candidate.receiver.framework {
+	case "http":
+		// net/http: only HandleFunc and Handle register; http.Get/Post are
+		// client calls and a ServeMux has no verb methods.
+		if name != "HandleFunc" && name != "Handle" {
+			return
+		}
+	case "gin", "httprouter":
+		// gin and httprouter Handle(method, path, handlers...): the path is
+		// the second argument, and a call with no handler registers nothing.
+		if name == "Handle" {
+			if len(call.Args) < 3 {
+				return
+			}
+			candidate.route = r.text(call.Args[1])
+			candidate.handler, candidate.inline = "", true
+		}
+	}
+	if name == "Handle" && candidate.route == r.text(call.Args[0]) && len(call.Args) != 2 {
+		// Handle(pattern, handler) is the only two-argument form this pass
+		// knows for any other router.
+		return
+	}
 	r.regs = append(r.regs, candidate)
 }
 
@@ -372,6 +395,10 @@ func (r *goRouteResolver) maskSpans() [][2]int {
 		}
 		if index := goRouteRouteArgIndex(name); index >= 0 && len(call.Args) >= index+2 {
 			add(call.Args[index])
+			if name == "Handle" && !goRouteIsPathLiteral(call.Args[0]) {
+				// gin/httprouter Handle(method, path, ...).
+				add(call.Args[1])
+			}
 			return true
 		}
 		switch name {
@@ -583,4 +610,10 @@ var goRouteRootTypes = map[string]bool{
 // goRouteGroupishTypeName reports a local type named like a router group.
 func goRouteGroupishTypeName(name string) bool {
 	return strings.Contains(name, "Group")
+}
+
+// goRouteIsPathLiteral reports a string literal that starts with a slash.
+func goRouteIsPathLiteral(expr ast.Expr) bool {
+	lit, ok := goRouteUnparen(expr).(*ast.BasicLit)
+	return ok && lit.Kind == token.STRING && len(lit.Value) > 1 && lit.Value[1] == '/'
 }
