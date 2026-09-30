@@ -56,7 +56,7 @@ func declRecoverLineNumbers(block []byte) (numbers []int, sources []string, last
 // printed line. Only a bare header with no lines under it is exempt.
 func declCheckRecoverable(t *testing.T, tag string, result sem.SearchResult, budget int) []byte {
 	t.Helper()
-	block := agentSearchPrimaryBlock(result, budget)
+	block := agentSearchPrimaryBlock(result, budget, false)
 	if len(block) == 0 || !strings.Contains(strings.TrimSuffix(string(block), "\n"), "\n") {
 		return nil
 	}
@@ -166,7 +166,7 @@ func TestAgentBlockKeepsCandidateDeclarationTheWindowShowed(t *testing.T) {
 	for budget := 40; budget <= 2500; budget++ {
 		view := agentSearchBlockViewOf(result)
 		plain, left, _ := agentSearchFocusWindow(view, budget)
-		block := agentSearchPrimaryBlock(result, budget)
+		block := agentSearchPrimaryBlock(result, budget, false)
 		if plain == nil || left == 0 || !blockShowsLine(plain, lines[1]) {
 			continue
 		}

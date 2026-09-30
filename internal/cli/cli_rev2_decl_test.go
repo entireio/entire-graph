@@ -32,7 +32,7 @@ func TestRev2LongDecoratorStackWrongPick(t *testing.T) {
 	for budget := 60; budget <= 4000; budget++ {
 		view := agentSearchBlockViewOf(res)
 		plain, _, _ := agentSearchFocusWindow(view, budget)
-		block := agentSearchPrimaryBlock(res, budget)
+		block := agentSearchPrimaryBlock(res, budget, false)
 		if !blockShowsLine(plain, lines[def]) {
 			continue
 		}
@@ -68,7 +68,7 @@ func TestRev2CSharpLazyPropertyBlock(t *testing.T) {
 	for budget := 60; budget <= 3000; budget++ {
 		view := agentSearchBlockViewOf(res)
 		plain, _, _ := agentSearchFocusWindow(view, budget)
-		block := agentSearchPrimaryBlock(res, budget)
+		block := agentSearchPrimaryBlock(res, budget, false)
 		if blockShowsLine(plain, lines[0]) && !blockShowsLine(block, lines[0]) {
 			lost++
 		}
@@ -98,7 +98,7 @@ func TestRev2TailRowMinimalRungNamesUnprintedFocus(t *testing.T) {
 	}
 	bad := 0
 	for budget := 30; budget <= 400; budget++ {
-		block := agentSearchPrimaryBlock(searchResultOnOneLine(result), budget)
+		block := agentSearchPrimaryBlock(searchResultOnOneLine(result), budget, false)
 		numbers, sources, _, ok := declRecoverLineNumbers(block)
 		if !ok || len(numbers) == 0 {
 			continue
@@ -229,7 +229,7 @@ func TestRev2AbsorbedWrongPickAboveUnprotected(t *testing.T) {
 				continue
 			}
 			exercised++
-			block := agentSearchPrimaryBlock(res, budget)
+			block := agentSearchPrimaryBlock(res, budget, false)
 			if !blockShowsLine(block, lines[real]) {
 				if lost == 0 {
 					t.Logf("focus %d budget %d\nplain:\n%s\nnew:\n%s", focus, budget, plain, block)

@@ -61,7 +61,7 @@ func TestAgentBlockParserRegionNeverLess(t *testing.T) {
 			tag := fmt.Sprintf("iter %d (pre %d annos %d body %d) budget %d", iter, pre, annos, body, budget)
 			view := agentSearchBlockViewOf(result)
 			plain, _, _ := agentSearchFocusWindow(view, budget)
-			block := agentSearchPrimaryBlock(result, budget)
+			block := agentSearchPrimaryBlock(result, budget, false)
 			for i := pre; i <= name; i++ {
 				if blockShowsLine(plain, lines[i]) {
 					exercised++
@@ -92,12 +92,12 @@ func TestAgentBlockParserNameLineBeyondScanBound(t *testing.T) {
 	name := lines[20]
 	shown, fallback := 0, 0
 	for budget := 200; budget <= 900; budget += 10 {
-		if blockShowsLine(agentSearchPrimaryBlock(result, budget), name) {
+		if blockShowsLine(agentSearchPrimaryBlock(result, budget, false), name) {
 			shown++
 		}
 		textOnly := result
 		textOnly.SymbolNameLine = 0
-		if blockShowsLine(agentSearchPrimaryBlock(textOnly, budget), name) {
+		if blockShowsLine(agentSearchPrimaryBlock(textOnly, budget, false), name) {
 			fallback++
 		}
 	}
@@ -136,7 +136,7 @@ func TestAgentBlockAbsorbedParserRegionNeverLess(t *testing.T) {
 		for budget := 80; budget <= 2600; budget += 13 {
 			view := agentSearchBlockViewOf(result)
 			plain, _, _ := agentSearchFocusWindow(view, budget)
-			block := agentSearchPrimaryBlock(result, budget)
+			block := agentSearchPrimaryBlock(result, budget, false)
 			for i := regionTop; i <= declared; i++ {
 				if blockShowsLine(plain, lines[i]) {
 					exercised++
@@ -209,7 +209,7 @@ func TestAgentBlockKnownNameLineOutsideSnippetIsNotGuessed(t *testing.T) {
 	}
 	for budget := 30; budget <= 400; budget += 3 {
 		plain, _, _ := agentSearchFocusWindow(agentSearchBlockViewOf(result), budget)
-		if got := agentSearchPrimaryBlock(result, budget); string(got) != string(plain) && plain != nil {
+		if got := agentSearchPrimaryBlock(result, budget, false); string(got) != string(plain) && plain != nil {
 			t.Fatalf("budget %d: block differs from the ordinary one:\n%s\nplain:\n%s", budget, got, plain)
 		}
 	}
@@ -266,7 +266,7 @@ func TestAgentBlockKnownElsewhereRegionNeverLess(t *testing.T) {
 		for budget := 60; budget <= 1400; budget += 7 {
 			view := agentSearchBlockViewOf(result)
 			plain, _, _ := agentSearchFocusWindow(view, budget)
-			block := agentSearchPrimaryBlock(result, budget)
+			block := agentSearchPrimaryBlock(result, budget, false)
 			for i := regionTop; i < len(lines); i++ {
 				if blockShowsLine(plain, lines[i]) {
 					exercised++

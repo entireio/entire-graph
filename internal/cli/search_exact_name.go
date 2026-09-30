@@ -450,7 +450,7 @@ func agentExactNameBlock(anchor exactNameAnchor, floor, budget int) []byte {
 	name, scored := searchResultDisplayName(row), agentSearchScoreTag(row)
 	render := func(step int) []byte {
 		top, bottom := anchor.steps[step][0], anchor.steps[step][1]
-		headers := agentSearchLocationHeaders(row.Rank, row.FilePath, anchor.first+top, anchor.first+bottom, named, name, tag, scored)
+		headers := agentSearchLocationHeaders(row.Rank, row.FilePath, anchor.first+top, anchor.first+bottom, named, name, tag, scored, "")
 		// The minimal rung names the FIRST printed line, not the named one: a row grown upward
 		// prints annotations and doc lines above its name, and `path:NAMED *` over them read as
 		// "the first line shown is NAMED", misnumbering every line below it. The rich and compact

@@ -20,7 +20,7 @@ func TestReview303PeerTailMinimalHeaderCoordinates(t *testing.T) {
 	file := strings.Split(result.Snippet, "\n")
 	bad, checked, minimal := 0, 0, 0
 	for budget := 30; budget <= 400; budget++ {
-		block := agentSearchPrimaryBlock(searchResultOnOneLine(result), budget)
+		block := agentSearchPrimaryBlock(searchResultOnOneLine(result), budget, false)
 		numbers, sources, _, ok := declRecoverLineNumbers(block)
 		if !ok || len(numbers) == 0 {
 			continue

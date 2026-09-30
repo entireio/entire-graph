@@ -114,7 +114,7 @@ func TestAgentBlockShowsDeclarationBudgetSweep(t *testing.T) {
 			t.Parallel()
 			result, decl := fixture.build(120, 45)
 			result = searchResultOnOneLine(result)
-			full := len(agentSearchPrimaryBlock(result, 0))
+			full := len(agentSearchPrimaryBlock(result, 0, false))
 			maxLine := 0
 			for _, line := range strings.Split(result.Snippet, "\n") {
 				maxLine = max(maxLine, len(line)+1)
@@ -123,7 +123,7 @@ func TestAgentBlockShowsDeclarationBudgetSweep(t *testing.T) {
 			for budget := 40; budget <= full+64; budget++ {
 				view := agentSearchBlockViewOf(result)
 				plain, _, _ := agentSearchFocusWindow(view, budget)
-				block := agentSearchPrimaryBlock(result, budget)
+				block := agentSearchPrimaryBlock(result, budget, false)
 				if len(block) > budget {
 					t.Fatalf("budget %d: block is %d bytes:\n%s", budget, len(block), block)
 				}
@@ -176,7 +176,7 @@ func TestAgentBlockDeclarationStepsOverAnnotations(t *testing.T) {
 			continue
 		}
 		result, decl := fixture.build(10, 45)
-		block := agentSearchPrimaryBlock(searchResultOnOneLine(result), 700)
+		block := agentSearchPrimaryBlock(searchResultOnOneLine(result), 700, false)
 		if !blockShowsLine(block, decl) {
 			t.Fatalf("%s: declaration not shown:\n%s", fixture.lang, block)
 		}
@@ -189,7 +189,7 @@ func TestAgentBlockDeclarationStepsOverAnnotations(t *testing.T) {
 		// Under a ranked header rung the printed range starts at the declaration, not the annotation.
 		ranked := 0
 		for budget := 300; budget < 3000; budget += 7 {
-			block := agentSearchPrimaryBlock(searchResultOnOneLine(result), budget)
+			block := agentSearchPrimaryBlock(searchResultOnOneLine(result), budget, false)
 			header, _, _ := strings.Cut(string(block), "\n")
 			if !strings.HasPrefix(header, "1. ") || !strings.Contains(string(block), " elided\n") {
 				continue
@@ -219,7 +219,7 @@ func TestAgentBlockUnchangedWhenWindowHoldsDeclaration(t *testing.T) {
 			if !blockShowsLine(plain, decl) {
 				continue
 			}
-			if got := agentSearchPrimaryBlock(result, budget); string(got) != string(plain) {
+			if got := agentSearchPrimaryBlock(result, budget, false); string(got) != string(plain) {
 				t.Fatalf("%s budget %d: block changed although the window held the declaration:\nWANT\n%s\nGOT\n%s", fixture.lang, budget, plain, got)
 			}
 		}
@@ -260,7 +260,7 @@ func TestAgentBlockUnchangedWhenWindowHoldsNamedLineButNotContinuation(t *testin
 				continue
 			}
 			checked++
-			if got := agentSearchPrimaryBlock(result, budget); string(got) != string(plain) {
+			if got := agentSearchPrimaryBlock(result, budget, false); string(got) != string(plain) {
 				t.Fatalf("budget %d: re-rendered a block that already showed its declaration:\nWANT\n%s\nGOT\n%s", budget, plain, got)
 			}
 		}
@@ -300,7 +300,7 @@ func TestAgentBlockNoNamedLineIsUnchanged(t *testing.T) {
 		if plain == nil {
 			plain = fitAgentSearchLocation(result.Rank, result.FilePath, result.FocusLine, result.QualifiedName, "", agentSearchScoreTag(result), budget)
 		}
-		if got := agentSearchPrimaryBlock(result, budget); string(got) != string(plain) {
+		if got := agentSearchPrimaryBlock(result, budget, false); string(got) != string(plain) {
 			t.Fatalf("budget %d: changed without a named line:\n%s\nvs\n%s", budget, plain, got)
 		}
 	}
@@ -322,7 +322,7 @@ func TestAgentBlockDeclarationAloneWhenNoWindowFits(t *testing.T) {
 			continue
 		}
 		found = true
-		block := agentSearchPrimaryBlock(result, budget)
+		block := agentSearchPrimaryBlock(result, budget, false)
 		if !blockShowsLine(block, decl) || strings.Contains(string(block), "elided") {
 			t.Fatalf("budget %d: want the declaration alone, got:\n%s", budget, block)
 		}
@@ -348,7 +348,7 @@ func TestAgentBlockMultiLineSignature(t *testing.T) {
 	result = searchResultOnOneLine(result)
 	sawAll := false
 	for budget := 200; budget < 1500; budget++ {
-		block := agentSearchPrimaryBlock(result, budget)
+		block := agentSearchPrimaryBlock(result, budget, false)
 		shown := 0
 		for _, line := range fixture.signature[:3] {
 			if blockShowsLine(block, line) {
@@ -399,7 +399,7 @@ func TestAgentBlockMergedSpanShowsAbsorbedDeclarations(t *testing.T) {
 	for budget := 60; budget < 3000; budget++ {
 		view := agentSearchBlockViewOf(result)
 		plain, _, _ := agentSearchFocusWindow(view, budget)
-		block := agentSearchPrimaryBlock(result, budget)
+		block := agentSearchPrimaryBlock(result, budget, false)
 		if len(block) > budget {
 			t.Fatalf("budget %d: %d bytes", budget, len(block))
 		}
@@ -438,7 +438,7 @@ func TestAgentBlockTailFocusBelowSnippetKeepsHeaderFocus(t *testing.T) {
 		SymbolStartLine: 194, SymbolEndLine: 199, SymbolName: "resolveNamespace", QualifiedName: "Indexer.resolveNamespace",
 		Snippet: "func (i *Indexer) resolveNamespace(repoID string) string {\n\tif i.override != \"\" {",
 	}
-	block := string(agentSearchPrimaryBlock(searchResultOnOneLine(result), 4096))
+	block := string(agentSearchPrimaryBlock(searchResultOnOneLine(result), 4096, false))
 	if !strings.Contains(block, "[focus:198]") || !strings.Contains(block, "func (i *Indexer) resolveNamespace") {
 		t.Fatalf("got:\n%s", block)
 	}
@@ -451,9 +451,9 @@ func TestAgentBlockDeclarationDeterministic(t *testing.T) {
 		result, _ := fixture.build(77, 45)
 		result = searchResultOnOneLine(result)
 		for _, budget := range []int{150, 333, 700, 1200} {
-			first := agentSearchPrimaryBlock(result, budget)
+			first := agentSearchPrimaryBlock(result, budget, false)
 			for i := 0; i < 5; i++ {
-				if got := agentSearchPrimaryBlock(result, budget); string(got) != string(first) {
+				if got := agentSearchPrimaryBlock(result, budget, false); string(got) != string(first) {
 					t.Fatalf("%s budget %d: nondeterministic", fixture.lang, budget)
 				}
 			}

@@ -111,7 +111,7 @@ func TestAgentBlockAdvFuzz(t *testing.T) {
 		}
 		for b := 0; b < 20; b++ {
 			budget := rng.Intn(3000)
-			block := agentSearchPrimaryBlock(res, budget)
+			block := agentSearchPrimaryBlock(res, budget, false)
 			tag := fmt.Sprintf("iter %d budget %d", iter, budget)
 			declAdvCheck(t, tag, block, res, budget)
 			view := agentSearchBlockViewOf(res)
@@ -136,7 +136,7 @@ func TestAgentBlockAdvAnnotationNamesSymbol(t *testing.T) {
 	res := sem.SearchResult{Rank: 1, Score: 10, FilePath: "src/A.java", StartLine: 10, EndLine: 10 + len(lines) - 1,
 		FocusLine: 10 + 40, SnippetStartLine: 10, SnippetEndLine: 10 + len(lines) - 1, SymbolStartLine: 10,
 		SymbolEndLine: 10 + len(lines) - 1, SymbolName: "fooBar", QualifiedName: "A.fooBar", Snippet: strings.Join(lines, "\n")}
-	block := agentSearchPrimaryBlock(res, 400)
+	block := agentSearchPrimaryBlock(res, 400, false)
 	t.Logf("\n%s", block)
 	if !blockShowsLine(block, lines[2]) {
 		t.Errorf("DEFECT: real declaration line not printed; annotation shown instead")
@@ -167,8 +167,8 @@ func TestAgentBlockAdvAbsorbedDisplacement(t *testing.T) {
 	for budget := 100; budget < 1200; budget++ {
 		without := res
 		without.MergedDeclLines = nil
-		a := agentSearchPrimaryBlock(without, budget)
-		b := agentSearchPrimaryBlock(res, budget)
+		a := agentSearchPrimaryBlock(without, budget, false)
+		b := agentSearchPrimaryBlock(res, budget, false)
 		if plain, _, _ := agentSearchFocusWindow(agentSearchBlockViewOf(res), budget); blockShowsLine(plain, lines[abs]) {
 			// The old window showed the absorbed declaration, so it is not ADDED but kept (never
 			// locate less), whatever it costs; `without` is then the block that drops it.
@@ -204,7 +204,7 @@ func TestAgentBlockAdvHugeDecl(t *testing.T) {
 		SnippetStartLine: 1, SnippetEndLine: len(lines), SymbolStartLine: 1, SymbolEndLine: len(lines),
 		SymbolName: "huge", Snippet: strings.Join(lines, "\n")}
 	for budget := 1; budget < 3000; budget++ {
-		block := agentSearchPrimaryBlock(res, budget)
+		block := agentSearchPrimaryBlock(res, budget, false)
 		declAdvCheck(t, fmt.Sprint(budget), block, res, budget)
 	}
 }
@@ -234,7 +234,7 @@ func TestAgentBlockAdvTiming(t *testing.T) {
 				agentSearchFocusWindow(view, budget)
 				plainT := time.Since(t0)
 				t0 = time.Now()
-				agentSearchPrimaryBlock(res, budget)
+				agentSearchPrimaryBlock(res, budget, false)
 				allT := time.Since(t0)
 				t.Logf("n=%d longName=%v budget=%d plain=%v total=%v (decl overhead %v)", n, longName, budget, plainT, allT, allT-plainT)
 			}
@@ -263,7 +263,7 @@ func TestAgentBlockAdvFlaskMergedLosesDef(t *testing.T) {
 	for budget := 100; budget < 3000; budget++ {
 		view := agentSearchBlockViewOf(res)
 		plain, _, _ := agentSearchFocusWindow(view, budget)
-		block := agentSearchPrimaryBlock(res, budget)
+		block := agentSearchPrimaryBlock(res, budget, false)
 		for _, want := range []int{1, absorbedDef} {
 			if blockShowsLine(plain, lines[want]) && !blockShowsLine(block, lines[want]) {
 				if lost == 0 {
@@ -309,7 +309,7 @@ func TestAgentBlockAdvJavaNamedMergedLosesDecl(t *testing.T) {
 	for budget := 60; budget < 2000; budget++ {
 		view := agentSearchBlockViewOf(res)
 		plain, _, _ := agentSearchFocusWindow(view, budget)
-		block := agentSearchPrimaryBlock(res, budget)
+		block := agentSearchPrimaryBlock(res, budget, false)
 		if blockShowsLine(plain, lines[1]) && !blockShowsLine(block, lines[1]) {
 			if lost == 0 {
 				t.Logf("budget %d\nplain:\n%s\nnew:\n%s", budget, plain, block)
