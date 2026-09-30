@@ -104,6 +104,9 @@ type goRouteBinding struct {
 	// entry values. Identifier reads and aliases copy them; definite assignments
 	// replace them. They are distinct from the live closure source above.
 	stripPrefixJoins []*goRouteRewriteJoin
+	// closure is present only for a provably local function literal. Aliases
+	// copy the descriptor; an ordinary assignment replaces it.
+	closure *goRouteClosureEffect
 }
 
 // goRouteOrigin is one router instance created by a constructor call. Every
@@ -191,6 +194,24 @@ type goRouteRewriteJoin struct {
 	observed   map[*goRouteOrigin]bool
 	deps       map[*goRouteRewriteJoin]bool
 	dependents map[*goRouteRewriteJoin]bool
+}
+
+type goRouteClosureUse struct {
+	origin     *goRouteOrigin
+	middleware goRouteBinding
+}
+
+type goRouteClosureWrite struct {
+	name   string
+	target *goRouteBinding
+	value  goRouteBinding
+}
+
+type goRouteClosureEffect struct {
+	uses     []goRouteClosureUse
+	writes   []goRouteClosureWrite
+	escaped  bool
+	applying bool
 }
 
 // goRouteReceivers answers "what prefix does the receiver identifier at this
@@ -346,6 +367,18 @@ type goRouteResolver struct {
 	// closure-captured middleware binding. A later rewrite value assigned to
 	// that exact outer binding makes those origins opaque.
 	stripPrefixWatchers map[*goRouteBinding]map[*goRouteOrigin]bool
+	// escapedStripPrefixWrites records exact captured bindings that an escaped
+	// callback may overwrite with rewrite middleware at any later point.
+	escapedStripPrefixWrites map[*goRouteBinding]bool
+	// closureCaptureTargets maps closure-local capture proxies to the exact
+	// outer binding they write. Value aliases are intentionally not included.
+	closureCaptureTargets map[*goRouteBinding]*goRouteBinding
+	localClosureLits      map[*ast.FuncLit]bool
+	immediateClosureLits  map[*ast.FuncLit]bool
+	closureEffects        map[*ast.FuncLit]*goRouteClosureEffect
+	safeClosureUses       map[*ast.Ident]bool
+	closureCollector      *goRouteClosureEffect
+	asyncClosureCall      bool
 }
 
 // goRouteParamKey names a parameter: the receiver type of a method ("" for a
@@ -395,10 +428,16 @@ func (r *goRouteResolver) read(binding *goRouteBinding) goRouteBinding {
 	if binding == nil {
 		return goRouteBinding{}
 	}
+	value := *binding
 	if r.escaped[binding] {
-		return goRouteUnknownBinding
+		value = goRouteUnknownBinding
 	}
-	return *binding
+	if r.escapedStripPrefixWrites[binding] {
+		value.stripPrefixMiddleware = true
+		value.stripPrefixJoins = nil
+		value.stripPrefixSource = nil
+	}
+	return value
 }
 
 func (r *goRouteResolver) offset(pos token.Pos) int {
@@ -494,6 +533,14 @@ func (r *goRouteResolver) walkFile() {
 	r.paramArgs = map[goRouteParamKey][]goRouteBinding{}
 	r.escaped = map[*goRouteBinding]bool{}
 	r.stripPrefixWatchers = map[*goRouteBinding]map[*goRouteOrigin]bool{}
+	r.escapedStripPrefixWrites = map[*goRouteBinding]bool{}
+	r.closureCaptureTargets = map[*goRouteBinding]*goRouteBinding{}
+	r.localClosureLits = map[*ast.FuncLit]bool{}
+	r.immediateClosureLits = map[*ast.FuncLit]bool{}
+	r.closureEffects = map[*ast.FuncLit]*goRouteClosureEffect{}
+	r.safeClosureUses = map[*ast.Ident]bool{}
+	r.closureCollector = nil
+	r.asyncClosureCall = false
 	r.log = r.log[:0]
 	r.atPackage = true
 	pkg := r.packageScope()
@@ -623,6 +670,7 @@ func (r *goRouteResolver) noteGroup(name string, binding goRouteBinding) {
 func (r *goRouteResolver) set(name string, binding *goRouteBinding, value goRouteBinding) {
 	r.log = append(r.log, goRouteWrite{binding: binding, old: *binding})
 	*binding = value
+	value = r.read(binding)
 	for origin := range r.stripPrefixWatchers[binding] {
 		r.step(1)
 		if value.stripPrefixMiddleware {
@@ -654,6 +702,21 @@ func (r *goRouteResolver) ultimateStripPrefixSource(binding *goRouteBinding) (*g
 	return nil, false
 }
 
+// ultimateClosureCaptureTarget follows only lexical capture-proxy identity.
+// Proxy targets are flattened when created, so this is a single bounded
+// lookup. Ordinary value aliases are absent from closureCaptureTargets and
+// therefore cannot make writes to an alias taint its source binding.
+func (r *goRouteResolver) ultimateClosureCaptureTarget(binding *goRouteBinding) (*goRouteBinding, bool) {
+	r.step(1)
+	if binding == nil {
+		return nil, false
+	}
+	if target := r.closureCaptureTargets[binding]; target != nil {
+		return target, true
+	}
+	return binding, true
+}
+
 func (r *goRouteResolver) watchStripPrefixSource(source *goRouteBinding, origin *goRouteOrigin) {
 	source, ok := r.ultimateStripPrefixSource(source)
 	if !ok {
@@ -661,11 +724,12 @@ func (r *goRouteResolver) watchStripPrefixSource(source *goRouteBinding, origin 
 		origin.opaque = true
 		return
 	}
-	if source.stripPrefixMiddleware {
+	value := r.read(source)
+	if value.stripPrefixMiddleware {
 		origin.opaque = true
 		return
 	}
-	for _, join := range source.stripPrefixJoins {
+	for _, join := range value.stripPrefixJoins {
 		r.step(1)
 		r.observeStripPrefixJoin(join, origin)
 	}
@@ -676,6 +740,136 @@ func (r *goRouteResolver) watchStripPrefixSource(source *goRouteBinding, origin 
 	}
 	r.step(1)
 	watchers[origin] = true
+}
+
+func (r *goRouteResolver) observeStripPrefixValue(value goRouteBinding, origin *goRouteOrigin, future bool) {
+	if value.stripPrefixMiddleware {
+		origin.opaque = true
+		return
+	}
+	for _, join := range value.stripPrefixJoins {
+		r.step(1)
+		r.observeStripPrefixJoin(join, origin)
+	}
+	if value.stripPrefixSource == nil {
+		return
+	}
+	if future {
+		r.watchStripPrefixSource(value.stripPrefixSource, origin)
+		return
+	}
+	source, ok := r.ultimateStripPrefixSource(value.stripPrefixSource)
+	if !ok {
+		origin.opaque = true
+		return
+	}
+	r.observeStripPrefixValue(r.read(source), origin, false)
+}
+
+func (r *goRouteResolver) materializeClosureValue(value goRouteBinding) goRouteBinding {
+	if value.stripPrefixSource == nil {
+		return value
+	}
+	source, ok := r.ultimateStripPrefixSource(value.stripPrefixSource)
+	if !ok {
+		value.stripPrefixMiddleware = true
+		value.stripPrefixJoins = nil
+		value.stripPrefixSource = nil
+		return value
+	}
+	snapshot := r.read(source)
+	value.stripPrefixSource = nil
+	if snapshot.stripPrefixMiddleware {
+		value.stripPrefixMiddleware = true
+		value.stripPrefixJoins = nil
+		return value
+	}
+	for _, join := range snapshot.stripPrefixJoins {
+		var merged bool
+		value.stripPrefixJoins, merged = r.withStripPrefixJoin(value.stripPrefixJoins, join)
+		if !merged {
+			value.stripPrefixMiddleware = true
+			value.stripPrefixJoins = nil
+			break
+		}
+	}
+	return value
+}
+
+func (r *goRouteResolver) applyClosureEffect(effect *goRouteClosureEffect) {
+	if effect == nil {
+		return
+	}
+	if effect.applying {
+		r.escapeClosureEffect(effect)
+		return
+	}
+	effect.applying = true
+	defer func() { effect.applying = false }()
+	for _, use := range effect.uses {
+		r.step(1)
+		r.observeStripPrefixValue(use.middleware, use.origin, false)
+	}
+	writeValues := make([]goRouteBinding, len(effect.writes))
+	for i, write := range effect.writes {
+		r.step(1)
+		writeValues[i] = r.materializeClosureValue(write.value)
+	}
+	for i, write := range effect.writes {
+		r.step(1)
+		r.set(write.name, write.target, writeValues[i])
+	}
+}
+
+func (r *goRouteResolver) escapeClosureEffect(effect *goRouteClosureEffect) {
+	if effect == nil || effect.escaped {
+		return
+	}
+	effect.escaped = true
+	for _, use := range effect.uses {
+		r.step(1)
+		r.observeStripPrefixValue(use.middleware, use.origin, true)
+	}
+	// An escaped callback may run or not run. Preserve the current binding and
+	// OR in only rewrite evidence from its possible final writes.
+	writeValues := make([]goRouteBinding, len(effect.writes))
+	for i, write := range effect.writes {
+		r.step(1)
+		if write.value.stripPrefixMiddleware || write.value.stripPrefixSource != nil || len(write.value.stripPrefixJoins) > 0 {
+			target, ok := r.ultimateClosureCaptureTarget(write.target)
+			if !ok {
+				target = write.target
+			}
+			r.escapedStripPrefixWrites[target] = true
+		}
+		if write.value.stripPrefixSource != nil {
+			// An escaped callback may perform this write after the captured
+			// source changes, so its possible result is rewrite middleware.
+			writeValues[i].stripPrefixMiddleware = true
+		} else {
+			writeValues[i] = r.materializeClosureValue(write.value)
+		}
+	}
+	for i, write := range effect.writes {
+		r.step(1)
+		possible := writeValues[i]
+		value := r.read(write.target)
+		if possible.stripPrefixMiddleware {
+			value.stripPrefixMiddleware = true
+			value.stripPrefixJoins = nil
+		} else {
+			for _, join := range possible.stripPrefixJoins {
+				var merged bool
+				value.stripPrefixJoins, merged = r.withStripPrefixJoin(value.stripPrefixJoins, join)
+				if !merged {
+					value.stripPrefixMiddleware = true
+					value.stripPrefixJoins = nil
+					break
+				}
+			}
+		}
+		r.set(write.name, write.target, value)
+	}
 }
 
 func (r *goRouteResolver) addStripPrefixJoinDependency(join, dependency *goRouteRewriteJoin) {
@@ -804,6 +998,8 @@ func (r *goRouteResolver) groupValue(expr ast.Expr, lookup goRouteLookup) goRout
 	switch expr := expr.(type) {
 	case *ast.ParenExpr:
 		return r.groupValue(expr.X, lookup)
+	case *ast.FuncLit:
+		return goRouteBinding{kind: goRouteUnknown, closure: r.closureEffects[expr]}
 	case *ast.Ident:
 		value, _ := lookup(expr.Name)
 		return value
@@ -990,6 +1186,11 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 			if !ok {
 				continue
 			}
+			if len(valueSpec.Values) == len(valueSpec.Names) {
+				for i, value := range valueSpec.Values {
+					r.noteLocalClosureValue(value, valueSpec.Names[i].Name != "_")
+				}
+			}
 			r.exprs(valueSpec.Values, scope)
 			values := make([]goRouteBinding, len(valueSpec.Names))
 			switch {
@@ -1013,9 +1214,15 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 	case *ast.ExprStmt:
 		r.expr(stmt.X, scope)
 	case *ast.GoStmt:
+		savedAsync := r.asyncClosureCall
+		r.asyncClosureCall = true
 		r.expr(stmt.Call, scope)
+		r.asyncClosureCall = savedAsync
 	case *ast.DeferStmt:
+		savedAsync := r.asyncClosureCall
+		r.asyncClosureCall = true
 		r.expr(stmt.Call, scope)
+		r.asyncClosureCall = savedAsync
 	case *ast.ReturnStmt:
 		r.exprs(stmt.Results, scope)
 	case *ast.SendStmt:
@@ -1038,7 +1245,7 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 			mergeGoRouteWritten(written, r.writtenNames(stmt.Else))
 			branches = append(branches, func() { r.walkStmt(stmt.Else, ifScope) })
 		}
-		r.branches(ifScope, written, branches, false)
+		r.branches(ifScope, written, branches, false, nil)
 	case *ast.ForStmt:
 		forScope := newGoRouteScope(scope)
 		r.walkStmt(stmt.Init, forScope)
@@ -1050,7 +1257,7 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 			r.expr(stmt.Cond, forScope)
 			r.walkStmts(stmt.Body.List, newGoRouteScope(forScope))
 			r.walkStmt(stmt.Post, forScope)
-		}}, true)
+		}}, true, nil)
 	case *ast.RangeStmt:
 		r.expr(stmt.X, scope)
 		rangeScope := newGoRouteScope(scope)
@@ -1074,12 +1281,12 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 		}
 		r.branches(rangeScope, written, []func(){func() {
 			r.walkStmts(stmt.Body.List, newGoRouteScope(rangeScope))
-		}}, true)
+		}}, true, nil)
 	case *ast.SwitchStmt:
 		switchScope := newGoRouteScope(scope)
 		r.walkStmt(stmt.Init, switchScope)
 		r.expr(stmt.Tag, switchScope)
-		r.clauses(switchScope, stmt.Body, nil)
+		r.clauses(switchScope, stmt.Body, nil, true)
 	case *ast.TypeSwitchStmt:
 		switchScope := newGoRouteScope(scope)
 		r.walkStmt(stmt.Init, switchScope)
@@ -1100,18 +1307,19 @@ func (r *goRouteResolver) walkStmt(stmt ast.Stmt, scope *goRouteScope) {
 				// The switched value's prefix is not known either.
 				r.declare(clauseScope, bound, goRouteUnknownBinding)
 			}
-		})
+		}, false)
 	case *ast.SelectStmt:
-		r.clauses(scope, stmt.Body, nil)
+		r.clauses(scope, stmt.Body, nil, false)
 	}
 }
 
 // clauses walks switch/select clauses as alternative branches. A clause ending
 // in fallthrough reaches the next one; the pre-marking in branches already
 // makes anything the previous clause wrote unknown to it.
-func (r *goRouteResolver) clauses(scope *goRouteScope, body *ast.BlockStmt, bind func(*goRouteScope)) {
+func (r *goRouteResolver) clauses(scope *goRouteScope, body *ast.BlockStmt, bind func(*goRouteScope), allowFallthrough bool) {
 	written := r.writtenNames(body)
 	var branches []func()
+	var fallthroughEdges []bool
 	for _, clause := range body.List {
 		switch clause := clause.(type) {
 		case *ast.CaseClause:
@@ -1123,15 +1331,23 @@ func (r *goRouteResolver) clauses(scope *goRouteScope, body *ast.BlockStmt, bind
 				}
 				r.walkStmts(clause.Body, clauseScope)
 			})
+			fallsThrough := false
+			if allowFallthrough && len(clause.Body) > 0 {
+				if branch, ok := clause.Body[len(clause.Body)-1].(*ast.BranchStmt); ok {
+					fallsThrough = branch.Tok == token.FALLTHROUGH
+				}
+			}
+			fallthroughEdges = append(fallthroughEdges, fallsThrough)
 		case *ast.CommClause:
 			branches = append(branches, func() {
 				clauseScope := newGoRouteScope(scope)
 				r.walkStmt(clause.Comm, clauseScope)
 				r.walkStmts(clause.Body, clauseScope)
 			})
+			fallthroughEdges = append(fallthroughEdges, false)
 		}
 	}
-	r.branches(scope, written, branches, false)
+	r.branches(scope, written, branches, false, fallthroughEdges)
 }
 
 // branches walks code that may run zero, one, or many times, or instead of a
@@ -1139,17 +1355,35 @@ func (r *goRouteResolver) clauses(scope *goRouteScope, body *ast.BlockStmt, bind
 // each branch (a previous iteration or fallthrough may have written it) and
 // after all of them (whether it was written depends on the path taken). Each
 // branch's own writes are rolled back so siblings never see them.
-func (r *goRouteResolver) branches(scope *goRouteScope, written map[string]bool, branches []func(), repeat bool) {
+func (r *goRouteResolver) branches(scope *goRouteScope, written map[string]bool, branches []func(), repeat bool, fallthroughEdges []bool) {
 	joins := r.markNames(scope, written, repeat)
 	savedRegion := r.region
-	for _, branch := range branches {
+	var incoming []*goRouteRewriteJoin
+	for branchIndex, branch := range branches {
 		mark := len(r.log)
+		if branchIndex > 0 && branchIndex-1 < len(fallthroughEdges) && fallthroughEdges[branchIndex-1] {
+			for i, flow := range incoming {
+				r.step(1)
+				value := *joins[i].binding
+				dependencies, ok := r.withStripPrefixJoin(value.stripPrefixJoins, flow)
+				if !ok {
+					value.stripPrefixMiddleware = true
+					value.stripPrefixJoins = nil
+				} else {
+					value.stripPrefixJoins = dependencies
+				}
+				r.set(joins[i].name, joins[i].binding, value)
+			}
+		}
 		r.nextRegion++
 		r.region = r.nextRegion
 		branch()
 		r.region = savedRegion
 		for _, join := range joins {
 			r.step(1)
+			if join.binding.closure != nil {
+				r.escapeClosureEffect(join.binding.closure)
+			}
 			if join.binding.stripPrefixMiddleware {
 				r.resolveStripPrefixJoin(join)
 			}
@@ -1157,6 +1391,29 @@ func (r *goRouteResolver) branches(scope *goRouteScope, written map[string]bool,
 				r.step(1)
 				r.addStripPrefixJoinDependency(join, dependency)
 			}
+		}
+		if branchIndex < len(fallthroughEdges) && fallthroughEdges[branchIndex] {
+			incoming = make([]*goRouteRewriteJoin, len(joins))
+			for i, join := range joins {
+				r.step(1)
+				flow := &goRouteRewriteJoin{
+					name:       join.name,
+					binding:    join.binding,
+					observed:   map[*goRouteOrigin]bool{},
+					deps:       map[*goRouteRewriteJoin]bool{},
+					dependents: map[*goRouteRewriteJoin]bool{},
+				}
+				if join.binding.stripPrefixMiddleware {
+					r.resolveStripPrefixJoin(flow)
+				}
+				for _, dependency := range join.binding.stripPrefixJoins {
+					r.step(1)
+					r.addStripPrefixJoinDependency(flow, dependency)
+				}
+				incoming[i] = flow
+			}
+		} else {
+			incoming = nil
 		}
 		r.undo(mark)
 	}
@@ -1195,6 +1452,11 @@ func (r *goRouteResolver) markNames(scope *goRouteScope, written map[string]bool
 		}
 		if r.collecting && r.isPackageBinding(scope, name) {
 			r.pkgWritten[name] = true
+		}
+		if binding.closure != nil {
+			// A conditional/loop/goto write makes the local descriptor choice
+			// ambiguous. Fall back to the conservative escaped-callback model.
+			r.escapeClosureEffect(binding.closure)
 		}
 		join := &goRouteRewriteJoin{
 			name:       name,
@@ -1239,8 +1501,43 @@ func (r *goRouteResolver) isPackageBinding(scope *goRouteScope, name string) boo
 	return false
 }
 
+func (r *goRouteResolver) noteLocalClosureValue(expr ast.Expr, local bool) {
+	if !local {
+		return
+	}
+	switch expr := goRouteUnparen(expr).(type) {
+	case *ast.FuncLit:
+		r.localClosureLits[expr] = true
+	case *ast.Ident:
+		// A local alias retains the descriptor without making the callback
+		// externally executable.
+		r.safeClosureUses[expr] = true
+	}
+}
+
+func goRouteLocalClosureEligible(lit *ast.FuncLit) bool {
+	if lit == nil || lit.Type == nil {
+		return false
+	}
+	return (lit.Type.Params == nil || len(lit.Type.Params.List) == 0) &&
+		(lit.Type.Results == nil || len(lit.Type.Results.List) == 0)
+}
+
 func (r *goRouteResolver) assign(stmt *ast.AssignStmt, scope *goRouteScope) {
 	// Go evaluates every right-hand operand before assigning any left side.
+	if len(stmt.Lhs) == len(stmt.Rhs) {
+		for i, value := range stmt.Rhs {
+			ident, ok := stmt.Lhs[i].(*ast.Ident)
+			if !ok || ident.Name == "_" {
+				continue
+			}
+			local := stmt.Tok == token.DEFINE
+			if stmt.Tok == token.ASSIGN {
+				local = r.lookup(scope, ident.Name) != nil && !r.isPackageBinding(scope, ident.Name)
+			}
+			r.noteLocalClosureValue(value, local)
+		}
+	}
 	r.exprs(stmt.Rhs, scope)
 	values := make([]goRouteBinding, len(stmt.Lhs))
 	paired := len(stmt.Lhs) == len(stmt.Rhs)
@@ -1325,6 +1622,20 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 			r.funcLit(node, scope, nil)
 			return false
 		case *ast.CallExpr:
+			if lit, ok := goRouteUnparen(node.Fun).(*ast.FuncLit); ok {
+				r.immediateClosureLits[lit] = true
+			}
+			if ident, ok := goRouteUnparen(node.Fun).(*ast.Ident); ok {
+				value := r.read(r.lookup(scope, ident.Name))
+				if value.closure != nil {
+					r.safeClosureUses[ident] = true
+					if r.asyncClosureCall || r.closureCollector != nil {
+						r.escapeClosureEffect(value.closure)
+					} else {
+						r.applyClosureEffect(value.closure)
+					}
+				}
+			}
 			r.noteCall(node, scope)
 			r.noteMount(node, scope)
 			r.noteStripPrefix(node, scope)
@@ -1356,6 +1667,9 @@ func (r *goRouteResolver) expr(expr ast.Expr, scope *goRouteScope) {
 		case *ast.Ident:
 			value := r.read(r.lookup(scope, node.Name))
 			r.uses[r.offset(node.Pos())] = value
+			if value.closure != nil && !r.safeClosureUses[node] {
+				r.escapeClosureEffect(value.closure)
+			}
 			if value.origin != nil && !r.safe[node] {
 				// The router itself is passed, returned or stored: whoever
 				// receives it may mount it under a prefix.
@@ -1375,10 +1689,17 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 		name  string
 		outer *goRouteBinding
 		proxy *goRouteBinding
+		value goRouteBinding
 		may   bool
 		joins []*goRouteRewriteJoin
 	}
 	var captures []rewriteCapture
+	deferred := seed == nil && goRouteLocalClosureEligible(lit) &&
+		(r.localClosureLits[lit] || r.immediateClosureLits[lit])
+	var effect *goRouteClosureEffect
+	if deferred {
+		effect = &goRouteClosureEffect{}
+	}
 	// Only names the closure mentions can be read inside it, so iterate those
 	// rather than every name written in the enclosing declaration.
 	for name := range r.mentionedNames(lit.Body) {
@@ -1391,32 +1712,71 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 			continue
 		}
 		unknown := goRouteUnknownBinding
-		// The closure may run after a later outer assignment. Preserve current
-		// MAY-rewrite evidence and link only this capture proxy to the exact
-		// outer binding whose future value it observes. MUST-client certainty
-		// intentionally does not survive the ambiguous capture.
-		unknown.stripPrefixMiddleware = binding.stripPrefixMiddleware
+		// A proved local closure reads the exact outer binding at its synchronous
+		// call. Unknown callbacks also preserve current MAY evidence because they
+		// may run immediately or later. MUST-client certainty never survives the
+		// ambiguous capture.
+		if !deferred {
+			unknown.stripPrefixMiddleware = binding.stripPrefixMiddleware
+		}
 		if source, ok := r.ultimateStripPrefixSource(binding); ok {
 			unknown.stripPrefixSource = source
 		} else {
 			unknown.stripPrefixMiddleware = true
 		}
 		proxy := &unknown
+		captureTarget := binding
+		if outerTarget := r.closureCaptureTargets[binding]; outerTarget != nil {
+			captureTarget = outerTarget
+		}
+		r.closureCaptureTargets[proxy] = captureTarget
 		closureScope.vars[name] = proxy
 		captures = append(captures, rewriteCapture{name: name, outer: binding, proxy: proxy})
 	}
 	mark := len(r.log)
 	savedRegion := r.region
+	savedCollector := r.closureCollector
+	switch {
+	case deferred:
+		r.closureCollector = effect
+	case seed == nil:
+		r.closureCollector = nil
+	}
 	r.nextRegion++
 	r.region = r.nextRegion
 	r.walkFunc(nil, lit.Type, lit.Body, closureScope, seed)
 	r.region = savedRegion
+	r.closureCollector = savedCollector
 	for i := range captures {
 		r.step(1)
+		captures[i].value = *captures[i].proxy
 		captures[i].may = captures[i].proxy.stripPrefixMiddleware
 		captures[i].joins, _ = r.withStripPrefixJoin(captures[i].proxy.stripPrefixJoins, nil)
 	}
 	r.undo(mark)
+	if deferred {
+		written := r.writtenNames(lit.Body)
+		for _, capture := range captures {
+			r.step(1)
+			if written[capture.name] {
+				effect.writes = append(effect.writes, goRouteClosureWrite{
+					name: capture.name, target: capture.outer, value: capture.value,
+				})
+			}
+		}
+		r.closureEffects[lit] = effect
+		if r.immediateClosureLits[lit] {
+			if r.asyncClosureCall || savedCollector != nil {
+				r.escapeClosureEffect(effect)
+			} else {
+				r.applyClosureEffect(effect)
+			}
+		}
+		for name := range r.addressedNames(lit.Body) {
+			r.escape(scope, name)
+		}
+		return
+	}
 	r.markNames(scope, r.writtenNames(lit.Body), false)
 	for _, capture := range captures {
 		r.step(1)
@@ -2361,16 +2721,13 @@ func (r *goRouteResolver) noteUseStripPrefix(call *ast.CallExpr, scope *goRouteS
 		if router.origin == nil {
 			continue
 		}
-		if middleware.stripPrefixMiddleware {
-			router.origin.opaque = true
+		if r.closureCollector != nil {
+			r.step(1)
+			r.closureCollector.uses = append(r.closureCollector.uses, goRouteClosureUse{
+				origin: router.origin, middleware: middleware,
+			})
 			continue
 		}
-		if middleware.stripPrefixSource != nil {
-			r.watchStripPrefixSource(middleware.stripPrefixSource, router.origin)
-		}
-		for _, join := range middleware.stripPrefixJoins {
-			r.step(1)
-			r.observeStripPrefixJoin(join, router.origin)
-		}
+		r.observeStripPrefixValue(middleware, router.origin, true)
 	}
 }
