@@ -24665,39 +24665,16 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 var goHTTPRouteRegistrationsGroupRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)`)
 
 func goHTTPRouteRegistrations(content string, constants map[string]string) []goHTTPRouteRegistration {
-	groupPrefixes := map[string]string{}
-	groupMatches := goHTTPRouteRegistrationsGroupRe.FindAllStringSubmatch(content, -1)
-	changed := true
-	for changed {
-		changed = false
-		for _, match := range groupMatches {
-			if len(match) != 4 {
-				continue
-			}
-			prefix, ok := staticRouteExpressionValue(match[3], constants)
-			if !ok {
-				continue
-			}
-			if parentPrefix := groupPrefixes[match[2]]; parentPrefix != "" {
-				prefix = joinRoutePaths(parentPrefix, prefix)
-			}
-			if groupPrefixes[match[1]] == prefix {
-				continue
-			}
-			groupPrefixes[match[1]] = prefix
-			changed = true
+	// Group receivers are resolved per use site, not per file-global name: see
+	// go_route_binding.go. Resolution is lazy so files without router method
+	// calls never pay for a parse.
+	var receivers *goRouteReceivers
+	receiverAt := func(offset int, name string) goRouteBinding {
+		if receivers == nil {
+			resolved := resolveGoRouteReceivers(content, constants)
+			receivers = &resolved
 		}
-	}
-	for _, match := range groupMatches {
-		if len(match) != 4 {
-			continue
-		}
-		if _, exists := groupPrefixes[match[1]]; exists {
-			continue
-		}
-		if prefix, ok := staticRouteExpressionValue(match[3], constants); ok {
-			groupPrefixes[match[1]] = prefix
-		}
+		return receivers.at(offset, name)
 	}
 	var registrations []goHTTPRouteRegistration
 	add := func(routeExpr, handler, evidence string) {
@@ -24727,33 +24704,46 @@ func goHTTPRouteRegistrations(content string, constants map[string]string) []goH
 			add(match[1], match[2], "go_http_handler_func")
 		}
 	}
-	for _, match := range routerMethodRe.FindAllStringSubmatch(content, -1) {
-		if len(match) == 4 {
-			routeExpr := match[2]
-			if prefix := groupPrefixes[match[1]]; prefix != "" {
-				if route, ok := staticRouteExpressionValue(routeExpr, constants); ok {
-					routeExpr = strconv.Quote(joinRoutePaths(prefix, route))
-				}
+	for _, idx := range routerMethodRe.FindAllStringSubmatchIndex(content, -1) {
+		if len(idx) != 8 {
+			continue
+		}
+		receiver := receiverAt(idx[2], content[idx[2]:idx[3]])
+		if receiver.kind == goRouteUnknown || goRouteReceiverIsSelector(content, idx[2]) {
+			// The receiver's prefix at this call is not determined: emitting the
+			// bare path, or another binding's prefix, would invent a route.
+			continue
+		}
+		routeExpr := content[idx[4]:idx[5]]
+		if receiver.kind == goRouteKnown && receiver.prefix != "" {
+			route, ok := staticRouteExpressionValue(routeExpr, constants)
+			if !ok {
+				continue
 			}
-			add(routeExpr, match[3], "go_router_method")
+			routeExpr = strconv.Quote(joinRoutePaths(receiver.prefix, route))
 		}
+		add(routeExpr, content[idx[6]:idx[7]], "go_router_method")
 	}
-	for _, match := range chainedGroupMethodRe.FindAllStringSubmatch(content, -1) {
-		if len(match) != 5 {
+	for _, idx := range chainedGroupMethodRe.FindAllStringSubmatchIndex(content, -1) {
+		if len(idx) != 10 {
 			continue
 		}
-		prefix, ok := staticRouteExpressionValue(match[2], constants)
+		receiver := receiverAt(idx[2], content[idx[2]:idx[3]])
+		if receiver.kind == goRouteUnknown || goRouteReceiverIsSelector(content, idx[2]) {
+			continue
+		}
+		prefix, ok := staticRouteExpressionValue(content[idx[4]:idx[5]], constants)
 		if !ok {
 			continue
 		}
-		if parentPrefix := groupPrefixes[match[1]]; parentPrefix != "" {
-			prefix = joinRoutePaths(parentPrefix, prefix)
+		if receiver.kind == goRouteKnown && receiver.prefix != "" {
+			prefix = joinRoutePaths(receiver.prefix, prefix)
 		}
-		route, ok := staticRouteExpressionValue(match[3], constants)
+		route, ok := staticRouteExpressionValue(content[idx[6]:idx[7]], constants)
 		if !ok {
 			continue
 		}
-		add(strconv.Quote(joinRoutePaths(prefix, route)), match[4], "go_router_group_method")
+		add(strconv.Quote(joinRoutePaths(prefix, route)), content[idx[8]:idx[9]], "go_router_group_method")
 	}
 	return registrations
 }

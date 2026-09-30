@@ -6954,6 +6954,142 @@ func ping() {
 	}
 }
 
+// goRouteRegistrationsWithin calls goHTTPRouteRegistrations in-process and
+// fails if it took longer than a generous budget. There is deliberately no
+// goroutine or subprocess: a goroutine abandoned at a deadline would keep
+// spinning after the test failed, and the resolver is now a single bounded
+// syntax walk. A regression back to a non-terminating loop is caught by the
+// package -timeout, which kills the whole test binary and nothing it owns.
+func goRouteRegistrationsWithin(t *testing.T, content string) []goHTTPRouteRegistration {
+	t.Helper()
+	start := time.Now()
+	regs := goHTTPRouteRegistrations(content, nil)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("goHTTPRouteRegistrations took %s on a small input", elapsed)
+	}
+	return regs
+}
+
+func goRouteSet(regs []goHTTPRouteRegistration) map[string]bool {
+	routes := map[string]bool{}
+	for _, reg := range regs {
+		routes[reg.Route+" -> "+reg.Handler] = true
+	}
+	return routes
+}
+
+func assertGoRouteSet(t *testing.T, regs []goHTTPRouteRegistration, want ...string) {
+	t.Helper()
+	got := goRouteSet(regs)
+	if len(regs) != len(want) || len(got) != len(want) {
+		t.Fatalf("routes = %v, want exactly %v", regs, want)
+	}
+	for _, route := range want {
+		if !got[route] {
+			t.Fatalf("routes = %v, want exactly %v", regs, want)
+		}
+	}
+}
+
+func TestGoRouterGroupPrefixTerminatesOnReboundVariable(t *testing.T) {
+	// The same group variable bound to different prefixes in two functions
+	// (every echo/gin test file) has no file-global fixed point: g flipped
+	// /a <-> /b forever, and a bounded loop then gave one function's prefix to
+	// the other's routes. Each use must see its own function's binding.
+	regs := goRouteRegistrationsWithin(t, `package routes
+
+func a(e *Echo) {
+	g := e.Group("/a")
+	g.GET("/x", handler)
+}
+
+func b(e *Echo) {
+	g := e.Group("/b")
+	g.GET("/y", handler)
+}
+`)
+	assertGoRouteSet(t, regs, "/a/x -> handler", "/b/y -> handler")
+}
+
+func TestGoRouterGroupPrefixTerminatesOnNamingCycle(t *testing.T) {
+	// Across functions api's parent is users and users' parent is api, and c
+	// rebinds g from itself: a file-global name map grew these prefixes forever.
+	// In statement order none of them is a cycle.
+	regs := goRouteRegistrationsWithin(t, `package routes
+
+func a(e *Echo) {
+	api := e.Group("/api")
+	users := api.Group("/users")
+	users.GET("/x", handler)
+}
+
+func b(users *Group) {
+	api := users.Group("/v")
+	api.GET("/y", handler)
+}
+
+func c(e *Echo) {
+	g := e.Group("/g")
+	g = g.Group("/self")
+	g.GET("/z", handler)
+}
+`)
+	assertGoRouteSet(t, regs, "/api/users/x -> handler", "/v/y -> handler", "/g/self/z -> handler")
+}
+
+func TestGoRouterGroupPrefixResolvesChainDeclaredInReverse(t *testing.T) {
+	// Package-level initializers may reference later declarations; a chain
+	// written child-first must compose exactly like one written in order.
+	regs := goRouteRegistrationsWithin(t, `package routes
+
+var d = c.Group("/d")
+var c = b.Group("/c")
+var b = a.Group("/b")
+var a = e.Group("/a")
+var e *Echo
+
+func register() {
+	d.GET("/x", handler)
+}
+`)
+	assertGoRouteSet(t, regs, "/a/b/c/d/x -> handler")
+}
+
+func TestGoReboundRouterGroupSnapshotTerminates(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "server_test.go", `package server
+
+import "net/http"
+
+func registerA(e Echo) {
+	g := e.Group("/group")
+	g.GET("/users", showUser)
+}
+
+func registerB(e Echo) {
+	g := e.Group("/books")
+	g.GET("/list", listBooks)
+}
+
+func showUser(w http.ResponseWriter, r *http.Request) {}
+
+func listBooks(w http.ResponseWriter, r *http.Request) {}
+`)
+	// In-process and bounded by the package -timeout; see goRouteRegistrationsWithin.
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/group/users") ||
+		!hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "listBooks", "/books/list") {
+		t.Fatalf("missing per-function group routes: %#v", snapshot.Relations)
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/books/users") ||
+		hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "listBooks", "/group/list") {
+		t.Fatalf("group prefix leaked across functions: %#v", snapshot.Relations)
+	}
+}
+
 func TestStaticConstantRouteComposition(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "api.ts", `const apiPrefix = "/api"
