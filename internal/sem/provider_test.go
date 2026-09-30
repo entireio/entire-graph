@@ -6954,6 +6954,129 @@ func ping() {
 	}
 }
 
+// goRouteRegistrationsWithin runs goHTTPRouteRegistrations under a deadline so a
+// non-terminating group-prefix fixed point fails the test instead of hanging
+// the package (it previously spun forever on labstack/echo's group_test.go).
+func goRouteRegistrationsWithin(t *testing.T, content string) []goHTTPRouteRegistration {
+	t.Helper()
+	done := make(chan []goHTTPRouteRegistration, 1)
+	go func() { done <- goHTTPRouteRegistrations(content, nil) }()
+	select {
+	case regs := <-done:
+		return regs
+	case <-time.After(5 * time.Second):
+		t.Fatal("goHTTPRouteRegistrations did not terminate within 5s")
+		return nil
+	}
+}
+
+func goRouteSet(regs []goHTTPRouteRegistration) map[string]bool {
+	routes := map[string]bool{}
+	for _, reg := range regs {
+		routes[reg.Route+" -> "+reg.Handler] = true
+	}
+	return routes
+}
+
+func TestGoRouterGroupPrefixTerminatesOnReboundVariable(t *testing.T) {
+	// The same group variable bound to different prefixes in two functions
+	// (every echo/gin test file) has no fixed point: g flipped /a <-> /b forever.
+	regs := goRouteRegistrationsWithin(t, `package routes
+
+func a(e *Echo) {
+	g := e.Group("/a")
+	g.GET("/x", handler)
+}
+
+func b(e *Echo) {
+	g := e.Group("/b")
+	g.GET("/y", handler)
+}
+`)
+	if len(regs) != 2 {
+		t.Fatalf("want 2 registrations, got %#v", regs)
+	}
+}
+
+func TestGoRouterGroupPrefixTerminatesOnNamingCycle(t *testing.T) {
+	// api's parent is users and users' parent is api: the prefix grew forever.
+	regs := goRouteRegistrationsWithin(t, `package routes
+
+func a(e *Echo) {
+	api := e.Group("/api")
+	users := api.Group("/users")
+	users.GET("/x", handler)
+}
+
+func b(e *Echo) {
+	api := users.Group("/v")
+	api.GET("/y", handler)
+}
+
+func c(e *Echo) {
+	g := e.Group("/g")
+	g = g.Group("/self")
+	g.GET("/z", handler)
+}
+`)
+	if len(regs) != 3 {
+		t.Fatalf("want 3 registrations, got %#v", regs)
+	}
+}
+
+func TestGoRouterGroupPrefixResolvesChainDeclaredInReverse(t *testing.T) {
+	// Each pass propagates one parent link in file order; a chain written
+	// child-first needs len(groupMatches)+1 passes. Pins the pass bound.
+	regs := goRouteRegistrationsWithin(t, `package routes
+
+func register(e *Echo) {
+	d := c.Group("/d")
+	c := b.Group("/c")
+	b := a.Group("/b")
+	a := e.Group("/a")
+	d.GET("/x", handler)
+}
+`)
+	if routes := goRouteSet(regs); !routes["/a/b/c/d/x -> handler"] {
+		t.Fatalf("reverse-declared chain not fully composed: %#v", regs)
+	}
+}
+
+func TestGoReboundRouterGroupSnapshotTerminates(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "server_test.go", `package server
+
+import "net/http"
+
+func TestA(e Echo) {
+	g := e.Group("/group")
+	g.GET("/users", showUser)
+}
+
+func TestB(e Echo) {
+	g := e.Group("/books")
+	g.GET("/list", listBooks)
+}
+
+func showUser(w http.ResponseWriter, r *http.Request) {}
+
+func listBooks(w http.ResponseWriter, r *http.Request) {}
+`)
+	done := make(chan error, 1)
+	go func() {
+		_, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("BuildProviderSnapshot did not terminate within 20s on a rebound Go router group")
+	}
+}
+
 func TestStaticConstantRouteComposition(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "api.ts", `const apiPrefix = "/api"
