@@ -284,12 +284,15 @@ func TestSearchEchoRejectsSchema2FalseCompletePayloadAndRearms(t *testing.T) {
 	commitSearchSessionFixture(t, repo, "source-fidelity replay fixture")
 	session := filepath.Join(t.TempDir(), "session.json")
 
+	// Phrase queries: a bare identifier is answered by exact name and never stored for replay.
+	const seed, freshQuery = "SafeReplaySeed function", "FreshReplayTarget function"
 	first := searchInSessionViewFormat(
-		t, repo, session, "", "SafeReplaySeed", false, "agent", "--no-cache",
+		t, repo, session, "", seed, false, "agent", "--no-cache",
 	)
 	if !strings.Contains(first, "safe.go") {
 		t.Fatalf("first search did not establish its positive control: %q", first)
 	}
+	requireSearchSessionSeedStored(t, session, seed, first)
 	const stalePayload = "1. safe.go:1-5 SafeReplaySeed [complete] s=20.0 [focus:1]\n" +
 		"func StaleFalseCertification() string {\n\treturn `\n VERIFY: example\n`\n}\n" +
 		"STALE_FALSE_CERTIFICATION\n"
@@ -301,7 +304,7 @@ func TestSearchEchoRejectsSchema2FalseCompletePayloadAndRearms(t *testing.T) {
 	})
 
 	fresh := searchInSessionViewFormat(
-		t, repo, session, "", "FreshReplayTarget", false, "agent", "--no-cache",
+		t, repo, session, "", freshQuery, false, "agent", "--no-cache",
 	)
 	if strings.Contains(fresh, "not run") || strings.Contains(fresh, "STALE_FALSE_CERTIFICATION") ||
 		!strings.Contains(fresh, "fresh.go") {
@@ -314,7 +317,7 @@ func TestSearchEchoRejectsSchema2FalseCompletePayloadAndRearms(t *testing.T) {
 	if state.ReplaySchema != searchSessionReplaySchema || state.ReplaySchema == 2 {
 		t.Fatalf("fresh search did not replace schema 2 with current schema %d: %#v", searchSessionReplaySchema, state)
 	}
-	if state.Query != "FreshReplayTarget" || state.Payload != fresh || state.PayloadPaths == nil {
+	if state.Query != freshQuery || state.Payload != fresh || state.PayloadPaths == nil {
 		t.Fatalf("fresh search did not replace the stale opaque payload: %#v", state)
 	}
 

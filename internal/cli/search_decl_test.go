@@ -333,8 +333,9 @@ func TestAgentBlockUnchangedWhenWindowHoldsNamedLineButNotContinuation(t *testin
 	check(t, annotated, 0, 3)
 }
 
-// TestAgentBlockUndocumentedSymbolWithoutNamedLineIsUnchanged: no line naming the symbol within the
-// anchor bound means the block renders as it always has.
+// TestAgentBlockNoNamedLineIsUnchanged: no line naming the symbol within the anchor bound means an
+// unmarked block renders as it always has, the focus window or locator byte for byte. A whole,
+// unchanged body certified under completeMarker is checked on its own terms instead.
 func TestAgentBlockNoNamedLineIsUnchanged(t *testing.T) {
 	t.Parallel()
 	result, _ := declFixtures[0].build(200, 45)
@@ -345,7 +346,14 @@ func TestAgentBlockNoNamedLineIsUnchanged(t *testing.T) {
 		if plain == nil {
 			plain = fitAgentSearchLocation(result.Rank, result.FilePath, result.FocusLine, result.QualifiedName, "", agentSearchScoreTag(result), budget)
 		}
-		if got := agentSearchPrimaryBlock(result, budget, false); string(got) != string(plain) {
+		got := agentSearchPrimaryBlock(result, budget, false)
+		// A whole, unchanged body is certified ahead of any window when a marked header fits; that
+		// block is checked on its own terms, and only the unmarked fallback must be unchanged.
+		if bytes.Contains(got, []byte(completeMarker)) {
+			assertTruthfulCompleteBlock(t, "no named line", budget, got, agentSearchBlockViewOf(result))
+			continue
+		}
+		if string(got) != string(plain) {
 			t.Fatalf("budget %d: changed without a named line:\n%s\nvs\n%s", budget, plain, got)
 		}
 	}

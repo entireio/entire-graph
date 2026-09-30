@@ -88,8 +88,8 @@ type searchSessionState struct {
 	PayloadPaths      []string `json:"payload_paths"`
 	Format            string   `json:"format,omitempty"`
 	// VerifyOmitted records that the payload was rendered with the VERIFY block suppressed. It is
-	// always written alongside schema 6; a file from before schema 6 is refused on its schema, so an
-	// absent field is never read as a mode.
+	// omitted when false, so a schema-6 record without it is an on-mode payload. A record from before
+	// schema 6 is refused on its schema, so a missing field there is never read as a mode.
 	VerifyOmitted bool `json:"verify_omitted,omitempty"`
 	// Repo and Tree are the scope the payload was recorded against. See searchSessionScope: the
 	// state file is what makes an echo possible, and these are what stop it answering for the
