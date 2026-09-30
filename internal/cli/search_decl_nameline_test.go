@@ -297,3 +297,22 @@ func TestAgentBlockFallbackUsesTheFilesLanguage(t *testing.T) {
 		t.Fatal("control: with no language the raw string masks the rest of the line")
 	}
 }
+
+// agentSearchRenderDecls bounds its window like agentSearchBodyLines. Its callers only pass windows
+// inside the snippet (agentSearchWidestWithDecls: right = left+span-1 <= len-1; agentSearchDeclsOnly:
+// no window), so an out-of-range window is not reachable from the renderer; a direct call with one
+// renders the lines that exist instead of panicking.
+func TestAgentSearchRenderDeclsBoundsTheWindow(t *testing.T) {
+	t.Parallel()
+	_, result := declNameLineFixture(0, 1, 3, 10)
+	view := agentSearchBlockViewOf(result)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("out-of-range window panicked: %v", r)
+		}
+	}()
+	block, _ := agentSearchRenderDecls(view, []agentSearchDecl{{index: 1}}, 2, len(view.lines)+5, 0)
+	if !strings.Contains(string(block), view.lines[len(view.lines)-1]) {
+		t.Fatalf("block does not end at the snippet's last line:\n%s", block)
+	}
+}
