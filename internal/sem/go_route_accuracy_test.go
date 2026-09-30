@@ -1042,3 +1042,26 @@ func main() {
 		})
 	}
 }
+
+// Inside a framework's own package, its unqualified types are classified like
+// the qualified ones: a group-typed parameter there is unknown, a root-typed
+// one is root.
+func TestGoRouteAccuracyInPackageTypes(t *testing.T) {
+	runGoRouteAccuracyCases(t, []goRouteAccuracyCase{
+		{
+			name: "gin IRoutes parameter and *Engine parameter",
+			content: `package gin
+func testRoutes(t *testing.T, r IRoutes) { r.GET("/any", anyHandler) }
+func setup(e *Engine) { e.GET("/root", rootHandler) }
+func TestX(t *testing.T) {
+	router := New()
+	testRoutes(t, router)
+	testRoutes(t, router.Group("/v1"))
+	setup(router)
+	router.Run()
+}
+`,
+			want: []string{"/root -> rootHandler"},
+		},
+	})
+}
