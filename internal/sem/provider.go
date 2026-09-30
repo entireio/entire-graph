@@ -3979,7 +3979,7 @@ func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord,
 			if to.ID == from.ID || (to.Kind != "function" && !typeLikeKind(to.Kind)) || !localReachable(from, to) {
 				continue
 			}
-			if filepath.ToSlash(filepath.Dir(to.FilePath)) == fromDir {
+			if inSlashDir(to.FilePath, fromDir) {
 				samePkg = append(samePkg, to)
 			}
 		}
@@ -4009,7 +4009,7 @@ func resolveCallTargetsWithRawImportDeclarations(name string, from SymbolRecord,
 			if to.ID == from.ID || (to.Kind != "function" && !typeLikeKind(to.Kind)) || !localReachable(from, to) {
 				continue
 			}
-			if filepath.ToSlash(filepath.Dir(to.FilePath)) == fromDir {
+			if inSlashDir(to.FilePath, fromDir) {
 				sameDir = append(sameDir, to)
 			}
 		}
@@ -12672,15 +12672,22 @@ func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecor
 	if len(candidates) == 1 {
 		return candidates[0], "name_only", "module", 0.75, true
 	}
+	// Only the count matters and at most one match is returned, so remember
+	// the first rather than collecting them. inSlashDir keeps the per-candidate
+	// directory check allocation-free on Windows too; see its comment.
 	fromDir := filepath.ToSlash(filepath.Dir(from.FilePath))
-	var sameDir []SymbolRecord
-	for _, sym := range candidates {
-		if filepath.ToSlash(filepath.Dir(sym.FilePath)) == fromDir {
-			sameDir = append(sameDir, sym)
+	sameDirCount, sameDirIndex := 0, -1
+	for index, sym := range candidates {
+		if inSlashDir(sym.FilePath, fromDir) {
+			sameDirCount++
+			if sameDirCount > 1 {
+				break
+			}
+			sameDirIndex = index
 		}
 	}
-	if len(sameDir) == 1 {
-		return sameDir[0], "package", "module", 0.75, true
+	if sameDirCount == 1 {
+		return candidates[sameDirIndex], "package", "module", 0.75, true
 	}
 	return SymbolRecord{}, "", "", 0, false
 }
@@ -12689,7 +12696,9 @@ func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecor
 // can bind to: type-like symbols of that exact name other than the referrer.
 //
 // Like sharedTypeCandidates it returns its input unchanged when every entry
-// qualifies, and resolveTypeReference only reads the result. Copying here was
+// qualifies, and resolveTypeReference only reads the result. As there, the
+// cap stops appends from reaching the index but not element writes: the result
+// may alias symbolsByShortName and must be treated as read-only. Copying here was
 // the second half of the same quadratic: one resolution per reference, each
 // copying every same-name declaration, so a name declared in every file of a
 // generated package cost references times declarations in allocations.

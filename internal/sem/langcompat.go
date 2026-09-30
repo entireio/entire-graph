@@ -224,7 +224,9 @@ func LanguagesMayShareRelations(left, right string) bool {
 // already do: the index is shared read-only by every relation worker, so
 // writing through either slice would already be a data race. The result is
 // capped at its length so a caller that appends to it reallocates rather
-// than writing past the end into the index's spare capacity.
+// than writing past the end into the index's spare capacity. The cap only
+// protects against appends: the elements may be the index's own, so callers
+// must treat the result as read-only and never assign to its elements.
 func sharedTypeCandidates(from SymbolRecord, candidates []SymbolRecord) []SymbolRecord {
 	for index, candidate := range candidates {
 		if candidateSharesDeclarations(from, candidate) {
