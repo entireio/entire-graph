@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"sort"
 	"strings"
 	"testing"
 )
@@ -177,7 +178,8 @@ func c() { e := echo.New(); e.GET("/notecho", notEchoHandler) }
 func d(gin *Thing) { r := gin.Default(); r.GET("/shadow", shadowHandler) }
 func f() { m := &http.ServeMux{}; m.Handle("/lit", http.HandlerFunc(litHandler)); m.GET("/lit2", lit2Handler) }
 `,
-			want: []string{"/alias -> aliasHandler", "/gin -> ginHandler", "/lit -> litHandler", "/lit2 -> lit2Handler"},
+			// A ServeMux has no verb methods: m.GET is not a registration.
+			want: []string{"/alias -> aliasHandler", "/gin -> ginHandler", "/lit -> litHandler"},
 		},
 	})
 }
@@ -977,5 +979,66 @@ func main() {
 		if strings.HasPrefix(key, "adminRoutes ") || strings.HasPrefix(key, "healthHandler ") {
 			t.Fatalf("route of a returned or StripPrefix'd router emitted: %s (all: %v)", key, got)
 		}
+	}
+}
+
+// Inline registrations (closures, calls, middleware arguments, Method and
+// gin Handle forms) get exactly their composed route, and call shapes that
+// only look like registrations get none.
+func TestGoRouteAccuracyInlineRegistrations(t *testing.T) {
+	for _, tc := range []goRouteAccuracyCase{
+		{
+			name: "closures, middleware arguments and Method forms",
+			content: `package p
+func main() {
+	r := chi.NewRouter()
+	r.Route("/api", func(r chi.Router) {
+		r.Get("/items", func(w http.ResponseWriter, req *http.Request) {})
+		r.Method("POST", "/m", handler)
+		r.MethodFunc("PUT", "/mf", hf)
+	})
+	e := echo.New()
+	g := e.Group("/g")
+	g.GET("/mw", h, m2)
+	http.ListenAndServe(":1", r)
+}
+`,
+			want: []string{"/api/items", "/api/m", "/api/mf", "/g/mw"},
+		},
+		{
+			name: "gin Handle(method, path, handlers...) and handler-less calls",
+			content: `package p
+func main() {
+	router := gin.New()
+	router.Handle("GET", "/x", h)
+	router.Handle("PO ST", "/")
+	router.Run(":1")
+}
+`,
+			want: []string{"/x"},
+		},
+		{
+			name: "net/http client calls are not registrations",
+			content: `package p
+func main() {
+	http.Post("/api/x", "application/json", body)
+	http.HandleFunc("/y", func(w http.ResponseWriter, r *http.Request) {})
+}
+`,
+			want: []string{"/y"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, inline := range goRouteRegistrationsDetailed(tc.content, nil).inline {
+				got = append(got, inline.Route)
+			}
+			sort.Strings(got)
+			want := append([]string(nil), tc.want...)
+			sort.Strings(want)
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				t.Fatalf("inline routes = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

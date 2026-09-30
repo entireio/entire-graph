@@ -1688,12 +1688,13 @@ func (r *goRouteResolver) noteStripPrefix(call *ast.CallExpr, scope *goRouteScop
 // unqualified inside that framework's package (New() in package gin).
 func (r *goRouteResolver) inPackageConstructorValue(call *ast.CallExpr, lookup goRouteLookup) (goRouteBinding, bool) {
 	fun, ok := call.Fun.(*ast.Ident)
-	if !ok || r.file.Name == nil || !goRouteDefaultFrameworkNames[r.file.Name.Name] {
+	if !ok || r.file.Name == nil {
 		return goRouteBinding{}, false
 	}
 	if _, declared := lookup(fun.Name); declared {
 		return goRouteBinding{}, false
 	}
+	// Only a package named like the framework has a constructor-table entry.
 	framework := r.file.Name.Name
 	mountable, ok := goRouteConstructors[framework+"."+fun.Name]
 	if !ok {
