@@ -371,6 +371,16 @@ func (r *goRouteResolver) maskSpans() [][2]int {
 			spans = append(spans, [2]int{start, end})
 		}
 	}
+	// Comments are never routes: a commented-out registration or a doc
+	// example must not reach the route literal fallback either.
+	for _, group := range r.file.Comments {
+		for _, comment := range group.List {
+			start, end := r.offset(comment.Pos()), r.offset(comment.End())
+			if start >= 0 && end <= len(r.src) && start < end {
+				spans = append(spans, [2]int{start, end})
+			}
+		}
+	}
 	ast.Inspect(r.file, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
