@@ -952,6 +952,7 @@ func main() {
 	m := http.NewServeMux()
 	m.HandleFunc("/x", healthHandler)
 	http.Handle("/a/", http.StripPrefix("/a", m))
+	// r.Get("/commented", healthHandler)
 	http.ListenAndServe(":1", r)
 }
 `)
@@ -971,7 +972,7 @@ func main() {
 		}
 	}
 	for key := range got {
-		for _, bare := range []string{"/users", "/items", "/stats", "/x", "/a", "/api", "/admin"} {
+		for _, bare := range []string{"/users", "/items", "/stats", "/x", "/a", "/api", "/admin", "/commented"} {
 			if strings.HasSuffix(key, " "+externalID("route", bare)) {
 				t.Fatalf("bare or undetermined path emitted: %s (all: %v)", key, got)
 			}

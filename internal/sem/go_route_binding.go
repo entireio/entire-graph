@@ -219,13 +219,13 @@ func resolveGoRouteReceiversWithBudget(content string, constants map[string]stri
 	}
 	fset := token.NewFileSet()
 	shift := 0
-	file, err := parser.ParseFile(fset, "", content, parser.SkipObjectResolution)
+	file, err := parser.ParseFile(fset, "", content, parser.SkipObjectResolution|parser.ParseComments)
 	if err != nil {
 		// Fragments without a package clause are still worth resolving. A file
 		// that does not parse either way keeps the name-based fallback.
 		const clause = "package routes\n"
 		fset = token.NewFileSet()
-		file, err = parser.ParseFile(fset, "", clause+content, parser.SkipObjectResolution)
+		file, err = parser.ParseFile(fset, "", clause+content, parser.SkipObjectResolution|parser.ParseComments)
 		if err != nil {
 			return receivers
 		}
