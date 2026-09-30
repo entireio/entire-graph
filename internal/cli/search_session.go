@@ -66,6 +66,10 @@ type searchSession struct {
 // phrase search that the replay would then answer with the same names-only payload.
 const (
 	searchSessionReplaySchema = 5
+	// searchSessionReplaySchemaVerifyOmitted is the schema of a payload rendered with
+	// `--verify-block off`. PRE-FIX COMPOSITION: 306 numbered the off mode 4, which collides with
+	// 297's producer-bound schema 4. Repaired in the following schema-5 commit.
+	searchSessionReplaySchemaVerifyOmitted = 4
 	// A normal search payload is budgeted in kilobytes. Keep a generous ceiling for callers that
 	// deliberately widen it, but never let an untrusted/stale session file allocate without bound.
 	maxSearchSessionStateBytes = 8 << 20
@@ -82,6 +86,10 @@ type searchSessionState struct {
 	PolicyFingerprint string   `json:"policy_fingerprint,omitempty"`
 	PayloadPaths      []string `json:"payload_paths"`
 	Format            string   `json:"format,omitempty"`
+	// VerifyOmitted records that the payload was rendered with the VERIFY block suppressed. Absent
+	// (false) is exactly what every older state file means: before the switch existed, every payload
+	// was rendered with the block on.
+	VerifyOmitted bool `json:"verify_omitted,omitempty"`
 	// Repo and Tree are the scope the payload was recorded against. See searchSessionScope: the
 	// state file is what makes an echo possible, and these are what stop it answering for the
 	// wrong repository.
@@ -122,6 +130,10 @@ type searchSessionScope struct {
 	// snippets and budget are the RECORDING binary's; replaying it after an upgrade serves the old
 	// ranking under a header saying the question was already answered.
 	Producer string
+	// OmitVerify is the resolved `--verify-block off`. It is part of the identity for the same
+	// reason Format is: the payload is opaque rendered bytes, so a payload recorded with VERIFY must
+	// never answer an omit-verify call (it would hand the no-VERIFY arm the block) and vice versa.
+	OmitVerify bool
 }
 
 // matches reports whether a recorded scope may answer for the live one.
@@ -131,7 +143,7 @@ type searchSessionScope struct {
 // another repository or wire format. The cost of being wrong is one real search; the cost of the
 // wildcard is serving opaque bytes under the wrong identity.
 func (recorded searchSessionState) matches(live searchSessionScope) bool {
-	if recorded.ReplaySchema != searchSessionReplaySchema ||
+	if recorded.ReplaySchema != searchSessionReplaySchemaFor(live.OmitVerify) ||
 		recorded.PolicyFingerprint == "" ||
 		live.PolicyFingerprint == "" ||
 		recorded.PolicyFingerprint != live.PolicyFingerprint ||
@@ -140,7 +152,8 @@ func (recorded searchSessionState) matches(live searchSessionScope) bool {
 		recorded.Format != live.Format ||
 		recorded.Producer == "" ||
 		live.Producer == "" ||
-		recorded.Producer != live.Producer {
+		recorded.Producer != live.Producer ||
+		recorded.VerifyOmitted != live.OmitVerify {
 		return false
 	}
 	// The tree hash alone is not a repository identity: sibling --repo subdirectories share the
@@ -152,6 +165,15 @@ func (recorded searchSessionState) matches(live searchSessionScope) bool {
 		return recorded.Tree == live.Tree
 	}
 	return true
+}
+
+// searchSessionReplaySchemaFor is the replay schema a payload rendered in this VERIFY mode is
+// recorded under and must match. See searchSessionReplaySchemaVerifyOmitted.
+func searchSessionReplaySchemaFor(omitVerify bool) int {
+	if omitVerify {
+		return searchSessionReplaySchemaVerifyOmitted
+	}
+	return searchSessionReplaySchema
 }
 
 // newSearchSession returns nil when the echo is off, which is the default for every caller that
@@ -285,10 +307,11 @@ func (s *searchSession) record(
 	if state.Searches < math.MaxInt {
 		state.Searches++
 	}
-	state.ReplaySchema = searchSessionReplaySchema
+	state.ReplaySchema = searchSessionReplaySchemaFor(live.OmitVerify)
 	state.PolicyFingerprint = live.PolicyFingerprint
 	state.Repo, state.Tree, state.Format = live.Repo, live.Tree, live.Format
 	state.Producer = live.Producer
+	state.VerifyOmitted = live.OmitVerify
 	if state.Payload == "" && replayable && len(payload) <= maxSearchSessionStateBytes {
 		state.Query = query
 		state.Payload = string(payload)

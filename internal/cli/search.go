@@ -50,6 +50,12 @@ const (
 	searchReferenceBlocksAll           = "all"
 )
 
+// The two values of `--verify-block` / ENTIRE_GRAPH_VERIFY_BLOCK. See resolveSearchVerifyBlock.
+const (
+	searchVerifyBlockOn  = "on"
+	searchVerifyBlockOff = "off"
+)
+
 type searchFlags struct {
 	// VerifyExplain is appended to the emitted VERIFY line as `... 2>&1 | <cmd>`.
 	VerifyExplain         string
@@ -78,10 +84,15 @@ type searchFlags struct {
 	CalleeHop             bool
 	VerifyPrefix          string
 	VerifyPreFixStatus    string
-	FileOutline           bool
-	Deep                  bool
-	SingleResolution      bool
-	DocumentResolution    bool
+	// VerifyBlock is the explicit `--verify-block` value ("on"/"off"), or "" when no flag named it.
+	// OmitVerify is the resolved decision (flag, then ENTIRE_GRAPH_VERIFY_BLOCK, then on); see
+	// resolveSearchVerifyBlock.
+	VerifyBlock        string
+	OmitVerify         bool
+	FileOutline        bool
+	Deep               bool
+	SingleResolution   bool
+	DocumentResolution bool
 	// The reference blocks, off unless asked for. See SearchOptions in internal/sem/search.go for
 	// the session measurement that made OFF the default.
 	ContainerMap   bool
@@ -114,9 +125,56 @@ func applySearchReferenceBlocks(flags *searchFlags, value string) error {
 	return nil
 }
 
+// resolveSearchVerifyBlock decides whether this search emits its VERIFY block.
+//
+// Precedence: an explicit `--verify-block on|off` (or `--omit-verify`) wins; otherwise
+// ENTIRE_GRAPH_VERIFY_BLOCK; otherwise on. On is the product default and is byte-identical to a
+// build without the flag. Off suppresses the block at its producer (sem.SearchOptions.OmitVerifyCommand)
+// and exists for fair A/B comparisons: the block carries a runnable test command and run-once/fix/stop
+// advice that would help an arm with no tool, and the fairness rule is "both arms or neither".
+//
+// Off refuses the flags that only decorate the VERIFY block, and refuses a pre-delivered payload.
+// Each of those would otherwise be silently ignored (or, for the presearch file, silently echo bytes
+// that may carry a VERIFY block), and a knob that quietly does nothing is how a measurement gets
+// attributed to the wrong configuration.
+func resolveSearchVerifyBlock(flags *searchFlags, env EntireEnv) error {
+	value := flags.VerifyBlock
+	source := "--verify-block"
+	if value == "" {
+		value = strings.ToLower(strings.TrimSpace(env.VerifyBlock))
+		source = envVerifyBlock
+	}
+	switch value {
+	case "", searchVerifyBlockOn:
+		flags.OmitVerify = false
+		return nil
+	case searchVerifyBlockOff:
+	default:
+		return fmt.Errorf("%s: want %s or %s, got %q", source, searchVerifyBlockOn, searchVerifyBlockOff, value)
+	}
+	flags.OmitVerify = true
+	for _, decorator := range []struct{ name, value string }{
+		{"--verify-prefix", flags.VerifyPrefix},
+		{"--verify-prefix-status", flags.VerifyPreFixStatus},
+		{"--verify-explain", flags.VerifyExplain},
+	} {
+		if decorator.value != "" {
+			return fmt.Errorf("%s decorates the VERIFY block, which %s off suppresses", decorator.name, source)
+		}
+	}
+	if strings.TrimSpace(env.PresearchPath) != "" {
+		return fmt.Errorf("%s off cannot apply to a pre-delivered payload (%s): its bytes were rendered elsewhere and are echoed verbatim",
+			source, envPresearch)
+	}
+	return nil
+}
+
 func runSearch(ctx context.Context, opts Options, args []string) error {
 	flags, rest, err := parseSearchFlags(args)
 	if err != nil {
+		return err
+	}
+	if err := resolveSearchVerifyBlock(&flags, opts.Env); err != nil {
 		return err
 	}
 	// The environment sets a session-wide default; the flags then add to it. A flag can only ever
@@ -159,6 +217,8 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The producer is computed once so all three scope builders bind the same binary identity.
+	producer := opts.sessionProducer()
 	var (
 		scope               searchSessionScope
 		replayPolicy        sem.SearchReplayPolicy
@@ -166,8 +226,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		forceSessionReplace bool
 	)
 	if session != nil {
-		scope = searchSessionScopeFor(ctx, repo, opts.sessionProducer())
-		scope.Format = flags.Format
+		scope = searchSessionScopeForFlags(ctx, repo, flags, producer)
 		// A rendered payload is opaque: snippets and reference blocks cannot be safely removed from
 		// it after the fact. Bind it to the semantic layer's effective corpus policy and validate
 		// every contributing path before writing even the replay header. Policy resolution is an
@@ -221,9 +280,8 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 					IgnoreFiles:  flags.IgnoreFiles,
 					IncludeFiles: flags.IncludeFiles,
 				})
-				confirmedScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer())
+				confirmedScope := searchSessionScopeForFlags(ctx, repo, flags, producer)
 				confirmedScope.PolicyFingerprint = confirmedPolicy.Fingerprint()
-				confirmedScope.Format = flags.Format
 				if confirmErr == nil &&
 					confirmedPolicy.Fingerprint() == replayPolicy.Fingerprint() &&
 					confirmedPolicy.MatchesTree(confirmedScope.Tree) &&
@@ -239,9 +297,8 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 							IgnoreFiles:  flags.IgnoreFiles,
 							IncludeFiles: flags.IncludeFiles,
 						})
-						finalScope := searchSessionScopeFor(ctx, repo, opts.sessionProducer())
+						finalScope := searchSessionScopeForFlags(ctx, repo, flags, producer)
 						finalScope.PolicyFingerprint = finalPolicy.Fingerprint()
-						finalScope.Format = flags.Format
 						if finalErr == nil &&
 							finalPolicy.Fingerprint() == confirmedPolicy.Fingerprint() &&
 							finalPolicy.MatchesTree(finalScope.Tree) &&
@@ -309,6 +366,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		CalleeHop:                      flags.CalleeHop,
 		VerifyPrefix:                   flags.VerifyPrefix,
 		VerifyPreFixStatus:             flags.VerifyPreFixStatus,
+		OmitVerifyCommand:              flags.OmitVerify,
 		IncludeFileOutline:             flags.FileOutline,
 		VerifyExplainCommand:           flags.VerifyExplain,
 		Deep:                           flags.Deep,
@@ -376,6 +434,17 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		)
 	}
 	return nil
+}
+
+// searchSessionScopeForFlags is searchSessionScopeFor plus the render choices that shape the opaque
+// payload bytes: the wire format and whether the VERIFY block was suppressed. Every scope the search
+// verb compares or records is built here, so a render choice cannot be bound at one site and
+// forgotten at another.
+func searchSessionScopeForFlags(ctx context.Context, repo string, flags searchFlags, producer string) searchSessionScope {
+	scope := searchSessionScopeFor(ctx, repo, producer)
+	scope.Format = flags.Format
+	scope.OmitVerify = flags.OmitVerify
+	return scope
 }
 
 // searchSessionScopeFor describes the tree a payload recorded now would be answering for.
@@ -2851,6 +2920,26 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.VerifyPreFixStatus, i = value, next
+		// --verify-block on|off: whether the payload carries the VERIFY block. --omit-verify is
+		// shorthand for off. Naming both values in one command line is an error rather than
+		// last-wins. See resolveSearchVerifyBlock.
+		case "--verify-block", "--omit-verify":
+			value, next := searchVerifyBlockOff, i
+			if args[i] == "--verify-block" {
+				raw, after, err := searchFlagValue(args, i)
+				if err != nil {
+					return flags, nil, err
+				}
+				value, next = strings.ToLower(strings.TrimSpace(raw)), after
+				if value != searchVerifyBlockOn && value != searchVerifyBlockOff {
+					return flags, nil, fmt.Errorf("--verify-block: want %s or %s, got %q",
+						searchVerifyBlockOn, searchVerifyBlockOff, raw)
+				}
+			}
+			if flags.VerifyBlock != "" && flags.VerifyBlock != value {
+				return flags, nil, fmt.Errorf("--verify-block given as both %s and %s", flags.VerifyBlock, value)
+			}
+			flags.VerifyBlock, i = value, next
 		case "--max-regions-per-file":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

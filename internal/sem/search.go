@@ -167,6 +167,17 @@ type SearchOptions struct {
 	// VerifyPreFixStatus is one caller-computed line rendered verbatim as `PRE-FIX:` under the emitted
 	// command, capped at searchVerifyPreFixStatusMaxBytes.
 	VerifyPreFixStatus string
+	// OmitVerifyCommand suppresses the VERIFY block at its producer: no command is derived, the
+	// response carries no VerifyCommand (the JSON `verify_command` member is ABSENT, not null), and
+	// Stats.VerifyOmitted says so, so a structured consumer can tell "suppressed on request" from
+	// "nothing derivable". Off (the default) is byte-for-byte the payload without this field.
+	//
+	// It exists for fair A/B comparisons. The block is not retrieval: it carries a runnable test
+	// command plus run-once/fix/stop instructions that would help an arm with NO tool just as much,
+	// and the benchmark fairness rule is "both arms or neither". Suppressing it here, rather than
+	// scraping `VERIFY:` lines out of the rendered payload, cannot touch retrieved source text that
+	// happens to look like a VERIFY record.
+	OmitVerifyCommand bool
 	// CalleeHop admits the top hit's OUTGOING CALLS targets as candidate fix sites — up to three,
 	// same-repo and resolved only. Off by default.
 	//
@@ -454,6 +465,9 @@ type SearchStats struct {
 	FileOutlineBytes   int `json:"file_outline_bytes,omitempty"`
 	FileOutlineRows    int `json:"file_outline_rows,omitempty"`
 	VerifyCommandBytes int `json:"verify_command_bytes,omitempty"`
+	// VerifyOmitted is true when the caller suppressed the VERIFY block (SearchOptions.OmitVerifyCommand),
+	// so an absent verify_command is attributable to the request rather than to a failed derivation.
+	VerifyOmitted bool `json:"verify_omitted,omitempty"`
 	// VerifyExplainSuffixBytes is the caller-configured `| <explain cmd>` tail appended to the verify
 	// command. It is reported separately because it is fixed overhead the caller opted into, so it is
 	// added to the block's allowance instead of competing with the command the ranking derived.
@@ -1924,7 +1938,12 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			}
 		}
 	}
-	verifyCommand := buildSearchVerifyCommand(results, verifyEvidence)
+	var verifyCommand *SearchVerifyCommand
+	if options.OmitVerifyCommand {
+		stats.VerifyOmitted = true
+	} else {
+		verifyCommand = buildSearchVerifyCommand(results, verifyEvidence)
+	}
 	if verifyCommand != nil && options.VerifyExplainCommand != "" {
 		// Compose here, in the emitted string, rather than asking the agent to compose. `explain`
 		// passes the build output through before appending declarations, so this stays a superset of
