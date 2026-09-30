@@ -38,8 +38,12 @@ func TestStatsHonestModelIncludesLossesAndComparisonPopulation(t *testing.T) {
 	}
 	for _, verbose := range []bool{false, true} {
 		text := runHonestyText(t, args, verbose)
-		if !strings.Contains(text, "1:1 context model: -200 est. tokens; not measured savings") {
-			t.Errorf("missing signed, qualified result:\n%s", text)
+		// No fixture re-queries or re-reads, so observed displacement equals the 1:1 model here.
+		if !strings.Contains(text, "observed displacement: net -200 est. tokens; displaced 100% of 4") {
+			t.Errorf("missing signed, qualified observed result:\n%s", text)
+		}
+		if verbose && !strings.Contains(text, "1:1 context model: -200 est. tokens; not measured savings") {
+			t.Errorf("missing signed, qualified 1:1 result:\n%s", text)
 		}
 		if verbose && !strings.Contains(text, "sessions with both result types: 3 of 4") {
 			t.Errorf("missing model population:\n%s", text)
@@ -70,9 +74,17 @@ func TestStatsHonestModelDistinguishesSignedZeroAndUnavailable(t *testing.T) {
 			repo, sessions := t.TempDir(), t.TempDir()
 			writeHonestyTranscript(t, sessions, tc.name, tc.graph, tc.explore)
 			args := []string{"--repo", repo, "--sessions-dir", sessions, "--since", "all"}
+			observed := "observed displacement: net " + tc.want
+			if strings.HasPrefix(tc.want, "unavailable") {
+				observed = "unavailable"
+			}
 			for _, verbose := range []bool{false, true} {
-				if text := runHonestyText(t, args, verbose); !strings.Contains(text, "1:1 context model: "+tc.want) {
-					t.Errorf("missing %q:\n%s", tc.want, text)
+				text := runHonestyText(t, args, verbose)
+				if !strings.Contains(text, observed) {
+					t.Errorf("missing %q:\n%s", observed, text)
+				}
+				if verbose && !strings.Contains(text, "1:1 context model: "+tc.want) {
+					t.Errorf("missing 1:1 %q:\n%s", tc.want, text)
 				}
 			}
 		})

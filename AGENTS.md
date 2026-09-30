@@ -149,19 +149,27 @@ Local, read-only report over the coding-agent session transcripts already on dis
 (`~/.claude/projects/<path-slug>/*.jsonl`; `--sessions-dir` overrides the lookup). Reports graph
 calls per verb vs. exploration calls (`Read` whole-file / `Read` line-range / `Grep` / `Glob` /
 shell `grep|find|cat|head|tail|sed|awk`), observed result bytes, session tokens reported by transcript
-`usage`, and a signed **1:1 context model**, explicitly not measured savings.
+`usage`, and a signed **observed-displacement** net, explicitly not measured savings.
 
 A shell call counts as exploration only when the LEADING stage of one of its pipelines runs a
 locate tool: `grep -rn foo . | head` does, `go test ./... 2>&1 | tail -40` does not, and a write
 (`cat > file`, a here-document, `tee`, `sed -i`) never does. `entire sem edges|symbols` counts as a
 graph call, like `entire graph <verb>`.
 
-The model assumes each observed `query`/`search`/`neighbors`/`impact` result replaces ONE
+The headline classifies each observed `query`/`search`/`neighbors`/`impact` result by the agent's
+next 5 tool calls in the same transcript: another graph lookup, `Grep`, `Glob` or shell search first
+is a RE-QUERY; a read of a file whose path overlaps one the graph output named is READ-ANYWAY; both
+earn no credit and their bytes are a cost. Only the rest (DISPLACED) are credited, at the session's
+average exploration bytes/result. The displaced/re-query/read-anyway rates are always printed
+beside the net (`graph_locate_*`, `*_rate`, `observed_net_*` in JSON). Path overlap is a suffix
+match on extension-bearing paths, and anything outside the 5-call window is invisible.
+
+The legacy 1:1 model (`--verbose`, `estimated_savings_*`) assumes each observed locate result replaces ONE
 exploration result, priced using that session's average exploration bytes/result, then subtracts
 graph result bytes. The 1:1 substitution is unvalidated; bytes/4 is only a rough token estimate.
 Queries, output truncation and task quality are not controlled, so this does not establish causal
-savings. Human output uses `estimated_savings_est_tokens_unfloored`, including negative sessions,
-and `sessions_with_savings_comparison` distinguishes an available zero from no comparison.
+savings. `estimated_savings_est_tokens_unfloored` keeps negative sessions (the status line reads
+it), and `sessions_with_savings_comparison` distinguishes an available zero from no comparison.
 Legacy positive-only savings, percentage and graph-first JSON fields remain for compatibility;
 they are not human-facing evidence of savings or behavior. No network; local parse-cache writes
 can be disabled with `--no-cache`.
