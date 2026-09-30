@@ -7014,7 +7014,9 @@ func b(e *Echo) {
 func TestGoRouterGroupPrefixTerminatesOnNamingCycle(t *testing.T) {
 	// Across functions api's parent is users and users' parent is api, and c
 	// rebinds g from itself: a file-global name map grew these prefixes forever.
-	// In statement order none of them is a cycle.
+	// In statement order none of them is a cycle. b's users is a *Group
+	// parameter whose prefix is set by its caller, so /v/y (the bare child
+	// path) would be a fabricated route and is omitted.
 	regs := goRouteRegistrationsWithin(t, `package routes
 
 func a(e *Echo) {
@@ -7034,7 +7036,7 @@ func c(e *Echo) {
 	g.GET("/z", handler)
 }
 `)
-	assertGoRouteSet(t, regs, "/api/users/x -> handler", "/v/y -> handler", "/g/self/z -> handler")
+	assertGoRouteSet(t, regs, "/api/users/x -> handler", "/g/self/z -> handler")
 }
 
 func TestGoRouterGroupPrefixResolvesChainDeclaredInReverse(t *testing.T) {
