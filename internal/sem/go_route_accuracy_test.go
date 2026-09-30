@@ -336,3 +336,68 @@ func main() {
 		},
 	})
 }
+
+// fiber: Route closures carry the prefix (with or without a route name),
+// Group accepts middleware, a v2 Mount of an app created here is composed, and
+// an app handed to Use (v3 mounting) or returned is unknown.
+func TestGoRouteAccuracyFiber(t *testing.T) {
+	runGoRouteAccuracyCases(t, []goRouteAccuracyCase{
+		{
+			name: "Route, named Route, Group with middleware",
+			content: `package p
+func main() {
+	app := fiber.New()
+	app.Get("/", indexHandler)
+	app.Route("/a", func(api fiber.Router) {
+		api.Get("/x", xHandler)
+	})
+	v1 := app.Group("/api", logger)
+	v1.Route("/users", func(r fiber.Router) {
+		r.Get("/list", listHandler)
+	}, "users.")
+	log.Fatal(app.Listen(":3000"))
+}
+`,
+			want: []string{"/ -> indexHandler", "/a/x -> xHandler", "/api/users/list -> listHandler"},
+		},
+		{
+			name: "v2 Mount is composed once",
+			content: `package p
+func main() {
+	app := fiber.New()
+	micro := fiber.New()
+	micro.Get("/doe", doeHandler)
+	app.Mount("/john", micro)
+	app.Listen(":3000")
+}
+`,
+			want: []string{"/john/doe -> doeHandler"},
+		},
+		{
+			name: "app handed to Use, returned, or mounted twice",
+			content: `package p
+func a() {
+	app := fiber.New()
+	sub := fiber.New()
+	sub.Get("/u", uHandler)
+	app.Use("/v3", sub)
+	app.Listen(":3000")
+}
+func setup() *fiber.App {
+	app := fiber.New()
+	app.Get("/s", sHandler)
+	return app
+}
+func b() {
+	app := fiber.New()
+	m := fiber.New()
+	m.Get("/m", mHandler)
+	app.Mount("/one", m)
+	app.Mount("/two", m)
+	app.Listen(":3000")
+}
+`,
+			want: nil,
+		},
+	})
+}

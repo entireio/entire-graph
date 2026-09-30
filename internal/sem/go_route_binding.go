@@ -51,7 +51,7 @@ import (
 // Route closures (chi, fiber) are walked with their parameter bound to the
 // parent's prefix plus the Route prefix; chi Group(func) and With keep the
 // parent's prefix. A router instance is served where it is mounted: a single,
-// unconditional chi Mount with a static prefix of an instance created in
+// unconditional chi or fiber Mount with a static prefix of an instance created in
 // this file is composed; any other Mount, and any escape of a mountable
 // instance (returned, passed to a call other than a serve or Handle call,
 // stored in a field, composite or package variable, addressed, or declared
@@ -1369,6 +1369,10 @@ func (r *goRouteResolver) routeClosure(call *ast.CallExpr, scope *goRouteScope) 
 	return lit, r.groupValue(call, r.lookupIn(scope)), true
 }
 
+// goRouteMountStrips are the frameworks whose Mount serves the mounted
+// router's routes under the mount prefix (chi Mount, fiber v2 App.Mount).
+var goRouteMountStrips = map[string]bool{"chi": true, "fiber": true}
+
 // noteMount handles parent.Mount(prefix, sub) on a router instance created in
 // this file. The instance's routes are served under the parent's prefix plus
 // prefix when that is a single, unconditional, composable mount; otherwise
@@ -1388,7 +1392,7 @@ func (r *goRouteResolver) noteMount(call *ast.CallExpr, scope *goRouteScope) {
 	if origin == nil {
 		return
 	}
-	if sub.kind != goRouteKnown || sub.prefix != "" || origin.framework != "chi" || origin.region != r.region {
+	if sub.kind != goRouteKnown || sub.prefix != "" || !goRouteMountStrips[origin.framework] || origin.region != r.region {
 		// A group of the instance, a router whose framework does not strip
 		// the mount prefix, or a mount that may run zero or many times.
 		origin.opaque = true
