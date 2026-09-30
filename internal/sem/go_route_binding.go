@@ -217,6 +217,11 @@ type goRouteClosureEffect struct {
 	applying bool
 }
 
+type goRouteClosureRewriteTarget struct {
+	name    string
+	binding *goRouteBinding
+}
+
 // goRouteReceivers answers "what prefix does the receiver identifier at this
 // byte offset hold". Offsets are into the original content.
 type goRouteReceivers struct {
@@ -963,6 +968,35 @@ func (r *goRouteResolver) withStripPrefixJoin(dependencies []*goRouteRewriteJoin
 	return result, true
 }
 
+func (r *goRouteResolver) newStripPrefixJoin(name string, binding *goRouteBinding) *goRouteRewriteJoin {
+	join := &goRouteRewriteJoin{
+		name:       name,
+		binding:    binding,
+		may:        binding.stripPrefixMiddleware,
+		observed:   map[*goRouteOrigin]bool{},
+		deps:       map[*goRouteRewriteJoin]bool{},
+		dependents: map[*goRouteRewriteJoin]bool{},
+	}
+	for _, dependency := range binding.stripPrefixJoins {
+		r.step(1)
+		r.addStripPrefixJoinDependency(join, dependency)
+	}
+	return join
+}
+
+// setStripPrefixJoinFrontier replaces a value's transitive frontier with its
+// summary join. The summary already depends on every prior frontier token, so
+// retaining both eventually exhausts the independent-dependency bound.
+func (r *goRouteResolver) setStripPrefixJoinFrontier(join *goRouteRewriteJoin) {
+	value := *join.binding
+	if value.stripPrefixMiddleware {
+		value.stripPrefixJoins = nil
+	} else {
+		value.stripPrefixJoins = []*goRouteRewriteJoin{join}
+	}
+	r.set(join.name, join.binding, value)
+}
+
 func (r *goRouteResolver) undo(mark int) {
 	for i := len(r.log) - 1; i >= mark; i-- {
 		*r.log[i].binding = r.log[i].old
@@ -1369,13 +1403,70 @@ func (r *goRouteResolver) clauses(scope *goRouteScope, body *ast.BlockStmt, bind
 	r.branches(scope, written, branches, false, fallthroughEdges)
 }
 
+// visibleClosureRewriteTargets returns exact captured bindings that a visible
+// local closure descriptor may write with rewrite middleware. Lexical names
+// are considered only once so a shadowed outer descriptor cannot seed a join;
+// value aliases of the same descriptor are deduplicated by effect identity.
+func (r *goRouteResolver) visibleClosureRewriteTargets(scope *goRouteScope) []goRouteClosureRewriteTarget {
+	seenNames := map[string]bool{}
+	seenEffects := map[*goRouteClosureEffect]bool{}
+	seenTargets := map[*goRouteBinding]bool{}
+	var targets []goRouteClosureRewriteTarget
+	for current := scope; current != nil; current = current.parent {
+		for name, binding := range current.vars {
+			r.step(1)
+			if seenNames[name] {
+				continue
+			}
+			seenNames[name] = true
+			effect := binding.closure
+			if effect == nil || seenEffects[effect] {
+				continue
+			}
+			seenEffects[effect] = true
+			for _, write := range effect.writes {
+				r.step(1)
+				if !write.value.stripPrefixMiddleware && write.value.stripPrefixSource == nil && len(write.value.stripPrefixJoins) == 0 {
+					continue
+				}
+				target := write.target
+				if target == nil || seenTargets[target] {
+					continue
+				}
+				seenTargets[target] = true
+				targets = append(targets, goRouteClosureRewriteTarget{name: write.name, binding: target})
+			}
+		}
+	}
+	return targets
+}
+
 // branches walks code that may run zero, one, or many times, or instead of a
 // sibling branch. Every outer variable any branch may write is unknown before
 // each branch (a previous iteration or fallthrough may have written it) and
 // after all of them (whether it was written depends on the path taken). Each
 // branch's own writes are rolled back so siblings never see them.
 func (r *goRouteResolver) branches(scope *goRouteScope, written map[string]bool, branches []func(), repeat bool, fallthroughEdges []bool) {
+	closureTargets := r.visibleClosureRewriteTargets(scope)
 	joins := r.markNames(scope, written, repeat)
+	syntacticJoinCount := len(joins)
+	joined := make(map[*goRouteBinding]bool, len(joins)+len(closureTargets))
+	for _, join := range joins {
+		r.step(1)
+		joined[join.binding] = true
+	}
+	for _, target := range closureTargets {
+		r.step(1)
+		if joined[target.binding] {
+			continue
+		}
+		join := r.newStripPrefixJoin(target.name, target.binding)
+		joins = append(joins, join)
+		joined[target.binding] = true
+		if repeat {
+			r.setStripPrefixJoinFrontier(join)
+		}
+	}
 	savedRegion := r.region
 	var incoming []*goRouteRewriteJoin
 	for branchIndex, branch := range branches {
@@ -1398,9 +1489,9 @@ func (r *goRouteResolver) branches(scope *goRouteScope, written map[string]bool,
 		r.region = r.nextRegion
 		branch()
 		r.region = savedRegion
-		for _, join := range joins {
+		for joinIndex, join := range joins {
 			r.step(1)
-			if join.binding.closure != nil {
+			if joinIndex < syntacticJoinCount && join.binding.closure != nil {
 				r.escapeClosureEffect(join.binding.closure)
 			}
 			if join.binding.stripPrefixMiddleware {
@@ -1439,15 +1530,7 @@ func (r *goRouteResolver) branches(scope *goRouteScope, written map[string]bool,
 	if !repeat {
 		for _, join := range joins {
 			r.step(1)
-			value := *join.binding
-			dependencies, ok := r.withStripPrefixJoin(value.stripPrefixJoins, join)
-			if !ok {
-				value.stripPrefixMiddleware = true
-				value.stripPrefixJoins = nil
-			} else {
-				value.stripPrefixJoins = dependencies
-			}
-			r.set(join.name, join.binding, value)
+			r.setStripPrefixJoinFrontier(join)
 		}
 	}
 }
@@ -1477,18 +1560,7 @@ func (r *goRouteResolver) markNames(scope *goRouteScope, written map[string]bool
 			// ambiguous. Fall back to the conservative escaped-callback model.
 			r.escapeClosureEffect(binding.closure)
 		}
-		join := &goRouteRewriteJoin{
-			name:       name,
-			binding:    binding,
-			may:        binding.stripPrefixMiddleware,
-			observed:   map[*goRouteOrigin]bool{},
-			deps:       map[*goRouteRewriteJoin]bool{},
-			dependents: map[*goRouteRewriteJoin]bool{},
-		}
-		for _, dependency := range binding.stripPrefixJoins {
-			r.step(1)
-			r.addStripPrefixJoinDependency(join, dependency)
-		}
+		join := r.newStripPrefixJoin(name, binding)
 		joins = append(joins, join)
 		unknown := goRouteUnknownBinding
 		// Rewriting is a MAY fact, so an ambiguous write retains prior rewrite
@@ -1497,13 +1569,10 @@ func (r *goRouteResolver) markNames(scope *goRouteScope, written map[string]bool
 		unknown.stripPrefixSource = binding.stripPrefixSource
 		unknown.stripPrefixJoins, _ = r.withStripPrefixJoin(binding.stripPrefixJoins, nil)
 		if repeat {
-			dependencies, ok := r.withStripPrefixJoin(unknown.stripPrefixJoins, join)
-			if !ok {
-				unknown.stripPrefixMiddleware = true
+			if unknown.stripPrefixMiddleware {
 				unknown.stripPrefixJoins = nil
-				r.resolveStripPrefixJoin(join)
 			} else {
-				unknown.stripPrefixJoins = dependencies
+				unknown.stripPrefixJoins = []*goRouteRewriteJoin{join}
 			}
 		}
 		r.set(name, binding, unknown)
