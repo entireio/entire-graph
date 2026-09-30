@@ -637,6 +637,10 @@ func goRouteIsPathLiteral(expr ast.Expr) bool {
 // c.Redirect, c.Param, ...) take keys and URLs, never routes.
 var goRouteContextTypes = map[string]bool{"gin.Context": true, "fiber.Ctx": true, "echo.Context": true}
 
+// goRouteRouterTypes are framework router types a composite literal could
+// build (a usable zero value).
+var goRouteRouterTypes = map[string]bool{"http.ServeMux": true, "mux.Router": true, "httprouter.Router": true, "chi.Mux": true}
+
 // goRouteClientFuncs are package-level HTTP client and request constructors.
 var goRouteClientFuncs = map[string]bool{
 	"http.Get": true, "http.Post": true, "http.Head": true, "http.PostForm": true,
@@ -680,13 +684,37 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 	}
 	clientTypes := map[string]bool{"http.Client": true}
 	clients := map[string]bool{}
+	// Names only ever bound to a composite literal of a type that is not a
+	// framework router (kv := cache{}, api := apiClient{}): a zero value built
+	// here holds no router.
+	literalValues, otherValues := map[string]bool{}, map[string]bool{}
+	noteValue := func(name string, value ast.Expr) {
+		expr := goRouteUnparen(value)
+		if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+			expr = goRouteUnparen(unary.X)
+		}
+		if lit, ok := expr.(*ast.CompositeLit); ok && lit.Type != nil && !isType(lit.Type, goRouteRouterTypes) {
+			literalValues[name] = true
+			return
+		}
+		otherValues[name] = true
+	}
 	ast.Inspect(r.file, func(n ast.Node) bool {
 		switch n := n.(type) {
+		case *ast.RangeStmt:
+			for _, target := range []ast.Expr{n.Key, n.Value} {
+				if ident, ok := target.(*ast.Ident); ok {
+					otherValues[ident.Name] = true
+				}
+			}
 		case *ast.Field:
 			if isType(n.Type, clientTypes) {
 				for _, name := range n.Names {
 					clients[name.Name] = true
 				}
+			}
+			for _, name := range n.Names {
+				otherValues[name.Name] = true
 			}
 		case *ast.ValueSpec:
 			if n.Type != nil && isType(n.Type, clientTypes) {
@@ -699,18 +727,40 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 					clients[n.Names[i].Name] = true
 				}
 			}
+			for i, name := range n.Names {
+				if len(n.Values) == len(n.Names) {
+					noteValue(name.Name, n.Values[i])
+				} else {
+					otherValues[name.Name] = true
+				}
+			}
 		case *ast.AssignStmt:
 			if len(n.Lhs) != len(n.Rhs) {
+				for _, lhs := range n.Lhs {
+					if ident, ok := lhs.(*ast.Ident); ok {
+						otherValues[ident.Name] = true
+					}
+				}
 				return true
 			}
 			for i, value := range n.Rhs {
-				if ident, ok := n.Lhs[i].(*ast.Ident); ok && goRouteIsClientLit(value, isType, clientTypes) {
+				ident, ok := n.Lhs[i].(*ast.Ident)
+				if !ok {
+					continue
+				}
+				if goRouteIsClientLit(value, isType, clientTypes) {
 					clients[ident.Name] = true
 				}
+				noteValue(ident.Name, value)
 			}
 		}
 		return true
 	})
+	for name := range literalValues {
+		if !otherValues[name] {
+			clients[name] = true
+		}
+	}
 	var visit func(node ast.Node, contexts map[string]bool)
 	visit = func(node ast.Node, contexts map[string]bool) {
 		ast.Inspect(node, func(n ast.Node) bool {

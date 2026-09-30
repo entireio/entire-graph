@@ -1217,7 +1217,21 @@ func TestX(t *testing.T) {
 		t.Fatal()
 	}
 	cache.Get("/unknown-receiver")
+	kv := store{}
+	_ = kv.Get("/store-key")
+	api := &apiClient{}
+	api.Post("/api-client-post", nil)
+	mux := &http.ServeMux{}
+	mux.Handle("/mux-literal", nil)
 }
+
+type store struct{}
+
+func (store) Get(key string) any { return nil }
+
+type apiClient struct{}
+
+func (*apiClient) Post(path string, body any) {}
 `)
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -1229,7 +1243,7 @@ func TestX(t *testing.T) {
 			got[relation.ToID] = true
 		}
 	}
-	for _, path := range []string{"/redirect-target", "/context-key", "/context-get", "/fiber-client-post", "/fiber-redirect", "/client-get", "/test-request", "/client-var", "/helper-request"} {
+	for _, path := range []string{"/redirect-target", "/context-key", "/context-get", "/fiber-client-post", "/fiber-redirect", "/client-get", "/test-request", "/client-var", "/helper-request", "/store-key", "/api-client-post"} {
 		if got[externalID("route", path)] {
 			t.Fatalf("non-router literal %s emitted as a route: %v", path, got)
 		}
