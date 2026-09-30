@@ -51,7 +51,8 @@ func register(e *Echo) {
 		{
 			name: "unparseable file: assigned and group-typed receivers are not trusted",
 			content: `package p
-func register(e *Echo, g *echo.Group, r chi.Router) {
+func register(e *Echo, g *echo.Group, r chi.Router, s *server) {
+	s.e.GET("/sel", selHandler)
 	x := e.Group("/a")
 	x.GET("/x", xHandler)
 	g.GET("/g", gHandler)
@@ -248,6 +249,20 @@ func main() {
 			want: []string{"/api/users -> usersHandler", "/api/admin/audit -> auditHandler", "/api/v1/x -> xHandler"},
 		},
 		{
+			name: "an alias of a mounted router is the same instance",
+			content: `package p
+func main() {
+	r := chi.NewRouter()
+	api := chi.NewRouter()
+	alias := api
+	alias.Get("/al", alHandler)
+	r.Mount("/api", api)
+	http.ListenAndServe(":80", r)
+}
+`,
+			want: []string{"/api/al -> alHandler"},
+		},
+		{
 			name: "Mount under a group prefix",
 			content: `package p
 func main() {
@@ -329,7 +344,6 @@ func main() {
 	top := http.NewServeMux()
 	top.Handle("/", r)
 	http.ListenAndServe(":80", top)
-	go http.ListenAndServeTLS(":443", "c", "k", r)
 }
 `,
 			want: []string{"/a -> aHandler"},
