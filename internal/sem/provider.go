@@ -9168,6 +9168,19 @@ func goMethodSignaturesMatch(requirement, implementation string, requirementImpo
 // parameter/result name are dropped. It declines (false) on a generic
 // type-parameter list and on any list it cannot split into types.
 func goNormalizedMethodSignature(signature string) (string, bool) {
+	return goNormalizedMethodSignatureWithWalk(signature, &goEvidenceWalk{})
+}
+
+func goNormalizedMethodSignatureWithWalk(signature string, walk *goEvidenceWalk) (string, bool) {
+	if walk == nil || walk.exhausted {
+		return "", false
+	}
+	// Input storage is borrowed rather than constructed key output, but bounding
+	// it independently keeps parameter metadata proportional to a fixed input.
+	if len(signature) > goEvidenceKeyByteBudget {
+		walk.exhausted = true
+		return "", false
+	}
 	rest := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(signature), "{"))
 	if after, ok := strings.CutPrefix(rest, "func"); ok {
 		rest = strings.TrimSpace(after)
@@ -9197,7 +9210,7 @@ func goNormalizedMethodSignature(signature string) (string, bool) {
 	if closing < 0 {
 		return "", false
 	}
-	params, ok := goSignatureTypeList(rest[1:closing])
+	params, ok := goSignatureTypeList(rest[1:closing], walk)
 	if !ok {
 		return "", false
 	}
@@ -9209,11 +9222,57 @@ func goNormalizedMethodSignature(signature string) (string, bool) {
 		}
 		results = results[1:end]
 	}
-	resultTypes, ok := goSignatureTypeList(results)
+	resultTypes, ok := goSignatureTypeList(results, walk)
 	if !ok {
 		return "", false
 	}
-	return "(" + strings.Join(params, ",") + ")(" + strings.Join(resultTypes, ",") + ")", true
+	remaining, ok := walk.remaining()
+	if !ok {
+		return "", false
+	}
+	length, ok := goEvidenceAddRepeatedLength(0, 1, 4, remaining)
+	if !ok {
+		walk.exhausted = true
+		return "", false
+	}
+	addTypes := func(types []string) bool {
+		for i, typeText := range types {
+			if i > 0 {
+				length, ok = goEvidenceAddRepeatedLength(length, 1, 1, remaining)
+				if !ok {
+					return false
+				}
+			}
+			length, ok = goEvidenceAddRepeatedLength(length, len(typeText), 1, remaining)
+			if !ok {
+				return false
+			}
+		}
+		return true
+	}
+	if !addTypes(params) || !addTypes(resultTypes) {
+		walk.exhausted = true
+		return "", false
+	}
+	if !walk.reserve(length) {
+		return "", false
+	}
+	var normalized strings.Builder
+	normalized.Grow(length)
+	writeTypes := func(types []string) {
+		for i, typeText := range types {
+			if i > 0 {
+				normalized.WriteByte(',')
+			}
+			normalized.WriteString(typeText)
+		}
+	}
+	normalized.WriteByte('(')
+	writeTypes(params)
+	normalized.WriteString(")(")
+	writeTypes(resultTypes)
+	normalized.WriteByte(')')
+	return normalized.String(), true
 }
 
 // goSignatureTypeList reduces a Go parameter or result list to its types. Go
@@ -9221,7 +9280,10 @@ func goNormalizedMethodSignature(signature string) (string, bool) {
 // form `ident <type>` marks the whole list named; in a named list a bare
 // identifier is a grouped name that borrows the type declared to its right
 // (`a, b string`).
-func goSignatureTypeList(list string) ([]string, bool) {
+func goSignatureTypeList(list string, walk *goEvidenceWalk) ([]string, bool) {
+	if walk == nil || walk.exhausted {
+		return nil, false
+	}
 	list = strings.TrimSpace(list)
 	if list == "" {
 		return nil, true
@@ -9237,8 +9299,8 @@ func goSignatureTypeList(list string) ([]string, bool) {
 	types := make([]string, len(parts))
 	if !named {
 		for i, part := range parts {
-			typeText := goCanonicalTypeText(part)
-			if typeText == "" {
+			typeText, ok := goCanonicalTypeText(part, walk)
+			if !ok || typeText == "" {
 				return nil, false
 			}
 			types[i] = typeText
@@ -9249,7 +9311,10 @@ func goSignatureTypeList(list string) ([]string, bool) {
 	for i := len(parts) - 1; i >= 0; i-- {
 		part := strings.TrimSpace(parts[i])
 		if _, typeText, ok := goNamedParamSplit(part); ok {
-			pending = goCanonicalTypeText(typeText)
+			pending, ok = goCanonicalTypeText(typeText, walk)
+			if !ok {
+				return nil, false
+			}
 		} else if !isTypeName(part) {
 			// In a named list every remaining part must be a grouped name.
 			return nil, false
@@ -9291,9 +9356,32 @@ func goNamedParamSplit(part string) (string, string, bool) {
 // goCanonicalTypeText drops whitespace that is not separating two identifier
 // characters, so `map[string] int` and `map[string]int` compare equal while
 // `chan int` keeps its word break.
-func goCanonicalTypeText(text string) string {
-	var out strings.Builder
+func goCanonicalTypeText(text string, walk *goEvidenceWalk) (string, bool) {
+	if walk == nil || walk.exhausted {
+		return "", false
+	}
+	length := 0
 	prevIdent, pendingSpace := false, false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			pendingSpace = length > 0
+			continue
+		}
+		cur := identifierByte(c)
+		if pendingSpace && prevIdent && cur {
+			length++
+		}
+		pendingSpace = false
+		length++
+		prevIdent = cur
+	}
+	if !walk.reserve(length) {
+		return "", false
+	}
+	var out strings.Builder
+	out.Grow(length)
+	prevIdent, pendingSpace = false, false
 	for i := 0; i < len(text); i++ {
 		c := text[i]
 		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
@@ -9308,7 +9396,7 @@ func goCanonicalTypeText(text string) string {
 		out.WriteByte(c)
 		prevIdent = cur
 	}
-	return out.String()
+	return out.String(), true
 }
 
 // uniqueGoConcreteMethodByShortName is uniqueMethodByShortName restricted to Go
