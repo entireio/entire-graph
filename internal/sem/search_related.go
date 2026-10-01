@@ -449,6 +449,16 @@ func searchRelatedCallSiteLine(relation RelationRecord, caller SymbolRecord) int
 	return caller.StartLine
 }
 
+// searchRelatedDeclarationLine uses the parser's binding-token line when it belongs to the
+// symbol, retaining the start-line fallback when declaration-name metadata is unavailable.
+func searchRelatedDeclarationLine(symbol SymbolRecord) int {
+	line := symbol.NameLine()
+	if symbol.StartLine > 0 && line >= symbol.StartLine && line <= symbol.EndLine {
+		return line
+	}
+	return symbol.StartLine
+}
+
 // searchRelatedSiblingSites collects members that stand in the same place as the anchor.
 //
 // Three routes, in decreasing directness of what the graph states:
@@ -487,7 +497,7 @@ func searchRelatedSiblingSites(
 		sites = append(sites, searchRelatedSite{
 			kind:     searchRelatedSibling,
 			symbol:   symbol,
-			line:     symbol.StartLine,
+			line:     searchRelatedDeclarationLine(symbol),
 			evidence: evidence,
 		})
 	}
@@ -595,7 +605,7 @@ func searchRelatedNearDuplicateSites(
 		sites = append(sites, searchRelatedSite{
 			kind:     searchRelatedNearDupe,
 			symbol:   symbol,
-			line:     symbol.StartLine,
+			line:     searchRelatedDeclarationLine(symbol),
 			strength: strength,
 		})
 	}
