@@ -497,7 +497,7 @@ func planSearchCalleeHopRanking(
 		// Only a rank the renderer prints as a bare locator anyway may give up its snippet bytes. A hop
 		// is the lowest-priority claim in the payload and must never reduce what a ranked hit renders.
 		if index >= demoteFrom && !searchResultRendersSource(results, index) {
-			result = tersifySearchResult(result, tailLines)
+			result = tersifySearchResultKeepingDeclaration(result, tailLines)
 		}
 		plan = append(plan, result)
 		plan = append(plan, after[index]...)
