@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/entire-graph-prompt-context.py\"",
-            "timeout": 20
+            "timeout": 12
           }
         ]
       }

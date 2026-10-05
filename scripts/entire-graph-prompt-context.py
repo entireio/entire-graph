@@ -25,7 +25,9 @@ import time
 
 HEADING = "Code locations for this request (prompt input from the local code graph, entire-graph):"
 QUERY_CHARS = 160
-TIMEOUT_S = 15
+# Search budget. The hook runs before the prompt reaches the model, so it must never noticeably delay it: past this
+# the search is abandoned and nothing is injected (fail open). hooks/hooks.json's timeout must stay above it.
+TIMEOUT_S = 8
 # A binary that predates --head rejects it ("search does not accept --head in entire-graph ...", or a generic
 # unknown-flag error). Only that rejection earns the one retry without --head; any other failure fails open.
 HEAD_REJECTED = re.compile(r"(does not accept|unknown flag|flag provided but not defined)[^\n]*?(?<![\w-])-{1,2}head\b")

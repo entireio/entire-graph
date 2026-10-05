@@ -122,6 +122,28 @@ class T(unittest.TestCase):
             self.assertTrue(pc.HEAD_REJECTED.search(msg), msg)
         for msg in ("search does not accept --headx in entire-graph", "index missing; try --head", "unknown flag: --ahead"):
             self.assertFalse(pc.HEAD_REJECTED.search(msg), msg)
+    def test_search_timeout_is_8s_and_hook_timeout_above_it(self):
+        self.assertEqual(pc.TIMEOUT_S, 8)
+        seen, real = [], pc.subprocess.run
+        def spy(*a, **k):
+            seen.append(k.get("timeout")); return real(*a, **k)
+        pc.subprocess.run = spy
+        try:
+            self.assertTrue(self.run_hook(self.ev())[1])
+        finally:
+            pc.subprocess.run = real
+        self.assertTrue(seen and all(t is not None and t <= 8 for t in seen), seen)
+        hooks = json.load(open(os.path.join(HERE, "..", "hooks", "hooks.json")))
+        cmd = [h for e in hooks["hooks"]["UserPromptSubmit"] for h in e["hooks"]
+               if "entire-graph-prompt-context.py" in h["command"]][0]
+        self.assertGreater(cmd["timeout"], pc.TIMEOUT_S)
+    def test_timeout_fails_open(self):
+        slow = os.path.join(self.d, "slow"); open(slow, "w").write("#!/bin/sh\nexec sleep 5\n"); os.chmod(slow, 0o755)
+        old = pc.TIMEOUT_S; pc.TIMEOUT_S = 0.3
+        try:
+            self.assertEqual(self.run_hook(self.ev(), dict(self.env, ENTIRE_GRAPH_BIN=slow)), (0, ""))
+        finally:
+            pc.TIMEOUT_S = old
     def test_budget_override(self):
         self.run_hook(self.ev(), dict(self.env, ENTIRE_GRAPH_PROMPT_CONTEXT_BYTES="4096"))
         a = open(self.args).read().split("\n"); self.assertEqual(a[a.index("--max-context-bytes") + 1], "4096")
