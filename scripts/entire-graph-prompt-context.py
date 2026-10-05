@@ -17,6 +17,7 @@ Fails open: any error, timeout, non-repo or empty answer adds nothing and never 
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -52,10 +53,19 @@ def graph_argv(env):
     return [entire, "graph"] if entire else None
 
 
+# Compact forms the agent renderer degrades to under tight budgets (internal/cli/search.go):
+# the "I:<state>/<ms>[ Q:n][ P:n][ T:n]" header, the "!N|!D W.. F.. L../..[ X..]" coverage diagnostic,
+# and the "!LOW s=.." low-confidence marker. Anchored whole-line matches, so code lines never match.
+COMPACT_HEADER = re.compile(r"^I:[a-z-]+/\d+(?: [QPT]:\d+)*$")
+COMPACT_DIAG = re.compile(r"^![ND] W\d+ F\d+ L\d+/\d+(?: X\d+)?$")
+COMPACT_LOW = re.compile(r"^!LOW s=-?\d+(?:\.\d+)?$")
+
+
 def clean(answer):
     """Keep the ranked regions only. Drop, whatever the binary version:
-    - the timing line ("Index: ...") and the Coverage diagnostics block ("Coverage: ..." plus its "- ..." lines);
-    - LOW CONFIDENCE advisories;
+    - the timing line ("Index: ..." or its compact "I:..." form) and the Coverage diagnostics block ("Coverage: ..."
+      plus its "- ..." lines, or the compact "!N W.. F.. L../.." line);
+    - LOW CONFIDENCE advisories (or the compact "!LOW s=.." marker);
     - the VERIFY block ("VERIFY: ..." plus its indented continuation lines). It carries test-running advice, i.e.
       directive text, which the measured bundle never contained. Older binaries ignore ENTIRE_GRAPH_VERIFY_BLOCK=off
       and reject --verify-block, so it is removed here rather than requested off."""
@@ -66,7 +76,8 @@ def clean(answer):
         if block == "verify" and (line.startswith("  ") or line.startswith("\t")):
             continue
         block = None
-        if line.startswith("Index: ") or "LOW CONFIDENCE" in line:
+        if (line.startswith("Index: ") or "LOW CONFIDENCE" in line or COMPACT_HEADER.match(line)
+                or COMPACT_DIAG.match(line) or COMPACT_LOW.match(line)):
             continue
         if line.startswith("Coverage: "):
             block = "coverage"; continue

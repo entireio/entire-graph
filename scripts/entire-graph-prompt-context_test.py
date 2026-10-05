@@ -43,6 +43,14 @@ class T(unittest.TestCase):
     def test_user_input_preferred_over_legacy_prompt(self):
         self.run_hook({"user_input": "new field", "prompt": "old field", "session_id": "u2", "cwd": self.d})
         a = open(self.args).read().split("\n"); self.assertEqual(a[a.index("--query") + 1], "new field")
+    def test_compact_tight_budget_forms_stripped(self):
+        answer = ("I:miss/1349 Q:374 P:276 T:2001\n!D W1 F13 L9/72 X2\n!LOW s=8.4\n"
+                  "1. src/a.go:10-20 Handler s=9.1\nfunc Handler() {}\nI:x = 1  // code line, kept\n")
+        got = pc.clean(answer)
+        self.assertEqual(got, "1. src/a.go:10-20 Handler s=9.1\nfunc Handler() {}\nI:x = 1  // code line, kept")
+        for header in ("I:hit/3", "I:miss/12 T:40", "I:miss/1 Q:2 P:3 T:4"):
+            self.assertEqual(pc.clean(header + "\n1. a.go:1 X s=1"), "1. a.go:1 X s=1")
+        self.assertEqual(pc.clean("!N W0 F0 L3/10\n1. a.go:1 X s=1"), "1. a.go:1 X s=1")
     def test_off_by_default(self):
         env = dict(self.env); env.pop("ENTIRE_GRAPH_PROMPT_CONTEXT")
         self.assertEqual(self.run_hook(self.ev(), env), (0, ""))
