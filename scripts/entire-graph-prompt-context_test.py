@@ -36,6 +36,13 @@ class T(unittest.TestCase):
     def ev(self, prompt="Fix the crash in Handler when input is empty\nmore detail", session="s1"):
         return {"prompt": prompt, "session_id": session, "cwd": self.d}
 
+    def test_reads_current_user_input_field(self):
+        rc, out = self.run_hook({"user_input": "Fix the crash in Handler", "session_id": "u1", "cwd": self.d})
+        self.assertTrue(out)
+        a = open(self.args).read().split("\n"); self.assertEqual(a[a.index("--query") + 1], "Fix the crash in Handler")
+    def test_user_input_preferred_over_legacy_prompt(self):
+        self.run_hook({"user_input": "new field", "prompt": "old field", "session_id": "u2", "cwd": self.d})
+        a = open(self.args).read().split("\n"); self.assertEqual(a[a.index("--query") + 1], "new field")
     def test_off_by_default(self):
         env = dict(self.env); env.pop("ENTIRE_GRAPH_PROMPT_CONTEXT")
         self.assertEqual(self.run_hook(self.ev(), env), (0, ""))

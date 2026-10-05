@@ -83,7 +83,8 @@ def main(stdin=sys.stdin, stdout=sys.stdout, env=os.environ):
         event = json.load(stdin)
     except ValueError:
         return 0
-    prompt = event.get("prompt") or ""
+    # current Claude Code sends the prompt as "user_input"; earlier versions used "prompt"
+    prompt = event.get("user_input") or event.get("prompt") or ""
     session = event.get("session_id") or ""
     repo = env.get("CLAUDE_PROJECT_DIR") or event.get("cwd") or os.getcwd()
     query = first_line(prompt)
