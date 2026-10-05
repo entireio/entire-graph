@@ -168,6 +168,20 @@ class T(unittest.TestCase):
         self.run_hook(self.ev(), env); self.run_hook(self.ev(prompt="second request"), env)
         self.run_hook(self.ev(prompt="third request"), self.env)
         self.assertEqual(self.calls(), ["version --json"], "the probe runs once per session, its result is reused")
+    def test_marked_before_probe_so_a_killed_hook_is_not_retried(self):
+        # The probe kills the hook process itself (as Claude Code's hook timeout would): the session must already
+        # be marked, so the next prompt does not probe or search again.
+        killer = os.path.join(self.d, "killer")
+        with open(killer, "w") as f:
+            f.write("#!/bin/sh\necho \"$*\" >> \"$FAKE_ARGS.calls\"\nkill -9 $PPID\nsleep 5\n")
+        os.chmod(killer, 0o755)
+        env = dict(self.env, ENTIRE_GRAPH_BIN=killer)
+        r = subprocess.run([sys.executable, os.path.join(HERE, "entire-graph-prompt-context.py")],
+                           input=json.dumps(self.ev()), capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(r.returncode, -9)
+        self.assertEqual(self.marker(), {"probe": "pending"})
+        self.assertEqual(self.run_hook(self.ev(prompt="next request"), env), (0, ""))
+        self.assertEqual(self.calls(), ["version --json"])
     def test_absent_binary_marks_done(self):
         env = dict(self.env, ENTIRE_GRAPH_BIN=os.path.join(self.d, "missing"))
         self.assertEqual(self.run_hook(self.ev(), env), (0, ""))
