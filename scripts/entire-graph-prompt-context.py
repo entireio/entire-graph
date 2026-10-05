@@ -21,10 +21,14 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 HEADING = "Code locations for this request (prompt input from the local code graph, entire-graph):"
 QUERY_CHARS = 160
 TIMEOUT_S = 15
+# A binary that predates --head rejects it ("search does not accept --head in entire-graph ...", or a generic
+# unknown-flag error). Only that rejection earns the one retry without --head; any other failure fails open.
+HEAD_REJECTED = re.compile(r"(does not accept|unknown flag|flag provided but not defined)[^\n]*?(?<![\w-])-{1,2}head\b")
 
 
 def enabled(env):
@@ -87,6 +91,24 @@ def clean(answer):
     return "\n".join(keep).strip()
 
 
+def search(argv, query, repo, budget, env, timeout):
+    """Search the committed tree (--head): it is served from the tree-hash cache once warm, while working-tree mode
+    rebuilds the index on every call (10-30 s cold) and would usually exceed the time budget. Falls back to the
+    working tree, once, only when the binary rejects --head. Both attempts share one deadline."""
+    base = argv + ["search", "--query", query, "--repo", repo, "--profile", "full",
+                   "--format", "agent", "--max-context-bytes", budget]
+    deadline = time.monotonic() + timeout
+    r = subprocess.run(base + ["--head"], capture_output=True, text=True, timeout=timeout, env=env, cwd=repo,
+                       stdin=subprocess.DEVNULL)
+    if r.returncode != 0 and HEAD_REJECTED.search(r.stderr or ""):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        r = subprocess.run(base, capture_output=True, text=True, timeout=remaining, env=env, cwd=repo,
+                           stdin=subprocess.DEVNULL)
+    return r
+
+
 def main(stdin=sys.stdin, stdout=sys.stdout, env=os.environ):
     if not enabled(env):
         return 0
@@ -115,12 +137,10 @@ def main(stdin=sys.stdin, stdout=sys.stdout, env=os.environ):
     open(marker, "w").close()
     run_env = dict(env, ENTIRE_GRAPH_VERIFY_BLOCK="off")
     try:
-        r = subprocess.run(argv + ["search", "--query", query, "--repo", repo, "--profile", "full",
-                                   "--format", "agent", "--max-context-bytes", budget],
-                           capture_output=True, text=True, timeout=TIMEOUT_S, env=run_env, cwd=repo)
+        r = search(argv, query, repo, budget, run_env, TIMEOUT_S)
     except (OSError, subprocess.SubprocessError):
         return 0
-    if r.returncode != 0:
+    if r is None or r.returncode != 0:
         return 0
     answer = clean(r.stdout)
     if not answer:

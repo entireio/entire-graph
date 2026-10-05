@@ -6,6 +6,16 @@ spec = importlib.util.spec_from_file_location("pc", os.path.join(HERE, "entire-g
 pc = importlib.util.module_from_spec(spec); spec.loader.exec_module(pc)
 
 FAKE = """#!/bin/sh
+[ "$1" = graph ] && shift
+printf '%s\\n' "$*" >> "$FAKE_ARGS.calls"
+if [ -n "$FAKE_REJECT_HEAD" ]; then
+  for a in "$@"; do
+    if [ "$a" = --head ]; then
+      echo "search does not accept --head in entire-graph v0.3.0: this binary may be older than the caller" >&2
+      exit 2
+    fi
+  done
+fi
 printf '%s\\n' "$@" > "$FAKE_ARGS"
 printf 'VERIFY=%s\\n' "$ENTIRE_GRAPH_VERIFY_BLOCK" >> "$FAKE_ARGS"
 cat <<'OUT'
@@ -87,6 +97,31 @@ class T(unittest.TestCase):
         env = dict(self.env, ENTIRE_GRAPH_BIN=bad)
         self.assertEqual(self.run_hook(self.ev(), env), (0, ""))
         self.assertEqual(pc.main(stdin=io.StringIO("not json"), stdout=io.StringIO(), env=self.env), 0)
+    def calls(self):
+        return open(self.args + ".calls").read().splitlines()
+    def test_searches_committed_tree_with_head(self):
+        rc, out = self.run_hook(self.ev())
+        self.assertTrue(out)
+        a = open(self.args).read().split("\n"); self.assertIn("--head", a)
+        self.assertEqual(len([c for c in self.calls() if c.startswith("search ")]), 1)
+    def test_falls_back_once_without_head_when_rejected(self):
+        rc, out = self.run_hook(self.ev(), dict(self.env, FAKE_REJECT_HEAD="1"))
+        self.assertTrue(out, "the working-tree retry should still inject the answer")
+        searches = [c for c in self.calls() if c.startswith("search ")]
+        self.assertEqual(len(searches), 2)
+        self.assertIn("--head", searches[0].split()); self.assertNotIn("--head", searches[1].split())
+    def test_no_retry_on_other_failures(self):
+        bad = os.path.join(self.d, "bad"); open(bad, "w").write(
+            "#!/bin/sh\necho x >> \"$FAKE_ARGS.calls\"\necho 'search does not accept --headx' >&2\nexit 2\n")
+        os.chmod(bad, 0o755)
+        self.assertEqual(self.run_hook(self.ev(), dict(self.env, ENTIRE_GRAPH_BIN=bad)), (0, ""))
+        self.assertEqual(len(self.calls()), 1, "only a --head rejection earns a retry")
+    def test_head_rejection_pattern(self):
+        for msg in ("search does not accept --head in entire-graph v0.3.0: ...", "Error: unknown flag: --head",
+                    "flag provided but not defined: -head"):
+            self.assertTrue(pc.HEAD_REJECTED.search(msg), msg)
+        for msg in ("search does not accept --headx in entire-graph", "index missing; try --head", "unknown flag: --ahead"):
+            self.assertFalse(pc.HEAD_REJECTED.search(msg), msg)
     def test_budget_override(self):
         self.run_hook(self.ev(), dict(self.env, ENTIRE_GRAPH_PROMPT_CONTEXT_BYTES="4096"))
         a = open(self.args).read().split("\n"); self.assertEqual(a[a.index("--max-context-bytes") + 1], "4096")
