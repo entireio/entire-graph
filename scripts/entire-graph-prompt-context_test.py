@@ -8,6 +8,11 @@ pc = importlib.util.module_from_spec(spec); spec.loader.exec_module(pc)
 FAKE = """#!/bin/sh
 [ "$1" = graph ] && shift
 printf '%s\\n' "$*" >> "$FAKE_ARGS.calls"
+if [ "$1" = version ]; then
+  [ -n "$FAKE_PROBE_FAIL" ] && { echo "unknown command graph" >&2; exit 1; }
+  echo '{"identity_revision":"2","provider":"entire-graph","version":"v0.0.0-test"}'
+  exit 0
+fi
 if [ -n "$FAKE_REJECT_HEAD" ]; then
   for a in "$@"; do
     if [ "$a" = --head ]; then
@@ -29,6 +34,9 @@ func Handler() {}
 LOW CONFIDENCE: verify before editing
 OUT
 """
+
+# A failure fake must still answer the capability probe, or it would test the probe instead of the search path.
+PROBE_OK = "#!/bin/sh\n[ \"$1\" = version ] && { echo '{\"provider\":\"entire-graph\"}'; exit 0; }\n"
 
 class T(unittest.TestCase):
     def setUp(self):
@@ -93,7 +101,7 @@ class T(unittest.TestCase):
         self.assertEqual(self.run_hook(self.ev(prompt="/compact"))[1], "")
         self.assertEqual(self.run_hook(self.ev(prompt="   \n "))[1], "")
     def test_fails_open_on_error_and_bad_json(self):
-        bad = os.path.join(self.d, "bad"); open(bad, "w").write("#!/bin/sh\necho '1. src/a.go:1-2 X s=1'\necho 'partial output'\nexit 3\n"); os.chmod(bad, 0o755)
+        bad = os.path.join(self.d, "bad"); open(bad, "w").write(PROBE_OK + "echo '1. src/a.go:1-2 X s=1'\necho 'partial output'\nexit 3\n"); os.chmod(bad, 0o755)
         env = dict(self.env, ENTIRE_GRAPH_BIN=bad)
         self.assertEqual(self.run_hook(self.ev(), env), (0, ""))
         self.assertEqual(pc.main(stdin=io.StringIO("not json"), stdout=io.StringIO(), env=self.env), 0)
@@ -112,10 +120,10 @@ class T(unittest.TestCase):
         self.assertIn("--head", searches[0].split()); self.assertNotIn("--head", searches[1].split())
     def test_no_retry_on_other_failures(self):
         bad = os.path.join(self.d, "bad"); open(bad, "w").write(
-            "#!/bin/sh\necho x >> \"$FAKE_ARGS.calls\"\necho 'search does not accept --headx' >&2\nexit 2\n")
+            PROBE_OK + "echo x >> \"$FAKE_ARGS.calls\"\necho 'search does not accept --headx' >&2\nexit 2\n")
         os.chmod(bad, 0o755)
         self.assertEqual(self.run_hook(self.ev(), dict(self.env, ENTIRE_GRAPH_BIN=bad)), (0, ""))
-        self.assertEqual(len(self.calls()), 1, "only a --head rejection earns a retry")
+        self.assertEqual(self.calls(), ["x"], "only a --head rejection earns a retry")
     def test_head_rejection_pattern(self):
         for msg in ("search does not accept --head in entire-graph v0.3.0: ...", "Error: unknown flag: --head",
                     "flag provided but not defined: -head"):
@@ -136,14 +144,51 @@ class T(unittest.TestCase):
         hooks = json.load(open(os.path.join(HERE, "..", "hooks", "hooks.json")))
         cmd = [h for e in hooks["hooks"]["UserPromptSubmit"] for h in e["hooks"]
                if "entire-graph-prompt-context.py" in h["command"]][0]
-        self.assertGreater(cmd["timeout"], pc.TIMEOUT_S)
+        self.assertGreater(cmd["timeout"], pc.TIMEOUT_S + pc.PROBE_TIMEOUT_S)
     def test_timeout_fails_open(self):
-        slow = os.path.join(self.d, "slow"); open(slow, "w").write("#!/bin/sh\nexec sleep 5\n"); os.chmod(slow, 0o755)
+        slow = os.path.join(self.d, "slow"); open(slow, "w").write(PROBE_OK + "exec sleep 5\n"); os.chmod(slow, 0o755)
         old = pc.TIMEOUT_S; pc.TIMEOUT_S = 0.3
         try:
             self.assertEqual(self.run_hook(self.ev(), dict(self.env, ENTIRE_GRAPH_BIN=slow)), (0, ""))
         finally:
             pc.TIMEOUT_S = old
+    def marker(self, session="s1"):
+        return json.load(open(pc.once_marker(self.env, session)))
+    def test_probe_runs_once_before_search(self):
+        self.assertTrue(self.run_hook(self.ev())[1])
+        c = self.calls(); self.assertEqual(c[0], "version --json"); self.assertTrue(c[1].startswith("search "))
+        self.assertEqual(self.marker(), {"probe": "ok", "version": "v0.0.0-test"})
+    def test_probe_failure_skips_search_and_marks_done(self):
+        env = dict(self.env, FAKE_PROBE_FAIL="1")
+        self.assertEqual(self.run_hook(self.ev(), env), (0, ""))
+        self.assertEqual(self.calls(), ["version --json"], "no search after a failed probe")
+        self.assertEqual(self.marker()["probe"], "error")
+    def test_probe_result_cached_for_session(self):
+        env = dict(self.env, FAKE_PROBE_FAIL="1")
+        self.run_hook(self.ev(), env); self.run_hook(self.ev(prompt="second request"), env)
+        self.run_hook(self.ev(prompt="third request"), self.env)
+        self.assertEqual(self.calls(), ["version --json"], "the probe runs once per session, its result is reused")
+    def test_absent_binary_marks_done(self):
+        env = dict(self.env, ENTIRE_GRAPH_BIN=os.path.join(self.d, "missing"))
+        self.assertEqual(self.run_hook(self.ev(), env), (0, ""))
+        self.assertEqual(self.marker()["probe"], "error")
+        env = dict(self.env, PATH=self.d); env.pop("ENTIRE_GRAPH_BIN")
+        self.assertEqual(self.run_hook(self.ev(session="s9"), env), (0, ""))
+        self.assertEqual(self.marker("s9"), {"probe": "absent"})
+    def test_probe_rejects_other_provider_and_slow_probe(self):
+        other = os.path.join(self.d, "other"); open(other, "w").write(
+            "#!/bin/sh\necho \"$*\" >> \"$FAKE_ARGS.calls\"\necho '{\"provider\":\"something-else\"}'\n")
+        os.chmod(other, 0o755)
+        self.assertEqual(self.run_hook(self.ev(), dict(self.env, ENTIRE_GRAPH_BIN=other)), (0, ""))
+        self.assertEqual(self.calls(), ["version --json"])
+        self.assertEqual(pc.PROBE_TIMEOUT_S, 3)
+        slow = os.path.join(self.d, "slowprobe"); open(slow, "w").write("#!/bin/sh\nexec sleep 5\n"); os.chmod(slow, 0o755)
+        old = pc.PROBE_TIMEOUT_S; pc.PROBE_TIMEOUT_S = 0.3
+        try:
+            self.assertEqual(self.run_hook(self.ev(session="s3"), dict(self.env, ENTIRE_GRAPH_BIN=slow)), (0, ""))
+        finally:
+            pc.PROBE_TIMEOUT_S = old
+        self.assertEqual(self.marker("s3"), {"probe": "error", "reason": "TimeoutExpired"})
     def test_budget_override(self):
         self.run_hook(self.ev(), dict(self.env, ENTIRE_GRAPH_PROMPT_CONTEXT_BYTES="4096"))
         a = open(self.args).read().split("\n"); self.assertEqual(a[a.index("--max-context-bytes") + 1], "4096")

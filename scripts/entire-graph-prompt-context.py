@@ -28,6 +28,8 @@ QUERY_CHARS = 160
 # Search budget. The hook runs before the prompt reaches the model, so it must never noticeably delay it: past this
 # the search is abandoned and nothing is injected (fail open). hooks/hooks.json's timeout must stay above it.
 TIMEOUT_S = 8
+# Capability probe budget: `version --json` answers in well under a second when the graph is installed.
+PROBE_TIMEOUT_S = 3
 # A binary that predates --head rejects it ("search does not accept --head in entire-graph ...", or a generic
 # unknown-flag error). Only that rejection earns the one retry without --head; any other failure fails open.
 HEAD_REJECTED = re.compile(r"(does not accept|unknown flag|flag provided but not defined)[^\n]*?(?<![\w-])-{1,2}head\b")
@@ -93,6 +95,31 @@ def clean(answer):
     return "\n".join(keep).strip()
 
 
+def probe(argv, env):
+    """Once per session, before any search: is there a working entire-graph behind argv? A missing binary, an `entire`
+    without the graph plugin, a timeout, a non-zero exit or another provider all answer no."""
+    try:
+        r = subprocess.run(argv + ["version", "--json"], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S,
+                           env=env, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"probe": "error", "reason": type(e).__name__}
+    if r.returncode != 0:
+        return {"probe": "error", "reason": "exit %d" % r.returncode}
+    try:
+        info = json.loads(r.stdout)
+    except ValueError:
+        info = None
+    if isinstance(info, dict) and info.get("provider", "entire-graph") != "entire-graph":
+        return {"probe": "error", "reason": "provider %r" % info.get("provider")}
+    version = info.get("version") if isinstance(info, dict) else None
+    return {"probe": "ok", "version": version if isinstance(version, str) else ""}
+
+
+def write_marker(marker, state):
+    with open(marker, "w") as f:
+        json.dump(state, f)
+
+
 def search(argv, query, repo, budget, env, timeout):
     """Search the committed tree (--head): it is served from the tree-hash cache once warm, while working-tree mode
     rebuilds the index on every call (10-30 s cold) and would usually exceed the time budget. Falls back to the
@@ -128,16 +155,22 @@ def main(stdin=sys.stdin, stdout=sys.stdout, env=os.environ):
     marker = once_marker(env, session)
     if os.path.exists(marker):
         return 0
+    # Mark first, so a slow or failing probe or search is never retried on later prompts of the same session.
+    # The marker also caches the probe result for the session.
+    write_marker(marker, {"probe": "pending"})
     argv = graph_argv(env)
     if not argv:
+        write_marker(marker, {"probe": "absent"})
+        return 0
+    run_env = dict(env, ENTIRE_GRAPH_VERIFY_BLOCK="off")
+    state = probe(argv, run_env)
+    write_marker(marker, state)
+    if state["probe"] != "ok":
         return 0
     try:
         budget = str(int(env.get("ENTIRE_GRAPH_PROMPT_CONTEXT_BYTES", "2048")))
     except ValueError:
         budget = "2048"
-    # Mark first, so a slow or failing search is never retried on later prompts of the same session.
-    open(marker, "w").close()
-    run_env = dict(env, ENTIRE_GRAPH_VERIFY_BLOCK="off")
     try:
         r = search(argv, query, repo, budget, run_env, TIMEOUT_S)
     except (OSError, subprocess.SubprocessError):
