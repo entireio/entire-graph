@@ -76,7 +76,7 @@ def clean(answer):
         if block == "verify" and (line.startswith("  ") or line.startswith("\t")):
             continue
         block = None
-        if (line.startswith("Index: ") or "LOW CONFIDENCE" in line or COMPACT_HEADER.match(line)
+        if (line.startswith("Index: ") or line.startswith("LOW CONFIDENCE:") or COMPACT_HEADER.match(line)
                 or COMPACT_DIAG.match(line) or COMPACT_LOW.match(line)):
             continue
         if line.startswith("Coverage: "):

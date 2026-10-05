@@ -51,6 +51,10 @@ class T(unittest.TestCase):
         for header in ("I:hit/3", "I:miss/12 T:40", "I:miss/1 Q:2 P:3 T:4"):
             self.assertEqual(pc.clean(header + "\n1. a.go:1 X s=1"), "1. a.go:1 X s=1")
         self.assertEqual(pc.clean("!N W0 F0 L3/10\n1. a.go:1 X s=1"), "1. a.go:1 X s=1")
+    def test_low_confidence_only_as_column0_metadata(self):
+        code = '    log("LOW CONFIDENCE: retry")  # repository content, kept'
+        got = pc.clean("LOW CONFIDENCE: top score 8.1 (weak); verify before editing.\n1. a.go:1 X s=1\n" + code)
+        self.assertEqual(got, "1. a.go:1 X s=1\n" + code)
     def test_off_by_default(self):
         env = dict(self.env); env.pop("ENTIRE_GRAPH_PROMPT_CONTEXT")
         self.assertEqual(self.run_hook(self.ev(), env), (0, ""))
