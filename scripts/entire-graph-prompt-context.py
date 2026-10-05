@@ -138,17 +138,29 @@ def search(argv, query, repo, budget, env, timeout):
     return r
 
 
-def main(stdin=sys.stdin, stdout=sys.stdout, env=os.environ):
+def text_field(event, *keys):
+    """The first non-empty string among event[keys]. A field of any other type is treated as absent, so a changed or
+    malformed hook schema degrades to "no prompt" instead of an exception."""
+    for key in keys:
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def handle(stdin, stdout, env):
     if not enabled(env):
         return 0
     try:
         event = json.load(stdin)
     except ValueError:
         return 0
+    if not isinstance(event, dict):
+        return 0
     # current Claude Code sends the prompt as "user_input"; earlier versions used "prompt"
-    prompt = event.get("user_input") or event.get("prompt") or ""
-    session = event.get("session_id") or ""
-    repo = env.get("CLAUDE_PROJECT_DIR") or event.get("cwd") or os.getcwd()
+    prompt = text_field(event, "user_input", "prompt")
+    session = text_field(event, "session_id")
+    repo = env.get("CLAUDE_PROJECT_DIR") or text_field(event, "cwd") or os.getcwd()
     query = first_line(prompt)
     if not query or query.startswith("/") or not session:
         return 0
@@ -183,6 +195,15 @@ def main(stdin=sys.stdin, stdout=sys.stdout, env=os.environ):
     json.dump({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                       "additionalContext": HEADING + "\n" + answer}}, stdout)
     return 0
+
+
+def main(stdin=sys.stdin, stdout=sys.stdout, env=os.environ):
+    """Fail open: whatever goes wrong (an unexpected event shape, an unwritable cache directory), add nothing and let
+    the prompt through. A traceback and a non-zero exit would surface as a hook error on every prompt."""
+    try:
+        return handle(stdin, stdout, env)
+    except Exception:  # noqa: BLE001 - the contract is "never block the prompt"
+        return 0
 
 
 if __name__ == "__main__":

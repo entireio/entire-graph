@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Hermetic tests for entire-graph-prompt-context.py (fake graph binary, temp cache; no network, no real index)."""
-import importlib.util, io, json, os, stat, sys, tempfile, unittest
+import importlib.util, io, json, os, stat, subprocess, sys, tempfile, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("pc", os.path.join(HERE, "entire-graph-prompt-context.py"))
 pc = importlib.util.module_from_spec(spec); spec.loader.exec_module(pc)
@@ -189,6 +189,31 @@ class T(unittest.TestCase):
         finally:
             pc.PROBE_TIMEOUT_S = old
         self.assertEqual(self.marker("s3"), {"probe": "error", "reason": "TimeoutExpired"})
+    def test_malformed_event_shapes_fail_open_without_raising(self):
+        # handle() directly: main() would also swallow an exception, which would hide a missing type guard.
+        for event in ([], "text", 5, None, {"user_input": ["Fix it"], "session_id": "m1"},
+                      {"user_input": {"t": 1}, "prompt": 7, "session_id": "m2"},
+                      {"user_input": "Fix the crash", "session_id": 42},
+                      {"user_input": "Fix the crash", "session_id": ["m3"]}):
+            out = io.StringIO()
+            self.assertEqual(pc.handle(io.StringIO(json.dumps(event)), out, self.env), 0, event)
+            self.assertEqual(out.getvalue(), "", event)
+        self.assertFalse(os.path.exists(self.args + ".calls"), "a malformed event must not reach the graph")
+    def test_non_string_field_falls_back_to_next_string(self):
+        env = dict(self.env); env.pop("CLAUDE_PROJECT_DIR")
+        out = io.StringIO()
+        pc.handle(io.StringIO(json.dumps({"user_input": 3, "prompt": "Fix the crash", "session_id": "m4",
+                                          "cwd": ["x"]})), out, env)
+        self.assertTrue(out.getvalue())
+        a = open(self.args).read().split("\n"); self.assertEqual(a[a.index("--query") + 1], "Fix the crash")
+    def test_script_exits_zero_on_unexpected_error(self):
+        blocker = os.path.join(self.d, "cache-is-a-file"); open(blocker, "w").close()
+        env = dict(self.env, XDG_CACHE_HOME=blocker)  # makedirs under a regular file raises
+        with self.assertRaises(OSError):
+            pc.handle(io.StringIO(json.dumps(self.ev())), io.StringIO(), env)
+        r = subprocess.run([sys.executable, os.path.join(HERE, "entire-graph-prompt-context.py")],
+                           input=json.dumps(self.ev()), capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
     def test_budget_override(self):
         self.run_hook(self.ev(), dict(self.env, ENTIRE_GRAPH_PROMPT_CONTEXT_BYTES="4096"))
         a = open(self.args).read().split("\n"); self.assertEqual(a[a.index("--max-context-bytes") + 1], "4096")
