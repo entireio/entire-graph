@@ -1,0 +1,16 @@
+{
+  "description": "Experimental, opt-in (ENTIRE_GRAPH_PROMPT_CONTEXT=1): put the code graph's answer for the first prompt of a session into context, without a tool call.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/entire-graph-prompt-context.py\"",
+            "timeout": 12
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -331,3 +331,17 @@ jobs:
         with: { go-version: "1.27.x" }
       - run: go build -o entire-graph ./cmd/entire-graph
       - run: sh scripts/entire-graph-statusline_test.sh
+
+  # The prompt-context hook is Python with a hermetic stdlib unittest suite; `go test` never runs it.
+  # No windows-latest: the tests build fake binaries as /bin/sh scripts and use `kill -9`.
+  # python3 ships on both runners, so no setup-python.
+  prompt-context-hook:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: python3 scripts/entire-graph-prompt-context_test.py

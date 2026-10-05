@@ -116,6 +116,29 @@ then you ask a code question in plain language, the agent runs graph queries,
 reads the code the graph points at, and answers with citations. A captured example
 is shown further below.
 
+### Experimental: graph context on the first prompt (Claude Code, opt-in)
+
+The plugin ships a `UserPromptSubmit` hook that, when enabled, runs one graph search on the first line of a
+session's first prompt and adds the ranked regions (capped at 2 KB) to the session context, with no tool call.
+VERIFY advice, coverage diagnostics and timing lines are stripped. It fires once per session and fails open.
+
+It searches the committed tree (`--head`), so it is served from the tree-hash index cache and does not see
+uncommitted edits. A binary too old for `--head` gets one retry on the working tree. Before searching it checks
+`entire graph version --json` (3 s cap) once per session; no working graph means nothing is injected. The search
+has an 8 s budget so the prompt is never visibly held up: past it, nothing is injected. A cold index for a new
+commit can take longer than that (10-30 s), so the first session on a fresh checkout may get nothing; later
+sessions on the same commit hit the cache.
+
+```bash
+export ENTIRE_GRAPH_PROMPT_CONTEXT=1          # off unless set
+# optional: ENTIRE_GRAPH_PROMPT_CONTEXT_BYTES=2048
+# optional: ENTIRE_GRAPH_BIN=/path/to/entire  # run as `<path> graph search`; any other command as `<cmd> search`
+```
+
+Why it is opt-in: in paired agent runs, a graph search *tool call* cost a whole agent turn and raised tokens; the
+same answer injected into the prompt was token-neutral (+0.7%, 95% CI about ±11%) and resolved slightly more tasks
+in two separate stages, but neither difference is statistically significant.
+
 ## What to ask
 
 Prompts are the interface. The commands are what the agent runs underneath;
