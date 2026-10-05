@@ -26,6 +26,13 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+      # Go 1.27 enables the jsonv2 experiment by default, so every other job compiles the
+      # streaming cache encoder (cache_encode_jsonv2.go) and
+      # TestDefaultBuildCompilesStreamingCacheEncoder fails if one ever does not. This step
+      # keeps the buffering fallback (cache_encode_legacy.go) compiled and byte-identical.
+      - name: cache encoder fallback (GOEXPERIMENT=nojsonv2)
+        env: { GOEXPERIMENT: nojsonv2 }
+        run: go test -count=1 -run 'Cache|EncodeCacheValue' ./internal/sem
 
   # Release archives are immutable once published, so third-party attribution
   # has to be correct before a tag, not after it. This regenerates NOTICES from
