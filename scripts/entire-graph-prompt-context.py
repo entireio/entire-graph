@@ -11,7 +11,8 @@ Why this shape (pilot8 evidence, entirehq/graphmark pilot8-prep, CHANGES-fairnes
 
 Opt in:  ENTIRE_GRAPH_PROMPT_CONTEXT=1   (in the environment Claude Code is started from, or settings.json "env").
 Tuning:  ENTIRE_GRAPH_PROMPT_CONTEXT_BYTES (default 2048, the measured setting), ENTIRE_GRAPH_BIN (default: `entire`
-         on PATH, invoked as `entire graph ...`).
+         on PATH, invoked as `entire graph ...`; a path to `entire` is also invoked as `<path> graph ...`, anything
+         else, such as the standalone `entire-graph` binary, as `<bin> search ...`).
 Fails open: any error, timeout, non-repo or empty answer adds nothing and never blocks the prompt.
 """
 import hashlib
@@ -54,9 +55,16 @@ def once_marker(env, session_id):
 
 
 def graph_argv(env):
+    """The command prefix that takes `search ...`. ENTIRE_GRAPH_BIN may name the `entire` CLI (run as
+    `entire graph search ...`, like the default) or a command that already takes `search` directly, such as the
+    standalone `entire-graph` binary or "entire graph"."""
     override = env.get("ENTIRE_GRAPH_BIN", "").strip()
     if override:
-        return override.split()
+        argv = override.split()
+        name = os.path.basename(argv[-1]).lower()
+        if name.endswith(".exe"):
+            name = name[:-4]
+        return argv + ["graph"] if name == "entire" else argv
     entire = shutil.which("entire", path=env.get("PATH"))
     return [entire, "graph"] if entire else None
 

@@ -214,6 +214,20 @@ class T(unittest.TestCase):
         r = subprocess.run([sys.executable, os.path.join(HERE, "entire-graph-prompt-context.py")],
                            input=json.dumps(self.ev()), capture_output=True, text=True, env=env, timeout=30)
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+    def test_bin_override_naming_entire_runs_graph_subcommand(self):
+        for name in ("entire", "entire.exe", "Entire.EXE"):
+            sub = os.path.join(self.d, name.lower() + "-dir"); os.makedirs(sub, exist_ok=True)
+            entire = os.path.join(sub, name)
+            with open(entire, "w") as f:
+                f.write("#!/bin/sh\n[ \"$1\" = graph ] || { echo 'unknown command' >&2; exit 1; }\nshift\n"
+                        "exec \"$FAKE_GRAPH\" \"$@\"\n")
+            os.chmod(entire, 0o755)
+            self.assertEqual(pc.graph_argv({"ENTIRE_GRAPH_BIN": entire}), [entire, "graph"])
+        env = dict(self.env, ENTIRE_GRAPH_BIN=os.path.join(self.d, "entire-dir", "entire"), FAKE_GRAPH=self.fake)
+        self.assertTrue(self.run_hook(self.ev(), env)[1], "ENTIRE_GRAPH_BIN=/path/to/entire must reach `entire graph`")
+        for override, want in (("entire graph", ["entire", "graph"]), ("/opt/entire-graph", ["/opt/entire-graph"]),
+                               (self.fake, [self.fake])):
+            self.assertEqual(pc.graph_argv({"ENTIRE_GRAPH_BIN": override}), want)
     def test_budget_override(self):
         self.run_hook(self.ev(), dict(self.env, ENTIRE_GRAPH_PROMPT_CONTEXT_BYTES="4096"))
         a = open(self.args).read().split("\n"); self.assertEqual(a[a.index("--max-context-bytes") + 1], "4096")
