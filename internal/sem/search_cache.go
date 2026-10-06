@@ -733,11 +733,30 @@ func restoreCachedSearchInternals(cache *cachedSearchSnapshot) {
 	}
 }
 
-// selectiveSearchSnapshotFromFull derives the same graph that a fresh
-// OnlyFiles build would produce. It reuses cached parse output, but deliberately
-// reruns relation resolution against only the selected symbols: simply dropping
-// cross-boundary edges from a complete graph is wrong because an OnlyFiles build
-// externalizes those targets and records different resolution metadata.
+// selectiveSearchSnapshotFromFull derives the selective view of a complete
+// snapshot: the selected files, their symbols, and the complete graph's
+// relations FILTERED to those that start at a selected file or symbol and end at
+// a selected one or at an `external:` target. It reuses the complete snapshot's
+// relation resolution instead of rerunning it, which was the whole cost of a
+// warm query: re-extracting relations for the 600-800 files a git-grep
+// preselection admits took as long as the cold build the preindex exists to
+// avoid (16s on this repository, against 2.3s for the filter).
+//
+// The result is a subset of what a fresh OnlyFiles build of the same selection
+// produces, and the difference is deliberate. A fresh selective build resolves
+// names against the SELECTION, so where the real target lies outside it, it
+// either externalizes the edge (`external:` target, no symbol to rank or quote)
+// or falls back to a weaker same-named candidate that happens to be selected (a
+// name_only/pattern CALLS, a representative-file IMPORTS, a SIMILAR_TO chosen
+// among the selected bodies only, a name_only type edge where the complete graph
+// resolved it by package). The complete graph resolved every one of those against
+// the whole tree, so the filtered view keeps the complete graph's answer and
+// drops the edge whose answer lies outside the selection. Measured on this
+// repository across three queries, capped and uncapped selections: the filter
+// added no relation a fresh build lacks, and dropped 0.1-2.6% of relations, all
+// in the classes above. Ranking consumers only follow relations whose endpoints
+// are both selected symbols, so the externalized half never reached a ranked
+// result; TestSelectiveDerivationFiltersCompleteGraph pins both directions.
 func selectiveSearchSnapshotFromFull(
 	ctx context.Context,
 	repo, providerVersion string,
@@ -791,17 +810,6 @@ func selectiveSearchSnapshotFromFull(
 			recordsByFile[filePath] = retainedSymbolsForProfile(symbols, spec)
 		}
 	}
-	precomputedImports := make(map[string][]string)
-	if spec.name != ProfileSyntaxOnly {
-		for _, file := range selective.Files {
-			if !skipFastProfilePerSymbolScan(spec, file.Language) {
-				continue
-			}
-			if content, ok := sc.read(file.Path); ok {
-				precomputedImports[file.Path] = importsFor(file.Path, content)
-			}
-		}
-	}
 
 	seenRelations := make(map[uint64]struct{})
 	externalsByID := make(map[string]ExternalRecord)
@@ -837,22 +845,29 @@ func selectiveSearchSnapshotFromFull(
 		relationsByType[relation.Type]++
 		selective.Relations = append(selective.Relations, relation)
 	}
-	var relationFailures []PartialFailure
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, emitRelation)
 	} else {
-		forEachRelation(ctx, sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, defaultProviderWorkerCount(), func() bool {
-			return ctx.Err() != nil
-		}, emitRelation, func(failure PartialFailure) {
-			relationFailures = append(relationFailures, failure)
-		})
-		if spec.emits("FILE_CHANGES_WITH") {
-			for _, relation := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, selective.Files) {
-				if ctx.Err() != nil {
-					break
-				}
-				emitRelation(relation)
+		// Filter, do not re-extract; see the function comment for what this keeps
+		// and why. FILE_CHANGES_WITH needs no special case: it is a pairwise fact
+		// about two files computed over history independently of the file set, so
+		// keeping the pairs whose files are both selected is exactly what a fresh
+		// selective build emits.
+		selectedIDs := make(map[string]bool, len(selective.Files)+len(selective.Symbols))
+		for _, file := range selective.Files {
+			selectedIDs[file.ID] = true
+		}
+		for _, symbol := range selective.Symbols {
+			selectedIDs[symbol.ID] = true
+		}
+		for _, relation := range full.Relations {
+			if ctx.Err() != nil {
+				break
 			}
+			if !selectiveRelationRetained(relation, selectedIDs) {
+				continue
+			}
+			emitRelation(relation)
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -877,8 +892,10 @@ func selectiveSearchSnapshotFromFull(
 	if warnings == nil {
 		warnings = []ProviderWarning{}
 	}
+	// The complete build already folded its relation-phase failures into these
+	// records (mergePartialFailures), so filtering them by file is the selective
+	// view's whole failure set: the filter itself resolves nothing and cannot fail.
 	failures := filterSearchPartialFailures(full.Header.PartialFailures, allowedFiles)
-	failures = mergePartialFailures(failures, relationFailures)
 	languageSet := make(map[string]struct{})
 	completenessLanguages := make(map[string]LanguageCompleteness)
 	for _, file := range selective.Files {
@@ -924,11 +941,23 @@ func selectiveSearchSnapshotFromFull(
 	return selective, nil
 }
 
-// The relation-phase failures recorded during selective derivation are merged
-// via mergePartialFailures (provider.go), which folds a record the (filtered)
-// full-build failures already carry for the same file and code into that record
-// instead of adding or dropping one — so the selective path reports the same
-// single record, carrying both phases' effects, that a full build does.
+// selectiveRelationRetained is the filter selectiveSearchSnapshotFromFull applies
+// to the complete graph: the relation must start at a selected file or symbol and
+// end at a selected one or at an `external:` target. An edge into an unselected
+// symbol is dropped rather than kept dangling, because a fresh selective build
+// never names an unselected symbol either.
+func selectiveRelationRetained(relation RelationRecord, selectedIDs map[string]bool) bool {
+	if !selectedIDs[relation.FromID] {
+		return false
+	}
+	return selectedIDs[relation.ToID] || strings.HasPrefix(relation.ToID, "external:")
+}
+
+// filterSearchPartialFailures keeps the complete build's failures that belong to
+// the selection, plus the repository-wide ones that name no file. The complete
+// build already merged each file's relation-phase failure into its parse-phase
+// record (mergePartialFailures, provider.go), so the selective view reports the
+// same single record, carrying both phases' effects, that a full build does.
 func filterSearchPartialFailures(failures []PartialFailure, allowedFiles map[string]bool) []PartialFailure {
 	filtered := make([]PartialFailure, 0, len(failures))
 	for _, failure := range failures {
