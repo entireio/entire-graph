@@ -17,8 +17,9 @@ import (
 const coldBuildLockChildEnv = "ENTIRE_GRAPH_TEST_COLD_BUILD_LOCK_CHILD"
 
 const (
-	coldBuildLockRoleQuery = "query"
-	coldBuildLockRoleHold  = "hold"
+	coldBuildLockRoleQuery    = "query"
+	coldBuildLockRoleComplete = "complete"
+	coldBuildLockRoleHold     = "hold"
 )
 
 var coldBuildLockQueryOptions = SearchOptions{Profile: ProfileFull, TopK: 10, MaxIndexedFiles: 2}
@@ -33,7 +34,7 @@ func TestColdBuildLockChild(t *testing.T) {
 	repo := os.Getenv("COLD_BUILD_LOCK_REPO")
 	cacheDir := os.Getenv("COLD_BUILD_LOCK_CACHE")
 	switch role {
-	case coldBuildLockRoleQuery:
+	case coldBuildLockRoleQuery, coldBuildLockRoleComplete:
 		counter := os.Getenv("COLD_BUILD_LOCK_COUNTER")
 		beforeColdCompleteBuild = func() {
 			file, err := os.OpenFile(counter, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
@@ -57,6 +58,15 @@ func TestColdBuildLockChild(t *testing.T) {
 				t.Fatal("start barrier never opened")
 			}
 			time.Sleep(5 * time.Millisecond)
+		}
+		if role == coldBuildLockRoleComplete {
+			// The complete-query path (def, impact, neighbors, explain).
+			snapshot, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFull}, cacheDir, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fmt.Printf("COLD-BUILD-LOCK-RESULT hit=%v results=%d\n", hit, len(snapshot.Files))
+			return
 		}
 		options := coldBuildLockQueryOptions
 		options.CacheDir = cacheDir
@@ -112,6 +122,19 @@ func waitForFiles(t *testing.T, paths ...string) {
 // the same moment produce exactly one complete build. The rest wait on the
 // build lock and are then served the published snapshot as a cache hit.
 func TestConcurrentColdQueriesBuildCompleteSnapshotOnce(t *testing.T) {
+	runConcurrentColdBuilds(t, coldBuildLockRoleQuery)
+}
+
+// TestConcurrentColdCompleteQueriesBuildOnce is the same pin for the complete
+// query path, whose lock is released by a defer in the loader itself rather
+// than in a nested function: it must stay held across the build, or each waiter
+// would take the lock in turn, miss the still-unwritten entry and build again.
+func TestConcurrentColdCompleteQueriesBuildOnce(t *testing.T) {
+	runConcurrentColdBuilds(t, coldBuildLockRoleComplete)
+}
+
+func runConcurrentColdBuilds(t *testing.T, role string) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("spawns helper processes")
 	}
@@ -131,7 +154,7 @@ func TestConcurrentColdQueriesBuildCompleteSnapshotOnce(t *testing.T) {
 	for index := range processes {
 		readyFile := filepath.Join(signals, fmt.Sprintf("ready-%d", index))
 		ready = append(ready, readyFile)
-		cmd := coldBuildLockChild(t, coldBuildLockRoleQuery,
+		cmd := coldBuildLockChild(t, role,
 			"COLD_BUILD_LOCK_REPO="+repo,
 			"COLD_BUILD_LOCK_CACHE="+cacheDir,
 			"COLD_BUILD_LOCK_COUNTER="+counter,
