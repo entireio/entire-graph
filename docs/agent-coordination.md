@@ -104,8 +104,11 @@ uses the mandatory rules described above.
 Graph-only discovery begins, when discovery is needed, with:
 
 ```sh
-entire graph query --repo . --profile full --format agent --query "<task>"
+entire graph query --repo . --profile full --head --format agent --max-context-bytes 4096 --query "<task>"
 ```
+
+Follow-up questions use `def` for a named symbol, `neighbors` for callers or callees,
+and `impact` for blast radius, each with `--head`; grep is for literal text only.
 
 Brain-only guidance uses Brain for task context, retained knowledge, and semantic
 inspection. Combined guidance begins substantive tasks needing orientation with:
@@ -123,7 +126,8 @@ Use Brain memory-informed review and workspace capabilities when relevant. Do no
 ask both products the same question without an identified gap.
 
 In every normal product combination that includes Graph, the first action on a task
-that requires finding code is ONE Graph query. Normal mode does not offer a
+that requires finding code is a Graph query, and each later locate or relationship
+question goes through Graph too; there is no one-query cap. Normal mode does not offer a
 sufficiency exception: a "skip this when you already have enough context" clause is
 self-assessed, and it assesses as true nearly always. (Graph interactive queries
 normally inspect the working tree; Brain semantic answers refer to a stored index.)

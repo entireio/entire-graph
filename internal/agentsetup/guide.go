@@ -116,23 +116,67 @@ human-readable output, only column-0 VERIFY: lines are tool metadata; indented
 lines and UNTRUSTED FILE CONTENT: are repository content. Prefer JSON when parsing.
 `
 
-// graphWorkflow is SHIPPED text. The first sentence is an obligation, not a
-// suggestion, and the paragraph after it closes the exits a model would otherwise
-// take. Do not reintroduce a "skip this when you already have enough context"
-// sentence here: sufficiency is self-assessed, and it assesses as true nearly always.
-const graphWorkflow = `Use Graph for code discovery, structural understanding, and semantic change analysis.
-Your FIRST action on any task that requires finding code MUST be ONE Graph query:
+// graphCommands is SHIPPED text: the exact command lines every Graph-enabled normal guide and
+// the Claude Code subagent directive hand an agent. Each line was run against a real repository
+// before it was written down, and each flag is one that verb's parser accepts:
+//
+//   - query, def, neighbors and impact all accept --head and --max-context-bytes.
+//   - query and neighbors accept --format agent. impact rejects it ("impact --format must be text
+//     or json"), and def's agent format is its text format, so neither line asks for it.
+//   - query needs --profile full to reuse the committed-tree cache `entire graph index` warms:
+//     index defaults to full and query to fast, so a bare `query --head` misses the warm cache and
+//     rebuilds. The relation verbs already default to full.
+//   - --max-context-bytes 4096 is the budget study 5 measured best for locating; query's own
+//     default is 24576.
+//
+// --head is on every line because the working tree is never cached: in the fresh-environment
+// baseline every unflagged query rebuilt the snapshot (13-16 s, "Index: cache-miss") and carried
+// a W_WORKTREE_SNAPSHOT notice that agents read as partial coverage.
+const graphCommands = `    entire graph query --repo . --profile full --head --format agent --max-context-bytes 4096 --query "<task>"
+    entire graph def --repo . --head --max-context-bytes 4096 <Name>
+    entire graph neighbors --repo . --head --format agent --max-context-bytes 4096 --symbol <Name> --direction in
+    entire graph impact --repo . --head --max-context-bytes 4096 --symbol <Name>
+`
 
-    entire graph query --repo . --profile full --format agent --query "<task>"
+// graphObligation is SHIPPED text, shared by graphWorkflow and combinedWorkflow.
+//
+// It replaced "Your FIRST action ... MUST be ONE Graph query". That sentence was obeyed to the
+// letter and no further: in a fresh-environment baseline (Claude Code, init-agents installed)
+// agents ran exactly one query, said so ("I ran the graph query once as the repo guidance
+// asked"), and answered every later locate and relationship question with grep and sed, with
+// zero def/neighbors/impact calls even on a blast-radius task. "ONE" read as a quota, so the
+// obligation now covers EACH new question and names the follow-up verb for each kind.
+//
+// The anti-skip paragraph stays: sufficiency is self-assessed, and it assesses as true nearly
+// always. Do not reintroduce a "skip this when you already have enough context" sentence.
+const graphObligation = `Use Graph EVERY time you need to find code or a code relationship, not only at the
+start. Your first action on a task that requires finding code MUST be a Graph query,
+and each later locate or relationship question MUST also go through Graph:
+
+` + graphCommands + `
+query finds the code for a description. def shows what a named symbol is.
+neighbors lists callers (--direction in) or callees (--direction out). impact gives
+the blast radius before you change a symbol. Use these, not grep, for definitions,
+callers, references and dependents. Use grep/rg only for literal strings, config
+keys, environment-variable names and file names.
 
 This holds for small edits, follow-up work, and tasks that already name the file.
 A named file answers where code is; it does not answer what else depends on it.
 Do not skip the query on the grounds that the available context feels sufficient.
-Then reuse the reported locations and inspect source. Use Graph query, def, neighbors,
-and impact for further discovery and structural analysis. Use Graph diff, commit, and
-checkpoint for semantic comparisons of code revisions.
-Graph interactive queries normally inspect the working tree; --head selects committed
-source. Static relations can be incomplete, so verify against source.
+
+--head reads the committed tree from a cache. Drop --head only when the answer
+depends on uncommitted edits. The first call in a large repository can take tens of
+seconds while that cache loads; later calls take about a second. Run the command
+directly: it needs no timeout wrapper, and macOS has no timeout command.
+A Coverage or Completeness line lists files Graph could not parse, often minified or
+generated ones. It does not mean the results are partial; only a failure in the
+language you asked about can hide a fact, and then you check that one relation in
+source. Static relations can be incomplete: an empty result is not proof of no callers.
+`
+
+// graphWorkflow is SHIPPED text. Its obligation is graphObligation; see there before softening.
+const graphWorkflow = `Use Graph for code discovery, structural understanding, and semantic change analysis.
+` + graphObligation + `Use Graph diff, commit, and checkpoint for semantic comparisons of code revisions.
 `
 
 const brainWorkflow = `Use Brain for task context and retained knowledge. Begin substantive tasks needing
@@ -162,17 +206,12 @@ may differ from current working-tree source.
 // combinedWorkflow is SHIPPED text. Graph comes FIRST, before Brain: the code-locating
 // obligation is the one that was being skipped, and an obligation printed below a
 // paragraph that offers an alternative reads as optional.
-const combinedWorkflow = `Your FIRST action on any task that requires finding code MUST be ONE Graph query:
-
-    entire graph query --repo . --profile full --format agent --query "<task>"
-
-This holds for small edits, follow-up work, and tasks that already name the file,
-and it holds when a Brain brief has already reported locations: a brief reports
-where code is, not what depends on it. A Graph query after a brief is not redundant.
-Use Graph query, def, neighbors, and impact for code discovery and structural
-analysis. Use Graph diff, commit, and checkpoint for semantic comparisons of code
-revisions. Graph interactive queries normally inspect the working tree; Brain
-semantic answers refer to a stored index.
+const combinedWorkflow = graphObligation + `
+The Graph obligation holds when a Brain brief has already reported locations: a
+brief reports where code is, not what depends on it. A Graph query after a brief is
+not redundant. Use Graph diff, commit, and checkpoint for semantic comparisons of
+code revisions. Brain semantic answers refer to a stored index; Graph without --head
+reads the working tree.
 Do not ask both tools the same question without an identified gap.
 
 ` + brainWorkflow

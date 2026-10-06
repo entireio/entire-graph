@@ -186,9 +186,11 @@ what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status l
 ## Repository-specific workflow
 
 Follow `.entire/agent-guide.md`, generated from repository state. Both Graph-only
-and combined instructions make the same first-action obligation: the first action on
-any task that requires finding code is ONE
-`entire graph query --repo . --profile full --format agent --query "<task>"`.
+and combined instructions make the same obligation: the first action on any task that
+requires finding code is a Graph query,
+`entire graph query --repo . --profile full --head --format agent --max-context-bytes 4096 --query "<task>"`,
+and each later locate or relationship question also goes through Graph (`def`,
+`neighbors`, `impact`, all with `--head`), with grep reserved for literal text.
 That holds for small edits, follow-ups, tasks that already name the file, and tasks
 where a Brain brief has already reported locations — a brief reports where code is,
 not what depends on it. Combined instructions also begin substantive orientation with

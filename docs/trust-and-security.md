@@ -199,7 +199,9 @@ these rules existed misses instead of re-emitting the paths it named.
   namespace authority can already move existing cache artifacts.
 - `init-agents` writes through three primary repository paths, disclosed in
   [agent activation](agents.md): `.entire/agent-guide.md` and managed blocks
-  in `AGENTS.md` and `CLAUDE.md`. Existing legacy Graph/Brain guide paths are
+  in `AGENTS.md` and `CLAUDE.md`. It also merges one Claude Code hook entry into
+  the per-user `.claude/settings.local.json` (skipped with `--no-claude-hook`);
+  that path is never followed through a symlink or hard link. Existing legacy Graph/Brain guide paths are
   also checked and rewritten as redirects under the same protections. See
   [coordination](agent-coordination.md) for detection and migration.
   A repository-committed symlink at one of
