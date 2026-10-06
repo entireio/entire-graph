@@ -408,19 +408,59 @@ func loadOrBuildSearchSnapshotPersisting(
 		// time, and charging it to an interactive query that selected a few dozen
 		// files would turn a seconds-long cold query into minutes.
 		if persistBuilt && generationKnown && completeSnapshotAffordableOnColdQuery(ctx, absRepo, completeOptions) {
-			full, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, completeOptions)
-			if buildErr != nil && ctx.Err() != nil {
-				return ProviderSnapshot{}, false, buildErr
-			}
-			if buildErr == nil && validateBuiltSearchSnapshot(full, repositoryKey, providerVersion, tree, completeOptions) == nil {
-				full.Header.Commit = commit
-				// Best effort, like every query-time store: an unwritable cache
-				// still serves this query from the snapshot in memory.
-				_ = writeSearchSnapshot(fullEntry, newCachedSearchSnapshot(providerVersion, commit, tree, completeOptions, full))
-				if selective, ok := deriveFromFull(full); ok {
-					return selective, false, nil
+			selective, hit, done, buildErr := func() (ProviderSnapshot, bool, bool, error) {
+				// Concurrent cold queries on this tree, typically parallel agents in
+				// separate processes, would each build the same complete snapshot.
+				// The first to take the lock builds and publishes it; the others
+				// wait, then find it below and derive from it as a cache hit.
+				lock, lockErr := acquireCompleteBuildLock(ctx, cacheDir, "search", searchSnapshotCacheVersion, completeKey)
+				if lockErr != nil {
+					return ProviderSnapshot{}, false, true, lockErr
 				}
+				defer lock.release()
+				if cached, ok := loadCachedSearchSnapshot(fullEntry, absRepo, commit, repositoryKey, providerVersion, tree, completeOptions); ok {
+					if selective, ok := deriveFromFull(cached.Snapshot); ok {
+						return selective, true, true, nil
+					}
+				}
+				if beforeColdCompleteBuild != nil {
+					beforeColdCompleteBuild()
+				}
+				full, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, completeOptions)
+				if buildErr != nil && ctx.Err() != nil {
+					return ProviderSnapshot{}, false, true, buildErr
+				}
+				if buildErr == nil && validateBuiltSearchSnapshot(full, repositoryKey, providerVersion, tree, completeOptions) == nil {
+					full.Header.Commit = commit
+					// Best effort, like every query-time store: an unwritable cache
+					// still serves this query from the snapshot in memory.
+					_ = writeSearchSnapshot(fullEntry, newCachedSearchSnapshot(providerVersion, commit, tree, completeOptions, full))
+					if selective, ok := deriveFromFull(full); ok {
+						return selective, false, true, nil
+					}
+				}
+				return ProviderSnapshot{}, false, false, nil
+			}()
+			if done {
+				return selective, hit, buildErr
 			}
+		}
+	}
+	// A complete query that missed builds exactly the artifact a concurrent cold
+	// query on the same tree is building, so it takes the same lock and re-checks
+	// the entry once it holds it.
+	if len(options.OnlyFiles) == 0 && persistBuilt && generationKnown {
+		lock, lockErr := acquireCompleteBuildLock(ctx, cacheDir, "search", searchSnapshotCacheVersion, completeKey)
+		if lockErr != nil {
+			return ProviderSnapshot{}, false, lockErr
+		}
+		defer lock.release()
+		if cached, ok := loadCachedSearchSnapshot(entry, absRepo, commit, repositoryKey, providerVersion, tree, options); ok &&
+			cached.DerivedFrom == derivedFrom {
+			return cached.Snapshot, true, nil
+		}
+		if beforeColdCompleteBuild != nil {
+			beforeColdCompleteBuild()
 		}
 	}
 	snapshot, err := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
