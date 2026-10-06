@@ -265,7 +265,7 @@ var commandDocs = []commandDoc{
 			{name: "--kind", arg: "kind", desc: "Disambiguate by symbol kind"},
 			{name: "--members", arg: "n", def: "15", desc: "Max members listed per group"},
 			{name: "--format", arg: "text|json", desc: "Output format"},
-			{name: "--max-context-bytes", arg: "n", def: "4096", desc: "Total text budget"},
+			{name: "--max-context-bytes", arg: "n", def: "4096", desc: "Total output budget, card and source, text or json, shared by all names; 0 = unbounded"},
 			{name: "--head", desc: "Query the committed tree (cached)"},
 		},
 		examples: []string{"entire graph def Result --repo ."},

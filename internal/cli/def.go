@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -136,6 +137,7 @@ type defResponse struct {
 	Declarations     []defDeclaration       `json:"declarations"`
 	DeclarationTotal int                    `json:"declarations_total"`
 	Truncated        bool                   `json:"truncated"`
+	BudgetOmitted    *defBudgetOmission     `json:"budget_omitted,omitempty"`
 	Warnings         []sem.ProviderWarning  `json:"warnings"`
 	PartialFailures  []sem.PartialFailure   `json:"partial_failures"`
 	Completeness     sem.CompletenessReport `json:"completeness"`
@@ -197,6 +199,10 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	}
 	// One index build, N answers. The whole point of the multi-query form is that the second and third
 	// name cost a map lookup rather than another 10-second snapshot load.
+	//
+	// --max-context-bytes is the TOTAL for the invocation, so N names share it evenly. A per-name
+	// budget would let `def A B C` print three budgets' worth while the guide promised one.
+	nameBudget := defNameBudget(flags.MaxContextBytes, len(symbols))
 	for position, symbol := range symbols {
 		query := flags
 		query.Symbol = symbol
@@ -207,23 +213,37 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 		response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
 		switch flags.Format {
 		case "json":
-			encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
-			encoder.SetEscapeHTML(false)
-			if err := encoder.Encode(response); err != nil {
+			encoded, err := fitDefJSON(response, nameBudget, flags.MaxContextBytes)
+			if err != nil {
+				return err
+			}
+			if _, err := opts.Stdout.Write(encoded); err != nil {
 				return err
 			}
 		case "text", "agent":
+			var section bytes.Buffer
 			if position > 0 {
 				// A separator, because several cards in one stream have to be tellable apart.
-				fmt.Fprintln(opts.Stdout)
+				section.WriteByte('\n')
 			}
 			if len(symbols) > 1 {
-				fmt.Fprintf(opts.Stdout, "== %s ==\n", symbol)
+				fmt.Fprintf(&section, "== %s ==\n", termsafe.Line(symbol))
 			}
-			if err := writeDefText(opts.Stdout, response, flags.MaxContextBytes); err != nil {
+			answerBudget := nameBudget
+			if nameBudget > 0 {
+				answerBudget = nameBudget - section.Len()
+			}
+			if nameBudget > 0 && answerBudget <= 0 {
+				// The header alone spends this name's share; 0 would mean "unbounded" below.
+				if _, err := termsafe.NewWriter(opts.Stdout).Write(defCutAtLine(section.Bytes(), nameBudget)); err != nil {
+					return err
+				}
+				continue
+			}
+			section.Write(renderDefAnswerText(response, readSource, query.From, answerBudget, flags.MaxContextBytes))
+			if _, err := termsafe.NewWriter(opts.Stdout).Write(section.Bytes()); err != nil {
 				return err
 			}
-			writeDefBodiesFromReader(opts.Stdout, response, readSource, query.From)
 		default:
 			return fmt.Errorf("def --format must be json, text, or agent, got %q", flags.Format)
 		}
@@ -231,18 +251,26 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	return nil
 }
 
-// writeDefBodiesFromReader prints the SOURCE of each declaration the card describes, numbered,
-// through the reader the command owns.
+// defNameBudget is one name's share of the invocation's byte budget; 0 stays unbounded.
+func defNameBudget(budget, names int) int {
+	if budget <= 0 || names <= 1 {
+		return budget
+	}
+	if share := budget / names; share > 0 {
+		return share
+	}
+	return 1
+}
+
+// defBodyRecords are the records whose SOURCE `def` prints under the card, numbered, through the
+// reader the command owns.
 //
 // The card answers "what can I do with this"; agents call `def` to answer "show me the code". Measured
 // on carbon: the agent got a body it could not navigate, cut it with `head -80`, lost the line it
 // needed and spent 87 turns grepping instead. The card alone was never the whole answer.
-func writeDefBodiesFromReader(out io.Writer, response defResponse, read lineReader, from int) {
-	if len(response.Declarations) == 0 || read == nil {
-		return
-	}
-	records := make([]sem.SymbolRecord, 0, len(response.Declarations))
-	for _, declaration := range response.Declarations {
+func defBodyRecords(declarations []defDeclaration, from int) []sem.SymbolRecord {
+	records := make([]sem.SymbolRecord, 0, len(declarations))
+	for _, declaration := range declarations {
 		start := declaration.StartLine
 		if from > start {
 			start = from
@@ -252,7 +280,262 @@ func writeDefBodiesFromReader(out io.Writer, response defResponse, read lineRead
 			FilePath: declaration.FilePath, StartLine: start, EndLine: declaration.EndLine,
 		})
 	}
-	writeSymbolMatchBodies(out, symbolMatchBodiesFromReader(read, records, len(records)))
+	return records
+}
+
+// renderDefAnswerText is the whole text answer for one name — card, then bodies — held to `budget`
+// bytes (0 = unbounded). The output is already terminal-escaped, and it is MEASURED escaped, so the
+// bytes counted are the bytes printed. `flagBudget` is the --max-context-bytes the caller typed, which
+// is what the notes name: with several names `budget` is only this name's share of it.
+//
+// The budget used to bound the card alone; the bodies after it were unbounded, so an ambiguous or
+// fuzzy name printed up to four bodies of up to 400 lines each under a 4 KiB budget (measured 23 KB on
+// the cli repo for `def State`). Now the card is fitted first with room reserved for the omission note,
+// bodies are added whole while they fit, the first one that does not is clipped at a line with a resume
+// note, and every body left out is counted.
+func renderDefAnswerText(response defResponse, read lineReader, from, budget, flagBudget int) []byte {
+	reserve := 0
+	if budget > 0 && read != nil && len(response.Declarations) > 0 {
+		reserve = len(defBodiesOmittedNote(len(response.Declarations), flagBudget))
+	}
+	cardBudget := budget
+	if budget > 0 && budget-reserve > 0 {
+		cardBudget = budget - reserve
+	}
+	card, kept := fitDefCard(response, cardBudget)
+	output := append([]byte(nil), card...)
+	if read == nil || kept == 0 {
+		return output
+	}
+	bodies := symbolMatchBodiesFromReader(read, defBodyRecords(response.Declarations[:kept], from), kept)
+	omitted := 0
+	for index, body := range bodies {
+		full := renderDefBody(body)
+		if budget <= 0 {
+			output = append(output, full...)
+			continue
+		}
+		rest := len(bodies) - index - 1
+		note := defBodiesOmittedNote(rest, flagBudget)
+		if len(output)+len(full)+len(note) <= budget {
+			output = append(output, full...)
+			continue
+		}
+		if clipped := clipDefBody(body, budget-len(output)-len(note), flagBudget); clipped != nil {
+			output = append(output, clipped...)
+			omitted = rest
+		} else {
+			omitted = rest + 1
+		}
+		break
+	}
+	output = append(output, defBodiesOmittedNote(omitted, flagBudget)...)
+	// The arithmetic above already fits; this is the floor for budgets smaller than any note.
+	return defCutAtLine(output, budget)
+}
+
+// renderDefBody renders one body exactly as writeSymbolMatchBodies prints it, escaped.
+func renderDefBody(body symbolMatchBody) []byte {
+	var buffer bytes.Buffer
+	writeSymbolMatchBodies(&buffer, []symbolMatchBody{body})
+	return termsafe.Bytes(buffer.Bytes())
+}
+
+// clipDefBody returns the longest whole-line prefix of body that fits `room` bytes together with a
+// resume note naming the exact rerun, or nil when not even one line fits.
+func clipDefBody(body symbolMatchBody, room, budget int) []byte {
+	lines := strings.Split(body.Source, "\n")
+	trueEnd := body.EndLine
+	if body.Elided && body.UnitEndLine > trueEnd {
+		trueEnd = body.UnitEndLine
+	}
+	render := func(count int) []byte {
+		clipped := body
+		clipped.Source = strings.Join(lines[:count], "\n")
+		clipped.EndLine = body.StartLine + count - 1
+		clipped.Elided, clipped.UnitEndLine = false, 0
+		rendered := renderDefBody(clipped)
+		note := fmt.Sprintf("  …continues to line %d — rerun with --file %s --from %d, or raise --max-context-bytes (%d)\n",
+			trueEnd, termsafe.Line(body.FilePath), clipped.EndLine+1, budget)
+		return append(rendered, termsafe.Bytes([]byte(note))...)
+	}
+	// Rendered length grows with the line count, so the largest fitting prefix is a binary search.
+	low, high := 0, len(lines)-1
+	for low < high {
+		middle := (low + high + 1) / 2
+		if len(render(middle)) <= room {
+			low = middle
+		} else {
+			high = middle - 1
+		}
+	}
+	if low == 0 {
+		return nil
+	}
+	return render(low)
+}
+
+// defBodiesOmittedNote counts the bodies a budget left out; empty when none were.
+func defBodiesOmittedNote(omitted, budget int) string {
+	if omitted <= 0 {
+		return ""
+	}
+	noun := "bodies"
+	if omitted == 1 {
+		noun = "body"
+	}
+	return fmt.Sprintf("\n(%d more %s not shown within --max-context-bytes %d; narrow with --file, --line or --kind)\n",
+		omitted, noun, budget)
+}
+
+// defCutAtLine is the last-resort cut: at the last whole line within budget, else at a rune boundary.
+// A cut must never split a multi-byte rune: half a character is not smaller output, it is corrupt output.
+func defCutAtLine(output []byte, budget int) []byte {
+	if budget <= 0 || len(output) <= budget {
+		return output
+	}
+	if newline := bytes.LastIndexByte(output[:budget], '\n'); newline >= 0 {
+		return output[:newline+1]
+	}
+	cut := budget
+	for cut > 0 && !utf8.RuneStart(output[cut]) {
+		cut--
+	}
+	return output[:cut]
+}
+
+// defBudgetOmission says what a JSON answer dropped to fit --max-context-bytes. Present only when
+// something was dropped; the per-list *_total fields still carry the real counts.
+type defBudgetOmission struct {
+	// SignaturesClipped counts signatures shortened to the card's own signature width.
+	SignaturesClipped int `json:"signatures_clipped,omitempty"`
+	Members           int `json:"members,omitempty"`
+	Declarations      int `json:"declarations,omitempty"`
+	Warnings          int `json:"warnings,omitempty"`
+	PartialFailures   int `json:"partial_failures,omitempty"`
+	// Completeness is true when the completeness table was emptied to fit.
+	Completeness bool   `json:"completeness,omitempty"`
+	Note         string `json:"note"`
+}
+
+func encodeDefJSON(response defResponse) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(termsafe.NewJSONWriter(&buffer))
+	encoder.SetEscapeHTML(false)
+	err := encoder.Encode(response)
+	return buffer.Bytes(), err
+}
+
+// fitDefJSON encodes the JSON answer within `budget` bytes (0 = unbounded). It clips signatures to
+// the card's width, shrinks the member and implementor lists, empties the warning, partial-failure and
+// completeness metadata, and only then drops trailing declarations, recording each omission in
+// budget_omitted. A document that still does not fit is an error,
+// never a cut: a byte-truncated JSON document is not a smaller answer, it is an unparseable one.
+func fitDefJSON(response defResponse, budget, flagBudget int) ([]byte, error) {
+	encoded, err := encodeDefJSON(response)
+	if err != nil || budget <= 0 || len(encoded) <= budget {
+		return encoded, err
+	}
+	fitted := response
+	fitted.Truncated = true
+	omission := defBudgetOmission{}
+	attempt := func() ([]byte, bool, error) {
+		total := omission.Members + omission.Declarations + omission.Warnings + omission.PartialFailures
+		omission.Note = fmt.Sprintf("%d more omitted and %d signatures clipped to fit --max-context-bytes %d; narrow with --file, --line or --kind, or raise the budget",
+			total, omission.SignaturesClipped, flagBudget)
+		snapshot := omission
+		fitted.BudgetOmitted = &snapshot
+		out, err := encodeDefJSON(fitted)
+		return out, err == nil && len(out) <= budget, err
+	}
+	// Signatures first: a type's JSON signature can be its whole declaration (measured: one Go struct
+	// carried several KB), and the text card already shows every signature at this width.
+	clipped := make([]defDeclaration, len(response.Declarations))
+	for index, declaration := range response.Declarations {
+		clipped[index] = defClipDeclarationSignatures(declaration, &omission.SignaturesClipped)
+	}
+	fitted.Declarations = clipped
+	if out, ok, err := attempt(); err != nil || ok {
+		return out, err
+	}
+	for _, limit := range []int{8, 5, 3, 1, 0} {
+		fitted.Declarations = make([]defDeclaration, len(clipped))
+		omission.Members = 0
+		for index, declaration := range clipped {
+			var dropped int
+			fitted.Declarations[index], dropped = defTrimDeclaration(declaration, limit)
+			omission.Members += dropped
+		}
+		if out, ok, err := attempt(); err != nil || ok {
+			return out, err
+		}
+	}
+	// Snapshot metadata goes before any declaration does: it is context for the answer, not the answer.
+	// On a polyglot repository the per-language completeness table alone can outgrow a per-name share.
+	omission.Warnings, omission.PartialFailures = len(fitted.Warnings), len(fitted.PartialFailures)
+	fitted.Warnings, fitted.PartialFailures = []sem.ProviderWarning{}, []sem.PartialFailure{}
+	if out, ok, err := attempt(); err != nil || ok {
+		return out, err
+	}
+	fitted.Completeness, omission.Completeness = sem.CompletenessReport{}, true
+	out, ok, err := attempt()
+	for err == nil && !ok && len(fitted.Declarations) > 0 {
+		fitted.Declarations = fitted.Declarations[:len(fitted.Declarations)-1]
+		omission.Declarations++
+		out, ok, err = attempt()
+	}
+	if err != nil || ok {
+		return out, err
+	}
+	return nil, fmt.Errorf("def --max-context-bytes %d leaves %d bytes for this answer, less than the smallest JSON answer (%d bytes); raise it, or pass 0 for no limit", flagBudget, budget, len(out))
+}
+
+// defClipDeclarationSignatures shortens every signature in declaration to defMaxSignatureRunes,
+// counting each one it changed. Member slices are copied, never written through.
+func defClipDeclarationSignatures(declaration defDeclaration, clipped *int) defDeclaration {
+	clip := func(signature string) string {
+		if utf8.RuneCountInString(signature) <= defMaxSignatureRunes {
+			return signature
+		}
+		*clipped++
+		return defTruncateRunes(signature, defMaxSignatureRunes)
+	}
+	declaration.Signature = clip(declaration.Signature)
+	clipMembers := func(members []defMember) []defMember {
+		if len(members) == 0 {
+			return members
+		}
+		out := make([]defMember, len(members))
+		for index, member := range members {
+			member.Signature = clip(member.Signature)
+			out[index] = member
+		}
+		return out
+	}
+	declaration.Fields = clipMembers(declaration.Fields)
+	declaration.Methods = clipMembers(declaration.Methods)
+	declaration.NestedTypes = clipMembers(declaration.NestedTypes)
+	return declaration
+}
+
+// defTrimDeclaration keeps the first `limit` entries of each list and reports how many it dropped.
+func defTrimDeclaration(declaration defDeclaration, limit int) (defDeclaration, int) {
+	dropped := 0
+	trim := func(members []defMember) []defMember {
+		if len(members) <= limit {
+			return members
+		}
+		dropped += len(members) - limit
+		return members[:limit]
+	}
+	declaration.Fields = trim(declaration.Fields)
+	declaration.Methods = trim(declaration.Methods)
+	declaration.NestedTypes = trim(declaration.NestedTypes)
+	if len(declaration.Implementors) > limit {
+		dropped += len(declaration.Implementors) - limit
+		declaration.Implementors = declaration.Implementors[:limit]
+	}
+	return declaration, dropped
 }
 
 func parseDefFlags(args []string) (defFlags, error) {
@@ -854,34 +1137,41 @@ func defDedupRelated(entries []defRelated) []defRelated {
 	return out
 }
 
-// writeDefText renders the declaration card. The budget is a ceiling: member
-// lists shrink before anything structural is dropped, because the identity line
-// and the owner are the two things a caller cannot reconstruct themselves.
+// writeDefText renders the declaration card within budget. See fitDefCard.
 func writeDefText(out io.Writer, response defResponse, budget int) error {
-	// The card prints whole source lines through writeNumberedSource, which reads
-	// them off the scanned repository unchanged. Wrapped here so the declaration
-	// headers and the bodies are both covered.
-	out = termsafe.NewWriter(out)
-	body := renderDefText(response, defaultDefMemberLimit)
-	if budget > 0 && len(body) > budget {
-		for _, limit := range []int{8, 5, 3, 1, 0} {
-			body = renderDefText(response, limit)
-			if len(body) <= budget {
-				break
-			}
-		}
-		if len(body) > budget {
-			// A hard byte cut must not split a multi-byte rune: a card ending in
-			// half a character is not a smaller card, it is corrupt output.
-			cut := budget
-			for cut > 0 && !utf8.RuneStart(body[cut]) {
-				cut--
-			}
-			body = body[:cut]
+	card, _ := fitDefCard(response, budget)
+	_, err := termsafe.NewWriter(out).Write(card)
+	return err
+}
+
+// fitDefCard renders the declaration card, escaped, within `budget` bytes (0 = unbounded), and
+// reports how many declarations it kept. The budget is a ceiling: member lists shrink first, then
+// trailing declarations are dropped (the card's own "+N more declarations" line counts them), and only
+// then is the card cut at a line — because the identity line and the owner are the two things a
+// caller cannot reconstruct themselves.
+func fitDefCard(response defResponse, budget int) ([]byte, int) {
+	render := func(limit, keep int) []byte {
+		trimmed := response
+		trimmed.Declarations = response.Declarations[:keep]
+		return termsafe.Bytes(renderDefText(trimmed, limit))
+	}
+	keep := len(response.Declarations)
+	card := render(defaultDefMemberLimit, keep)
+	if budget <= 0 || len(card) <= budget {
+		return card, keep
+	}
+	for _, limit := range []int{8, 5, 3, 1, 0} {
+		if card = render(limit, keep); len(card) <= budget {
+			return card, keep
 		}
 	}
-	_, err := out.Write(body)
-	return err
+	for keep > 1 {
+		keep--
+		if card = render(0, keep); len(card) <= budget {
+			return card, keep
+		}
+	}
+	return defCutAtLine(card, budget), keep
 }
 
 func renderDefText(response defResponse, limit int) []byte {
@@ -903,7 +1193,8 @@ func renderDefText(response defResponse, limit int) []byte {
 		writeDefDeclarationText(&buffer, declaration, limit)
 	}
 	if omitted := response.DeclarationTotal - len(response.Declarations); omitted > 0 {
-		fmt.Fprintf(&buffer, "(+%d more declaration%s named %s)\n", omitted, pluralSuffix(omitted), response.Query)
+		fmt.Fprintf(&buffer, "(+%d more declaration%s named %s; narrow with --file, --line or --kind)\n",
+			omitted, pluralSuffix(omitted), response.Query)
 	}
 	return []byte(buffer.String())
 }
