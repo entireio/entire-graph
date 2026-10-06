@@ -151,7 +151,7 @@ func TestConditionalReadsDoNotOfferADiscoveryOptOut(t *testing.T) {
 
 func TestStrictGraphDiscoveryRequestsTheMarkedAgentFormat(t *testing.T) {
 	t.Parallel()
-	const command = `entire graph query --repo . --profile full --head --format agent --query "<task>"`
+	const command = `entire graph query --repo . --profile full --head --format agent --max-context-bytes 4096 --query "<task>"`
 	for name, guide := range conditionalReadGuides() {
 		if name != "strict Graph" && name != "strict Combined" {
 			continue
