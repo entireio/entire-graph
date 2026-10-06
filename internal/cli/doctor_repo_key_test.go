@@ -317,12 +317,20 @@ func TestCollidingRepoKeysShareEntriesUnderTheirOwnRoot(t *testing.T) {
 			}, []string{"snapshot", "--repo", repo, "--cache-dir", cacheDir, "--format", format}); err != nil {
 				t.Fatalf("snapshot %s %s: %v", format, repo, err)
 			}
+			// Compare JSON spellings: a Windows path's separators are escaped.
+			jsonPath := func(path string) string {
+				encoded, err := json.Marshal(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(encoded)
+			}
 			firstLine, _, _ := strings.Cut(out.String(), "\n")
-			if !strings.Contains(firstLine, `"repo_root":"`+repo+`"`) {
+			if !strings.Contains(firstLine, `"repo_root":`+jsonPath(repo)) {
 				t.Fatalf("%s snapshot header for %s does not carry its own repo_root: %s", format, repo, firstLine)
 			}
 			for _, other := range []string{left, right} {
-				if other != repo && strings.Contains(out.String(), other) {
+				if other != repo && strings.Contains(out.String(), strings.Trim(jsonPath(other), `"`)) {
 					t.Fatalf("%s snapshot for %s carries the other checkout's path %s", format, repo, other)
 				}
 			}

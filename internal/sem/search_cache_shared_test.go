@@ -3,6 +3,7 @@ package sem
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"io"
 	"io/fs"
 	"os"
@@ -184,7 +185,13 @@ func TestSearchCacheEntryCarriesNoCheckoutPathButTheHeader(t *testing.T) {
 			return err
 		}
 		entries++
-		if count := bytes.Count(raw, []byte(repo)); count != 1 {
+		// The entry is JSON, so count the path's JSON spelling: a Windows
+		// path's separators are escaped there.
+		encoded, err := json.Marshal(repo)
+		if err != nil {
+			return err
+		}
+		if count := bytes.Count(raw, bytes.Trim(encoded, `"`)); count != 1 {
 			t.Errorf("%s names the checkout %d times, want once (repo_root)", path, count)
 		}
 		return nil
