@@ -1300,10 +1300,10 @@ func IdentitySensitiveTarget() bool { return true }
 		t.Fatal("full preindex with the old repository key was reported as usable")
 	}
 
-	assertNewRepoKeyResult := func(name string, response SearchResponse) {
+	assertNewRepoKeyResult := func(name string, response SearchResponse, wantHit bool) {
 		t.Helper()
-		if response.Stats.IndexCacheHit {
-			t.Fatalf("%s search reported the old repository-key cache as a hit: %#v", name, response.Stats)
+		if response.Stats.IndexCacheHit != wantHit {
+			t.Fatalf("%s search cache hit = %v, want %v: %#v", name, response.Stats.IndexCacheHit, wantHit, response.Stats)
 		}
 		for _, result := range response.Results {
 			if result.SymbolName != "IdentitySensitiveTarget" {
@@ -1323,7 +1323,16 @@ func IdentitySensitiveTarget() bool { return true }
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertNewRepoKeyResult("selective", selective)
+	assertNewRepoKeyResult("selective", selective, false)
+
+	// The cold selective query persisted a complete snapshot under the NEW key,
+	// so the complete search below is a hit on that entry, never on the old one:
+	// the symbol IDs it returns carry the new namespace.
+	if renamed, hit, err := loadCachedCompleteSearchSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileSyntaxOnly,
+	}, cacheDir); err != nil || !hit || renamed.Header.RepoKey != "gh/acme/renamed" {
+		t.Fatalf("cold selective query did not persist a complete snapshot under the new key: hit=%v key=%q err=%v", hit, renamed.Header.RepoKey, err)
+	}
 
 	full, err := SearchRepository(t.Context(), repo, "test-version", "IdentitySensitiveTarget repository identity", SearchOptions{
 		Profile: ProfileSyntaxOnly, TopK: 5, IndexAllFiles: true, CacheDir: cacheDir,
@@ -1331,7 +1340,7 @@ func IdentitySensitiveTarget() bool { return true }
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertNewRepoKeyResult("full", full)
+	assertNewRepoKeyResult("full", full, true)
 }
 
 func TestSearchRejectsPreindexWhenRepoKeyChangesAfterCacheLoad(t *testing.T) {

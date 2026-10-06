@@ -223,9 +223,10 @@ func loadCachedCompleteSearchSnapshotBinding(
 // resolves HEAD and the repository key once, serves a valid per-query cache
 // entry first, otherwise derives a selective view from a complete
 // committed-tree snapshot (the optional preloadedFull already in memory, then
-// the on-disk complete entry) and persists it, and finally falls back to a
-// fresh build. Derivation failures are soft so an optional cache can never
-// break retrieval.
+// the on-disk complete entry) and persists it, then, for a repository small
+// enough, builds and persists the complete snapshot and derives from that, and
+// finally falls back to a fresh selective build. Derivation failures are soft so
+// an optional cache can never break retrieval.
 func loadOrBuildSearchSnapshot(
 	ctx context.Context,
 	repo, providerVersion string,
@@ -391,6 +392,32 @@ func loadOrBuildSearchSnapshotPersisting(
 				return selective, true, nil
 			}
 		}
+		// Nothing complete to derive from. Build the complete snapshot instead of
+		// this query's selection, persist it, and derive the selection from it, so
+		// the NEXT query on this tree, whatever it asks, is a hit. Persisting only
+		// the selective view, as before, left every other query to rebuild: on this
+		// repository a cold query cost 16.2s and the next DIFFERENT query 16.5s.
+		// The complete build costs a few seconds more than the selective one, once.
+		//
+		// Bounded by repository size (coldCompleteSnapshotMaxFiles): on a large
+		// repository the complete build is the cost `index` exists to pay ahead of
+		// time, and charging it to an interactive query that selected a few dozen
+		// files would turn a seconds-long cold query into minutes.
+		if persistBuilt && generationKnown && completeSnapshotAffordableOnColdQuery(ctx, absRepo, completeOptions) {
+			full, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, completeOptions)
+			if buildErr != nil && ctx.Err() != nil {
+				return ProviderSnapshot{}, false, buildErr
+			}
+			if buildErr == nil && validateBuiltSearchSnapshot(full, repositoryKey, providerVersion, tree, completeOptions) == nil {
+				full.Header.Commit = commit
+				// Best effort, like every query-time store: an unwritable cache
+				// still serves this query from the snapshot in memory.
+				_ = writeSearchSnapshot(fullEntry, newCachedSearchSnapshot(providerVersion, commit, tree, completeOptions, full))
+				if selective, ok := deriveFromFull(full); ok {
+					return selective, false, nil
+				}
+			}
+		}
 	}
 	snapshot, err := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
 	if err != nil {
@@ -413,6 +440,27 @@ func loadOrBuildSearchSnapshotPersisting(
 		_ = writeSearchSnapshot(entry, newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot))
 	}
 	return snapshot, false, nil
+}
+
+// coldCompleteSnapshotMaxFiles is the largest repository, in source files after
+// ignore rules and the file cap, for which a cold selective query builds and
+// persists the complete snapshot rather than only its selection. This repository
+// (~870 files) builds its complete snapshot in about 16s at GOMAXPROCS=2. A var
+// so a test can lower it.
+var coldCompleteSnapshotMaxFiles = 3000
+
+// completeSnapshotAffordableOnColdQuery lists the files a complete build would
+// parse and reports whether there are few enough to build them all on a cold
+// query. A listing failure answers no: the selective build then reports it.
+func completeSnapshotAffordableOnColdQuery(ctx context.Context, absRepo string, options ProviderSnapshotOptions) bool {
+	source, err := prepareSource(ctx, absRepo, options)
+	if err != nil {
+		return false
+	}
+	if source.close != nil {
+		defer source.close()
+	}
+	return len(source.paths) <= coldCompleteSnapshotMaxFiles
 }
 
 // loadOrDeriveSelectiveSearchSnapshot serves a selective query from an
