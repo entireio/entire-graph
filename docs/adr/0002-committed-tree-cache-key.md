@@ -193,3 +193,31 @@ This closes policy, moving-HEAD, remote-identity, environment, and caller-slice 
 
 The final generations are `provider-records-v7` and `search-snapshot-v11`; earlier intermediate
 entries are retired. Working-tree snapshots are never persisted, as recorded by ADR 0004.
+
+## Addendum — cross-worktree sharing (2026-10-05)
+
+The deferred sharing win is taken. Neither key hashes the checkout path any longer
+(`search-snapshot-v19`, `provider-records-v12`), so N worktrees or clones at one tree
+(search) or commit (records) share one entry. The two blockers named above are closed:
+
+- **`repoRoot` overwritten from the cached header.** `loadCachedSearchSnapshot` rebinds every
+  search entry it serves: `Header.RepoRoot` becomes the serving checkout before validation, beside
+  the existing commit restamp. It is the only absolute path an entry carries
+  (`TestSearchCacheEntryCarriesNoCheckoutPathButTheHeader`); `def`, `neighbors`, and `impact` read
+  source through it.
+- **Opaque record bytes.** The envelope records the root the stream was built in, and a hit from
+  another checkout rewrites that one `"repo_root":` field in the header line, the first line in both
+  the native and compact encodings. Anything other than exactly one match is a miss.
+
+Repository identity stays in both keys. For the search cache, every `local/<basename>` key hashes
+to one term and the loader rewrites the ID namespace (`symbolID`/`fileID` are `key:` plus a
+key-independent remainder), so two remote-less clones under different directory names share an
+entry and are served exactly what a cold build would emit
+(`TestSearchCacheIsSharedAcrossRemotelessClonesUnderTheirOwnNamespace`). The record cache keeps the
+full key because its bytes are replayed verbatim. A `gh/` key is never rewritten.
+
+Why sharing is sound: the cache is per user (`os.UserCacheDir`) and the key is a content address
+(tree or commit) plus every graph-shaping option, the schema, and the provider version. Nothing in
+an entry depends on where the checkout lives once those fields are rebound.
+`TestCollidingRepoKeysShareEntriesUnderTheirOwnRoot` replaces the test that pinned the opposite.
+

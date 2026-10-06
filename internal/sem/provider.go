@@ -449,6 +449,17 @@ type ProviderSnapshot struct {
 	Externals []ExternalRecord
 	Symbols   []SymbolRecord
 	Relations []RelationRecord
+	// unmergedDataFlowEdges names the DATA_FLOWS edges (unmergedDataFlowEdgeKey)
+	// behind the header's W_DATA_FLOW_EVIDENCE_UNMERGED count; nil when there are
+	// none. The stream can only count them, but a snapshot holds every record, so
+	// it can keep which: selectiveSearchSnapshotFromFull recounts the ones its
+	// view retains instead of losing the disclosure. Private, so the wire schema
+	// is unchanged; the search cache carries it beside the other internals.
+	unmergedDataFlowEdges map[string]struct{}
+}
+
+func unmergedDataFlowEdgeKey(fromID, toID string) string {
+	return fromID + "\x00" + toID
 }
 
 type ProviderSnapshotOptions struct {
@@ -505,6 +516,12 @@ type ProviderSnapshotOptions struct {
 	// Deliberately unexported: it is an internal wiring detail, not a documented
 	// option, and is not part of the cache key (it changes no snapshot content).
 	trackRepoIgnored bool
+	// onUnmergedDataFlowEdge, when set, is told each DATA_FLOWS edge counted
+	// into W_DATA_FLOW_EVIDENCE_UNMERGED. BuildProviderSnapshotWithOptions uses
+	// it to remember WHICH edges those are, so a selective view filtered from
+	// the snapshot can disclose the ones it keeps. Internal wiring; it changes
+	// no snapshot content and is not part of any cache key.
+	onUnmergedDataFlowEdge func(fromID, toID string)
 	// cachePolicy is an immutable, bounded capture of external ignore inputs.
 	// Cache pipelines set it once and carry it through keying and construction.
 	cachePolicy *capturedIgnorePolicy
@@ -973,6 +990,12 @@ func evidenceLimit(spec profileSpec) string {
 func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions) (ProviderSnapshot, error) {
 	var snapshot ProviderSnapshot
 	var summary SnapshotSummary
+	options.onUnmergedDataFlowEdge = func(fromID, toID string) {
+		if snapshot.unmergedDataFlowEdges == nil {
+			snapshot.unmergedDataFlowEdges = map[string]struct{}{}
+		}
+		snapshot.unmergedDataFlowEdges[unmergedDataFlowEdgeKey(fromID, toID)] = struct{}{}
+	}
 	err := StreamSnapshot(ctx, repo, providerVersion, options, func(record any) error {
 		switch r := record.(type) {
 		case SnapshotHeader:
@@ -1444,6 +1467,9 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 				if kept, ok := dataFlowEvidence[dedupKey]; ok && kept != evidenceDigest(r.Evidence) {
 					unmergedEvidenceEdges++
 					delete(dataFlowEvidence, dedupKey) // count each edge once
+					if options.onUnmergedDataFlowEdge != nil {
+						options.onUnmergedDataFlowEdge(r.FromID, r.ToID)
+					}
 				}
 			}
 			return
@@ -28805,12 +28831,13 @@ func externalID(kind, value string) string {
 // TestRepoKeyLocalIsNotGloballyUnique pins that boundary.
 //
 // The discriminator every side already carries is the absolute repository
-// path. This provider hashes it into both persistent cache keys beside the
-// repo key (searchSnapshotKey, providerRecordsKey), which is why two colliding
-// repositories sharing a cache directory never share an entry even at an
-// identical tree — TestCollidingRepoKeysDoNotShareCacheEntries. `doctor --json`
-// reports `repo_root` beside `repo_key` for the same reason: it is what makes
-// the pair unique.
+// path. The persistent caches are deliberately path-free (searchSnapshotKey,
+// providerRecordsKey): an entry is content-addressed by the tree (search) or
+// commit (records), so two colliding repositories at an identical tree DO share
+// one, and the loaders restamp repo_root to the checkout being served —
+// TestCollidingRepoKeysShareEntriesUnderTheirOwnRoot. `doctor --json` reports
+// `repo_root` beside `repo_key` for the same reason: it is what makes the pair
+// unique.
 func RepoKey(ctx context.Context, repo string) string {
 	return repoKey(ctx, repo)
 }

@@ -88,8 +88,8 @@ through the same writable namespace.
 ### What a cache entry is keyed on
 
 A search-snapshot entry is a function of: the cache format version, the
-checkout path, the repository identity (derived from the Git remote), the
-provider version, the committed `HEAD` tree hash, the profile, the parse-size
+repository identity (derived from the Git remote; every remote-less
+`local/<name>` checkout shares one identity term), the provider version, the committed `HEAD` tree hash, the profile, the parse-size
 and file-count limits, any file-subset selection, the paths **and contents** of
 `--ignore-file`/`--include-file` inputs in caller order, and the contents of
 `.graphignore`. Change any of these and the next query builds a new entry;
@@ -99,8 +99,15 @@ term because working-tree snapshots cannot receive persistent keys.
 [ADR 0002](adr/0002-committed-tree-cache-key.md) records why the key is total
 over graph-shaping inputs.
 
+The checkout path is not a key term, so every worktree and clone at the same
+tree shares one entry. On a hit the loader rewrites what is specific to the
+checkout serving it: `repo_root` (which `def`, `neighbors`, and `impact` read
+source through), the commit, and, for a remote-less checkout, the
+`local/<name>` namespace in every symbol and file ID.
+
 A provider-record entry binds the same graph-shaping inputs plus the exact
-commit and output mode. Exact commit identity is required because the cached
+commit and output mode, keyed on the full repository key; its header line's
+`repo_root` is restamped for the checkout replaying it. Exact commit identity is required because the cached
 opaque NDJSON header records it; unlike a structured search snapshot, that
 stream cannot be safely restamped on a same-tree cache hit.
 

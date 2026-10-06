@@ -445,17 +445,27 @@ export function helperFunction(): string { return "helper"; }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(cached, uncached) {
-		t.Fatalf("cached selective snapshot differs from uncached OnlyFiles build:\ncached=%#v\nuncached=%#v", cached, uncached)
+	// The derived view FILTERS the complete graph rather than re-resolving it
+	// against the selection (selectiveSearchSnapshotFromFull), so it carries the
+	// same records and failures as an uncached OnlyFiles build but only the
+	// relations both graphs agree on: the edges an OnlyFiles build externalizes
+	// (here ./helper's import and Helper's superclass) are dropped, not
+	// externalized. TestSelectiveDerivationFiltersCompleteGraph pins that contract.
+	if !reflect.DeepEqual(cached.Files, uncached.Files) || !reflect.DeepEqual(cached.Symbols, uncached.Symbols) ||
+		!reflect.DeepEqual(cached.Header.PartialFailures, uncached.Header.PartialFailures) {
+		t.Fatalf("cached selective snapshot selected different records than an uncached OnlyFiles build:\ncached=%#v\nuncached=%#v", cached, uncached)
+	}
+	uncachedRelations := map[string]bool{}
+	for _, relation := range uncached.Relations {
+		uncachedRelations[relationKey(relation)] = true
+	}
+	for _, relation := range cached.Relations {
+		if !uncachedRelations[relationKey(relation)] {
+			t.Fatalf("cached selective snapshot carries a relation an uncached OnlyFiles build lacks: %#v", relation)
+		}
 	}
 
 	assertSelectiveSnapshotAccounting(t, cached)
-	if !hasExternalID(cached.Externals, "external:import:./helper") {
-		t.Fatalf("cross-boundary import was not externalized: %#v", cached.Externals)
-	}
-	if !hasExternalID(cached.Externals, "external:type:Helper") {
-		t.Fatalf("cross-boundary superclass was not externalized: %#v", cached.Externals)
-	}
 	for _, relation := range cached.Relations {
 		if strings.Contains(relation.ToID, ":src/helper.ts:") {
 			t.Fatalf("selective snapshot retained a relation to an unselected symbol: %#v", relation)
@@ -533,15 +543,6 @@ func assertSelectiveSnapshotAccounting(t *testing.T, snapshot ProviderSnapshot) 
 	if fileCount != len(snapshot.Files) || symbolCount != len(snapshot.Symbols) {
 		t.Fatalf("language completeness does not describe selective records: %#v", snapshot.Header.Completeness.Languages)
 	}
-}
-
-func hasExternalID(externals []ExternalRecord, id string) bool {
-	for _, external := range externals {
-		if external.ID == id {
-			return true
-		}
-	}
-	return false
 }
 
 func TestPreindexProviderSnapshotServesSelectiveSearch(t *testing.T) {
@@ -1299,10 +1300,10 @@ func IdentitySensitiveTarget() bool { return true }
 		t.Fatal("full preindex with the old repository key was reported as usable")
 	}
 
-	assertNewRepoKeyResult := func(name string, response SearchResponse) {
+	assertNewRepoKeyResult := func(name string, response SearchResponse, wantHit bool) {
 		t.Helper()
-		if response.Stats.IndexCacheHit {
-			t.Fatalf("%s search reported the old repository-key cache as a hit: %#v", name, response.Stats)
+		if response.Stats.IndexCacheHit != wantHit {
+			t.Fatalf("%s search cache hit = %v, want %v: %#v", name, response.Stats.IndexCacheHit, wantHit, response.Stats)
 		}
 		for _, result := range response.Results {
 			if result.SymbolName != "IdentitySensitiveTarget" {
@@ -1322,7 +1323,16 @@ func IdentitySensitiveTarget() bool { return true }
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertNewRepoKeyResult("selective", selective)
+	assertNewRepoKeyResult("selective", selective, false)
+
+	// The cold selective query persisted a complete snapshot under the NEW key,
+	// so the complete search below is a hit on that entry, never on the old one:
+	// the symbol IDs it returns carry the new namespace.
+	if renamed, hit, err := loadCachedCompleteSearchSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileSyntaxOnly,
+	}, cacheDir); err != nil || !hit || renamed.Header.RepoKey != "gh/acme/renamed" {
+		t.Fatalf("cold selective query did not persist a complete snapshot under the new key: hit=%v key=%q err=%v", hit, renamed.Header.RepoKey, err)
+	}
 
 	full, err := SearchRepository(t.Context(), repo, "test-version", "IdentitySensitiveTarget repository identity", SearchOptions{
 		Profile: ProfileSyntaxOnly, TopK: 5, IndexAllFiles: true, CacheDir: cacheDir,
@@ -1330,7 +1340,7 @@ func IdentitySensitiveTarget() bool { return true }
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertNewRepoKeyResult("full", full)
+	assertNewRepoKeyResult("full", full, true)
 }
 
 func TestSearchRejectsPreindexWhenRepoKeyChangesAfterCacheLoad(t *testing.T) {
