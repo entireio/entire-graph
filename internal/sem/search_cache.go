@@ -88,6 +88,10 @@ type cachedSearchSnapshot struct {
 	// it came from does, and the generation is read before the complete snapshot
 	// is, so such a writer necessarily stamps the generation being retired.
 	DerivedFrom string `json:"derived_from,omitempty"`
+	// UnmergedDataFlowEdges carries ProviderSnapshot.unmergedDataFlowEdges as
+	// sorted [from, to] pairs, so a view derived from a cached snapshot discloses
+	// the unmerged DATA_FLOWS edges it retains exactly as one derived in memory.
+	UnmergedDataFlowEdges [][2]string `json:"unmerged_data_flow_edges,omitempty"`
 }
 
 type cachedSignatureTypes struct {
@@ -687,6 +691,14 @@ func newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom stri
 		Worktree:        options.Worktree,
 		Snapshot:        snapshot,
 	}
+	for key := range snapshot.unmergedDataFlowEdges {
+		fromID, toID, _ := strings.Cut(key, "\x00")
+		cache.UnmergedDataFlowEdges = append(cache.UnmergedDataFlowEdges, [2]string{fromID, toID})
+	}
+	sort.Slice(cache.UnmergedDataFlowEdges, func(i, j int) bool {
+		left, right := cache.UnmergedDataFlowEdges[i], cache.UnmergedDataFlowEdges[j]
+		return left[0] < right[0] || (left[0] == right[0] && left[1] < right[1])
+	})
 	for _, file := range snapshot.Files {
 		if file.Lines == 0 {
 			continue
@@ -741,6 +753,12 @@ func newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom stri
 }
 
 func restoreCachedSearchInternals(cache *cachedSearchSnapshot) {
+	for _, edge := range cache.UnmergedDataFlowEdges {
+		if cache.Snapshot.unmergedDataFlowEdges == nil {
+			cache.Snapshot.unmergedDataFlowEdges = map[string]struct{}{}
+		}
+		cache.Snapshot.unmergedDataFlowEdges[unmergedDataFlowEdgeKey(edge[0], edge[1])] = struct{}{}
+	}
 	for index := range cache.Snapshot.Files {
 		cache.Snapshot.Files[index].Lines = cache.FileLines[cache.Snapshot.Files[index].ID]
 	}
@@ -909,6 +927,15 @@ func selectiveSearchSnapshotFromFull(
 			if !selectiveRelationRetained(relation, selectedIDs) {
 				continue
 			}
+			if relation.Type == "DATA_FLOWS" {
+				key := unmergedDataFlowEdgeKey(relation.FromID, relation.ToID)
+				if _, unmerged := full.unmergedDataFlowEdges[key]; unmerged {
+					if selective.unmergedDataFlowEdges == nil {
+						selective.unmergedDataFlowEdges = map[string]struct{}{}
+					}
+					selective.unmergedDataFlowEdges[key] = struct{}{}
+				}
+			}
 			emitRelation(relation)
 		}
 	}
@@ -930,9 +957,12 @@ func selectiveSearchSnapshotFromFull(
 		return left < right
 	})
 
-	warnings := sc.warnings
-	if warnings == nil {
-		warnings = []ProviderWarning{}
+	warnings := append([]ProviderWarning{}, sc.warnings...)
+	// The complete graph's own W_DATA_FLOW_EVIDENCE_UNMERGED counts the whole
+	// tree; this view recounts the unmerged edges it kept, placed where a build
+	// of the view would place it, after the source warnings.
+	if len(selective.unmergedDataFlowEdges) > 0 {
+		warnings = append(warnings, unmergedDataFlowEvidenceWarning(len(selective.unmergedDataFlowEdges)))
 	}
 	// The complete build already folded its relation-phase failures into these
 	// records (mergePartialFailures), so filtering them by file is the selective
@@ -1235,6 +1265,14 @@ func rebindCachedSearchSnapshot(cache cachedSearchSnapshot, repoRoot, repository
 		relation := &snapshot.Relations[index]
 		relation.FromID = rename(relation.FromID)
 		relation.ToID = rename(relation.ToID)
+	}
+	if len(snapshot.unmergedDataFlowEdges) > 0 {
+		renamed := make(map[string]struct{}, len(snapshot.unmergedDataFlowEdges))
+		for key := range snapshot.unmergedDataFlowEdges {
+			fromID, toID, _ := strings.Cut(key, "\x00")
+			renamed[unmergedDataFlowEdgeKey(rename(fromID), rename(toID))] = struct{}{}
+		}
+		snapshot.unmergedDataFlowEdges = renamed
 	}
 	// External IDs are `external:` and carry no namespace; renaming them is a
 	// no-op kept so the rewrite covers every ID field the snapshot has.

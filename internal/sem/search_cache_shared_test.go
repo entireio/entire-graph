@@ -49,6 +49,17 @@ export class Client {
 `)
 	write(t, repo, "web/format.ts", `export function format(entry: string): string { return entry.trim(); }
 `)
+	write(t, repo, "ledger/flow.go", `package ledger
+
+func alpha(a int) int {
+	return bravo(a)
+}
+
+func bravo(b int) int {
+	value := alpha(b)
+	return value
+}
+`)
 	write(t, repo, "assets/bundle.js", "var a=1;"+strings.Repeat("a=a+1;", 4000)+"\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "initial")
@@ -115,9 +126,9 @@ func TestSearchCacheIsSharedAcrossRemotelessClonesUnderTheirOwnNamespace(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cold.Relations) == 0 || len(cold.Externals) == 0 || len(cold.Header.PartialFailures) == 0 {
-		t.Fatalf("fixture too thin to audit the rebind: %d relations, %d externals, %d failures",
-			len(cold.Relations), len(cold.Externals), len(cold.Header.PartialFailures))
+	if len(cold.Relations) == 0 || len(cold.Externals) == 0 || len(cold.Header.PartialFailures) == 0 || len(cold.unmergedDataFlowEdges) == 0 {
+		t.Fatalf("fixture too thin to audit the rebind: %d relations, %d externals, %d failures, %d unmerged flows",
+			len(cold.Relations), len(cold.Externals), len(cold.Header.PartialFailures), len(cold.unmergedDataFlowEdges))
 	}
 	if !reflect.DeepEqual(served, cold) {
 		t.Fatalf("shared entry differs from a cold build in the clone:\nserved header=%#v\ncold header=%#v\nfirst differing relation: %s",

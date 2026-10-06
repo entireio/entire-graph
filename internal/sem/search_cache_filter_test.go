@@ -197,3 +197,82 @@ func TestSelectiveDerivationRanksLikeColdSearch(t *testing.T) {
 		}
 	}
 }
+
+// TestSelectiveDerivationRecountsUnmergedDataFlowEdges pins that the filtered
+// view keeps the W_DATA_FLOW_EVIDENCE_UNMERGED disclosure for exactly the edges
+// it retains, as a direct build of the selection reports it. The complete
+// graph's own warning counts the whole tree; copying it would overstate, and
+// dropping it hides one-sided evidence on edges the view still serves.
+func TestSelectiveDerivationRecountsUnmergedDataFlowEdges(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "flow/selected.go", `package flow
+
+func alpha(a int) int {
+	return bravo(a)
+}
+
+func bravo(b int) int {
+	value := alpha(b)
+	return value
+}
+`)
+	write(t, repo, "flow/unselected.go", `package flow
+
+func charlie(c int) int {
+	return delta(c)
+}
+
+func delta(d int) int {
+	value := charlie(d)
+	return value
+}
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	full, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := unmergedWarningDetail(full.Header.Warnings); !strings.HasPrefix(got, "4 DATA_FLOWS edge(s)") {
+		t.Fatalf("premise lost: complete graph unmerged warning = %q, want 4 edges", got)
+	}
+	options := ProviderSnapshotOptions{Profile: ProfileFull, OnlyFiles: []string{"flow/selected.go"}}
+	direct, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Derive from the in-memory snapshot and from a cache round trip: both
+	// routes serve warm queries.
+	cacheDir := t.TempDir()
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFull}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	cached, hit, err := loadCachedCompleteSearchSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFull}, cacheDir)
+	if err != nil || !hit {
+		t.Fatalf("complete snapshot not cached: hit=%v err=%v", hit, err)
+	}
+	for name, source := range map[string]ProviderSnapshot{"in-memory": full, "cached": cached} {
+		derived, err := selectiveSearchSnapshotFromFull(t.Context(), repo, "test-version", options, source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(derived.Header.Warnings, direct.Header.Warnings) {
+			t.Fatalf("%s: derived warnings %v, want the direct build's %v", name, derived.Header.Warnings, direct.Header.Warnings)
+		}
+		if got := unmergedWarningDetail(derived.Header.Warnings); !strings.HasPrefix(got, "2 DATA_FLOWS edge(s)") {
+			t.Fatalf("%s: derived unmerged warning = %q, want the 2 retained edges", name, got)
+		}
+	}
+}
+
+func unmergedWarningDetail(warnings []ProviderWarning) string {
+	for _, warning := range warnings {
+		if warning.Code == "W_DATA_FLOW_EVIDENCE_UNMERGED" {
+			return warning.Detail
+		}
+	}
+	return ""
+}
