@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,16 +61,21 @@ func writeClaudeSubagentStart(in io.Reader, out io.Writer) {
 	if !insideGitWorkTree(dir) {
 		return
 	}
-	payload, err := json.Marshal(map[string]any{
+	// Buffered, then written once, so a failure part-way leaves stdout empty rather than holding
+	// half a JSON document. HTML escaping is off: the directive's <task> and <Name> placeholders
+	// would otherwise reach the transcript as \u003ctask\u003e.
+	var payload bytes.Buffer
+	encoder := json.NewEncoder(&payload)
+	encoder.SetEscapeHTML(false)
+	if encoder.Encode(map[string]any{
 		"hookSpecificOutput": map[string]string{
 			"hookEventName":     "SubagentStart",
 			"additionalContext": agentsetup.SubagentDirective,
 		},
-	})
-	if err != nil {
+	}) != nil {
 		return
 	}
-	_, _ = out.Write(append(payload, '\n'))
+	_, _ = out.Write(payload.Bytes())
 }
 
 // insideGitWorkTree reports whether dir or an ancestor holds a .git entry (a directory in a normal

@@ -68,6 +68,9 @@ func TestClaudeSubagentStartHookOutputShape(t *testing.T) {
 		if err := decoder.Decode(&decoded); err != nil {
 			t.Fatalf("%s: stdout is not the hook JSON: %v\n%s", name, err, out)
 		}
+		if strings.Contains(out, "\\u003c") {
+			t.Errorf("%s: placeholders were HTML-escaped: %q", name, out)
+		}
 		if decoder.More() {
 			t.Errorf("%s: trailing output after the hook JSON: %q", name, out)
 		}
