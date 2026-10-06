@@ -129,6 +129,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runAgentGuide(opts, args[1:])
 	case "init-agents":
 		return runInitAgents(opts, args[1:])
+	case "hook":
+		return runHook(opts, args[1:])
 	case "version", "--version", "-v":
 		if len(args) > 1 && args[1] == "--json" {
 			return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(map[string]string{

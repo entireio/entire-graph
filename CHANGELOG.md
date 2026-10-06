@@ -18,6 +18,7 @@ auto-generated notes on
 - Added a `graph health` command with per-source-file health accounting, and made `graph query` the canonical search command with support for trailing free-text queries.
 - Added a persistent strict agent guidance mode, with Graph and Brain agent instructions coordinated to stay consistent.
 - Added nightly LoCoMo benchmark CI for the entire-graph arm, authenticated via OIDC with no stored credentials.
+- `init-agents` now registers a Claude Code `SubagentStart` hook (`entire graph hook claude-subagent-start`) in the per-user `.claude/settings.local.json`, merged into existing settings and added once, so Explore and Plan subagents, which do not load `CLAUDE.md`, are told to use the graph. `--no-claude-hook` skips it.
 - Added a `NOTICES` file to every release archive, covering the third-party parser sources and Go modules statically linked into the binary.
 
 ### Changed
@@ -29,6 +30,7 @@ auto-generated notes on
 
 ### Fixed
 
+- The normal agent guide no longer caps graph use at ONE query: it asks for a Graph call on each locate or relationship question, names `def`, `neighbors` and `impact` for follow-ups, and gives every command with `--head` and a 4 KiB budget. Agents following the old wording ran one uncached query, then switched to grep.
 - Scoped generated agent guidance to the observed source view: a complete body does not certify later freshness or dependencies, and unmarked source no longer mandates a duplicate read. Follow-up reads target missing or possibly changed source.
 - Certified already-whole search bodies against their exact source without changing the selected JSON spans, and preserved unmarked source excerpts when an agent response cannot fit the complete body and its marker.
 - Preserved validated nested repository boundaries in working-tree fallback scans, avoiding duplicate source and search results from untracked nested clones, linked worktrees, and submodules while retaining outer-repository tracked source.

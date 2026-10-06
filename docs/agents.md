@@ -17,7 +17,8 @@ Activation is per repository. From the repository root:
 entire graph init-agents --repo .
 ```
 
-The command manages three repository paths:
+The command manages three repository paths, plus one per-user Claude Code
+settings file:
 
 - `.entire/agent-guide.md`: the complete operating guide for coding agents.
   It is regenerated on every successful run, so manual edits do not survive.
@@ -27,6 +28,16 @@ The command manages three repository paths:
   existing managed block while preserving other content.
 - `CLAUDE.md`: a Claude Code entry point whose managed block is selected from
   the repository's existing instruction-file topology.
+- `.claude/settings.local.json`: a Claude Code `SubagentStart` hook running
+  `entire graph hook claude-subagent-start`. Claude Code's built-in Explore and
+  Plan subagents do not load `CLAUDE.md`; the hook adds a short graph directive
+  (the guide's command lines, under 1 KiB) to every subagent's context, and
+  prints nothing outside a git work tree. The file is per-user and untracked:
+  existing keys and hooks are preserved, the hook is added once, and a rerun
+  leaves the file unchanged. `init-agents` refuses, before writing anything,
+  settings that are not a JSON object, and a `.claude` or settings file that is
+  a symlink, hard link or other non-regular file. `--no-claude-hook` skips this
+  file. To remove the hook, delete its `SubagentStart` entry.
 
 The direct managed block contains a pointer to the generated guide. Its
 identifying lines are:

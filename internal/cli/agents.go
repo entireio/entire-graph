@@ -14,6 +14,10 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 	repo := fs.String("repo", "", "Project root (default: host repository or nearest repository)")
 	strict := fs.Bool("strict", false, "Use strict guidance (saved by init-agents; preview only for agent-guide)")
 	normal := fs.Bool("normal", false, "Use normal guidance (saved by init-agents; preview only for agent-guide)")
+	noClaudeHook := new(bool)
+	if install {
+		fs.BoolVar(noClaudeHook, "no-claude-hook", false, "Do not register the Claude Code SubagentStart hook")
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -33,7 +37,20 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 		if root == "" {
 			return fmt.Errorf("outside a repository; supply --repo")
 		}
-		return agentsetup.Install(root, render, opts.Stdout)
+		// The hook preflight runs before Install writes anything, so settings it would refuse fail
+		// the command with no partial installation, like every other init-agents preflight.
+		if !*noClaudeHook {
+			if err := agentsetup.CheckClaudeSubagentHook(root); err != nil {
+				return err
+			}
+		}
+		if err := agentsetup.Install(root, render, opts.Stdout); err != nil {
+			return err
+		}
+		if *noClaudeHook {
+			return nil
+		}
+		return agentsetup.InstallClaudeSubagentHook(root, opts.Stdout)
 	}
 	guide, err := render()
 	if err != nil {
