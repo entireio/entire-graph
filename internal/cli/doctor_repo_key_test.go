@@ -245,19 +245,20 @@ func TestRepoKeyLocalIsNotGloballyUnique(t *testing.T) {
 	}
 }
 
-// TestCollidingRepoKeysDoNotShareCacheEntries is the guard that makes the
-// collision inert. Both persistent cache families hash the absolute repository
-// path beside the repo key, so two repositories that publish the same
-// `local/tools` AND stand at a byte-identical tree — the only configuration in
-// which every other keyed term also agrees — still get their own entry and
-// still report their own repo_root.
+// TestCollidingRepoKeysShareEntriesUnderTheirOwnRoot is the guard that makes the
+// collision inert now that both persistent cache families are path-free. Two
+// repositories that publish the same `local/tools` AND stand at a byte-identical
+// tree and commit — the only configuration in which every keyed term agrees —
+// produce byte-identical graphs apart from where they live, so the second is
+// served the first's entry. What must NOT be shared is the checkout: each run
+// must report its OWN repo_root, or the entry hands a consumer a foreign
+// snapshot under a matching repo_key (and def/neighbors/impact would read the
+// other checkout's files through it).
 //
-// Without the path term the second repository is served the first's entry and
-// reports the FIRST repository's root as its own, which is a foreign snapshot
-// handed to a consumer under a matching repo_key. ADR 0002 names identity-only
-// keying as a future change it deliberately did not take; this test is what
-// stops that change landing while `local/<basename>` can collide.
-func TestCollidingRepoKeysDoNotShareCacheEntries(t *testing.T) {
+// ADR 0002 deferred identity-only keying until the root could be restamped on a
+// hit; loadCachedSearchSnapshot and restampProviderRecordsRepoRoot are that
+// restamp, and this test is what holds them to it.
+func TestCollidingRepoKeysShareEntriesUnderTheirOwnRoot(t *testing.T) {
 	t.Parallel()
 
 	const source = "package fixture\n\nfunc Shared() string { return \"s\" }\n"
@@ -276,7 +277,7 @@ func TestCollidingRepoKeysDoNotShareCacheEntries(t *testing.T) {
 	}
 
 	cacheDir := t.TempDir()
-	for _, repo := range []string{left, right} {
+	for index, repo := range []string{left, right} {
 		var out bytes.Buffer
 		if err := Run(t.Context(), Options{
 			Version: "0.1.0",
@@ -292,41 +293,44 @@ func TestCollidingRepoKeysDoNotShareCacheEntries(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &summary); err != nil {
 			t.Fatalf("index summary invalid:\n%s\n%v", out.String(), err)
 		}
-		if summary.CacheHit {
-			t.Fatalf("index %s reported a cache hit; a colliding repository's entry was served", repo)
+		if wantHit := index == 1; summary.CacheHit != wantHit {
+			t.Fatalf("index %s cache hit = %v, want %v: a byte-identical tree must share one entry", repo, summary.CacheHit, wantHit)
 		}
 		if summary.RepoRoot != repo {
-			t.Fatalf("index repo_root = %q, want %q: a foreign repository's snapshot was served under a matching repo_key", summary.RepoRoot, repo)
+			t.Fatalf("index repo_root = %q, want %q: a foreign repository's root was served under a matching repo_key", summary.RepoRoot, repo)
 		}
 	}
 
-	if entries := countCacheEntries(t, cacheDir); entries != 2 {
-		t.Fatalf("search cache holds %d entries for two colliding repositories, want 2", entries)
+	if entries := countCacheEntries(t, cacheDir); entries != 1 {
+		t.Fatalf("search cache holds %d entries for one tree, want 1", entries)
 	}
 
-	// Exercise the second persistent family as well. If providerRecordsKey drops
-	// the absolute path, the second run replays the first repository's serialized
-	// header because repo key, commit, tree, mode, version, and options all match.
-	for _, repo := range []string{left, right} {
-		var out bytes.Buffer
-		if err := Run(t.Context(), Options{
-			Version: "0.1.0",
-			Env:     EntireEnv{RepoRoot: repo, PluginDataDir: cacheDir},
-			Stdout:  &out,
-		}, []string{"snapshot", "--repo", repo, "--cache-dir", cacheDir, "--format", "ndjson"}); err != nil {
-			t.Fatalf("snapshot %s: %v", repo, err)
-		}
-		var header sem.SnapshotHeader
-		if err := json.NewDecoder(&out).Decode(&header); err != nil {
-			t.Fatalf("snapshot header invalid:\n%s\n%v", out.String(), err)
-		}
-		if header.RepoRoot != repo {
-			t.Fatalf("snapshot repo_root = %q, want %q: provider-record cache replayed a foreign repository", header.RepoRoot, repo)
+	// The second persistent family replays serialized bytes, so its header line is
+	// restamped literally; both encodings carry repo_root there.
+	for _, format := range []string{"ndjson", "compact-ndjson"} {
+		for _, repo := range []string{left, right} {
+			var out bytes.Buffer
+			if err := Run(t.Context(), Options{
+				Version: "0.1.0",
+				Env:     EntireEnv{RepoRoot: repo, PluginDataDir: cacheDir},
+				Stdout:  &out,
+			}, []string{"snapshot", "--repo", repo, "--cache-dir", cacheDir, "--format", format}); err != nil {
+				t.Fatalf("snapshot %s %s: %v", format, repo, err)
+			}
+			firstLine, _, _ := strings.Cut(out.String(), "\n")
+			if !strings.Contains(firstLine, `"repo_root":"`+repo+`"`) {
+				t.Fatalf("%s snapshot header for %s does not carry its own repo_root: %s", format, repo, firstLine)
+			}
+			for _, other := range []string{left, right} {
+				if other != repo && strings.Contains(out.String(), other) {
+					t.Fatalf("%s snapshot for %s carries the other checkout's path %s", format, repo, other)
+				}
+			}
 		}
 	}
 
-	if entries := countCacheEntries(t, cacheDir); entries != 4 {
-		t.Fatalf("search and provider-record caches hold %d entries for two colliding repositories, want 4", entries)
+	if entries := countCacheEntries(t, cacheDir); entries != 3 {
+		t.Fatalf("search and provider-record caches hold %d entries for one tree in two encodings, want 3", entries)
 	}
 }
 

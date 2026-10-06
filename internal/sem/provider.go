@@ -28805,12 +28805,13 @@ func externalID(kind, value string) string {
 // TestRepoKeyLocalIsNotGloballyUnique pins that boundary.
 //
 // The discriminator every side already carries is the absolute repository
-// path. This provider hashes it into both persistent cache keys beside the
-// repo key (searchSnapshotKey, providerRecordsKey), which is why two colliding
-// repositories sharing a cache directory never share an entry even at an
-// identical tree — TestCollidingRepoKeysDoNotShareCacheEntries. `doctor --json`
-// reports `repo_root` beside `repo_key` for the same reason: it is what makes
-// the pair unique.
+// path. The persistent caches are deliberately path-free (searchSnapshotKey,
+// providerRecordsKey): an entry is content-addressed by the tree (search) or
+// commit (records), so two colliding repositories at an identical tree DO share
+// one, and the loaders restamp repo_root to the checkout being served —
+// TestCollidingRepoKeysShareEntriesUnderTheirOwnRoot. `doctor --json` reports
+// `repo_root` beside `repo_key` for the same reason: it is what makes the pair
+// unique.
 func RepoKey(ctx context.Context, repo string) string {
 	return repoKey(ctx, repo)
 }

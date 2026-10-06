@@ -112,7 +112,7 @@ func TestSearchSnapshotCachePreservesNameLine(t *testing.T) {
 	if got := restored.Snapshot.Symbols[1].NameLine(); got != 0 {
 		t.Fatalf("a symbol without a name line restored %d", got)
 	}
-	if !strings.HasPrefix(searchSnapshotCacheVersion, "search-snapshot-v18-") {
+	if !strings.HasPrefix(searchSnapshotCacheVersion, "search-snapshot-v19-") {
 		t.Fatalf("cache version %q: entries written before the current name-line producer must be retired", searchSnapshotCacheVersion)
 	}
 }

@@ -33,8 +33,10 @@ import (
 // line (a return-type tag, a typedef alias's neighbour, a qualifier spelled like its member):
 // nothing else in the key binds the producer's code — the provider version is "dev" for every
 // local build — so only the namespace can keep those lines from being served as authoritative.
-// Bump it again whenever the name-line producer's rules change.
-const searchSnapshotCacheVersion = "search-snapshot-v18-" + IdentityRevision
+// Bump it again whenever the name-line producer's rules change. v19 retires the entries keyed on
+// the checkout path: the key is now path-free (see searchSnapshotKeyForSchema), so every v18 entry
+// is unreachable by hash and would otherwise sit in a live version directory.
+const searchSnapshotCacheVersion = "search-snapshot-v19-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -206,14 +208,10 @@ func loadCachedCompleteSearchSnapshotBinding(
 	if entryErr != nil {
 		return preloadedCompleteSnapshot{}, false, entryErr
 	}
-	cached, readErr := readSearchSnapshot(fullEntry)
-	if readErr != nil || !validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, fullOptions) {
+	cached, ok := loadCachedSearchSnapshot(fullEntry, absRepo, commit, repositoryKey, providerVersion, tree, fullOptions)
+	if !ok {
 		return preloadedCompleteSnapshot{}, false, nil
 	}
-	// The cache key is tree-only: a hit may have been built for a different
-	// commit that shares this tree. The parsed graph is exactly correct, but
-	// commit provenance must reflect the HEAD we are serving right now.
-	cached = restampCachedSearchSnapshotCommit(cached, commit)
 	return preloadedCompleteSnapshot{
 		snapshot:        cached.Snapshot,
 		generation:      generation,
@@ -334,14 +332,11 @@ func loadOrBuildSearchSnapshotPersisting(
 			return ProviderSnapshot{}, false, err
 		}
 	}
-	if cached, err := readSearchSnapshot(entry); generationKnown && err == nil &&
-		validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, options) &&
-		cached.DerivedFrom == derivedFrom {
-		// See loadCachedCompleteSearchSnapshot: tree-only keying means this hit
-		// may belong to a different commit that shares the tree. Re-stamp before
-		// handing it back so no caller ever reports a stale commit.
-		cached = restampCachedSearchSnapshotCommit(cached, commit)
-		return cached.Snapshot, true, nil
+	if generationKnown {
+		if cached, ok := loadCachedSearchSnapshot(entry, absRepo, commit, repositoryKey, providerVersion, tree, options); ok &&
+			cached.DerivedFrom == derivedFrom {
+			return cached.Snapshot, true, nil
+		}
 	}
 	// A complete committed-tree snapshot is query independent and can serve a
 	// selective search without rebuilding the same tree for every query. Keep
@@ -391,8 +386,7 @@ func loadOrBuildSearchSnapshotPersisting(
 		if entryErr != nil {
 			return ProviderSnapshot{}, false, entryErr
 		}
-		if cached, readErr := readSearchSnapshot(fullEntry); readErr == nil && validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, completeOptions) {
-			cached = restampCachedSearchSnapshotCommit(cached, commit)
+		if cached, ok := loadCachedSearchSnapshot(fullEntry, absRepo, commit, repositoryKey, providerVersion, tree, completeOptions); ok {
 			if selective, ok := deriveFromFull(cached.Snapshot); ok {
 				return selective, true, nil
 			}
@@ -1018,8 +1012,14 @@ func searchSnapshotKeyForSchema(schemaVersion, absRepo, repositoryKey, providerV
 	hash := sha256.New()
 	writeCacheKeyString(hash, "cache-version", searchSnapshotCacheVersion)
 	writeCacheKeyString(hash, "schema-version", schemaVersion)
-	writeCacheKeyString(hash, "repository-path", absRepo)
-	writeCacheKeyString(hash, "repository-key", repositoryKey)
+	// No checkout path: the entry is content-addressed by the tree, so every
+	// worktree and clone of one repository at one tree shares it, and the loader
+	// restamps the path-bearing header fields for the checkout it serves
+	// (loadCachedSearchSnapshot). The identity term is the repository KEY CLASS:
+	// the full gh/<owner>/<name> key, which is what every stored ID embeds, but
+	// one term for all local/<basename> keys, whose IDs the loader rewrites into
+	// the serving checkout's namespace. See searchCacheRepositoryKeyTerm.
+	writeCacheKeyString(hash, "repository-key", searchCacheRepositoryKeyTerm(repositoryKey))
 	writeCacheKeyString(hash, "provider-version", providerVersion)
 	writeCacheKeyString(hash, "tree", tree)
 	writeCacheKeyString(hash, "profile", string(options.Profile))
@@ -1080,8 +1080,9 @@ func validCachedSearchSnapshot(cache cachedSearchSnapshot, repositoryKey, provid
 		cache.Profile == options.Profile &&
 		cache.MaxParseBytes == options.MaxParseBytes &&
 		cache.Snapshot.Header.RepoKey == repositoryKey &&
-		// Both identity gates remain required for decoding older entries: RepoKey
-		// separates two checkouts that share a tree hash, while Worktree prevents a
+		// Both identity gates remain required: RepoKey is the namespace every stored
+		// ID embeds, so an entry is served only after loadCachedSearchSnapshot has
+		// rebound it to the serving checkout's key, while Worktree prevents a
 		// retired working-tree entry from ever serving a committed-tree request.
 		cache.Worktree == options.Worktree &&
 		cache.Snapshot.Header.Tree == tree &&
@@ -1103,6 +1104,95 @@ func validCachedSearchSnapshot(cache cachedSearchSnapshot, repositoryKey, provid
 func restampCachedSearchSnapshotCommit(cache cachedSearchSnapshot, commit string) cachedSearchSnapshot {
 	cache.Commit = commit
 	cache.Snapshot.Header.Commit = commit
+	return cache
+}
+
+// searchCacheRepositoryKeyTerm is the repository-identity term of a search
+// snapshot key. A gh/<owner>/<name> key is globally unique and is hashed as is.
+// Every local/<basename> key hashes to one term: two remote-less clones of one
+// tree under different directory names parse identically except for the ID
+// namespace, which rebindCachedSearchSnapshot rewrites, so they can share an
+// entry. Sharing is sound because the cache is per user and the tree hash is a
+// content address: nothing in the entry is a function of anything but the tree,
+// the keyed options, and the namespace being rewritten.
+func searchCacheRepositoryKeyTerm(repositoryKey string) string {
+	if strings.HasPrefix(repositoryKey, "local/") {
+		return "local/"
+	}
+	return repositoryKey
+}
+
+// loadCachedSearchSnapshot reads one entry and, when it is valid for this
+// request, returns it bound to the checkout serving it. A read or validation
+// failure is a miss: the cache is optional on every path that consults it.
+func loadCachedSearchSnapshot(
+	entry cacheEntry,
+	absRepo, commit, repositoryKey, providerVersion, tree string,
+	options ProviderSnapshotOptions,
+) (cachedSearchSnapshot, bool) {
+	cached, err := readSearchSnapshot(entry)
+	if err != nil {
+		return cachedSearchSnapshot{}, false
+	}
+	cached = rebindCachedSearchSnapshot(cached, absRepo, repositoryKey)
+	if !validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, options) {
+		return cachedSearchSnapshot{}, false
+	}
+	// The cache key is tree-only: a hit may have been built for a different
+	// commit that shares this tree. The parsed graph is exactly correct, but
+	// commit provenance must reflect the HEAD we are serving right now.
+	return restampCachedSearchSnapshotCommit(cached, commit), true
+}
+
+// rebindCachedSearchSnapshot adopts an entry, which may have been written from
+// another worktree or clone of the same tree, for the checkout at repoRoot.
+//
+// Header.RepoRoot is the only absolute path an entry carries: file, symbol,
+// relation, evidence and failure paths are repository-relative, and
+// TestSearchCacheEntryCarriesNoCheckoutPathButTheHeader pins that. It is not
+// cosmetic. Search reports it as repo_root, and def, neighbors and impact open
+// their git readers and quote source through it (callsite.go), so a stale root
+// would read another checkout's files.
+//
+// A local/<basename> namespace is rewritten to the serving checkout's. Every
+// repository ID is symbolID/fileID: the key, a colon, and a key-independent
+// remainder, so a prefix rewrite reproduces what a cold build here would emit,
+// and it preserves every ordering a snapshot relies on (all rewritten IDs share
+// one prefix, and that prefix still sorts after `external:`). A gh/ key is never
+// rewritten: it is in the cache key, so an entry under another one never loads.
+func rebindCachedSearchSnapshot(cache cachedSearchSnapshot, repoRoot, repositoryKey string) cachedSearchSnapshot {
+	cache.Snapshot.Header.RepoRoot = repoRoot
+	from := cache.Snapshot.Header.RepoKey
+	if from == repositoryKey || !strings.HasPrefix(from, "local/") || !strings.HasPrefix(repositoryKey, "local/") {
+		return cache
+	}
+	prefix := from + ":"
+	rename := func(id string) string {
+		if strings.HasPrefix(id, prefix) {
+			return repositoryKey + ":" + id[len(prefix):]
+		}
+		return id
+	}
+	snapshot := &cache.Snapshot
+	snapshot.Header.RepoKey = repositoryKey
+	for index := range snapshot.Files {
+		snapshot.Files[index].ID = rename(snapshot.Files[index].ID)
+	}
+	for index := range snapshot.Symbols {
+		symbol := &snapshot.Symbols[index]
+		symbol.ID = rename(symbol.ID)
+		symbol.ContainerID = rename(symbol.ContainerID)
+	}
+	for index := range snapshot.Relations {
+		relation := &snapshot.Relations[index]
+		relation.FromID = rename(relation.FromID)
+		relation.ToID = rename(relation.ToID)
+	}
+	// External IDs are `external:` and carry no namespace; renaming them is a
+	// no-op kept so the rewrite covers every ID field the snapshot has.
+	for index := range snapshot.Externals {
+		snapshot.Externals[index].ID = rename(snapshot.Externals[index].ID)
+	}
 	return cache
 }
 
