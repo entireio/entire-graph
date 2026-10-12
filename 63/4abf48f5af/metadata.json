@@ -1,0 +1,21 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "634abf48f5af",
+  "strategy": "manual-commit",
+  "branch": "codex/trail243-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/dependabot.yml",
+    "bench/memory/FAIR-CONFIG.md",
+    "bench/memory/requirements-lock-py312.txt"
+  ],
+  "sessions": [
+    {
+      "metadata": "/63/4abf48f5af/0/metadata.json",
+      "transcript": "/63/4abf48f5af/0/full.jsonl",
+      "compact_transcript": "/63/4abf48f5af/0/transcript.jsonl",
+      "content_hash": "/63/4abf48f5af/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
