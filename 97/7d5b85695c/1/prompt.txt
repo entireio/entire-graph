@@ -1,4 +1,8 @@
-<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>
+GitHub's AI secret scanning keeps creating false positives, for example [https://github.com/entireio/entire-graph/security/secret-scanning/17](https://github.com/entireio/entire-graph/security/secret-scanning/17) - can you change its rules to not do that? It's annoying af.
+
+---
+
+Also, when you are done, close all existing alerts in this repo.
 
 ---
 
