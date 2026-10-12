@@ -56,6 +56,8 @@ def _mask_shell(command):
     while k < len(cmd):
         ch = cmd[k]
         if quote:
+            if ch == "\\" and quote != "'" and k + 1 < len(cmd):
+                out.append("  "); k += 2; continue
             out.append(ch if ch == quote else " ")
             if ch == quote:
                 quote = None
