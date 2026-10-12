@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "761254624234",
+  "session_id": "01a1304c-f8bd-78e0-8932-e7da79a54f3b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T13:55:31.801406Z",
+  "branch": "codex/trail207-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "bench/locate/budget_falsifier.py",
+    "bench/locate/doccomment_bench.py",
+    "bench/locate/head_to_head.py",
+    "bench/locate/mutation_sweep.py",
+    "bench/locate/replay_qualify.py",
+    "bench/locate/test_review_guards.py"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6.1-sol",
+  "turn_id": "dc8e76964952",
+  "checkpoint_transcript_start": 450,
+  "transcript_lines_at_start": 450,
+  "compact_transcript_start": 56,
+  "token_usage": {
+    "input_tokens": 24008,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1908608,
+    "output_tokens": 4905,
+    "api_call_count": 16
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-12T13:55:31.646782Z",
+    "agent_lines": 3014,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 3014,
+    "total_lines_changed": 3014,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}

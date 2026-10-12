@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "761254624234",
+  "strategy": "manual-commit",
+  "branch": "codex/trail207-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "bench/locate/budget_falsifier.py",
+    "bench/locate/doccomment_bench.py",
+    "bench/locate/head_to_head.py",
+    "bench/locate/mutation_sweep.py",
+    "bench/locate/replay_qualify.py",
+    "bench/locate/test_review_guards.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/76/1254624234/0/metadata.json",
+      "transcript": "/76/1254624234/0/full.jsonl",
+      "compact_transcript": "/76/1254624234/0/transcript.jsonl",
+      "content_hash": "/76/1254624234/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 24008,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1908608,
+    "output_tokens": 4905,
+    "api_call_count": 16
+  }
+}
