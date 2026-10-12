@@ -128,7 +128,7 @@ def build_cases(binary, repo, want, seed=7):
     # A failed or signal-killed `symbols` still prints what it managed. Building the case list
     # from a truncated stream silently samples whatever happened to be emitted first.
     if sp.returncode != 0:
-        raise SystemExit(f"symbols failed in {repo} (exit {sp.returncode}); refusing partial cases")
+        raise SystemExit(f"symbols failed in {repo} (exit {sp.returncode}); refusing partial cases: {sp.stderr.strip()}")
     raw = sp.stdout
     out=[]
     for line in raw.splitlines():
@@ -345,7 +345,7 @@ def phrase_arm(repo, q, name, target_file, lo, hi, follow=12):
     """
     phrase = phrase_for(q)
     if not phrase:
-        return 0, False, False, True, b"", {"argv": [], "rc": None, "stderr_bytes": b"", "note": "no phrase in q"}
+        return 0, False, False, False, b"", {"argv": [], "rc": None, "stderr_bytes": b"", "note": "no phrase in q"}
     # `--` BEFORE THE PATTERN. Without it a pattern beginning with a dash is parsed as an rg
     # option: case 012 of the fx-cli run drew the phrase "--dry-run ..." out of a doc comment,
     # rg exited 2, and the whole case was dropped from EVERY arm. A literal taken from user text
@@ -389,7 +389,7 @@ def phrase_arm(repo, q, name, target_file, lo, hi, follow=12):
     return cost, loc, dec, True, p.stdout, meta
 
 def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
-    """Returns (bytes_in_context, located, ok). ok=False means the ARM FAILED and the case
+    """Returns (bytes_in_context, located, declaration, ok, evidence, metadata). ok=False means the ARM FAILED and the case
     must be excluded, never scored as a retrieval miss (peer-review note 2)."""
     term = name if oracle else max((w for w in WORD.findall(query) if w.lower() not in STOP),
                                    key=len, default="")
@@ -412,7 +412,7 @@ def grep_arm(repo,query,name,target_file,oracle=False,tgt_lo=0,tgt_hi=0):
     return len(out), loc, dec, True, out, meta
 
 def graph_arm(binary,repo,query,name,target_file,budget,tgt_lo=0,tgt_hi=0):
-    """Returns (bytes_in_context, located, ok). `located` is DISPLAYED-SYMBOL-NAME recall OR
+    """Returns (bytes_in_context, located, declaration, ok, evidence, metadata). `located` is DISPLAYED-SYMBOL-NAME recall OR
     a header whose file and line span contain the preregistered target -- peer-review note 3:
     a locator-only or name-elided rendering must not read as zero retrieval."""
     p=subprocess.run([binary,"query","--repo",repo,"--query",query,"--format","agent",
@@ -1497,7 +1497,7 @@ if __name__=="__main__":
     # to measure anything but a clean tree -- which is what a frozen fixture is supposed to be.
     if dirty0:
         raise SystemExit(f"fixture {repo} is DIRTY; a frozen fixture must be clean\n{dirty0}")
-    bsha=hashlib.sha256(open(binary,"rb").read()).hexdigest()
+    bsha=file_sha256(binary)
     # IDENTITY FIRST, THEN SELECTION. The check sat after build_cases, so a binary that would be
     # refused had already chosen the population -- and on a dirty or unidentifiable build, the
     # selection is exactly as unreproducible as the measurement would have been.
@@ -1624,7 +1624,7 @@ if __name__=="__main__":
     print(f"state before/after: {rev0} dirty={dirty0}  ->  {rev1} dirty={dirty1}")
     if outdir: print(f"per-case receipts: {outdir}  (run-manifest.json carries the verdict)")
     me=os.path.abspath(__file__)
-    print(f"script sha256 {hashlib.sha256(open(me,'rb').read()).hexdigest()}")
+    print(f"script sha256 {file_sha256(me)}")
     # LAST THING THE RUN DOES. Everything above is already on disk as PROVISIONAL; this is what
     # makes the receipts quotable, and a run that dies before here stays provisional -- which
     # reads as invalid, deliberately.
