@@ -1464,6 +1464,9 @@ func hasStdoutRedirect(stage string) bool {
 		if index+1 < len(runes) && runes[index+1] == '&' {
 			continue // `>&2` duplicates a descriptor; it does not name a file
 		}
+		if index > 0 && runes[index-1] == '>' {
+			continue // second character of >>; the first carries descriptor context
+		}
 		if index > 0 && runes[index-1] == '<' {
 			continue // `<>` opens for read-write
 		}
