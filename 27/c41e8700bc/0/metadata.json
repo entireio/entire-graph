@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "27c41e8700bc",
+  "session_id": "01a1304c-f8bd-78e0-8932-e7da79a54f3b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T14:22:07.304047Z",
+  "branch": "codex/trail232-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/provider.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6.1-sol",
+  "turn_id": "dc8e76964952",
+  "checkpoint_transcript_start": 1089,
+  "transcript_lines_at_start": 1089,
+  "compact_transcript_start": 144,
+  "initial_attribution": {
+    "calculated_at": "2026-10-12T14:22:07.206539Z",
+    "agent_lines": 118,
+    "agent_removed": 49,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 118,
+    "total_lines_changed": 167,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}

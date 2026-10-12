@@ -1,0 +1,19 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "27c41e8700bc",
+  "strategy": "manual-commit",
+  "branch": "codex/trail232-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/provider.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/27/c41e8700bc/0/metadata.json",
+      "transcript": "/27/c41e8700bc/0/full.jsonl",
+      "compact_transcript": "/27/c41e8700bc/0/transcript.jsonl",
+      "content_hash": "/27/c41e8700bc/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
