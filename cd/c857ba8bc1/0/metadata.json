@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "cdc857ba8bc1",
+  "session_id": "01a1304c-f8bd-78e0-8932-e7da79a54f3b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T14:19:17.768058Z",
+  "branch": "codex/trail197-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-6.1-sol",
+  "turn_id": "dc8e76964952",
+  "checkpoint_transcript_start": 1004,
+  "transcript_lines_at_start": 1004,
+  "compact_transcript_start": 133,
+  "token_usage": {
+    "input_tokens": 3960,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 602880,
+    "output_tokens": 2130,
+    "api_call_count": 3
+  }
+}
