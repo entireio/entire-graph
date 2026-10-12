@@ -1715,7 +1715,7 @@ func writeStatsSummary(out io.Writer, report statsResponse) {
 			statsPrefix, termsafe.Line(report.Since))
 		return
 	}
-	fmt.Fprintln(out, statsGreen(out, statsPrefix+" "+statsModelSummary(report)))
+	fmt.Fprintln(out, statsModelStyle(out, statsPrefix+" "+statsModelSummary(report)))
 }
 
 func statsModelSummary(report statsResponse) string {
@@ -1729,15 +1729,15 @@ func statsModelSummary(report statsResponse) string {
 	return "1:1 context model: " + signed + " est. tokens; not measured savings"
 }
 
-// statsGreen styles the headline for a terminal and degrades to plain text everywhere else,
+// statsModelStyle styles the headline for a terminal and degrades to plain text everywhere else,
 // using the same NO_COLOR / FORCE_COLOR / TERM / character-device rules as the rest of the
 // binary, so a pipe or a redirect never receives raw escape bytes.
-func statsGreen(out io.Writer, value string) string {
+func statsModelStyle(out io.Writer, value string) string {
 	value = termsafe.Line(value)
 	if value == "" || !sem.ShouldUseColor(out) {
 		return value
 	}
-	return "\x1b[32m" + value + "\x1b[0m"
+	return "\x1b[2m" + value + "\x1b[0m"
 }
 
 func writeStatsText(out io.Writer, report statsResponse) {
