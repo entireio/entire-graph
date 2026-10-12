@@ -63,7 +63,8 @@ var followUpReadClasses = []string{followUpReadOverlapping, followUpReadDifferen
 // delivered locate result is a re-query. Meta verbs (stats, index, doctor, help, ...) are not.
 var graphLookupVerbs = map[string]bool{
 	"query": true, "search": true, "neighbors": true, "impact": true, "def": true, "explain": true,
-	"symbols": true, "edges": true, "snapshot-query": true,
+	"symbols": true, "edges": true,
+	"snapshot": true, "snapshot-query": true,
 }
 
 // shellSearchCommands / shellReadCommands split bashExploreCommands into "asks again" and "opens a
