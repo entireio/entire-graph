@@ -1,0 +1,19 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "577db4e8e352",
+  "strategy": "manual-commit",
+  "branch": "codex/trail254-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "bench/memory/FAIR-CONFIG.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/57/7db4e8e352/0/metadata.json",
+      "transcript": "/57/7db4e8e352/0/full.jsonl",
+      "compact_transcript": "/57/7db4e8e352/0/transcript.jsonl",
+      "content_hash": "/57/7db4e8e352/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
