@@ -36,7 +36,13 @@ sessions. Use Brain memory-informed review and workspace
 capabilities when relevant. Brain semantic answers refer to a stored index, which
 may differ from current working-tree source.
 
-Read focused source around useful locations before editing. Check related contracts
+Read focused source around useful locations before editing, with one exception:
+a Graph result marked [complete] is the whole symbol and is already in front of you,
+so that source already supplies the context for understanding. Perform any prior Read
+that your editing tool requires. Read for more context when you need
+what the result does NOT carry -- surrounding context, a caller, a contract, a second
+site -- never to re-confirm what it already showed you. An unmarked body is a fragment;
+read it. Check related contracts
 and make the smallest complete change. VERIFY before stopping: execute focused tests,
 a reproduction, or the most relevant build. If execution is unavailable, disclose
 that limit and perform a bounded source check. Prefer precise queries and line ranges,

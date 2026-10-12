@@ -104,7 +104,8 @@ question through it. Do not automatically install, configure, or repair tools.
 // either printed or did not.
 const verificationGuide = `Read focused source around useful locations before editing, with one exception:
 a Graph result marked [complete] is the whole symbol and is already in front of you,
-so opening that file to look at the same lines again buys nothing. Read when you need
+so that source already supplies the context for understanding. Perform any prior Read
+that your editing tool requires. Read for more context when you need
 what the result does NOT carry -- surrounding context, a caller, a contract, a second
 site -- never to re-confirm what it already showed you. An unmarked body is a fragment;
 read it. Check related contracts
