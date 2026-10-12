@@ -1,0 +1,5 @@
+<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>
+
+---
+
+Ok, disabling AI detection is one way, but means less security. Isn't there a way to customize it?

@@ -3,7 +3,7 @@
   "checkpoint_id": "977d5b85695c",
   "strategy": "manual-commit",
   "branch": "codex/trail197-readiness",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "internal/agentsetup/guide.go"
   ],
@@ -14,13 +14,20 @@
       "compact_transcript": "/97/7d5b85695c/0/transcript.jsonl",
       "content_hash": "/97/7d5b85695c/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/97/7d5b85695c/1/metadata.json",
+      "transcript": "/97/7d5b85695c/1/full.jsonl",
+      "compact_transcript": "/97/7d5b85695c/1/transcript.jsonl",
+      "content_hash": "/97/7d5b85695c/1/content_hash.txt",
+      "prompt": "/97/7d5b85695c/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 5161,
+    "input_tokens": 14937,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 402176,
-    "output_tokens": 1222,
-    "api_call_count": 3
+    "cache_read_tokens": 557440,
+    "output_tokens": 1648,
+    "api_call_count": 5
   }
 }
