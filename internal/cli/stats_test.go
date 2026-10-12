@@ -960,15 +960,15 @@ func TestStatsHeadlineIsPlainTextWhenOutputIsNotATerminal(t *testing.T) {
 	t.Setenv("FORCE_COLOR", "")
 	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "")
 	var out bytes.Buffer
-	if got := statsGreen(&out, "[entire-graph] ~1 tokens saved"); strings.Contains(got, "\x1b[") {
+	if got := statsModelStyle(&out, "[entire-graph] ~1 tokens saved"); strings.Contains(got, "\x1b[") {
 		t.Fatalf("a non-terminal writer must not receive escapes, got %q", got)
 	}
 	t.Setenv("FORCE_COLOR", "1")
-	if got := statsGreen(&out, "x"); got != "\x1b[32mx\x1b[0m" {
-		t.Fatalf("forced colour = %q, want a green wrap", got)
+	if got := statsModelStyle(&out, "x"); got != "\x1b[2mx\x1b[0m" {
+		t.Fatalf("forced colour = %q, want a neutral dim wrap", got)
 	}
 	t.Setenv("NO_COLOR", "1")
-	if got := statsGreen(&out, "x"); got != "x" {
+	if got := statsModelStyle(&out, "x"); got != "x" {
 		t.Fatalf("NO_COLOR must win, got %q", got)
 	}
 }
