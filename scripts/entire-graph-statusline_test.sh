@@ -630,6 +630,7 @@ if [ -n "$dir" ]; then key=$dir; else key=$repo; fi
 # directly. Distinctness is now guaranteed by construction rather than left to a hash, and the
 # property under test is unchanged: if the script resolved the launch directory instead of the
 # repository, all three would still collapse to one badge and the assertion would still fail.
+key=${key%/}
 case ${key##*/} in
 repo-a) n=101 ;;
 repo-b) n=202 ;;
