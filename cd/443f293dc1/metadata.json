@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "cd443f293dc1",
+  "strategy": "manual-commit",
+  "branch": "codex/trail241-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/bench-memory-deps.yml",
+    "bench/memory/FAIR-CONFIG.md",
+    "bench/memory/requirements-lock-py312.txt"
+  ],
+  "sessions": [
+    {
+      "metadata": "/cd/443f293dc1/0/metadata.json",
+      "transcript": "/cd/443f293dc1/0/full.jsonl",
+      "compact_transcript": "/cd/443f293dc1/0/transcript.jsonl",
+      "content_hash": "/cd/443f293dc1/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1317,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 205824,
+    "output_tokens": 721,
+    "api_call_count": 1
+  }
+}
