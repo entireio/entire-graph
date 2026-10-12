@@ -1,0 +1,19 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "e5cfcb5b4e2a",
+  "strategy": "manual-commit",
+  "branch": "codex/trail208-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "scripts/entire-graph-statusline_test.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e5/cfcb5b4e2a/0/metadata.json",
+      "transcript": "/e5/cfcb5b4e2a/0/full.jsonl",
+      "compact_transcript": "/e5/cfcb5b4e2a/0/transcript.jsonl",
+      "content_hash": "/e5/cfcb5b4e2a/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
