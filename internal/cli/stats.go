@@ -1836,7 +1836,7 @@ func writeStatsSummary(out io.Writer, report statsResponse) {
 			statsPrefix, termsafe.Line(report.Since))
 		return
 	}
-	fmt.Fprintf(out, "%s %s\n", statsPrefix, followUpSummary(report))
+	fmt.Fprintln(out, statsGreen(out, statsPrefix+" "+followUpSummary(report)))
 }
 
 // followUpClassified is the reconcilable denominator: every observed locate result, in one class.
