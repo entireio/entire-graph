@@ -3,7 +3,7 @@
   "checkpoint_id": "d5a087f615c9",
   "strategy": "manual-commit",
   "branch": "codex/trail206-readiness",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "internal/agentsetup/guide.go",
     "internal/cli/search.go",
@@ -19,6 +19,13 @@
       "compact_transcript": "/d5/a087f615c9/0/transcript.jsonl",
       "content_hash": "/d5/a087f615c9/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/d5/a087f615c9/1/metadata.json",
+      "transcript": "/d5/a087f615c9/1/full.jsonl",
+      "compact_transcript": "/d5/a087f615c9/1/transcript.jsonl",
+      "content_hash": "/d5/a087f615c9/1/content_hash.txt",
+      "prompt": "/d5/a087f615c9/1/prompt.txt"
     }
   ],
   "token_usage": {
