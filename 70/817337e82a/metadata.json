@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "70817337e82a",
+  "strategy": "manual-commit",
+  "branch": "codex/trail219-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/dependabot.yml",
+    "bench/memory/FAIR-CONFIG.md",
+    "bench/memory/requirements-lock-py312.txt"
+  ],
+  "sessions": [
+    {
+      "metadata": "/70/817337e82a/0/metadata.json",
+      "transcript": "/70/817337e82a/0/full.jsonl",
+      "compact_transcript": "/70/817337e82a/0/transcript.jsonl",
+      "content_hash": "/70/817337e82a/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5386,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 123904,
+    "output_tokens": 515,
+    "api_call_count": 1
+  }
+}
