@@ -276,13 +276,22 @@ func resolveGoRouteReceiversWithBudget(content string, constants map[string]stri
 	}
 	fset := token.NewFileSet()
 	shift := 0
-	file, err := parser.ParseFile(fset, "", content, parser.SkipObjectResolution|parser.ParseComments)
+	parse := func(input string) (*ast.File, error) {
+		file, err := parser.ParseFile(fset, "", input, parser.ParseComments)
+		if err != nil && strings.Contains(err.Error(), "scope depth") {
+			// Object resolution has a smaller nesting ceiling than syntax parsing.
+			// Retain the original conservative analysis and its explicit work budget.
+			return parser.ParseFile(fset, "", input, parser.SkipObjectResolution|parser.ParseComments)
+		}
+		return file, err
+	}
+	file, err := parse(content)
 	if err != nil {
 		// Fragments without a package clause are still worth resolving. A file
 		// that does not parse either way keeps the name-based fallback.
 		const clause = "package routes\n"
 		fset = token.NewFileSet()
-		file, err = parser.ParseFile(fset, "", clause+content, parser.SkipObjectResolution|parser.ParseComments)
+		file, err = parse(clause + content)
 		if err != nil {
 			return receivers
 		}
@@ -574,7 +583,7 @@ func (r *goRouteResolver) walkFile() {
 			if decl.Body == nil {
 				continue
 			}
-			r.fnWritten = r.writtenNames(decl.Body)
+			r.fnWritten = r.collectWrittenNames(decl.Body, true)
 			r.paramFunc = decl.Name.Name
 			r.paramRecv = goRouteRecvTypeName(decl.Recv)
 			r.walkFunc(decl.Recv, decl.Type, decl.Body, pkg, nil)
@@ -582,7 +591,7 @@ func (r *goRouteResolver) walkFile() {
 			if decl.Tok != token.VAR {
 				continue
 			}
-			r.fnWritten = r.writtenNames(decl)
+			r.fnWritten = r.collectWrittenNames(decl, true)
 			r.atPackage = true
 			for _, spec := range decl.Specs {
 				if valueSpec, ok := spec.(*ast.ValueSpec); ok {
@@ -1888,7 +1897,7 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 	}
 	r.undo(mark)
 	if deferred {
-		written := r.writtenNames(lit.Body)
+		written := r.writtenNames(lit)
 		for _, capture := range captures {
 			r.step(1)
 			_, isWritten := written[capture.name]
@@ -1915,7 +1924,7 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 		}
 		return
 	}
-	r.markNames(scope, r.writtenNames(lit.Body), false)
+	r.markNames(scope, r.writtenNames(lit), false)
 	for _, capture := range captures {
 		r.step(1)
 		value := *capture.outer
@@ -2002,12 +2011,23 @@ func goRouteUnparen(expr ast.Expr) ast.Expr {
 // true when some write could carry a router group (an identifier, a Group call,
 // or an unpaired multi-value assignment).
 func (r *goRouteResolver) writtenNames(node ast.Node) map[string]bool {
+	return r.collectWrittenNames(node, false)
+}
+
+func (r *goRouteResolver) collectWrittenNames(node ast.Node, includeLocal bool) map[string]bool {
 	written := map[string]bool{}
 	if node == nil {
 		return written
 	}
 	note := func(expr ast.Expr, groupish bool) {
 		if ident, ok := expr.(*ast.Ident); ok && ident.Name != "_" {
+			// Writes to a binding declared inside this subtree cannot invalidate an
+			// outer same-named binding. Go's parser resolves lexical object identity.
+			if !includeLocal && ident.Obj != nil {
+				if declaration, ok := ident.Obj.Decl.(ast.Node); ok && declaration.Pos() >= node.Pos() && declaration.End() <= node.End() {
+					return
+				}
+			}
 			written[ident.Name] = written[ident.Name] || groupish
 		}
 	}

@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
       # Both suites are stdlib-only on purpose: they must stay runnable without
