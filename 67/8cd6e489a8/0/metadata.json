@@ -1,0 +1,46 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "678cd6e489a8",
+  "session_id": "01a1304c-f8bd-78e0-8932-e7da79a54f3b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T14:50:42.775791Z",
+  "branch": "codex/trail221-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "README.md",
+    "docs/search.md",
+    "internal/cli/index.go",
+    "internal/cli/search.go",
+    "internal/cli/search_result_json.go",
+    "internal/cli/search_semantic_review_test.go",
+    "internal/sem/search_semantic.go",
+    "internal/sem/search_semantic_decode.go",
+    "internal/sem/search_semantic_decode_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6.1-sol",
+  "turn_id": "dc8e76964952",
+  "checkpoint_transcript_start": 1472,
+  "transcript_lines_at_start": 1472,
+  "compact_transcript_start": 190,
+  "token_usage": {
+    "input_tokens": 20584,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 818816,
+    "output_tokens": 5118,
+    "api_call_count": 7
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-12T14:50:42.598716Z",
+    "agent_lines": 1895,
+    "agent_removed": 37,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1895,
+    "total_lines_changed": 1932,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
