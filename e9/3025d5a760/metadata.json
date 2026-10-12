@@ -3,7 +3,7 @@
   "checkpoint_id": "e93025d5a760",
   "strategy": "manual-commit",
   "branch": "codex/trail199-readiness",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "internal/agentsetup/guide.go"
   ],
@@ -13,6 +13,13 @@
       "transcript": "/e9/3025d5a760/0/full.jsonl",
       "compact_transcript": "/e9/3025d5a760/0/transcript.jsonl",
       "content_hash": "/e9/3025d5a760/0/content_hash.txt",
+      "prompt": ""
+    },
+    {
+      "metadata": "/e9/3025d5a760/1/metadata.json",
+      "transcript": "/e9/3025d5a760/1/full.jsonl",
+      "compact_transcript": "/e9/3025d5a760/1/transcript.jsonl",
+      "content_hash": "/e9/3025d5a760/1/content_hash.txt",
       "prompt": ""
     }
   ]
