@@ -1,1 +1,13 @@
+GitHub's AI secret scanning keeps creating false positives, for example [https://github.com/entireio/entire-graph/security/secret-scanning/17](https://github.com/entireio/entire-graph/security/secret-scanning/17) - can you change its rules to not do that? It's annoying af.
+
+---
+
+Also, when you are done, close all existing alerts in this repo.
+
+---
+
+Ok, disabling AI detection is one way, but means less security. Isn't there a way to customize it?
+
+---
+
 Ok, keep it disabled.
