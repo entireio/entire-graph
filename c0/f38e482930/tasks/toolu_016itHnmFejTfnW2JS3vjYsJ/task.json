@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_016itHnmFejTfnW2JS3vjYsJ",
+  "agent_id": "aa1e6e8812bd5eb58",
+  "subagent_type": "general-purpose",
+  "task_description": "Adversarial review trail 240",
+  "token_usage": {
+    "input_tokens": 34,
+    "cache_creation_tokens": 63289,
+    "cache_read_tokens": 843327,
+    "output_tokens": 153,
+    "api_call_count": 17
+  },
+  "started_at": "2026-10-12T10:21:58.470292-04:00",
+  "completed_at": "2026-10-12T10:25:36.917426-04:00"
+}
