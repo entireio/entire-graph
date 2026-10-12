@@ -3,7 +3,7 @@
   "checkpoint_id": "cdf2a8be1e12",
   "strategy": "manual-commit",
   "branch": "codex/trail243-readiness",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "internal/sem/search_cache.go",
     "internal/sem/search_cache_history_review_test.go"
@@ -15,13 +15,20 @@
       "compact_transcript": "/cd/f2a8be1e12/0/transcript.jsonl",
       "content_hash": "/cd/f2a8be1e12/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/cd/f2a8be1e12/1/metadata.json",
+      "transcript": "/cd/f2a8be1e12/1/full.jsonl",
+      "compact_transcript": "/cd/f2a8be1e12/1/transcript.jsonl",
+      "content_hash": "/cd/f2a8be1e12/1/content_hash.txt",
+      "prompt": "/cd/f2a8be1e12/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 12815,
+    "input_tokens": 47735,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 1214464,
-    "output_tokens": 2839,
-    "api_call_count": 8
+    "cache_read_tokens": 1862144,
+    "output_tokens": 5482,
+    "api_call_count": 14
   }
 }

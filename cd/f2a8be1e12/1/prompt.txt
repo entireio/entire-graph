@@ -1,0 +1,1 @@
+Next, check the vulns in [https://github.com/entireio/entire-graph/security/dependabot](https://github.com/entireio/entire-graph/security/dependabot)
