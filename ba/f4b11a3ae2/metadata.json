@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "baf4b11a3ae2",
+  "strategy": "manual-commit",
+  "branch": "codex/trail235-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tools/ci-bench/windows-production/run_shard.py",
+    "tools/ci-bench/windows-production/tests/test_run_shard_progress.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ba/f4b11a3ae2/0/metadata.json",
+      "transcript": "/ba/f4b11a3ae2/0/full.jsonl",
+      "compact_transcript": "/ba/f4b11a3ae2/0/transcript.jsonl",
+      "content_hash": "/ba/f4b11a3ae2/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 14258,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 381696,
+    "output_tokens": 1599,
+    "api_call_count": 5
+  }
+}
