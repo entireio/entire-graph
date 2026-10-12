@@ -597,10 +597,7 @@ func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem
 			}
 		}
 		for _, result := range response.Results {
-			if err := encoder.Encode(struct {
-				RecordType string `json:"record_type"`
-				sem.SearchResult
-			}{RecordType: "search_result", SearchResult: result}); err != nil {
+			if err := encoder.Encode(searchResultRecord{result}); err != nil {
 				return err
 			}
 		}
@@ -2828,7 +2825,9 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.MaxContextBytes, i = value, next
-		case "--worktree", "--no-network":
+		case "--no-network":
+			flags.NoSemantic = true
+		case "--worktree":
 			if args[i] == "--worktree" {
 				flags.Worktree = true
 			}

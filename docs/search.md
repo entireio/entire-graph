@@ -122,3 +122,10 @@ stands in only for a row that has no symbol.
 
 `format_version` stays 1: every field above is additive and omitted when the
 channel is not configured.
+
+The opt-in semantic channel sends queries, function names, signatures and up to
+40 doc-comment lines to the configured loopback model service over HTTP. Trust
+that service and the local host: a different local process can bind its port.
+This is an exception to the default no-network/no-model behavior, with no remote
+endpoint support. Query `--no-network` disables the channel; index rejects
+`--no-network --semantic` before sending any request.

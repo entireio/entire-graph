@@ -1299,6 +1299,8 @@ func semanticEmbed(ctx context.Context, config *SemanticConfig, inputs []string,
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 		return nil, unavailable(fmt.Sprintf("http-%d", response.StatusCode), "")
 	}
+	// Bound raw storage to the requested number of maximum-width vectors.
+	maxResponseBytes = min(maxResponseBytes, int64(len(inputs))*semanticMaxDimension*32+4096)
 	limited := io.LimitReader(response.Body, maxResponseBytes+1)
 	raw, err := io.ReadAll(limited)
 	if err != nil {
@@ -1310,8 +1312,8 @@ func semanticEmbed(ctx context.Context, config *SemanticConfig, inputs []string,
 	if int64(len(raw)) > maxResponseBytes {
 		return nil, unavailable("bad-response", "response exceeds the size ceiling")
 	}
-	var decoded semanticEmbedResponse
-	if err := json.Unmarshal(raw, &decoded); err != nil {
+	decoded, err := decodeSemanticEmbedResponse(raw, len(inputs))
+	if err != nil {
 		return nil, unavailable("bad-response", "the response is not an embedding answer")
 	}
 	// The answered model name is service-controlled text; it is compared, never quoted.

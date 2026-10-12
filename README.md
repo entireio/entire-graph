@@ -13,8 +13,9 @@ Entire Graph is a plugin for the Entire CLI specifically designed to enable your
 agents to stop paying that cost. It hands your agent a precomputed map of a Git
 repository: ranked code search plus definitions, callers, types, routes, and
 change impact, each with `file:line` locations. The built-in analyzer parses the
-repository locally with tree-sitter and makes no network requests, model calls,
-or API-key lookups.
+repository locally with tree-sitter. Default analysis makes no network requests,
+model calls, or API-key lookups. The optional semantic channel makes HTTP model
+calls only to a user-configured loopback service; see [semantic search](docs/search.md#semantic-channel).
 
 When running [LoCoMo](https://github.com/snap-research/locomo) against competitors,
 we measured the top score of 94.74% for Entire Graph. We also observed token savings
@@ -33,7 +34,7 @@ up to 71% depending on the coding scenario. As always, your mileage may vary.
 - Full graph export through versioned NDJSON snapshots, stable symbol identifiers, a compact NDJSON format, and experimental SCIP export.
 - Per-repository agent activation, which installs repository-specific guidance in AGENTS.md and CLAUDE.md.
 - Machine-readable coverage, exclusions, warnings, and partial failures, with relation confidence and resolution metadata.
-- Local analysis with no network requests, model calls, API keys, telemetry, or runtime grammar downloads.
+- Default local analysis with no network requests, model calls, API keys, telemetry, or runtime grammar downloads. Opt-in semantic retrieval uses only a configured loopback model service.
 
 ## Benchmarks
 

@@ -29,7 +29,8 @@ type indexFlags struct {
 	Force bool
 	// Semantic also builds the opt-in semantic index for this committed tree, embedding with the
 	// endpoint and model named by ENTIRE_GRAPH_SEMANTIC_ENDPOINT / _MODEL. Force rebuilds it too.
-	Semantic bool
+	Semantic  bool
+	NoNetwork bool
 }
 
 type indexResponse struct {
@@ -101,6 +102,9 @@ func runIndexCommand(ctx context.Context, opts Options, args []string, health bo
 	// Checked BEFORE the snapshot build: asking for a semantic index without naming the embedder is
 	// a usage error, and it should not cost a full index to find that out.
 	semanticConfig := opts.Env.semanticConfig()
+	if flags.Semantic && flags.NoNetwork {
+		return errors.New("index --semantic cannot be combined with --no-network")
+	}
 	if flags.Semantic && semanticConfig == nil {
 		return fmt.Errorf("index --semantic requires both %s and %s", envSemanticEndpoint, envSemanticModel)
 	}
@@ -322,7 +326,9 @@ func parseIndexFlags(args []string) (indexFlags, []string, error) {
 			flags.Force = true
 		case "--semantic":
 			flags.Semantic = true
-		case "--head", "--no-network":
+		case "--no-network":
+			flags.NoNetwork = true
+		case "--head":
 			// Indexing is always local-only and always targets committed HEAD.
 		case "--worktree":
 			return flags, nil, errors.New("index is HEAD-only; --worktree is not supported")
