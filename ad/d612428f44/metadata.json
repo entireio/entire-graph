@@ -3,7 +3,7 @@
   "checkpoint_id": "add612428f44",
   "strategy": "manual-commit",
   "branch": "codex/trail251-readiness",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     ".github/workflows/bench-memory-guards.yml",
     ".github/workflows/bench-memory-kit.yml",
@@ -17,13 +17,20 @@
       "compact_transcript": "/ad/d612428f44/0/transcript.jsonl",
       "content_hash": "/ad/d612428f44/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/ad/d612428f44/1/metadata.json",
+      "transcript": "/ad/d612428f44/1/full.jsonl",
+      "compact_transcript": "/ad/d612428f44/1/transcript.jsonl",
+      "content_hash": "/ad/d612428f44/1/content_hash.txt",
+      "prompt": ""
     }
   ],
   "token_usage": {
-    "input_tokens": 6070,
+    "input_tokens": 11067,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 194304,
-    "output_tokens": 1297,
-    "api_call_count": 3
+    "cache_read_tokens": 328960,
+    "output_tokens": 1846,
+    "api_call_count": 5
   }
 }
