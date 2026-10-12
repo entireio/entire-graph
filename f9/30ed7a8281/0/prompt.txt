@@ -1,0 +1,1 @@
+Review all open trails. Bring the branch up to date, resolve any merge conflict, address any findings, make sure CI is green, keep looping until the trail is ready for approval. Only come back if you need any decisions from me. Finally, tell me which low-risk trails you can approve yourself.
