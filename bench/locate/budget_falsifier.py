@@ -26,8 +26,10 @@ def found(binary, repo, q, name, target_file, budget):
 
 if __name__ == "__main__":
     binary, repo, n, lo, hi = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
-    rev = subprocess.run(["git","-C",repo,"rev-parse","HEAD"],capture_output=True,text=True).stdout.strip()
+    rev = D.fixture_revision(repo)
     cases = D.build_cases(binary, repo, n)
+    if not cases:
+        raise SystemExit("no scorable cases")
     print(f"rev {rev}  n={len(cases)}  comparing {lo} vs {hi}\n")
     lost = kept = same = 0
     for q, name, fp in cases:
