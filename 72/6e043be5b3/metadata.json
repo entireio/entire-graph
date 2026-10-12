@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "726e043be5b3",
+  "strategy": "manual-commit",
+  "branch": "codex/trail216-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/stats.go",
+    "internal/cli/stats_heredoc_review_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/72/6e043be5b3/0/metadata.json",
+      "transcript": "/72/6e043be5b3/0/full.jsonl",
+      "compact_transcript": "/72/6e043be5b3/0/transcript.jsonl",
+      "content_hash": "/72/6e043be5b3/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4827,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 686720,
+    "output_tokens": 2080,
+    "api_call_count": 4
+  }
+}
