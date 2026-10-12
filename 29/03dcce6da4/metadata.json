@@ -3,7 +3,7 @@
   "checkpoint_id": "2903dcce6da4",
   "strategy": "manual-commit",
   "branch": "codex/trail229-readiness",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     ".github/workflows/bench-memory-guards.yml",
     ".github/workflows/bench-memory-kit.yml",
@@ -19,6 +19,13 @@
       "compact_transcript": "/29/03dcce6da4/0/transcript.jsonl",
       "content_hash": "/29/03dcce6da4/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/29/03dcce6da4/1/metadata.json",
+      "transcript": "/29/03dcce6da4/1/full.jsonl",
+      "compact_transcript": "/29/03dcce6da4/1/transcript.jsonl",
+      "content_hash": "/29/03dcce6da4/1/content_hash.txt",
+      "prompt": "/29/03dcce6da4/1/prompt.txt"
     }
   ],
   "token_usage": {
