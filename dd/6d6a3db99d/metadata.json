@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "dd6d6a3db99d",
+  "strategy": "manual-commit",
+  "branch": "codex/trail186-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/benchmarks.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/dd/6d6a3db99d/0/metadata.json",
+      "transcript": "/dd/6d6a3db99d/0/full.jsonl",
+      "compact_transcript": "/dd/6d6a3db99d/0/transcript.jsonl",
+      "content_hash": "/dd/6d6a3db99d/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6579,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 426752,
+    "output_tokens": 1237,
+    "api_call_count": 4
+  }
+}
