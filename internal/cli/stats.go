@@ -1584,13 +1584,21 @@ func hasStdoutRedirect(stage string) bool {
 			continue
 		}
 		if index+1 < len(runes) && runes[index+1] == '&' {
-			continue // `>&2` duplicates a descriptor; it does not name a file
+			continue
 		}
-		if index > 0 && runes[index-1] == '<' {
-			continue // `<>` opens for read-write
+		if index > 0 && (runes[index-1] == '<' || runes[index-1] == '>') {
+			continue
 		}
-		if index > 0 && runes[index-1] >= '0' && runes[index-1] <= '9' && runes[index-1] != '1' {
-			continue // 2>, 3>, … are not stdout
+		// IO_NUMBER is an entire unquoted numeric token, not a filename suffix.
+		start := index
+		for start > 0 && !literal[start-1] && runes[start-1] >= '0' && runes[start-1] <= '9' {
+			start--
+		}
+		if start < index && (start == 0 || strings.ContainsRune(" \t\r\n;|&()<>", runes[start-1])) {
+			descriptor := strings.TrimLeft(string(runes[start:index]), "0")
+			if descriptor != "1" {
+				continue
+			}
 		}
 		return true
 	}
