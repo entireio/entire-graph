@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "95aceb7d0211",
+  "strategy": "manual-commit",
+  "branch": "codex/trail214-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/search_verify.go",
+    "internal/sem/search_verify_pytest_review_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/95/aceb7d0211/0/metadata.json",
+      "transcript": "/95/aceb7d0211/0/full.jsonl",
+      "compact_transcript": "/95/aceb7d0211/0/transcript.jsonl",
+      "content_hash": "/95/aceb7d0211/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7737,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 985216,
+    "output_tokens": 1898,
+    "api_call_count": 7
+  }
+}
