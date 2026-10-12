@@ -58,12 +58,11 @@ var brainReference string
 // BenchmarkNeutralGraphCapability states what Graph can do without telling the agent
 // what to do first. It exists so an A/B harness that must avoid arm-asymmetric
 // instructions has somewhere to take its wording FROM, instead of editing the guides
-// below. It is never part of GraphGuide, CombinedGuide, or BrainGuide. It names
-// --format agent for the cost reason above, not as an instruction: a capability
-// statement may say how the tool is invoked without telling an arm what to do.
+// below. It is never part of GraphGuide, CombinedGuide, or BrainGuide. The
+// benchmark harness selects its output format explicitly for each experiment.
 const BenchmarkNeutralGraphCapability = `Graph answers code-discovery, structural, and semantic-change questions:
 
-    entire graph query --repo . --profile full --format agent --query "<task>"
+    entire graph query --repo . --profile full --query "<task>"
 
 query, def, neighbors, and impact locate code and report structure. diff, commit, and
 checkpoint compare revisions. Graph interactive queries normally inspect the working
