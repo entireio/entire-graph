@@ -1,0 +1,22 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "b1e7cd634229",
+  "strategy": "manual-commit",
+  "branch": "codex/trail211-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/bench-memory-guards.yml",
+    ".github/workflows/bench-memory-kit.yml",
+    ".github/workflows/locomo-nightly.yml",
+    ".github/workflows/test.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b1/e7cd634229/0/metadata.json",
+      "transcript": "/b1/e7cd634229/0/full.jsonl",
+      "compact_transcript": "/b1/e7cd634229/0/transcript.jsonl",
+      "content_hash": "/b1/e7cd634229/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
