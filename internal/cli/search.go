@@ -1111,11 +1111,16 @@ func searchLocatorFollowUp(result sem.SearchResult) string {
 // The result is taken and returned BY VALUE, and a passage slice is copied before any element of
 // it changes. Nothing upstream sees the escaped copy, so the JSON encoding of the same response
 // still reports the exact bytes the repository holds.
+// Reserve the completeness token for renderer certification, never source metadata.
+func searchMetadataLine(value string) string {
+	return strings.ReplaceAll(termsafe.Line(value), completeMarker, `\x5bcomplete\x5d`)
+}
+
 func searchResultOnOneLine(result sem.SearchResult) sem.SearchResult {
-	result.FilePath = termsafe.Line(result.FilePath)
-	result.QualifiedName = termsafe.Line(result.QualifiedName)
-	result.SymbolName = termsafe.Line(result.SymbolName)
-	result.Kind = termsafe.Line(result.Kind)
+	result.FilePath = searchMetadataLine(result.FilePath)
+	result.QualifiedName = searchMetadataLine(result.QualifiedName)
+	result.SymbolName = searchMetadataLine(result.SymbolName)
+	result.Kind = searchMetadataLine(result.Kind)
 	result.Snippet, _ = searchQuarantineBody(result.Snippet)
 	for index, passage := range result.Passages {
 		quarantined, changed := searchQuarantineBody(passage.Snippet)
@@ -2408,7 +2413,7 @@ func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 	tag := agentSearchSectionTag(result)
 	scored := agentSearchScoreTag(result)
 	lines := strings.Split(result.Snippet, "\n")
-	if len(lines) > 1 && lines[len(lines)-1] == "" {
+	if len(lines) > 1 && lines[len(lines)-1] == "" && (result.SnippetStartLine <= 0 || result.SnippetEndLine-result.SnippetStartLine+1 < len(lines)) {
 		lines = lines[:len(lines)-1]
 	}
 	snippetStart := result.SnippetStartLine
