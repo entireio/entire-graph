@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "adabe3ba9407",
+  "strategy": "manual-commit",
+  "branch": "codex/trail240-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "scripts/entire-graph-prompt-context.py",
+    "scripts/entire-graph-prompt-context_test.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ad/abe3ba9407/0/metadata.json",
+      "transcript": "/ad/abe3ba9407/0/full.jsonl",
+      "compact_transcript": "/ad/abe3ba9407/0/transcript.jsonl",
+      "content_hash": "/ad/abe3ba9407/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 43777,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4042368,
+    "output_tokens": 13751,
+    "api_call_count": 30
+  }
+}
