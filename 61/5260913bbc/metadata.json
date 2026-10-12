@@ -1,0 +1,20 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "615260913bbc",
+  "strategy": "manual-commit",
+  "branch": "codex/trail251-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/dependabot.yml",
+    "bench/memory/FAIR-CONFIG.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/61/5260913bbc/0/metadata.json",
+      "transcript": "/61/5260913bbc/0/full.jsonl",
+      "compact_transcript": "/61/5260913bbc/0/transcript.jsonl",
+      "content_hash": "/61/5260913bbc/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
