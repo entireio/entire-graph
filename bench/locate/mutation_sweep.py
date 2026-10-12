@@ -1,8 +1,15 @@
 """MUTATION SWEEP. Break each guard on purpose; a suite that stays green has an unfailable
 test. Any GREEN row below is a guard nothing is actually holding."""
-import subprocess, os, sys
+import subprocess, os, sys, tempfile, shutil, atexit
+from pathlib import Path
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+# Mutations live in disposable copies: termination can never leave tracked source modified.
+_SOURCE_HERE = Path(__file__).resolve().parent
+_SANDBOX = tempfile.TemporaryDirectory(prefix="graph-mutation-")
+atexit.register(_SANDBOX.cleanup)
+_HERE = _SANDBOX.name
+for source in _SOURCE_HERE.glob("*.py"):
+    shutil.copy2(source, _HERE)
 H = os.path.join(_HERE, "head_to_head.py")
 R = os.path.join(_HERE, "replay_qualify.py")
 
@@ -144,7 +151,7 @@ print(f"{'guard mutated':<52} {'suite':<8} verdict")
 print("-" * 78)
 unfailable, stale = [], []
 for f, label, a, b in MUT:
-    src = open(f).read()
+    src = Path(f).read_text()
     if a not in src:
         # A MISSING ANCHOR IS NOT A FINDING, it is the sweep silently no longer testing this
         # guard. It has happened twice, both times because a predicate was renamed, and both
@@ -152,11 +159,11 @@ for f, label, a, b in MUT:
         # that already exists. Different diagnosis, reported differently, and fatal.
         print(f"{label:<52} {'--':<8} ANCHOR MISSING -- sweep is stale, not the code")
         stale.append(label); continue
-    open(f, "w").write(src.replace(a, b, 1))
+    Path(f).write_text(src.replace(a, b, 1))
     try:
         rc = run(f).returncode
     finally:
-        open(f, "w").write(src)
+        Path(f).write_text(src)
     ok = rc != 0
     print(f"{label:<52} {'RED' if ok else 'green':<8} {'caught' if ok else 'UNFAILABLE <<<'}")
     if not ok: unfailable.append(label)
