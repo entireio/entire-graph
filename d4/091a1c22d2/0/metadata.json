@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "d4091a1c22d2",
+  "session_id": "01a1304c-f8bd-78e0-8932-e7da79a54f3b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T14:44:17.800225Z",
+  "branch": "codex/trail225-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/bench-memory-guards.yml",
+    ".github/workflows/bench-memory-kit.yml",
+    ".github/workflows/locomo-nightly.yml",
+    ".github/workflows/test.yml",
+    "internal/cli/stats.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6.1-sol",
+  "turn_id": "dc8e76964952",
+  "checkpoint_transcript_start": 1321,
+  "transcript_lines_at_start": 1321,
+  "compact_transcript_start": 171,
+  "token_usage": {
+    "input_tokens": 53898,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 199296,
+    "output_tokens": 1066,
+    "api_call_count": 7
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-12T14:44:16.484999Z",
+    "agent_lines": 651,
+    "agent_removed": 75,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 651,
+    "total_lines_changed": 726,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
