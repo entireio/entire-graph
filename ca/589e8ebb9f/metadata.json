@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "ca589e8ebb9f",
+  "strategy": "manual-commit",
+  "branch": "codex/trail250-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/dependabot.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ca/589e8ebb9f/0/metadata.json",
+      "transcript": "/ca/589e8ebb9f/0/full.jsonl",
+      "compact_transcript": "/ca/589e8ebb9f/0/transcript.jsonl",
+      "content_hash": "/ca/589e8ebb9f/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 10263,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 588288,
+    "output_tokens": 2175,
+    "api_call_count": 3
+  }
+}
