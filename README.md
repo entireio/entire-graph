@@ -15,7 +15,7 @@ repository: ranked code search plus definitions, callers, types, routes, and
 change impact, each with `file:line` locations. The built-in analyzer parses the
 repository locally with tree-sitter. Default analysis makes no network requests,
 model calls, or API-key lookups. The optional semantic channel makes HTTP model
-calls only to a user-configured loopback service; see [semantic search](docs/search.md#semantic-channel).
+calls only to a user-configured loopback service; see [semantic search](docs/search.md#opt-in-semantic-channel).
 
 When running [LoCoMo](https://github.com/snap-research/locomo) against competitors,
 we measured the top score of 94.74% for Entire Graph. We also observed token savings
