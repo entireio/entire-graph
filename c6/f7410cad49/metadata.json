@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "c6f7410cad49",
+  "strategy": "manual-commit",
+  "branch": "codex/trail251-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/bench-memory-deps.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c6/f7410cad49/0/metadata.json",
+      "transcript": "/c6/f7410cad49/0/full.jsonl",
+      "compact_transcript": "/c6/f7410cad49/0/transcript.jsonl",
+      "content_hash": "/c6/f7410cad49/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1340,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 194560,
+    "output_tokens": 731,
+    "api_call_count": 1
+  }
+}
