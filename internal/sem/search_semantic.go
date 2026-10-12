@@ -1007,7 +1007,7 @@ func BuildSemanticIndex(
 	index.Vectors = blob.Bytes()
 	// Round-trip the invariants the loader enforces BEFORE writing, so a build can never persist
 	// an artifact every later search would reject.
-	if err := index.validate(tree, config.Model); err != nil {
+	if err := index.validateContext(ctx, tree, config.Model); err != nil {
 		return SemanticIndexReport{}, fmt.Errorf("semantic index failed its own validation: %w", err)
 	}
 	entry, err := semanticIndexEntry(cacheDir, tree, config.Model)
