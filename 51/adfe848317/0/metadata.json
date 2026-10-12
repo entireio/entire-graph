@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "51adfe848317",
+  "session_id": "01a1304c-f8bd-78e0-8932-e7da79a54f3b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T15:07:28.728734Z",
+  "branch": "codex/trail235-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tools/ci-bench/windows-production/run_shard.py",
+    "tools/ci-bench/windows-production/tests/test_run_shard_progress.py"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6.1-sol",
+  "turn_id": "dc8e76964952",
+  "checkpoint_transcript_start": 1894,
+  "transcript_lines_at_start": 1894,
+  "compact_transcript_start": 239,
+  "token_usage": {
+    "input_tokens": 4314,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 574720,
+    "output_tokens": 1999,
+    "api_call_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-12T15:07:28.312372Z",
+    "agent_lines": 504,
+    "agent_removed": 8,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 504,
+    "total_lines_changed": 512,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
