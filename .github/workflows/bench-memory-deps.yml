@@ -1,0 +1,112 @@
+# The locked third-party dependencies of the LoCoMo harness are otherwise first
+# exercised by the nightly, after merge, in a job that holds `id-token: write`.
+# The kit and guard jobs are stdlib-only on purpose, so a bump of
+# requirements-lock-py312.txt (Dependabot or manual) would land without any CI
+# ever installing or importing it. This job closes that gap on the PR: it
+# reconstructs the harness exactly as locomo-nightly.yml does, installs the lock
+# with the nightly's flags, imports every harness module, and runs the harness's
+# offline unit tests against the locked versions.
+#
+# It makes no model calls and consumes no tokens: no `id-token`, no secrets, no
+# Azure variables. The only network access is the pinned upstream clone and the
+# hash-pinned wheel downloads.
+name: bench-memory-deps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bench/memory/**"
+      - ".github/workflows/bench-memory-deps.yml"
+      - ".github/workflows/locomo-nightly.yml"
+  pull_request:
+    paths:
+      - "bench/memory/**"
+      - ".github/workflows/bench-memory-deps.yml"
+      - ".github/workflows/locomo-nightly.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench-memory-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Keep in step with "Reconstruct the pinned upstream harness" in
+      # locomo-nightly.yml: same commit, content pin, patch set, and install flags.
+      - name: Reconstruct the pinned upstream harness
+        env:
+          UPSTREAM_COMMIT: 4b61c5d31b9c668a12b4f5e78064248a02c82d2b
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/mem0ai/memory-benchmarks.git "$RUNNER_TEMP/mem0harness"
+          cd "$RUNNER_TEMP/mem0harness"
+          git checkout --quiet "$UPSTREAM_COMMIT"
+
+          expected=abdbb9f272e4265153b7e3e71837007e
+          actual=$(md5sum benchmarks/common/metrics.py | cut -d' ' -f1)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::upstream metrics.py md5 $actual != pinned $expected"
+            exit 1
+          fi
+
+          for p in "$GITHUB_WORKSPACE"/bench/memory/patches/000[1-4]-*.patch \
+                   "$GITHUB_WORKSPACE"/bench/memory/patches/0006-*.patch; do
+            git apply -p1 "$p"
+          done
+          cp "$GITHUB_WORKSPACE"/bench/memory/benchmarks/common/*.py benchmarks/common/
+          cp "$GITHUB_WORKSPACE"/bench/memory/requirements-lock-py312.txt .
+
+          python -B -m venv .venv
+          .venv/bin/python -B -m pip install \
+            --require-hashes --only-binary=:all: --no-deps \
+            -r requirements-lock-py312.txt
+          .venv/bin/python -B -m pip check
+
+      - name: Import every harness module against the locked dependencies
+        working-directory: ${{ runner.temp }}/mem0harness
+        run: |
+          .venv/bin/python -B - <<'PY'
+          import importlib
+          import pkgutil
+
+          import benchmarks
+
+          failed = []
+          count = 0
+          for module in pkgutil.walk_packages(benchmarks.__path__, "benchmarks."):
+              if ".test_" in module.name:
+                  continue
+              try:
+                  importlib.import_module(module.name)
+                  count += 1
+              except Exception as exc:  # report every broken module, not just the first
+                  failed.append(f"{module.name}: {type(exc).__name__}: {exc}")
+          print(f"imported {count} harness modules")
+          for line in failed:
+              print(f"::error::{line}")
+          if failed or count == 0:
+              raise SystemExit(1)
+          PY
+
+      - name: Harness unit tests (reconstructed layout)
+        working-directory: ${{ runner.temp }}/mem0harness
+        run: >-
+          .venv/bin/python -B -m unittest -v
+          benchmarks.common.test_entra_auth
+          benchmarks.common.test_runmeta
+
+      - name: Kit unit tests (repository layout) on the locked interpreter
+        run: >-
+          "$RUNNER_TEMP/mem0harness/.venv/bin/python" -B -m unittest -v
+          bench.memory.benchmarks.common.test_bm25_client
+          bench.memory.benchmarks.common.test_kit_reproducibility
