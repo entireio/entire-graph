@@ -153,7 +153,7 @@ func exactNameLineDefines(line, name, ext string) bool {
 		if len(before) == len(line[:at]) {
 			continue // the keyword must be separated from the name
 		}
-		if ext == ".go" && strings.HasSuffix(before, ")") && strings.HasPrefix(strings.TrimSpace(before), "func") {
+		if ext == ".go" && strings.HasSuffix(before, ")") && strings.HasPrefix(strings.TrimSpace(before), "func") && strings.HasPrefix(strings.TrimSpace(line[at+len(name):]), "(") {
 			return true // a Go method: func (r *T) name
 		}
 		word := len(before)
