@@ -1707,7 +1707,7 @@ func writeStatsSummary(out io.Writer, report statsResponse) {
 			statsPrefix, termsafe.Line(report.Since))
 		return
 	}
-	fmt.Fprintf(out, "%s %s\n", statsPrefix, statsModelSummary(report))
+	fmt.Fprintln(out, statsGreen(out, statsPrefix+" "+statsModelSummary(report)))
 }
 
 func statsModelSummary(report statsResponse) string {
