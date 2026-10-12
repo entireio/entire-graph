@@ -38,8 +38,11 @@ def doc_comment(path, start_line):
     return " ".join(reversed(out))
 
 def build_cases(binary, repo, want, seed=7):
-    raw = subprocess.run([binary, "symbols", "--repo", repo, "--format", "ndjson"],
-                         capture_output=True, text=True, timeout=1800).stdout
+    result = subprocess.run([binary, "symbols", "--repo", repo, "--format", "ndjson"],
+                            capture_output=True, text=True, timeout=1800)
+    if result.returncode != 0:
+        raise SystemExit(f"symbols failed (exit {result.returncode}); refusing partial cases")
+    raw = result.stdout
     cands = []
     for line in raw.splitlines():
         try: d = json.loads(line)
@@ -96,20 +99,39 @@ def ranked_hit(line, name, target_file, repo):
 def run(binary, repo, q, budget):
     p = subprocess.run([binary, "query", "--repo", repo, "--query", q, "--format", "agent",
                         "--max-context-bytes", str(budget), "--no-cache"],
-                       capture_output=True, text=True, timeout=900)
+                       capture_output=True, timeout=900)
+    if p.returncode != 0:
+        raise SystemExit(f"query failed (exit {p.returncode}); refusing to score a failed arm")
     hits = []
-    for line in p.stdout.splitlines():
+    for line in p.stdout.decode("utf8", "replace").splitlines():
         m = RANK.match(line)
         if m: hits.append((int(m.group(1)), m.group(2), line))
     return hits, len(p.stdout)
 
+def same_file(path, target_file, repo):
+    if os.path.isabs(path):
+        path = os.path.relpath(path, repo)
+    return os.path.normpath(path) == os.path.normpath(target_file)
+
+
+def fixture_revision(repo):
+    rev = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True)
+    dirty = subprocess.run(["git", "-C", repo, "status", "--porcelain"], capture_output=True, text=True)
+    if rev.returncode or dirty.returncode or not rev.stdout.strip():
+        raise SystemExit("cannot establish fixture revision; refusing unverifiable results")
+    if dirty.stdout.strip():
+        raise SystemExit("fixture is dirty; refusing mixed-revision results")
+    return rev.stdout.strip()
+
+
 if __name__ == "__main__":
     binary, repo, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
     budgets = [int(x) for x in sys.argv[4].split(",")]
-    rev = subprocess.run(["git","-C",repo,"rev-parse","HEAD"],capture_output=True,text=True).stdout.strip()
-    dirty = subprocess.run(["git","-C",repo,"status","--porcelain"],capture_output=True,text=True).stdout.strip()
+    rev = fixture_revision(repo)
     cases = build_cases(binary, repo, n)
-    print(f"repo {repo}\nrev  {rev} dirty={'YES' if dirty else 'no'}\ncases {len(cases)} (Go func/method, >=10-word doc, name stripped)\n")
+    if not cases:
+        raise SystemExit("no scorable cases")
+    print(f"repo {repo}\nrev  {rev} dirty=no\ncases {len(cases)} (Go func/method, >=10-word doc, name stripped)\n")
     print(f"{'budget':>7s} {'bytes':>8s} {'hit@1':>7s} {'hit@5':>7s} {'samefile@1':>11s} {'miss':>6s}")
     for b in budgets:
         h1=h5=sf=0; tot=0
@@ -118,7 +140,7 @@ if __name__ == "__main__":
             ranks = [r for r, _, line in hits if ranked_hit(line, name, fp, repo)]
             if 1 in ranks: h1 += 1
             if any(r <= 5 for r in ranks): h5 += 1
-            elif hits and hits[0][1] == fp: sf += 1
+            elif hits and same_file(hits[0][1], fp, repo): sf += 1
         m = len(cases) - h5 - sf
         print(f"{b:7d} {tot/len(cases):8,.0f} {h1:4d}/{len(cases)} {h5:4d}/{len(cases)} {sf:8d}/{len(cases)} {m:6d}")
     me=os.path.abspath(__file__)
