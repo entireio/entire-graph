@@ -1,0 +1,21 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "bf5e838b8ce3",
+  "strategy": "manual-commit",
+  "branch": "codex/trail247-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/bench-memory-deps.yml",
+    "bench/memory/FAIR-CONFIG.md",
+    "bench/memory/requirements-lock-py312.txt"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bf/5e838b8ce3/0/metadata.json",
+      "transcript": "/bf/5e838b8ce3/0/full.jsonl",
+      "compact_transcript": "/bf/5e838b8ce3/0/transcript.jsonl",
+      "content_hash": "/bf/5e838b8ce3/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
