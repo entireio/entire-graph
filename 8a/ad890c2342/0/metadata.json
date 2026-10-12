@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "8aad890c2342",
+  "session_id": "01a1304c-f8bd-78e0-8932-e7da79a54f3b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T14:34:51.033575Z",
+  "branch": "codex/trail240-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/bench-memory-guards.yml",
+    ".github/workflows/bench-memory-kit.yml",
+    ".github/workflows/locomo-nightly.yml",
+    ".github/workflows/test.yml"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6.1-sol",
+  "turn_id": "dc8e76964952",
+  "checkpoint_transcript_start": 1232,
+  "transcript_lines_at_start": 1232,
+  "compact_transcript_start": 162,
+  "token_usage": {
+    "input_tokens": 5319,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1174144,
+    "output_tokens": 4621,
+    "api_call_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-12T14:34:50.936816Z",
+    "agent_lines": 23,
+    "agent_removed": 14,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 23,
+    "total_lines_changed": 37,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
