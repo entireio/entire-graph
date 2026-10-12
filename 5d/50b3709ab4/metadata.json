@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "5d50b3709ab4",
+  "strategy": "manual-commit",
+  "branch": "codex/trail250-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/bench-memory-guards.yml",
+    ".github/workflows/bench-memory-kit.yml",
+    ".github/workflows/locomo-nightly.yml",
+    ".github/workflows/test.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5d/50b3709ab4/0/metadata.json",
+      "transcript": "/5d/50b3709ab4/0/full.jsonl",
+      "compact_transcript": "/5d/50b3709ab4/0/transcript.jsonl",
+      "content_hash": "/5d/50b3709ab4/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 14326,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 140544,
+    "output_tokens": 1278,
+    "api_call_count": 2
+  }
+}
