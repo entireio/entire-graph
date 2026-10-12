@@ -202,7 +202,18 @@ const (
 
 // FullUnitSignal is searchFullUnitSignal exported for renderers: a result carrying it was returned
 // as its enclosing unit on the caller's orders and must never be abbreviated on the way out.
+//
+// It does NOT mean the body is whole. A forced unit the safety cap clipped carries full-unit AND
+// FullUnitElidedSignal and withholds complete-symbol (see the producer below). A renderer deciding
+// whether the reader may skip a follow-up read must therefore key on complete-symbol, never on
+// full-unit alone -- doing the latter stamps a completeness promise onto a fragment.
 const FullUnitSignal = searchFullUnitSignal
+
+// FullUnitElidedSignal is searchFullUnitElidedSignal exported for the reason above: it is the
+// negative half of the full-unit contract, and a renderer that cannot see it cannot tell a whole
+// forced unit from a clipped one. Exported after peer review caught a predicate that accepted
+// full-unit alone.
+const FullUnitElidedSignal = searchFullUnitElidedSignal
 
 // RenderedSnippetHeadRanks is searchRenderedSnippetHeadRanks exported so the text renderer's test can
 // assert that the depth the allocator ASSUMES is printed is the depth that actually is. If the two
