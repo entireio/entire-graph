@@ -2,7 +2,7 @@
   "cli_version": "0.11.4",
   "checkpoint_id": "480741228c6c",
   "strategy": "manual-commit",
-  "branch": "codex/trail210-readiness",
+  "branch": "codex/trail203-readiness",
   "checkpoints_count": 10,
   "files_touched": null,
   "sessions": [
@@ -15,10 +15,10 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 2249,
+    "input_tokens": 2026,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 223488,
-    "output_tokens": 1767,
+    "cache_read_tokens": 225536,
+    "output_tokens": 3082,
     "api_call_count": 1
   }
 }
