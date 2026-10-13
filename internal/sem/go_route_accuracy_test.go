@@ -1261,3 +1261,17 @@ func (*apiClient) Post(path string, body any) {}
 		t.Fatalf("a literal on an unknown receiver must be left to the route literal fallback: %v", got)
 	}
 }
+
+func TestGoRouteAccuracyMalformedFallbackMasksQualifiedHandlerRoute(t *testing.T) {
+	content := "package main\nfunc main() { http.HandleFunc(\"/fallback\", handlers.Show) }\n@\n"
+	if resolveGoRouteReceivers(content, nil).parsed {
+		t.Fatal("fixture must exercise the token-scan fallback")
+	}
+	detail := goRouteRegistrationsDetailed(content, nil)
+	if len(detail.regs) != 1 || detail.regs[0].Handler != "handlers.Show" {
+		t.Fatalf("fallback lost qualified handler: %+v", detail.regs)
+	}
+	if len(detail.masks) != 1 || strings.TrimSpace(content[detail.masks[0][0]:detail.masks[0][1]]) != "\"/fallback\"" {
+		t.Fatalf("fallback route must be hidden from the independent literal scan: %+v", detail.masks)
+	}
+}

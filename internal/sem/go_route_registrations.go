@@ -23,11 +23,13 @@ import (
 type goRouteCandidate struct {
 	// order keeps the historical emission order: HandleFunc, then
 	// Handle(HandlerFunc(..)), then router methods, then Group(..).METHOD.
-	order    int
-	offset   int
-	route    string
-	handler  string
-	evidence string
+	order  int
+	offset int
+	route  string
+	// routeSpan keeps the token fallback's argument opaque to literal scans.
+	routeSpan [2]int
+	handler   string
+	evidence  string
 	// inline registrations have a handler this pass cannot name as a symbol
 	// (a closure, a call, a middleware chain): their route is attributed to
 	// the enclosing symbol.
@@ -91,7 +93,12 @@ func goRouteRegistrationsDetailed(content string, constants map[string]string) g
 		detail.masks = receivers.masks
 		return detail
 	default:
-		return goRouteEmit(goRouteFallbackRegistrations(content), constants)
+		candidates := goRouteFallbackRegistrations(content)
+		detail := goRouteEmit(candidates, constants)
+		for _, candidate := range candidates {
+			detail.masks = append(detail.masks, candidate.routeSpan)
+		}
+		return detail
 	}
 }
 
@@ -571,7 +578,7 @@ func goRouteFallbackRegistrations(content string) []goRouteCandidate {
 		if comma < 0 {
 			continue
 		}
-		candidate := goRouteCandidate{offset: toks[i].off, route: route}
+		candidate := goRouteCandidate{offset: toks[i].off, route: route, routeSpan: [2]int{toks[i+4].off, toks[comma].off}}
 		k := comma + 1
 		switch {
 		case method == "HandleFunc":
