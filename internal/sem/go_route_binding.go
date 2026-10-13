@@ -1859,6 +1859,10 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope, seed *g
 		if !deferred {
 			unknown.stripPrefixMiddleware = binding.stripPrefixMiddleware
 		}
+		// A captured function can still perform its known rewrite effect. The
+		// callback/collector identity gate treats this descriptor as MAY evidence,
+		// rather than claiming the captured variable keeps this exact value.
+		unknown.closure = binding.closure
 		unknown.httpClientType = binding.httpClientType
 		unknown.httpClient = binding.httpClientType
 		// Preserve the exact lexical binding. A later escaped write to this

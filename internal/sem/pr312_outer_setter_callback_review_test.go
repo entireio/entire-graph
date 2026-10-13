@@ -1,6 +1,9 @@
 package sem
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Independent PR312 witness for a seeded callback invoking a setter declared
 // in its enclosing function. The authored framework source is parsed as text
@@ -43,4 +46,12 @@ func TestReview312OuterSetterInvokedBySeededCallback(t *testing.T) {
 		review312AssertSeededCallbackRoutes(t,
 			review312OuterSetterCallbackSource(false), true)
 	})
+}
+
+func TestReview312ReassignedSetterInvokedByCapturedProxy(t *testing.T) {
+	for _, rewrite := range []bool{true, false} {
+		source := review312OuterSetterCallbackSource(rewrite)
+		source = strings.Replace(source, "\tr.Group(", "\tset = set\n\tr.Group(", 1)
+		review312AssertSeededCallbackRoutes(t, source, !rewrite)
+	}
 }
