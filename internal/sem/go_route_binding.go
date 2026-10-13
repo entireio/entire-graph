@@ -459,10 +459,15 @@ func (r *goRouteResolver) read(binding *goRouteBinding) goRouteBinding {
 	}
 	value := *binding
 	if r.escaped[binding] {
-		clientType := value.httpClientType
+		before := value
 		value = goRouteUnknownBinding
-		value.httpClientType = clientType
-		value.httpClient = clientType
+		value.httpClientType = before.httpClientType
+		value.httpClient = before.httpClientType
+		// Losing value certainty does not disprove known rewrite effects.
+		value.stripPrefixMiddleware = before.stripPrefixMiddleware
+		value.stripPrefixJoins = before.stripPrefixJoins
+		value.stripPrefixSource = before.stripPrefixSource
+		value.closure = before.closure
 	}
 	if r.escapedStripPrefixWrites[binding] {
 		value.stripPrefixMiddleware = true
