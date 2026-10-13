@@ -316,6 +316,10 @@ func resolveGoRouteReceiversWithBudget(content string, constants map[string]stri
 		return receivers
 	}
 	receivers.masks = resolver.maskSpans()
+	if resolver.steps > resolver.budget {
+		receivers.exhausted = true
+		return receivers
+	}
 	receivers.parsed = true
 	receivers.uses = resolver.uses
 	receivers.regs = resolver.regs

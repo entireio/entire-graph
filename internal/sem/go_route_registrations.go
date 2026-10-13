@@ -379,8 +379,18 @@ func (r *goRouteResolver) noteCall(call *ast.CallExpr, scope *goRouteScope) {
 // receiver or handler) and each Group/Route/Mount/PathPrefix/StripPrefix
 // prefix (a prefix is not a route). They are keyed by position, so an
 // identical literal elsewhere is unaffected.
-func (r *goRouteResolver) maskSpans() [][2]int {
-	var spans [][2]int
+func (r *goRouteResolver) maskSpans() (spans [][2]int) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if _, exceeded := recovered.(goRouteBudgetExceeded); !exceeded {
+				panic(recovered)
+			}
+			// Partial masks could let the literal fallback re-emit omitted routes.
+			// On exhaustion, fail closed for this file without completing the walk.
+			spans = [][2]int{{0, len(r.src)}}
+		}
+	}()
+	r.step(1)
 	add := func(arg ast.Expr) {
 		start, end := r.offset(arg.Pos()), r.offset(arg.End())
 		if start >= 0 && end <= len(r.src) && start < end {
@@ -390,7 +400,9 @@ func (r *goRouteResolver) maskSpans() [][2]int {
 	// Comments are never routes: a commented-out registration or a doc
 	// example must not reach the route literal fallback either.
 	for _, group := range r.file.Comments {
+		r.step(1)
 		for _, comment := range group.List {
+			r.step(1)
 			start, end := r.offset(comment.Pos()), r.offset(comment.End())
 			if start >= 0 && end <= len(r.src) && start < end {
 				spans = append(spans, [2]int{start, end})
@@ -399,6 +411,9 @@ func (r *goRouteResolver) maskSpans() [][2]int {
 	}
 	spans = append(spans, r.nonRouterStringSpans()...)
 	ast.Inspect(r.file, func(n ast.Node) bool {
+		if n != nil {
+			r.step(1)
+		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -667,6 +682,7 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 	var spans [][2]int
 	addStrings := func(call *ast.CallExpr) {
 		for _, arg := range call.Args {
+			r.step(1)
 			if lit, ok := goRouteUnparen(arg).(*ast.BasicLit); ok && lit.Kind == token.STRING {
 				start, end := r.offset(lit.Pos()), r.offset(lit.End())
 				if start >= 0 && end <= len(r.src) && start < end {
@@ -711,19 +727,25 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 		otherValues[name] = true
 	}
 	ast.Inspect(r.file, func(n ast.Node) bool {
+		if n != nil {
+			r.step(1)
+		}
 		switch n := n.(type) {
 		case *ast.RangeStmt:
 			for _, target := range []ast.Expr{n.Key, n.Value} {
+				r.step(1)
 				if ident, ok := target.(*ast.Ident); ok {
 					otherValues[ident.Name] = true
 				}
 			}
 		case *ast.Field:
 			for _, name := range n.Names {
+				r.step(1)
 				otherValues[name.Name] = true
 			}
 		case *ast.ValueSpec:
 			for i, name := range n.Names {
+				r.step(1)
 				if len(n.Values) == len(n.Names) {
 					noteValue(name.Name, n.Values[i])
 				} else {
@@ -733,6 +755,7 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 		case *ast.AssignStmt:
 			if len(n.Lhs) != len(n.Rhs) {
 				for _, lhs := range n.Lhs {
+					r.step(1)
 					if ident, ok := lhs.(*ast.Ident); ok {
 						otherValues[ident.Name] = true
 					}
@@ -740,6 +763,7 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 				return true
 			}
 			for i, value := range n.Rhs {
+				r.step(1)
 				ident, ok := n.Lhs[i].(*ast.Ident)
 				if !ok {
 					continue
@@ -752,6 +776,9 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 	var visit func(node ast.Node, contexts map[string]bool)
 	visit = func(node ast.Node, contexts map[string]bool) {
 		ast.Inspect(node, func(n ast.Node) bool {
+			if n != nil {
+				r.step(1)
+			}
 			var fnType *ast.FuncType
 			var body *ast.BlockStmt
 			switch n := n.(type) {
@@ -787,11 +814,14 @@ func (r *goRouteResolver) nonRouterStringSpans() [][2]int {
 			}
 			inner := map[string]bool{}
 			for name := range contexts {
+				r.step(1)
 				inner[name] = true
 			}
 			if fnType.Params != nil {
 				for _, field := range fnType.Params.List {
+					r.step(1)
 					for _, name := range field.Names {
+						r.step(1)
 						inner[name.Name] = isType(field.Type, goRouteContextTypes)
 					}
 				}
