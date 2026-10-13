@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
       - run: go vet ./...
       - run: |
@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
       - run: sh scripts/gen-notices.sh --check
 
@@ -50,7 +50,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
       - run: go build ./...
 
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
       # Keep the named package budget consistent with the Windows shard policy.
       - run: go test -timeout 30m ./...
@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
@@ -115,7 +115,7 @@ jobs:
           "value=$matrix" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - name: Upload immutable Windows test bundle
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
@@ -137,7 +137,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
@@ -164,7 +164,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Upload shard evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-test-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/windows-test-shard-${{ matrix.shard }}
@@ -180,7 +180,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
@@ -206,7 +206,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Upload non-heavy package evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-test-other
           path: ${{ runner.temp }}/windows-test-other
@@ -221,7 +221,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
@@ -261,7 +261,7 @@ jobs:
             --output "${{ runner.temp }}/windows-test-verification.json"
       - name: Upload verification report
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-test-verification
           path: ${{ runner.temp }}/windows-test-verification.json
@@ -327,7 +327,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
       - run: go build -o entire-graph ./cmd/entire-graph
       - run: sh scripts/entire-graph-statusline_test.sh

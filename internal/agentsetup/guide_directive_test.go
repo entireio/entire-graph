@@ -19,7 +19,12 @@ func TestNormalGuideStaysDirective(t *testing.T) {
 	t.Parallel()
 
 	const obligation = "Your FIRST action on any task that requires finding code MUST be ONE Graph query"
-	const command = `entire graph query --repo . --profile full --query "<task>"`
+
+	// The command is pinned whole, --format agent included. That flag is not incidental:
+	// the default json rendering measured 17595 B against the agent rendering's 6011 B for
+	// the same query and the same results, so a guide that drops it silently triples what
+	// every agent pays to follow it. See the cost note in guide.go.
+	const command = `entire graph query --repo . --profile full --format agent --query "<task>"`
 
 	for name, guide := range map[string]string{"GraphGuide": GraphGuide, "CombinedGuide": CombinedGuide} {
 		if !strings.Contains(guide, obligation) {
