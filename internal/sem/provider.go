@@ -1866,7 +1866,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		warnings = append(warnings, ProviderWarning{
 			Code:                 "W_WORKTREE_SNAPSHOT",
 			Severity:             "warning",
-			EffectOnCompleteness: "snapshot records are read from the working tree because --worktree was requested",
+			EffectOnCompleteness: "snapshot records are read from the working tree; this is the default, and working-tree reads are never cached, so --head is the cacheable, committed-tree baseline",
 		})
 	} else if headErr != nil {
 		warnings = append(warnings, ProviderWarning{

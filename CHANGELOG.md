@@ -38,6 +38,7 @@ auto-generated notes on
 - Fixed pipeline workers to observe shared context correctly, closed a map-race condition, and fixed the semantic diff to report pure file renames instead of hiding them.
 - Fixed the doctor handshake, git-metadata error reporting, and repository agent activation so failures explain themselves and activation survives initializers.
 - Fixed statusline to prefer the managed install over a stray developer build, and fixed the LoCoMo benchmark reproduction kit to run off the author's machine with stronger scoring and redaction guards.
+- Fixed the worktree-snapshot warning to stop blaming a `--worktree` flag nobody passed — worktree mode is the default for the interactive query family — and named `--head` as the cacheable, committed-tree alternative.
 
 ### Security
 
