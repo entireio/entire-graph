@@ -2,7 +2,7 @@
   "cli_version": "0.11.4",
   "checkpoint_id": "480741228c6c",
   "strategy": "manual-commit",
-  "branch": "codex/trail220-readiness",
+  "branch": "codex/trail234-readiness",
   "checkpoints_count": 10,
   "files_touched": null,
   "sessions": [
