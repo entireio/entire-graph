@@ -2,7 +2,7 @@
   "cli_version": "0.11.4",
   "checkpoint_id": "480741228c6c",
   "strategy": "manual-commit",
-  "branch": "codex/trail231-readiness",
+  "branch": "codex/trail256-readiness",
   "checkpoints_count": 10,
   "files_touched": null,
   "sessions": [
@@ -13,5 +13,12 @@
       "content_hash": "/48/0741228c6c/0/content_hash.txt",
       "prompt": ""
     }
-  ]
+  ],
+  "token_usage": {
+    "input_tokens": 7965,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 469760,
+    "output_tokens": 5636,
+    "api_call_count": 2
+  }
 }
