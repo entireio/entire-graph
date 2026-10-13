@@ -80,7 +80,11 @@ func goRouteRegistrationsDetailed(content string, constants map[string]string) g
 		}
 		// No registration here, but a Group/Route/Mount/PathPrefix/
 		// StripPrefix prefix is still not a route of this file.
-		return goRouteDetail{masks: resolveGoRouteReceivers(content, constants).masks}
+		receivers := resolveGoRouteReceivers(content, constants)
+		if !receivers.parsed && !receivers.exhausted {
+			receivers.masks = goRouteFallbackPrefixMasks(content)
+		}
+		return goRouteDetail{masks: receivers.masks}
 	}
 	receivers := resolveGoRouteReceivers(content, constants)
 	switch {
@@ -95,6 +99,7 @@ func goRouteRegistrationsDetailed(content string, constants map[string]string) g
 	default:
 		candidates := goRouteFallbackRegistrations(content)
 		detail := goRouteEmit(candidates, constants)
+		detail.masks = goRouteFallbackPrefixMasks(content)
 		for _, candidate := range candidates {
 			detail.masks = append(detail.masks, candidate.routeSpan)
 		}
@@ -447,6 +452,52 @@ func (r *goRouteResolver) maskSpans() (spans [][2]int) {
 		return true
 	})
 	return spans
+}
+
+// goRouteFallbackPrefixMasks keeps prefix-call arguments opaque when Go's parser
+// rejects the file. A single scanner pass tracks one outer call at a time, so
+// nested prefix calls cannot cause repeated walks of the same source. Explicit
+// recoverable registrations are still emitted separately by the token fallback.
+func goRouteFallbackPrefixMasks(content string) [][2]int {
+	fset := token.NewFileSet()
+	file := fset.AddFile("", fset.Base(), len(content))
+	var scan scanner.Scanner
+	scan.Init(file, []byte(content), func(token.Position, string) {}, 0)
+	var spans [][2]int
+	var previous, beforePrevious token.Token
+	previousLiteral := ""
+	depth, maskDepth, start := 0, 0, -1
+	for {
+		pos, kind, literal := scan.Scan()
+		offset := file.Offset(pos)
+		if kind == token.EOF {
+			if start >= 0 && start < len(content) {
+				spans = append(spans, [2]int{start, len(content)})
+			}
+			return spans
+		}
+		switch kind {
+		case token.LPAREN:
+			depth++
+			if start < 0 && previous == token.IDENT && beforePrevious == token.PERIOD {
+				switch previousLiteral {
+				case "Group", "Route", "Mount", "PathPrefix", "StripPrefix":
+					start, maskDepth = offset+1, depth
+				}
+			}
+		case token.RPAREN:
+			if start >= 0 && depth == maskDepth {
+				if start < offset {
+					spans = append(spans, [2]int{start, offset})
+				}
+				start = -1
+			}
+			if depth > 0 {
+				depth--
+			}
+		}
+		beforePrevious, previous, previousLiteral = previous, kind, literal
+	}
 }
 
 // goRouteFallbackRegistrations handles a file go/parser rejects. It scans

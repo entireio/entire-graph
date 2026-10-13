@@ -1275,3 +1275,22 @@ func TestGoRouteAccuracyMalformedFallbackMasksQualifiedHandlerRoute(t *testing.T
 		t.Fatalf("fallback route must be hidden from the independent literal scan: %+v", detail.masks)
 	}
 }
+
+func TestGoRouteAccuracyMalformedFallbackMasksPrefixCalls(t *testing.T) {
+	for _, prefix := range []string{`e.Group("/admin")`, `e.PathPrefix("/admin")`, `e.Group("/admin" + "/v1")`} {
+		for _, registration := range []string{"", `e.GET("/health", healthHandler)`} {
+			content := "package p\nfunc register(e *Echo) {\n" + prefix + "\n" + registration + "\n"
+			if resolveGoRouteReceivers(content, nil).parsed {
+				t.Fatal("fixture must remain malformed")
+			}
+			detail := goRouteRegistrationsDetailed(content, nil)
+			if registration != "" && (len(detail.regs) != 1 || detail.regs[0].Route != "/health") {
+				t.Fatalf("safe root registration lost: %+v", detail.regs)
+			}
+			masked := goRouteMaskContent(content, detail.masks)
+			if routes := routeLiteralsWithConstants(masked, nil); len(routes) != 0 {
+				t.Fatalf("prefix %q registration %q fabricated routes %v", prefix, registration, routes)
+			}
+		}
+	}
+}
