@@ -2,8 +2,11 @@
   "cli_version": "0.11.4",
   "checkpoint_id": "480741228c6c",
   "strategy": "manual-commit",
+  "branch": "codex/trail232-readiness",
   "checkpoints_count": 10,
-  "files_touched": null,
+  "files_touched": [
+    "internal/sem/search_semantic.go"
+  ],
   "sessions": [
     {
       "metadata": "/48/0741228c6c/0/metadata.json",
@@ -14,10 +17,11 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 2017053,
+    "input_tokens": 868251,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 88848512,
-    "output_tokens": 338751,
-    "api_call_count": 629
+    "cache_read_tokens": 22816512,
+    "output_tokens": 117740,
+    "api_call_count": 179,
+    "subagent_tokens_complete": false
   }
 }
