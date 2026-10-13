@@ -835,7 +835,7 @@ func (r *goRouteResolver) funcLit(lit *ast.FuncLit, scope *goRouteScope) {
 	r.walkFunc(nil, lit.Type, lit.Body, closureScope)
 	r.undo(mark)
 	r.markNames(scope, r.writtenNames(lit))
-	for name := range r.addressedNames(lit.Body) {
+	for name := range r.addressedNames(lit) {
 		r.escape(scope, name)
 	}
 }
@@ -871,6 +871,12 @@ func (r *goRouteResolver) addressedNames(node ast.Node) map[string]bool {
 		r.step(1)
 		if unary, ok := n.(*ast.UnaryExpr); ok && unary.Op == token.AND {
 			if ident, ok := goRouteUnparen(unary.X).(*ast.Ident); ok {
+				// Local and parameter objects cannot escape an enclosing same-named binding.
+				if ident.Obj != nil {
+					if declaration, ok := ident.Obj.Decl.(ast.Node); ok && declaration.Pos() >= node.Pos() && declaration.End() <= node.End() {
+						return true
+					}
+				}
 				names[ident.Name] = true
 			}
 		}
