@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01Y8m7eron33wWGWcNHXx7Sp",
+  "agent_id": "a939f5c84cbf1b616",
+  "subagent_type": "general-purpose",
+  "task_description": "Verify #221 fixes",
+  "token_usage": {
+    "input_tokens": 52,
+    "cache_creation_tokens": 121997,
+    "cache_read_tokens": 1357613,
+    "output_tokens": 272,
+    "api_call_count": 26
+  },
+  "started_at": "2026-10-12T11:05:22.365952-04:00",
+  "completed_at": "2026-10-12T11:19:08.57183-04:00"
+}

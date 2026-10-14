@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "45971370aa67",
+  "strategy": "manual-commit",
+  "checkpoints_count": 7,
+  "files_touched": [
+    ".github/workflows/bench-memory-deps.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/45/971370aa67/0/metadata.json",
+      "transcript": "/45/971370aa67/0/full.jsonl",
+      "compact_transcript": "/45/971370aa67/0/transcript.jsonl",
+      "content_hash": "/45/971370aa67/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 70,
+    "cache_creation_tokens": 37053,
+    "cache_read_tokens": 5821344,
+    "output_tokens": 21183,
+    "api_call_count": 31,
+    "subagent_tokens": {
+      "input_tokens": 0,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0,
+      "output_tokens": 0,
+      "api_call_count": 0
+    }
+  }
+}

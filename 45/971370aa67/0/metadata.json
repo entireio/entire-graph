@@ -1,0 +1,69 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "45971370aa67",
+  "session_id": "101d0936-b914-4d1e-b1dd-da5553d14674",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-14T13:33:52.152149Z",
+  "checkpoints_count": 7,
+  "save_step_count": 1,
+  "files_touched": [
+    ".github/workflows/bench-memory-deps.yml"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5-5",
+  "turn_id": "80a7612aa94a",
+  "checkpoint_transcript_start": 526,
+  "transcript_lines_at_start": 526,
+  "compact_transcript_start": 88,
+  "token_usage": {
+    "input_tokens": 70,
+    "cache_creation_tokens": 37053,
+    "cache_read_tokens": 5821344,
+    "output_tokens": 21183,
+    "api_call_count": 31,
+    "subagent_tokens": {
+      "input_tokens": 0,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0,
+      "output_tokens": 0,
+      "api_call_count": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 19
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-14T13:33:52.085036Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 10619,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 10619,
+    "total_lines_changed": 11184,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 11,
+      "user_lines_removed": 5,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.json": 11
+      },
+      "user_removed_per_file": {
+        ".claude/settings.json": 5
+      }
+    }
+  ]
+}
