@@ -33,17 +33,25 @@ import (
 )
 
 const (
-	// SchemaVersion 1.3 adds optional source-file health accounting; 1.2 added
+	// SchemaVersion 1.4 adds optional derived relation provenance; 1.3 added
+	// source-file health accounting; 1.2 added
 	// optional parser identity metadata.
 	// Schema 1.1 added the snapshot fields introduced
 	// alongside boundary source locations (the `external` flag on external records
 	// and the per-symbol source-location fields). The shape is backward compatible
 	// for tolerant readers; the bump lets consumers detect the new fields.
-	SchemaVersion         = "1.3"
+	SchemaVersion         = "1.4"
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
+	//
+	// Revision 4: the same correction for Swift, Kotlin, Rust and PHP, whose
+	// nested callables are local functions / block-scoped items / namespace
+	// functions rather than members of the enclosing type. Revision 3 shipped
+	// the Python half; a build carrying only that half wrote records under the
+	// revision-3 namespace, so these four need their own bump to stop those
+	// records being served for the languages they do not cover.
 	//
 	// Revision 3: Python nested callables are qualified by the enclosing
 	// CALLABLE rather than the enclosing class, so a helper defined inside a
@@ -51,7 +59,7 @@ const (
 	// `C.helper` (kind "method"). This re-keys every Python nested-callable
 	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
 	// real same-named members.
-	IdentityRevision     = "3"
+	IdentityRevision     = "4"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
@@ -217,6 +225,7 @@ var schemaFeatures = []string{
 	"language_versions",
 	"relation_evidence",
 	"relation_evidence_dropped",
+	"relation_provenance",
 	"relation_resolution",
 	"relation_scope",
 	"relation_target_kind",
@@ -12717,6 +12726,9 @@ func typeReferenceCandidates(name string, from SymbolRecord, shared []SymbolReco
 		}
 		for _, rest := range shared[index+1:] {
 			if keep(rest) {
+				if filtered == nil {
+					filtered = make([]SymbolRecord, 0, len(shared)-1)
+				}
 				filtered = append(filtered, rest)
 			}
 		}
@@ -27504,7 +27516,7 @@ func pythonRouteDecoratorsNearSymbol(content string, symbol SymbolRecord) []pyth
 	lines, index := splitLineWindow(content, symbol.StartLine-1, annotationScanLines)
 	seen := map[string]bool{}
 	var routes []pythonRouteDecorator
-	for i := index; i >= 0 && index-i <= 8; i-- {
+	for i := index; i >= 0 && index-i <= annotationScanLines; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -27923,7 +27935,7 @@ func nestJSRouteDecoratorLiteralsAroundSymbol(content string, symbol SymbolRecor
 		}
 	}
 	if index >= 0 && index < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[index]), "@") {
-		for i := index; i < len(lines) && i-index <= 8; i++ {
+		for i := index; i < len(lines) && i-index <= annotationScanLines; i++ {
 			line := strings.TrimSpace(lines[i])
 			if line == "" {
 				continue
@@ -27934,7 +27946,7 @@ func nestJSRouteDecoratorLiteralsAroundSymbol(content string, symbol SymbolRecor
 			collect(line)
 		}
 	}
-	for i := index - 1; i >= 0 && index-i <= 8; i-- {
+	for i := index - 1; i >= 0 && index-i <= annotationScanLines; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -28009,7 +28021,7 @@ func nestJSMessagePatternChannelsAroundSymbol(content string, symbol SymbolRecor
 		}
 	}
 	if index >= 0 && index < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[index]), "@") {
-		for i := index; i < len(lines) && i-index <= 8; i++ {
+		for i := index; i < len(lines) && i-index <= annotationScanLines; i++ {
 			line := strings.TrimSpace(lines[i])
 			if line == "" {
 				continue
@@ -28020,7 +28032,7 @@ func nestJSMessagePatternChannelsAroundSymbol(content string, symbol SymbolRecor
 			collect(line)
 		}
 	}
-	for i := index - 1; i >= 0 && index-i <= 8; i-- {
+	for i := index - 1; i >= 0 && index-i <= annotationScanLines; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -28072,7 +28084,7 @@ func annotationRouteLiteralsNearSymbol(content string, symbol SymbolRecord, spri
 	}
 	lines, index := splitLineWindow(content, symbol.StartLine-1, annotationScanLines)
 	seen := map[string]struct{}{}
-	for i := index; i >= 0 && index-i <= 8; i-- {
+	for i := index; i >= 0 && index-i <= annotationScanLines; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -28106,8 +28118,8 @@ func springAnnotationRouteLiteralsAroundSymbol(content string, symbol SymbolReco
 		current = strings.TrimSpace(lines[index])
 	}
 	if strings.HasPrefix(current, "@") {
-		collect(springAnnotationBlock(lines, index, minInt(len(lines)-1, index+8)))
-		for i := index + 1; i < len(lines) && i-index <= 8; i++ {
+		collect(springAnnotationBlock(lines, index, minInt(len(lines)-1, index+annotationScanLines)))
+		for i := index + 1; i < len(lines) && i-index <= annotationScanLines; i++ {
 			line := strings.TrimSpace(lines[i])
 			if line == "" {
 				continue
@@ -28115,10 +28127,10 @@ func springAnnotationRouteLiteralsAroundSymbol(content string, symbol SymbolReco
 			if !strings.HasPrefix(line, "@") {
 				break
 			}
-			collect(springAnnotationBlock(lines, i, minInt(len(lines)-1, index+8)))
+			collect(springAnnotationBlock(lines, i, minInt(len(lines)-1, index+annotationScanLines)))
 		}
 	}
-	for i := index - 1; i >= 0 && index-i <= 8; i-- {
+	for i := index - 1; i >= 0 && index-i <= annotationScanLines; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -28203,7 +28215,7 @@ func csharpRouteAnnotationLiteralsAroundSymbol(content string, symbol SymbolReco
 	lines, index := splitLineWindow(content, symbol.StartLine-1, annotationScanLines)
 	seen := map[string]struct{}{}
 	if index >= 0 && index < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[index]), "[") {
-		for i := index; i < len(lines) && i-index <= 8; i++ {
+		for i := index; i < len(lines) && i-index <= annotationScanLines; i++ {
 			line := strings.TrimSpace(lines[i])
 			if line == "" {
 				continue
@@ -28216,7 +28228,7 @@ func csharpRouteAnnotationLiteralsAroundSymbol(content string, symbol SymbolReco
 			}
 		}
 	}
-	for i := index - 1; i >= 0 && index-i <= 8; i-- {
+	for i := index - 1; i >= 0 && index-i <= annotationScanLines; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -28287,7 +28299,7 @@ func phpRouteAttributeLiteralsAroundSymbol(content string, symbol SymbolRecord) 
 	lines, index := splitLineWindow(content, symbol.StartLine-1, annotationScanLines)
 	seen := map[string]struct{}{}
 	if index >= 0 && index < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[index]), "#[") {
-		for i := index; i < len(lines) && i-index <= 8; i++ {
+		for i := index; i < len(lines) && i-index <= annotationScanLines; i++ {
 			line := strings.TrimSpace(lines[i])
 			if line == "" {
 				continue
@@ -28300,7 +28312,7 @@ func phpRouteAttributeLiteralsAroundSymbol(content string, symbol SymbolRecord) 
 			}
 		}
 	}
-	for i := index - 1; i >= 0 && index-i <= 8; i-- {
+	for i := index - 1; i >= 0 && index-i <= annotationScanLines; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue

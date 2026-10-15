@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"unicode/utf8"
@@ -1489,10 +1490,12 @@ func TestScoreSearchPathsStopsDispatchAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	var calls atomic.Int32
+	var cancellation sync.Once
 	files := scoreSearchPaths(ctx, paths, 8, func(path string) (searchFileCandidate, bool) {
-		if calls.Add(1) == 1 {
-			cancel()
-		}
+		// Wait until cancellation actually occurs; a preempted first callback
+		// must not let other workers run repeatedly before it cancels.
+		cancellation.Do(cancel)
+		calls.Add(1)
 		return searchFileCandidate{path: path, score: 1}, true
 	})
 	if got := calls.Load(); got > 8 {

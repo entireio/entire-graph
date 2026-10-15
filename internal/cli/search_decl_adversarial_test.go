@@ -106,7 +106,7 @@ func TestAgentBlockAdvFuzz(t *testing.T) {
 			StartLine: first, EndLine: first + n - 1, FocusLine: first + focus,
 			SnippetStartLine: first, SnippetEndLine: first + n - 1,
 			SymbolStartLine: first, SymbolEndLine: first + n - 1, SymbolName: name, QualifiedName: name,
-			Signals: []string{"complete-symbol"}, MergedDeclLines: merged,
+			Signals: []string{"body"}, MergedDeclLines: merged,
 			Snippet: strings.Join(lines, "\n"),
 		}
 		for b := 0; b < 20; b++ {
@@ -161,7 +161,7 @@ func TestAgentBlockAdvAbsorbedDisplacement(t *testing.T) {
 	res := sem.SearchResult{Rank: 1, Score: 50, FilePath: "pkg/m.go", StartLine: first, EndLine: first + len(lines) - 1,
 		FocusLine: first + abs + 30, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
 		SymbolStartLine: first, SymbolEndLine: first + 21, SymbolName: "survivor", QualifiedName: "survivor",
-		Signals: []string{"complete-symbol", "contiguous-span"}, MergedRanks: []int{1, 2},
+		Signals: []string{"body", "contiguous-span"}, MergedRanks: []int{1, 2},
 		MergedDeclLines: []int{first + abs}, Snippet: strings.Join(lines, "\n")}
 	worst := 0
 	for budget := 100; budget < 1200; budget++ {
@@ -257,7 +257,7 @@ func TestAgentBlockAdvFlaskMergedLosesDef(t *testing.T) {
 	res := sem.SearchResult{Rank: 1, Score: 50, FilePath: "app/views.py", StartLine: first, EndLine: first + len(lines) - 1,
 		FocusLine: first + absorbedDef + 20, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
 		SymbolStartLine: first, SymbolEndLine: first + 14, SymbolName: "login", QualifiedName: "login",
-		Signals: []string{"complete-symbol", "contiguous-span"}, MergedRanks: []int{1, 2},
+		Signals: []string{"body", "contiguous-span"}, MergedRanks: []int{1, 2},
 		MergedDeclLines: []int{first + absorbedDef - 1}, Snippet: strings.Join(lines, "\n")}
 	lost := 0
 	for budget := 100; budget < 3000; budget++ {
@@ -300,10 +300,10 @@ func TestAgentBlockAdvJavaNamedMergedLosesDecl(t *testing.T) {
 	res := sem.SearchResult{Rank: 1, Score: 50, FilePath: "src/A.java", StartLine: first, EndLine: first + len(lines) - 1,
 		FocusLine: first + 5, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
 		SymbolStartLine: first, SymbolEndLine: first + 10, SymbolName: "fooBar", QualifiedName: "A.fooBar",
-		Signals: []string{"complete-symbol", "contiguous-span"}, MergedRanks: []int{1, 2},
+		Signals: []string{"body", "contiguous-span"}, MergedRanks: []int{1, 2},
 		MergedDeclLines: []int{first + abs}, Snippet: strings.Join(lines, "\n")}
 	if os.Getenv("DECL_ADV_NOMERGE") != "" {
-		res.MergedDeclLines, res.MergedRanks, res.Signals = nil, nil, []string{"complete-symbol"}
+		res.MergedDeclLines, res.MergedRanks, res.Signals = nil, nil, []string{"body"}
 	}
 	lost := 0
 	for budget := 60; budget < 2000; budget++ {

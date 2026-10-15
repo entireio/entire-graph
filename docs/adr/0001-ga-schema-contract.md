@@ -7,7 +7,7 @@ Date: 2026-07-03
 
 `entire-graph` emits a semantic index consumed by downstream tools (notably
 `entire-brain`). The wire format carries `schema_version` in `major.minor` form.
-The provider currently advertises **`1.3`** (`internal/sem/provider.go`
+The provider currently advertises **`1.4`** (`internal/sem/provider.go`
 `SchemaVersion`), where the `1.1` minor adds *optional, additive* relation fields
 that tolerant readers ignore. A compatibility policy already exists in the
 [semantic provider requirements](../semantic-provider-requirements.md), but it
@@ -19,7 +19,7 @@ against it and so future changes have clear, non-breaking rules.
 
 ## Decision
 
-**GA ships on schema `1.x`, with `1.3` as the current minor. `1.x` is the frozen,
+**GA ships on schema `1.x`, with `1.4` as the current minor. `1.x` is the frozen,
 stable GA contract.** We do NOT roll back to `1.0`; `1.1` is strictly additive
 over `1.0` and every `1.0` reader already tolerates it.
 
@@ -173,3 +173,22 @@ inclusive 5% degradation threshold, retaining stronger safeguards. Diagnostic
 arrays remain intact. Both cache families are versioned to discard obsolete
 calculations. The persisted Result shape and symbol identity revision are
 unchanged. See [operations](../operations.md#graph-health) for denominator policy.
+
+### Derived relation provenance (schema 1.4)
+
+Schema 1.4 adds the optional native relation `provenance` field, detected through
+`schema_features: relation_provenance`; no existing field is removed, retyped,
+or reinterpreted. The three labels and their conservative derivation are defined
+in [snapshot format](../snapshot-format.md#relation-provenance-schema-14).
+Older supported-major readers ignore the additive field and may warn on the
+newer minor. No consumer identity migration or parser revision change is needed.
+
+`RelationRecord` uses an explicit JSON hook to compute the field from final
+relation inputs. This hook is covered by a serialized field contract, refinement
+and tolerant-reader tests, compact projection/hash parity, SCIP projection tests,
+and cold/warm CLI cache output tests. It is outside the persisted `Result` type
+graph: its reflection-based no-hook guard and pinned wire-shape digest remain
+unchanged. The Result version is re-pinned to 1.4 with its existing shape digest.
+Both cache families already include the exact schema version in their addresses
+and reject a mismatched envelope, so this bump invalidates pre-provenance data
+without changing parser identity or the compact v1 row layout.

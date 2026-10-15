@@ -1,7 +1,10 @@
 package sem
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"runtime"
 	"slices"
 	"strings"
@@ -70,25 +73,44 @@ func decoratedHandlersSource(handlers int) (string, []SymbolRecord) {
 // whole-file split. Each scan looks at most annotationScanLines lines either
 // side of a symbol, so its allocation must not grow with the file.
 func TestAnnotationScansDoNotSplitTheWholeFilePerSymbol(t *testing.T) {
-	content, symbols := decoratedHandlersSource(20000)
-	var before, after runtime.MemStats
-	found := 0
-	finishesWithin(t, 30*time.Second, func() {
-		runtime.GC()
-		runtime.ReadMemStats(&before)
-		for _, symbol := range symbols {
-			found += len(nestJSMessagePatternChannelsAroundSymbol(content, symbol))
-			found += len(nestJSMethodRouteLiteralsAroundSymbol(content, symbol))
+	// MemStats counts the whole process. Keep unrelated background builds out of the
+	// measurement by executing this one test in a fresh process.
+	const childEnv = "ENTIRE_GRAPH_ANNOTATION_ALLOCATION_CHILD"
+	if os.Getenv(childEnv) != "1" {
+		ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAnnotationScansDoNotSplitTheWholeFilePerSymbol$", "-test.v")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("isolated annotation allocation guard: %v\n%s", err, output)
 		}
-		runtime.ReadMemStats(&after)
-	})
-	if found != len(symbols) {
-		t.Fatalf("found %d channels across %d decorated handlers, want one each", found, len(symbols))
+		return
 	}
-	perSymbol := (after.TotalAlloc - before.TotalAlloc) / uint64(len(symbols))
-	if perSymbol > 8192 {
-		t.Fatalf("annotation scans allocated %d bytes per symbol over a %d-line file, want a constant under 8192", perSymbol, strings.Count(content, "\n"))
+	measure := func(handlers int) uint64 {
+		content, symbols := decoratedHandlersSource(handlers)
+		var before, after runtime.MemStats
+		found := 0
+		finishesWithin(t, 30*time.Second, func() {
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			for _, symbol := range symbols {
+				found += len(nestJSMessagePatternChannelsAroundSymbol(content, symbol))
+				found += len(nestJSMethodRouteLiteralsAroundSymbol(content, symbol))
+			}
+			runtime.ReadMemStats(&after)
+		})
+		if found != len(symbols) {
+			t.Fatalf("found %d channels across %d decorated handlers, want one each", found, len(symbols))
+		}
+		return (after.TotalAlloc - before.TotalAlloc) / uint64(len(symbols))
 	}
+	// Race instrumentation changes fixed regex/pool costs. The invariant is that
+	// per-symbol allocation stays bounded as the source grows twenty-fold.
+	small, large := measure(1000), measure(20000)
+	if limit := 2*small + 2048; large > limit {
+		t.Fatalf("annotation scans allocated %d bytes per symbol over 40002 lines, versus %d over 2002 lines; want at most %d", large, small, limit)
+	}
+	t.Logf("annotation allocation per symbol: small=%d large=%d", small, large)
 }
 
 func TestAnnotationScansStillReadDecoratorsAtTheFileEdges(t *testing.T) {

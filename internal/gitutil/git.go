@@ -2625,6 +2625,9 @@ func RemoteURLs(ctx context.Context, repo string) ([]string, error) {
 func run(ctx context.Context, dir, name string, args ...string) (string, error) {
 	stdout, stderr, err := runWithStderr(ctx, dir, name, args...)
 	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return "", contextErr
+		}
 		msg := stderr
 		if msg == "" {
 			msg = err.Error()
@@ -2892,6 +2895,9 @@ func runWithStderr(ctx context.Context, dir, name string, args ...string) (strin
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
+	if err != nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
 	return stdout.String(), strings.TrimSpace(stderr.String()), err
 }
 

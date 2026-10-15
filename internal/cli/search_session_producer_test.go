@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -94,6 +95,35 @@ func TestSearchEchoReplaysForTheSameProducer(t *testing.T) {
 	runProducerSearch(t, repo, session, "0.1.0", "producer_alpha_item", nil)
 	if out := runProducerSearch(t, repo, session, "0.1.0", "producer_beta_item", nil); !replayed(out) {
 		t.Fatalf("same producer did not replay:\n%s", out)
+	}
+}
+
+func TestSearchEchoCapturesOneProducerForEveryReplayScope(t *testing.T) {
+	t.Parallel()
+	for _, changeAt := range []int{0, 2, 3} {
+		t.Run(fmt.Sprint(changeAt), func(t *testing.T) {
+			t.Parallel()
+			repo, session := producerFixture(t), filepath.Join(t.TempDir(), "s.json")
+			runProducerSearch(t, repo, session, "dev", "producer_alpha_item", stampedBuild("rev-a", false))
+			var out bytes.Buffer
+			reads := 0
+			opts := Options{Env: EntireEnv{RepoRoot: repo, SearchSession: session}, Stdout: &out,
+				buildInfo: func() (*debug.BuildInfo, bool) {
+					reads++
+					revision := "rev-a"
+					if changeAt != 0 && reads >= changeAt {
+						revision = "rev-b"
+					}
+					return stampedBuild(revision, false), true
+				},
+			}
+			if err := Run(t.Context(), opts, []string{"search", "--repo", repo, "--query", "producer_beta_item", "--format", "text", "--profile", "syntax-only", "--head"}); err != nil {
+				t.Fatal(err)
+			}
+			if reads != 1 || !replayed(out.String()) {
+				t.Fatalf("producer should be captured once and shared by every scope: changeAt=%d reads=%d output=%s", changeAt, reads, out.String())
+			}
+		})
 	}
 }
 

@@ -13,6 +13,24 @@ import (
 	"time"
 )
 
+// Quoted argument contents cannot create shell operators or change the command's purpose.
+func FuzzExplorationQuotedArguments(f *testing.F) {
+	for _, payload := range []string{"file.go", "a; grep b", "$(cat secret)", "`rg needle`", "x | tail -1", "'quoted'", "x\ncat y", "a>&b"} {
+		f.Add(payload)
+	}
+	f.Fuzz(func(t *testing.T, payload string) {
+		quoted := "'" + strings.ReplaceAll(payload, "'", "'\\''") + "'"
+		for _, command := range []struct {
+			prefix string
+			want   bool
+		}{{"cat ", true}, {"git commit -m ", false}} {
+			if got := isExploringShellCommand(command.prefix + quoted); got != command.want {
+				t.Fatalf("classification of %q = %v, want %v", command.prefix+quoted, got, command.want)
+			}
+		}
+	})
+}
+
 // --- fixture helpers ---------------------------------------------------------------------
 
 func statsTime(offset time.Duration) string {
@@ -954,22 +972,15 @@ func TestStatsDefaultOutputIsOneHeadlineLine(t *testing.T) {
 	}
 }
 
-// TestStatsHeadlineIsPlainTextWhenOutputIsNotATerminal keeps ANSI bytes out of pipes and files.
+// Summary output remains plain text when terminal color settings are present.
 func TestStatsHeadlineIsPlainTextWhenOutputIsNotATerminal(t *testing.T) {
-	t.Setenv("NO_COLOR", "")
-	t.Setenv("FORCE_COLOR", "")
-	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "")
-	var out bytes.Buffer
-	if got := statsGreen(&out, "[entire-graph] ~1 tokens saved"); strings.Contains(got, "\x1b[") {
-		t.Fatalf("a non-terminal writer must not receive escapes, got %q", got)
-	}
-	t.Setenv("FORCE_COLOR", "1")
-	if got := statsGreen(&out, "x"); got != "\x1b[32mx\x1b[0m" {
-		t.Fatalf("forced colour = %q, want a green wrap", got)
-	}
-	t.Setenv("NO_COLOR", "1")
-	if got := statsGreen(&out, "x"); got != "x" {
-		t.Fatalf("NO_COLOR must win, got %q", got)
+	for _, force := range []string{"", "1"} {
+		t.Setenv("FORCE_COLOR", force)
+		var out bytes.Buffer
+		writeStatsSummary(&out, statsResponse{Sessions: 1, SessionsDirFound: true, SessionsWithSavingsComparison: 1, EstimatedSavingsTokensUnfloored: 4})
+		if strings.Contains(out.String(), "\x1b[") || !strings.Contains(out.String(), "1:1 context model: +4 est. tokens") {
+			t.Fatalf("unexpected summary: %q", out.String())
+		}
 	}
 }
 

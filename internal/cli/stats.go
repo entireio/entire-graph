@@ -1433,7 +1433,7 @@ func stripHeredocBodies(command string) string {
 		kept = append(kept, lines[index])
 		openers := heredocOpeners(lines[index])
 		cursor, closed := index+1, len(openers) > 0
-		for _, opener := range openers {
+		for openerIndex, opener := range openers {
 			terminator := -1
 			for ; cursor < len(lines); cursor++ {
 				line := strings.TrimSuffix(lines[cursor], "\r")
@@ -1447,6 +1447,12 @@ func stripHeredocBodies(command string) string {
 				}
 			}
 			if terminator < 0 {
+				// A completed earlier body establishes this as a heredoc command.
+				// Shells consume the unfinished subsequent body through EOF; those
+				// bytes cannot become commands merely because its closer is absent.
+				if openerIndex > 0 {
+					return strings.Join(kept, "\n")
+				}
 				closed = false
 				break
 			}
@@ -1463,7 +1469,8 @@ func stripHeredocBodies(command string) string {
 //
 // It is deliberately conservative, because a false positive costs real commands: stripHeredocBodies
 // would discard the lines that follow. Three guards here, and stripHeredocBodies adds a fourth by
-// refusing to strip an unterminated body:
+// refusing to strip an unterminated first body. Once an earlier body closes,
+// unfinished subsequent bodies are unambiguous data through EOF:
 //
 //   - the `<<` must be OUTSIDE quotes, so `echo "count << 2"` opens nothing;
 //   - `<<<` is a here-STRING, whose data is on the same line;
@@ -1567,7 +1574,7 @@ func isWritingShellStage(stage string) bool {
 	case "cat":
 		return hasStdoutRedirect(stage) || heredocDelimiter(stage) != ""
 	case "sed":
-		return hasInPlaceFlag(stage)
+		return hasInPlaceFlag(stage) || hasStdoutRedirect(stage)
 	}
 	return false
 }
@@ -1908,17 +1915,6 @@ func statsModelSummary(report statsResponse) string {
 	return "1:1 context model: " + signed + " est. tokens; not measured savings; assumes 100% displaced"
 }
 
-// statsGreen styles the headline for a terminal and degrades to plain text everywhere else,
-// using the same NO_COLOR / FORCE_COLOR / TERM / character-device rules as the rest of the
-// binary, so a pipe or a redirect never receives raw escape bytes.
-func statsGreen(out io.Writer, value string) string {
-	value = termsafe.Line(value)
-	if value == "" || !sem.ShouldUseColor(out) {
-		return value
-	}
-	return "\x1b[32m" + value + "\x1b[0m"
-}
-
 func writeStatsText(out io.Writer, report statsResponse) {
 	fmt.Fprintln(out, "entire graph stats")
 	fmt.Fprintf(out, "  repo:     %s\n", valueOrUnset(report.RepoRoot))
@@ -2002,10 +1998,6 @@ func writeStatsText(out io.Writer, report statsResponse) {
 	}
 }
 
-func percent(rate float64) string {
-	return fmt.Sprintf("%.0f%%", rate*100)
-}
-
 func humanInt(value int64) string {
 	text := strconv.FormatInt(value, 10)
 	negative := strings.HasPrefix(text, "-")
@@ -2042,4 +2034,8 @@ func wrapText(text string, width int) []string {
 		lines = append(lines, current)
 	}
 	return lines
+}
+
+func percent(rate float64) string {
+	return fmt.Sprintf("%.0f%%", rate*100)
 }

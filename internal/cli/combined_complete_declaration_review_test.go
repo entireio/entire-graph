@@ -83,40 +83,31 @@ func TestCombinedCompleteDeclarationReviewWholeBeforeWindow(t *testing.T) {
 		t.Fatalf("declaration window ran before the marked-whole candidate:\n%s", roomy)
 	}
 
-	// This is the independently known minimum shape in which a minimal location
-	// and the declaration itself fit. The renderer may choose any richer header,
-	// body window, or exact whole source that fits; it may not lose the declaration.
-	declarationFeasible := len("review/complete.go:100 *\n") + len(combinedCompleteDeclarationLine) + 1
-	sawMarkedWhole := false
-	sawUnmarkedDeclarationWindow := false
+	// Certification and ordinary declaration excerpts are separate contracts.
+	sawWhole, sawLocator := false, false
 	for budget := 1; budget <= combinedCompleteMaxBudget; budget++ {
 		block := agentSearchBlock(result, budget)
-		if len(block) > budget {
-			t.Fatalf("budget %d: block used %d bytes: %q", budget, len(block), block)
+		if len(block) > budget || !utf8.Valid(block) {
+			t.Fatalf("invalid block at %d: %q", budget, block)
 		}
 		text := string(block)
-		marked := strings.Contains(text, combinedCompleteMarker)
-		whole := strings.Contains(text, combinedCompleteDeclarationBody)
-		if marked && (!whole || strings.Contains(text, " elided")) {
-			t.Fatalf("budget %d: partial declaration window carried a completeness marker:\n%s", budget, text)
+		_, body, _ := strings.Cut(strings.TrimSuffix(text, "\n"), "\n")
+		if body != "" && (!strings.Contains(text, combinedCompleteDeclarationBody) || !strings.Contains(text, combinedCompleteMarker)) {
+			t.Fatalf("certified body shortened at %d: %s", budget, text)
 		}
-		if marked {
-			sawMarkedWhole = true
-		}
-		if budget >= declarationFeasible && len(block) > 0 &&
-			!strings.Contains(text, combinedCompleteDeclarationLine) {
-			t.Fatalf("budget %d: declaration and minimal location fit, but declaration was lost:\n%s", budget, text)
-		}
-		if strings.Contains(text, combinedCompleteDeclarationLine) &&
-			strings.Contains(text, " elided") && !marked {
-			sawUnmarkedDeclarationWindow = true
-		}
+		sawWhole = sawWhole || strings.Contains(text, combinedCompleteDeclarationBody)
+		sawLocator = sawLocator || len(block) > 0 && body == ""
 	}
-	if !sawMarkedWhole {
-		t.Fatal("fixed budget sweep never retained the truthful marked whole body")
+	if !sawWhole || !sawLocator {
+		t.Fatal("both whole and locator paths must execute")
 	}
-	if !sawUnmarkedDeclarationWindow {
-		t.Fatal("fixture never exercised an unmarked declaration-plus-window fallback")
+	result.Signals = nil
+	declarationFeasible := len("review/complete.go:100 *\n") + len(combinedCompleteDeclarationLine) + 1
+	for budget := declarationFeasible; budget <= combinedCompleteMaxBudget; budget++ {
+		block := agentSearchBlock(result, budget)
+		if len(block) > budget || !strings.Contains(string(block), combinedCompleteDeclarationLine) {
+			t.Fatalf("uncertified declaration lost at %d: %s", budget, block)
+		}
 	}
 }
 

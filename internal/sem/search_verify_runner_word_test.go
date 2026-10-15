@@ -118,6 +118,21 @@ func TestPytestIsDetectedFromASectionNotAMention(t *testing.T) {
 		{"a metadata keyword", "setup.cfg", "[metadata]\nname = x\nkeywords = pytest, testing\n", false},
 		{"a dep of a unittest tox env", "tox.ini",
 			"[tox]\nenvlist = py311\n[testenv]\ncommands = python -m unittest discover\ndeps = pytest-cov\n", false},
+		{"tox pre-command invokes pytest", "tox.ini", "[testenv]\ncommands_pre = pytest --collect-only\n", true},
+		{"tox post-command invokes pytest", "tox.ini", "[testenv]\ncommands_post =\n  python -m pytest tests\n", true},
+		{"tox pre-command only echoes pytest", "tox.ini", "[testenv]\ncommands_pre = echo pytest\n", false},
+		{"tox post-command only echoes pytest", "tox.ini", "[testenv]\ncommands_post = echo pytest\n", false},
+		{"tox command invokes pytest", "tox.ini", "[testenv]\ncommands = pytest {posargs}\n", true},
+		{"tox multiline invokes pytest", "tox.ini", "[testenv:py311]\ncommands =\n  python -m pytest tests\n", true},
+		{"tox command invokes python3 pytest", "tox.ini", "[testenv]\ncommands = python3 -m pytest\n", true},
+		{"tox only mentions pytest in dependencies", "tox.ini", "[testenv]\ncommands = true\ndeps =\n  pytest\n", false},
+		{"tox has no implicit shell", "tox.ini", "[testenv]\ncommands = echo harmless && pytest\n", false},
+		{"tox has no implicit shell assignments", "tox.ini", "[testenv]\ncommands = PYTHONDONTWRITEBYTECODE=1 pytest tests\n", false},
+		{"tox indented keys and commands", "tox.ini", "[testenv]\n  commands =\n    python -m pytest tests\n  deps = pytest\n", true},
+		{"tox multiline assignment is no executable pytest", "tox.ini", "[testenv]\ncommands =\n  PYTHONDONTWRITEBYTECODE=1 pytest tests\n", false},
+		{"tox echoes pytest", "tox.ini", "[testenv]\ncommands = echo pytest\n", false},
+		{"tox commented command", "tox.ini", "[testenv]\n# commands = pytest\n", false},
+		{"commands outside testenv", "tox.ini", "[tox]\ncommands = pytest\n", false},
 		{"a real pytest.ini", "pytest.ini", "[pytest]\ntestpaths = tests\n", true},
 		{"a real setup.cfg section", "setup.cfg", "[tool:pytest]\ntestpaths = tests\n", true},
 		{"a real pyproject section", "pyproject.toml", "[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n", true},
@@ -140,6 +155,12 @@ func TestPytestIsDetectedFromASectionNotAMention(t *testing.T) {
 		got := deriveSearchVerifySuitePytest("/r", searchVerifySubject{sourcePath: "/r/test_widget.py"}, &evidence)
 		if (got != nil) != tc.want {
 			t.Errorf("%s (%s): got %v, want detected=%v", tc.label, tc.file, got, tc.want)
+		}
+		narrow := deriveSearchVerifyPytest("/r", searchVerifySubject{
+			testPath: "/r/tests/test_example.py", testName: "test_example", testEvidence: "covering test",
+		}, &evidence)
+		if (narrow != nil) != tc.want {
+			t.Errorf("narrow %s (%s): got %v, want detected=%v", tc.label, tc.file, narrow, tc.want)
 		}
 	}
 }

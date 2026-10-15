@@ -805,18 +805,26 @@ func TestNestedCallableQualificationOnlyReplacesATypeScope(t *testing.T) {
 // named a member no instance of `C` has ever had. Its behaviour is pinned in
 // python_nested_callable_test.go.
 //
+// Swift, Kotlin, Rust and PHP joined in the fix for issue #259, the sibling set
+// #199's survey turned up. Their node types are not shared with each other or
+// with Python — a nested callable is `function_declaration` in Swift and Kotlin,
+// `function_item` in Rust and `function_definition` in PHP — and the semantics
+// were established per language, not pattern-matched: Swift and Kotlin nested
+// callables are local functions, a Rust `fn` in a block is an item scoped to
+// that block, and PHP has no nested function scope at all (the name lands in the
+// current namespace), so none of the four is reachable as `C.helper`. Their
+// behaviour is pinned in nested_callable_languages_test.go.
+//
 // The languages still at false are NOT all the same case:
 //
 //   - Ruby is CORRECT as-is. A nested `def` really does define an instance
 //     method on the enclosing class the first time the outer method runs, so
-//     `C.helper` is the symbol Ruby itself produces. Fixing it would be a bug.
+//     `C.helper` is the symbol Ruby itself produces. Fixing it would be a bug,
+//     which is why the four above were each checked against their own language's
+//     semantics rather than against the shared symptom.
 //   - Java is correct as-is: anonymous-class members are walked with the
 //     enclosing type scope on purpose (see initializerTypeBodies), and a named
 //     local class is already its own container.
-//   - Swift, Kotlin, Rust and PHP DO still emit the phantom member, confirmed
-//     on the released binary. Each needs its own lexicalCallableForm node types
-//     and its own regression coverage, and each is its own ID move; they are
-//     tracked separately rather than folded in here untested.
 //   - Go and C# never reach the shape: a Go closure is a `:=` binding and a C#
 //     local function emits no symbol at all.
 func TestNestedCallableScopeResetIsGatedByLanguage(t *testing.T) {
@@ -827,13 +835,14 @@ func TestNestedCallableScopeResetIsGatedByLanguage(t *testing.T) {
 		{"JavaScript", true},
 		{"TypeScript", true},
 		{"Python", true},
+		{"Swift", true},
+		{"Kotlin", true},
+		{"Rust", true},
+		{"PHP", true},
 		{"Java", false},
 		{"Ruby", false},
 		{"Go", false},
-		{"Swift", false},
-		{"Kotlin", false},
-		{"Rust", false},
-		{"PHP", false},
+		{"C#", false},
 	} {
 		if got := functionLocalScopeResets(testCase.language); got != testCase.want {
 			t.Errorf("functionLocalScopeResets(%q) = %v, want %v", testCase.language, got, testCase.want)

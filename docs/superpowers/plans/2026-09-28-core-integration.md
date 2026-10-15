@@ -17,12 +17,12 @@ fixes into one independently reviewable candidate. User authorizes implementatio
 and PRs only: no merges. This is one launch prerequisite, not launch completion,
 an accuracy result, or a measured token-savings result.
 
-Spec: `/Users/suhaan/devenv/.agent-comms/graph-launch-integration-map.md` and
-`/Users/suhaan/devenv/.agent-comms/core-integration-pin-deltas.md`.
+Spec: `original local integration notes: graph-launch-integration-map.md` and
+`original local integration notes: core-integration-pin-deltas.md`.
 
 ## Global Constraints
 
-- Work only in `/Users/suhaan/devenv-worktrees/eg-core-integration-20260928`,
+- Work only in `an isolated integration worktree`,
   branch `codex/graph-core-integration-20260928`, starting at
   `f22e6c952f3b375261942e6a17af67ca6b1d2e39`.
 - PRs only; never merge, push to an existing shared branch, publish, release,
@@ -89,7 +89,7 @@ original SHA to integrated SHA mapping, including any content-identical skips.
 Run one final full Go suite on the exact composed tree, offline:
 
 ```
-GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=maintenance.auto GIT_CONFIG_VALUE_0=false CGO_ENABLED=1 GOMAXPROCS=2 GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local /Users/suhaan/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.darwin-arm64/bin/go test -p 2 -count=1 ./...
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=maintenance.auto GIT_CONFIG_VALUE_0=false CGO_ENABLED=1 GOMAXPROCS=2 GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go test -p 2 -count=1 ./...
 ```
 
 Run the existing stats shell test suite with the same pinned Go toolchain on
