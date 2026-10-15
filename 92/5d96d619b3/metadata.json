@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "925d96d619b3",
+  "strategy": "manual-commit",
+  "branch": "codex/batch245-observed-stats",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "docs/commands.md",
+    "docs/operations.md",
+    "internal/cli/stats.go",
+    "internal/cli/stats_rendered_output_integration_test.go",
+    "internal/cli/stats_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/92/5d96d619b3/0/metadata.json",
+      "transcript": "/92/5d96d619b3/0/full.jsonl",
+      "compact_transcript": "/92/5d96d619b3/0/transcript.jsonl",
+      "content_hash": "/92/5d96d619b3/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 45816,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4327808,
+    "output_tokens": 19658,
+    "api_call_count": 18
+  }
+}
