@@ -2699,10 +2699,11 @@ func agentSearchResultBudgets(results []sem.SearchResult, budget int) []int {
 	declarationFloors := append([]int(nil), floors...)
 	declarationTotal := floorTotal
 	for index, row := range results {
-		if searchResultNeedsNoFollowUpRead(row) && !renderedBodyIsTransformed(row.Snippet) {
+		shown := searchResultOnOneLine(row)
+		if searchResultNeedsNoFollowUpRead(shown) && !renderedBodyIsTransformed(shown.Snippet) {
 			continue
 		}
-		view := agentSearchBlockViewOf(searchResultOnOneLine(row))
+		view := agentSearchBlockViewOf(shown)
 		own, ok, _ := agentSearchDecls(view)
 		if !ok || own.index < 0 || own.index >= len(view.lines) {
 			continue

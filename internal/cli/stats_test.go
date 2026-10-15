@@ -977,8 +977,10 @@ func TestStatsHeadlineIsPlainTextWhenOutputIsNotATerminal(t *testing.T) {
 	for _, force := range []string{"", "1"} {
 		t.Setenv("FORCE_COLOR", force)
 		var out bytes.Buffer
-		writeStatsSummary(&out, statsResponse{Sessions: 1, SessionsDirFound: true, SessionsWithSavingsComparison: 1, EstimatedSavingsTokensUnfloored: 4})
-		if strings.Contains(out.String(), "\x1b[") || !strings.Contains(out.String(), "1:1 context model: +4 est. tokens") {
+		writeStatsSummary(&out, statsResponse{Sessions: 1, SessionsDirFound: true, SessionsWithSavingsComparison: 1,
+			GraphLocateDisplaced: 1, NoFollowUpRate: 1, DisplacementWindowCalls: 4,
+			ObservedNetTokens: 4, ModeledBalanceCreditedResults: 1, ComparableGraphLocateResults: 1})
+		if strings.Contains(out.String(), "\x1b[") || !strings.Contains(out.String(), "observed follow-up of 1 graph locate results") || !strings.Contains(out.String(), "modeled balance +4 est. tokens") || !strings.Contains(out.String(), "not measured savings") {
 			t.Fatalf("unexpected summary: %q", out.String())
 		}
 	}

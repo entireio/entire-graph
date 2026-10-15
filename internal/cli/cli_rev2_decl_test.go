@@ -9,6 +9,9 @@ import (
 	"github.com/entireio/entire-graph/internal/sem"
 )
 
+// These layout fixtures are intentionally uncertified; complete bodies are
+// independently required to render whole or as a locator.
+
 // REV2-A: a wrong finder pick inside the first 16 lines, the real def BELOW the 16-line head bound
 // (a long decorator stack). The old window showed the def; does the new block keep it?
 func TestRev2LongDecoratorStackWrongPick(t *testing.T) {
@@ -25,7 +28,7 @@ func TestRev2LongDecoratorStackWrongPick(t *testing.T) {
 	res := sem.SearchResult{Rank: 1, Score: 20, FilePath: "app/cli.py", StartLine: first, EndLine: first + len(lines) - 1,
 		FocusLine: first + def + 6, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
 		SymbolStartLine: first, SymbolEndLine: first + len(lines) - 1, SymbolName: "handle", QualifiedName: "handle",
-		Signals: []string{"complete-symbol"}, Snippet: strings.Join(lines, "\n")}
+		Signals: []string{"body"}, Snippet: strings.Join(lines, "\n")}
 	idx, ok := agentSearchDeclIndex(lines, first, first, first+len(lines)-1, "handle")
 	t.Logf("finder premise: picked %d ok=%v (%q)", idx, ok, lines[idx])
 	lost, exercised := 0, 0
@@ -63,7 +66,7 @@ func TestRev2CSharpLazyPropertyBlock(t *testing.T) {
 	res := sem.SearchResult{Rank: 1, Score: 20, FilePath: "src/Cfg.cs", StartLine: first, EndLine: first + len(lines) - 1,
 		FocusLine: first + 25, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
 		SymbolStartLine: first, SymbolEndLine: first + len(lines) - 1, SymbolName: "Options", QualifiedName: "Cfg.Options",
-		Signals: []string{"complete-symbol"}, Snippet: strings.Join(lines, "\n")}
+		Signals: []string{"body"}, Snippet: strings.Join(lines, "\n")}
 	lost, wrongOnly := 0, 0
 	for budget := 60; budget <= 3000; budget++ {
 		view := agentSearchBlockViewOf(res)
@@ -220,7 +223,7 @@ func TestRev2AbsorbedWrongPickAboveUnprotected(t *testing.T) {
 		res := sem.SearchResult{Rank: 1, Score: 50, FilePath: "src/Cfg.cs", StartLine: first, EndLine: first + len(lines) - 1,
 			FocusLine: first + focus, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
 			SymbolStartLine: first, SymbolEndLine: first + real - 2, SymbolName: "Load", QualifiedName: "Cfg.Load",
-			Signals: []string{"complete-symbol", "contiguous-span"}, MergedRanks: []int{1, 2},
+			Signals: []string{"body", "contiguous-span"}, MergedRanks: []int{1, 2},
 			MergedDeclLines: rev2Merged(first, real, wrong), Snippet: strings.Join(lines, "\n")}
 		for budget := 80; budget <= 2500; budget++ {
 			view := agentSearchBlockViewOf(res)
