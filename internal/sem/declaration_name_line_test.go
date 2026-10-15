@@ -2,6 +2,7 @@ package sem
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -112,7 +113,8 @@ func TestSearchSnapshotCachePreservesNameLine(t *testing.T) {
 	if got := restored.Snapshot.Symbols[1].NameLine(); got != 0 {
 		t.Fatalf("a symbol without a name line restored %d", got)
 	}
-	if !strings.HasPrefix(searchSnapshotCacheVersion, "search-snapshot-v18-") {
+	var revision int
+	if _, err := fmt.Sscanf(searchSnapshotCacheVersion, "search-snapshot-v%d-", &revision); err != nil || revision < 18 {
 		t.Fatalf("cache version %q: entries written before the current name-line producer must be retired", searchSnapshotCacheVersion)
 	}
 }

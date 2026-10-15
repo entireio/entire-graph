@@ -30,7 +30,8 @@ import (
 //   - literals: "..." and '...' (to the end of the line at most), a Rust lifetime excepted;
 //     """...""", '''...''', `...`, Rust r"..."/r#"..."#, and C# @"..." across lines;
 //   - annotations, attributes and decorators: `@Name`, `@a.b(...)`, `#[...]`, `#![...]`, and a
-//     line-leading `[...]`, with their bracketed arguments across lines.
+//     language-specific bracket attributes (C#/F# `[...]`, C/C++ `[[...]]`),
+//     with their bracketed arguments across lines. Unknown dialects stay conservative.
 //
 // Among the lines where the name then occurs as a whole identifier (identifier characters are
 // Unicode letters and digits, `_` and `$`, so `runé` is not `run`), the first DEFINITION-SHAPED
@@ -231,6 +232,9 @@ const (
 // comments nest and C's do not; a backslash escapes the quote in a Python raw string and does not
 // in a Rust one; `#` opens a comment in Python and is code in C.
 type declarationDialect struct {
+	// Bare bracket attributes belong to C#/F#; C/C++ use double brackets.
+	bracketAttributes       bool
+	doubleBracketAttributes bool
 	// hashComments: `#` after whitespace and followed by whitespace starts a comment that runs to
 	// the end of the line, also inside an open annotation's arguments. (A whole line starting
 	// with `#`, other than `#[`, `#![` and `#define`, is a comment or directive in every dialect.)
@@ -250,7 +254,7 @@ type declarationDialect struct {
 // ordinary output, a false one is printed as the answer: comments nest, raw strings honour
 // escapes and continue past the line when unclosed, and `#` at the start of a line or after
 // whitespace opens a comment unless it opens an attribute (`#[`, `#![`) or interpolation (`#{`).
-var declarationUnknownDialect = declarationDialect{hashComments: true, nestedComments: true, rawEscapes: true}
+var declarationUnknownDialect = declarationDialect{bracketAttributes: true, hashComments: true, nestedComments: true, rawEscapes: true}
 
 // declarationDialectFor resolves a language name (sem's spelling in any case, or a common alias)
 // or, failing that, the file extension of path. Unlisted languages get the unknown dialect.
@@ -283,8 +287,11 @@ func declarationDialectNamed(key string) (declarationDialect, bool) {
 		return declarationDialect{nestedComments: true}, true
 	case "swift", "kotlin", "kt", "kts", "scala", "sc", "dart":
 		return declarationDialect{nestedComments: true, rawEscapes: true}, true
-	case "c", "h", "c++", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "objective-c", "objc", "m", "mm",
-		"java", "c#", "csharp", "cs", "go", "javascript", "js", "jsx", "mjs", "cjs", "typescript", "ts",
+	case "c#", "csharp", "cs":
+		return declarationDialect{rawEscapes: true, bracketAttributes: true}, true
+	case "c", "h", "c++", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "objective-c", "objc", "m", "mm":
+		return declarationDialect{rawEscapes: true, doubleBracketAttributes: true}, true
+	case "java", "go", "javascript", "js", "jsx", "mjs", "cjs", "typescript", "ts",
 		"tsx", "groovy", "gradle", "css", "scss", "less", "zig", "protocol buffers", "protobuf", "proto":
 		return declarationDialect{rawEscapes: true}, true
 	}
@@ -464,7 +471,7 @@ func (lexer *declarationLexer) code(line string) string {
 			blank(i, len(line))
 			return string(out)
 		}
-		if end, open, ok := declarationAnnotationStart(line, i, lead); ok {
+		if end, open, ok := declarationAnnotationStart(line, i, lead, lexer.dialect); ok {
 			blank(i, end)
 			i = end
 			if open {
@@ -554,10 +561,11 @@ func (lexer *declarationLexer) literal(line string, i int) (int, bool) {
 
 // declarationAnnotationStart recognises an annotation, attribute or decorator at line[i]: `@Name`,
 // `@a.b.c` (optionally followed by an argument list), `#[`, `#![`, or — at the start of a line —
-// `[`. It returns the offset after its name (after the opening bracket when it has arguments),
+// `[` in a bracket-attribute dialect (double `[[` for C/C++). It returns the offset after
+// its name (after the opening bracket when it has arguments),
 // whether an argument list was opened, and ok. `@interface` is Java's annotation-type keyword, and
 // `@"` opens a C# verbatim string; neither is an annotation.
-func declarationAnnotationStart(line string, i int, lead bool) (end int, open, ok bool) {
+func declarationAnnotationStart(line string, i int, lead bool, dialect declarationDialect) (end int, open, ok bool) {
 	switch {
 	case line[i] == '@':
 		if i > 0 && !lead {
@@ -589,7 +597,7 @@ func declarationAnnotationStart(line string, i int, lead bool) (end int, open, o
 		return i + 2, true, true
 	case strings.HasPrefix(line[i:], "#!["):
 		return i + 3, true, true
-	case lead && line[i] == '[':
+	case lead && line[i] == '[' && (dialect.bracketAttributes || dialect.doubleBracketAttributes && strings.HasPrefix(line[i:], "[[")):
 		return i + 1, true, true
 	}
 	return 0, false, false

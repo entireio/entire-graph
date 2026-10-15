@@ -505,9 +505,12 @@ func (r *goRouteResolver) resolve() (ok bool) {
 // router it wraps in http.StripPrefix), or when the function is used as a
 // value. Parameters forwarded to other functions propagate, so this iterates.
 func (r *goRouteResolver) taintParams() {
-	for changed, rounds := true, 0; changed && rounds < 16; rounds++ {
+	// Opacity only grows, so the finite origin set converges. Charge the
+	// shared step budget instead of silently stopping before the fixed point.
+	for changed := true; changed; {
 		changed = false
 		for key, origin := range r.paramOrigins {
+			r.step(1)
 			if origin.opaque {
 				continue
 			}
@@ -519,6 +522,7 @@ func (r *goRouteResolver) taintParams() {
 				args = append(append([]goRouteBinding(nil), args...), r.paramArgs[goRouteParamKey{recv: "*", fn: key.fn, index: key.index}]...)
 			}
 			for _, arg := range args {
+				r.step(1)
 				if !goRouteIsServedRoot(arg) {
 					bad = true
 				}
