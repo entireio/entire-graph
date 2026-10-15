@@ -172,7 +172,7 @@ var commandDocs = []commandDoc{
 			{name: "--callee-hop", desc: "Add called-helper results beyond --top-k, subject to byte-budget and ranked-source protections"},
 			{name: "--single-resolution", desc: "One result per ranked unit; do not spend spare slots on finer regions of a prose document"},
 			{name: "--document-resolution", desc: "Rank a prose document as one unit; do not rank its sections separately"},
-			{name: "--max-context-bytes", arg: "n", def: "24576", desc: "Output byte budget; 0 = unbounded"},
+			{name: "--max-context-bytes", arg: "n", def: "24576", desc: "Output byte budget; 0 = unbounded. Unset with --format agent: the smallest of 4096/8192/16384 that shows the top hit whole, else 24576"},
 			{name: "--reference-blocks", arg: "all|container-map,signature-types,type-card", desc: "Turn reference blocks back on (off by default)"},
 			{name: "--verify-block", arg: "on|off", def: "on", desc: "off removes the VERIFY block (suggested test command plus its run/fix/stop advice) in every format; exists for fair A/B comparisons against an arm with no tool. Env: " + envVerifyBlock},
 			{name: "--omit-verify", desc: "Shorthand for --verify-block off"},

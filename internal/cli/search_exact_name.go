@@ -396,11 +396,16 @@ func fitAgentExactNameResults(anchors []exactNameAnchor, note []byte, budget int
 	for floor := 0; floor < 3; floor++ {
 		costs := make([]int, len(anchors))
 		total := 0
+		valid := true
 		for index, anchor := range anchors {
 			costs[index] = len(agentExactNameBlock(anchor, floor, 0))
+			if costs[index] == 0 {
+				valid = false
+				break
+			}
 			total += costs[index]
 		}
-		if total > available {
+		if !valid || total > available {
 			continue
 		}
 		extra := available - total
@@ -435,6 +440,14 @@ func fitAgentExactNameResults(anchors []exactNameAnchor, note []byte, budget int
 // lines under a bare `path:line *` locator. For a name lookup the rank, name and [ends:N] are worth
 // more than one more body line, so every row keeps the richest rung the whole answer can afford.
 func agentExactNameBlock(anchor exactNameAnchor, floor, budget int) []byte {
+	// Exact-name compaction must preserve a certified body whole, just like the ordinary renderer.
+	if searchResultNeedsNoFollowUpRead(anchor.raw) && anchor.raw.Snippet == anchor.result.Snippet && !renderedBodyIsTransformed(anchor.raw.Snippet) {
+		block := agentSearchBlock(anchor.raw, budget)
+		if !bytes.Contains(block, []byte(completeMarker)) {
+			return nil
+		}
+		return block
+	}
 	row := anchor.result
 	tag := agentSearchSectionTag(row)
 	named := anchor.first + anchor.named

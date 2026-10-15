@@ -34,6 +34,11 @@ run = "sh scripts/entire-graph-statusline_test.sh"
 description = "Build the plugin binary"
 run = "go build -o entire-graph ./cmd/entire-graph"
 
+[tasks."test:prompt-context"]
+description = "Test the prompt-context hook with fake and real graph binaries"
+depends = ["build"]
+run = ["python3 scripts/entire-graph-prompt-context_test.py", "ENTIRE_GRAPH_TEST_BIN=./entire-graph python3 scripts/entire-graph-prompt-context_integration_test.py"]
+
 [tasks.install]
 description = "Build and install the plugin into the local Entire CLI"
 run = "scripts/install-local.sh"
@@ -44,4 +49,4 @@ run = "scripts/release.sh"
 
 [tasks.check]
 description = "Run formatting, vet, tests, and build"
-depends = ["fmt", "vet", "test:ci", "test:statusline", "build"]
+depends = ["fmt", "vet", "test:ci", "test:statusline", "test:prompt-context", "build"]

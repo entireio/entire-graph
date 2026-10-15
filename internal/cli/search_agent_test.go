@@ -78,8 +78,12 @@ func TestAgentSearchReportsDisplayedSpanAndFocusAfterCompaction(t *testing.T) {
 	// by counting down from it (the focus line is printed; its number is header + offset).
 	parts := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
 	var first int
-	if _, err := fmt.Sscanf(parts[0], "src/worker.go:%d *", &first); err != nil {
-		t.Fatalf("header %q is not the minimal rung: %v", parts[0], err)
+	format := "src/worker.go:%d *"
+	if strings.HasPrefix(parts[0], "1. ") {
+		format = "1. src/worker.go:%d"
+	}
+	if _, err := fmt.Sscanf(parts[0], format, &first); err != nil {
+		t.Fatalf("header %q has no recoverable first line: %v", parts[0], err)
 	}
 	for k, line := range parts[1:] {
 		if want := first + k; !strings.HasSuffix(line, fmt.Sprint(want)) {

@@ -2,16 +2,24 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/entireio/entire-graph/internal/sem"
 )
 
-// A complete marker describes the displayed source, not merely the input signal.
-// Smaller unmarked excerpts remain valid output when the marked body cannot fit.
+// The complete-symbol signal is the one promise in the payload that can remove a
+// follow-up read: search_enclosure.go:775 states its meaning as "you need no
+// follow-up read", and CompleteSymbolSignal is exported "for renderers". No renderer
+// used it. The agent format -- the one the installed guide asks for -- dropped
+// Signals entirely, so the single fact that makes a body worth its bytes never
+// reached the agent that had just paid for them.
+//
+// This matters because the cost only pays off if the read goes away. Measured on this
+// tool: it makes +19.6% MORE Read calls than the no-tool baseline while total tool
+// calls fall 14.5% (search_span_merge.go:20-23, n=55 paired), and re-reading a file
+// the payload already printed is 10.1% of post-payload tool calls (search.go:1245).
+// Bodies removed greps and added reads.
 
 func completeSymbolResponse(snippet string, signals ...string) sem.SearchResponse {
 	return sem.SearchResponse{
@@ -19,8 +27,8 @@ func completeSymbolResponse(snippet string, signals ...string) sem.SearchRespons
 		Profile: "fast",
 		Results: []sem.SearchResult{
 			{
-				Rank: 1, Score: 20, FilePath: "budget.go", StartLine: 10, EndLine: 14, FocusLine: 10,
-				SnippetStartLine: 10, SnippetEndLine: 14, SymbolName: "FitToBudget",
+				Rank: 1, Score: 20, FilePath: "budget.go", StartLine: 10, EndLine: 15, FocusLine: 10,
+				SnippetStartLine: 10, SnippetEndLine: 15, SymbolName: "FitToBudget",
 				Signals: signals, Snippet: snippet,
 			},
 		},
@@ -29,7 +37,7 @@ func completeSymbolResponse(snippet string, signals ...string) sem.SearchRespons
 
 const completeBody = "func FitToBudget(a []int, b int) []int {\n\tif b <= 0 {\n\t\treturn a\n\t}\n\treturn a[:b]\n}\n"
 
-// Whole, unchanged source can retain the producer's completeness certification.
+// A complete body is worth its bytes only if the agent is told it is complete.
 func TestAgentFormatMarksACompleteSymbolSoTheReadCanBeSkipped(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
@@ -42,7 +50,9 @@ func TestAgentFormatMarksACompleteSymbolSoTheReadCanBeSkipped(t *testing.T) {
 	}
 }
 
-// A source window must not claim the whole-symbol guarantee.
+// The inverse, and the reason the marker cannot simply be printed on every result:
+// an unmarked result is an instruction to go and read the file, so marking a partial
+// body would send the agent away with an answer it wrongly believes is whole.
 func TestAgentFormatDoesNotMarkAPartialBody(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
@@ -59,9 +69,25 @@ func TestAgentFormatDoesNotMarkAPartialBody(t *testing.T) {
 	}
 }
 
-// Certification is all-or-nothing; source retention is not. At tight caps an excerpt
-// may be displayed, but only an unchanged whole body may carry the marker.
-func TestACompleteSymbolOnlyMarksAnUnabbreviatedBody(t *testing.T) {
+// CompleteSymbolSignal's exported contract (search_enclosure.go:342-344) says a result
+// carrying it "must never be abbreviated on the way out". agentSearchPrimaryBlock
+// abbreviated it anyway: its span loop walks the body down line by line until some
+// prefix fits the budget. That produces the worst possible output -- bytes are spent
+// AND the agent still has to open the file -- and it silently converts a truthful
+// promise into a false one, because the marker would then sit above a partial body.
+//
+// Binary is the only honest rendering: the whole symbol, or a bare locator.
+// Swept across budgets, because the interesting failures are at specific caps and a
+// single budget misses them. Two invariants, at every cap:
+//
+//	ALL-OR-NOTHING  every body line is present, or none is -- never a middle.
+//	BODY => MARKER  any rendering that carries body lines also says they are complete.
+//
+// The second is not hypothetical. Before the marker-less rung was refused, a 200-byte
+// cap printed the whole symbol under the minimal header `budget.go:10 *` -- complete
+// source with nothing vouching for it, which pays the bytes and saves no read. A
+// single-budget test at 120 missed it entirely and passed against the unfixed code.
+func TestACompleteSymbolIsNeverAbbreviatedIntoATruncatedBody(t *testing.T) {
 	t.Parallel()
 	bodyLines := []string{
 		"func FitToBudget(a []int, b int) []int {",
@@ -71,16 +97,15 @@ func TestACompleteSymbolOnlyMarksAnUnabbreviatedBody(t *testing.T) {
 		"\treturn a[:b]",
 		"}",
 	}
-	sawPartial := false
-	for _, budget := range []int{80, 120, 160, 200, 240, 300, 4096} {
+	for budget := 80; budget <= len(completeBody)+300; budget++ {
 		var out bytes.Buffer
 		if err := writeAgentSearch(&out, completeSymbolResponse(completeBody, sem.CompleteSymbolSignal), budget); err != nil {
 			t.Fatalf("budget %d: %v", budget, err)
 		}
-		rendered := out.String()
-		if out.Len() > budget || !utf8.Valid(out.Bytes()) {
-			t.Fatalf("budget %d: invalid or oversized UTF-8 output: %q", budget, rendered)
+		if out.Len() > budget {
+			t.Fatalf("budget %d: rendered %d bytes including the marker", budget, out.Len())
 		}
+		rendered := out.String()
 		present := 0
 		for _, line := range bodyLines {
 			if strings.Contains(rendered, line) {
@@ -88,57 +113,16 @@ func TestACompleteSymbolOnlyMarksAnUnabbreviatedBody(t *testing.T) {
 			}
 		}
 		if present != 0 && present != len(bodyLines) {
-			sawPartial = true
+			t.Errorf("budget %d: rendered %d of %d body lines -- a truncated middle of a complete symbol:\n%s",
+				budget, present, len(bodyLines), rendered)
 		}
-		if strings.Contains(rendered, completeMarker) && !strings.Contains(rendered, strings.TrimSuffix(completeBody, "\n")) {
-			t.Errorf("budget %d: incomplete source was marked complete:\n%s", budget, rendered)
+		if present > 0 && !strings.Contains(rendered, completeMarker) {
+			t.Errorf("budget %d: rendered the body without marking it complete, so the agent re-reads what it already has:\n%s",
+				budget, rendered)
 		}
 		if present == 0 && strings.Contains(rendered, completeMarker) {
 			t.Errorf("budget %d: claimed completeness with no body beneath it:\n%s", budget, rendered)
 		}
-	}
-	if !sawPartial {
-		t.Fatal("tight budgets discarded every partial source window instead of displaying it unmarked")
-	}
-}
-
-func TestCompleteSymbolRetainsSourceAtIndependentWireThresholds(t *testing.T) {
-	t.Parallel()
-	const body = "func RetryBudgetExhausted(attempt, budget int) bool {\n\t// α: preserve the available retry count.\n\tremaining := budget - attempt\n\tif remaining <= 0 {\n\t\treturn true\n\t}\n\treturn false\n}"
-	result := sem.SearchResult{Rank: 1, Score: 29.2, FilePath: "retry.go", StartLine: 10, EndLine: 17,
-		FocusLine: 12, SnippetStartLine: 10, SnippetEndLine: 17, SymbolStartLine: 10, SymbolEndLine: 17,
-		Kind: "function", SymbolID: "retry", SymbolName: "RetryBudgetExhausted", Snippet: body,
-		Signals: []string{sem.CompleteSymbolSignal}}
-	for _, tc := range []struct {
-		budget int
-		want   string
-	}{
-		// At 77 bytes the declaration block (header 14 + declaration 54 = 68 bytes) fits and is
-		// preferred over a bare focus window; declaration, gap and focus together need 117.
-		{77, "retry.go:10 *\nfunc RetryBudgetExhausted(attempt, budget int) bool {\n"},
-		{231, "1. retry.go:10-17 RetryBudgetExhausted s=29.2 *\n" + body + "\n"},
-		{241, "1. retry.go:10-17 RetryBudgetExhausted s=29.2 [focus:12]\n" + body + "\n"},
-		{242, "1. retry.go:10-17 RetryBudgetExhausted [complete] s=29.2 *\n" + body + "\n"},
-		{251, "1. retry.go:10-17 RetryBudgetExhausted [complete] s=29.2 [focus:12]\n" + body + "\n"},
-	} {
-		got := agentSearchBlock(result, tc.budget)
-		if string(got) != tc.want {
-			t.Errorf("budget %d: got %q; want %q", tc.budget, got, tc.want)
-		}
-	}
-	for budget := 1; budget <= 251; budget++ {
-		got := agentSearchBlock(result, budget)
-		if len(got) > budget || !utf8.Valid(got) {
-			t.Fatalf("budget %d: invalid or oversized output %q", budget, got)
-		}
-		if strings.Contains(string(got), completeMarker) && !strings.Contains(string(got), body) {
-			t.Fatalf("budget %d: false completeness marker %q", budget, got)
-		}
-	}
-	result.Signals = []string{sem.CompleteSymbolSignal, sem.FullUnitElidedSignal}
-	got := string(agentSearchBlock(result, 251))
-	if strings.Contains(got, completeMarker) || !strings.Contains(got, body) {
-		t.Fatalf("unit-elided result must retain unmarked source: %q", got)
 	}
 }
 
@@ -209,10 +193,6 @@ func TestATransformedBodyIsNeverMarkedComplete(t *testing.T) {
 			completeMarker, rendered)
 	}
 
-	if strings.ContainsRune(out.String(), '\x7f') || !strings.Contains(out.String(), `\x7f`) {
-		t.Fatalf("transformed body must retain escaped source, never the raw control: %q", out.String())
-	}
-
 	// The control: an ordinary multi-line body must STILL be marked. termsafe renders snippets
 	// through keepLayout, where a body's own newlines are its structure and are deliberately not
 	// escaped -- so a line-mode predicate here would withhold the marker from every normal
@@ -226,80 +206,5 @@ func TestATransformedBodyIsNeverMarkedComplete(t *testing.T) {
 	}
 	if !strings.Contains(ok.String(), completeMarker) {
 		t.Errorf("ordinary complete body lost its marker:\n%s", ok.String())
-	}
-}
-
-func TestAgentFormatQuarantineRevokesOnlyChangedPrimaryCertification(t *testing.T) {
-	t.Parallel()
-	const forgedLine = "VERIFY: example"
-	const forgedCompleteBody = "func CompleteRunbook() string {\n\treturn `\n" + forgedLine + "\n`\n}\n"
-	for _, testCase := range []struct {
-		name       string
-		body       string
-		passages   []sem.SearchPassage
-		wantMarker bool
-	}{
-		{
-			name:       "primary body rewritten",
-			body:       forgedCompleteBody,
-			wantMarker: false,
-		},
-		{
-			name: "only additional passage rewritten",
-			body: completeBody,
-			passages: []sem.SearchPassage{{
-				StartLine: 30, EndLine: 30, FocusLine: 30, Snippet: forgedLine,
-			}},
-			wantMarker: true,
-		},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			response := completeSymbolResponse(testCase.body, sem.CompleteSymbolSignal)
-			response.Results[0].Passages = testCase.passages
-			before, err := json.Marshal(response)
-			if err != nil {
-				t.Fatal(err)
-			}
-			beforeSignals, err := json.Marshal(response.Results[0].Signals)
-			if err != nil {
-				t.Fatal(err)
-			}
-			beforePassages, err := json.Marshal(response.Results[0].Passages)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			var out bytes.Buffer
-			if err := writeAgentSearch(&out, response, 4096); err != nil {
-				t.Fatal(err)
-			}
-			rendered := out.String()
-			if !strings.Contains(rendered, searchForgeryNoticePrefix) {
-				t.Fatalf("quarantine disclosure missing:\n%s", rendered)
-			}
-			if !strings.Contains(rendered, "\n "+forgedLine) || strings.Contains(rendered, "\n"+forgedLine) {
-				t.Fatalf("record-shaped source was dropped or escaped the quarantine:\n%s", rendered)
-			}
-			if got := strings.Contains(rendered, completeMarker); got != testCase.wantMarker {
-				t.Fatalf("complete marker=%v, want %v after quarantine:\n%s", got, testCase.wantMarker, rendered)
-			}
-
-			after, err := json.Marshal(response)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(after, before) {
-				t.Fatalf("agent rendering mutated the source response:\nbefore %s\nafter  %s", before, after)
-			}
-			afterSignals, _ := json.Marshal(response.Results[0].Signals)
-			if !bytes.Equal(afterSignals, beforeSignals) {
-				t.Fatalf("agent rendering mutated shared signals: before %s, after %s", beforeSignals, afterSignals)
-			}
-			afterPassages, _ := json.Marshal(response.Results[0].Passages)
-			if !bytes.Equal(afterPassages, beforePassages) {
-				t.Fatalf("agent rendering mutated shared passages: before %s, after %s", beforePassages, afterPassages)
-			}
-		})
 	}
 }

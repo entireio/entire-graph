@@ -202,9 +202,7 @@ func validateSearchContextBlockBudget(response SearchResponse) error {
 		return fmt.Errorf("search container map exceeds its allowance: %d > %d",
 			stats.ContainerMapBytes, searchContextBlockAdditiveCap)
 	}
-	// The three agent-asked blocks are additive like the map, so each one is held to its own cap
-	// here. Their measured cost per block is the whole reason they are allowed to be additive: a
-	// warning that cannot fit is a warning that never arrives.
+	// Additive blocks have independent caps rather than displacing ranked source.
 	for _, additive := range []struct {
 		name  string
 		bytes int
@@ -220,6 +218,7 @@ func validateSearchContextBlockBudget(response SearchResponse) error {
 		},
 		{name: "verify command", bytes: stats.VerifyCommandBytes, cap: searchVerifyCommandMaxBytes + stats.VerifyExplainSuffixBytes},
 		{name: "closed set", bytes: stats.ClosedSetBytes, cap: searchClosedSetMaxBytes},
+		{name: "file outline", bytes: stats.FileOutlineBytes, cap: searchOutlineMaxBytes},
 	} {
 		if additive.bytes > additive.cap {
 			return fmt.Errorf("search %s exceeds its allowance: %d > %d",
@@ -238,14 +237,17 @@ func validateSearchContextBlockBudget(response SearchResponse) error {
 		return fmt.Errorf("search closed set byte accounting mismatch: %d != %d",
 			stats.ClosedSetBytes, actual)
 	}
+	if actual := SearchFileOutlineCost(response.FileOutlines); stats.FileOutlineBytes != actual {
+		return fmt.Errorf("search file outline byte accounting mismatch: %d != %d",
+			stats.FileOutlineBytes, actual)
+	}
 	if total := searchContextBlockBytes(stats); stats.ContextBlockBytes != total {
 		return fmt.Errorf("search context block byte accounting mismatch: %d != %d",
 			stats.ContextBlockBytes, total)
 	}
-	// The ceiling. The container map is excluded by policy (it is the additive block, capped
-	// above); every other block is funded from inside the ceiling, so their combined cost plus
-	// the ranking must fit. Checking them one at a time — which is what each funder does on its
-	// own — passes while the sum overshoots.
+	// The displacement-funded blocks and ranked results share a ceiling. Additive blocks
+	// are checked against their independent caps above. Check the funded sum as well as
+	// each component so individually affordable blocks cannot overspend together.
 	if stats.ContextBudgetBytes > 0 {
 		funded := stats.ResultBytes + stats.TypeCardBytes + stats.SignatureTypeBytes
 		if funded > stats.ContextBudgetBytes {

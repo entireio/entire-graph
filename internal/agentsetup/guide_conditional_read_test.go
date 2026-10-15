@@ -47,7 +47,8 @@ func TestEveryGuideKeepsUnmarkedSourceUncertified(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			for _, required := range []string{
 				"An unmarked result is not certified",
-				"a partial window or a whole body whose marker did not fit",
+				"a partial window, or a whole body the producer did not certify",
+				"A certified body that cannot fit with its marker becomes an unmarked locator",
 				"Retrieve only the specific additional span, surrounding context, caller, contract, or second site required for the task",
 			} {
 				if !strings.Contains(guide, required) {

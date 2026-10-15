@@ -194,6 +194,20 @@ class RunShardProgressTests(unittest.TestCase):
             for marker in CONSOLE_MARKERS:
                 self.assertNotIn(marker.encode(), content, f"{marker!r} leaked into {path.name}")
 
+    def test_duration_excludes_heartbeat_shutdown(self):
+        clock = [0.0]
+        original = run_shard.stop_heartbeat
+        def shutdown(*args):
+            clock[0] += 1.0
+            return original(*args)
+        def child(argv, kwargs, index):
+            clock[0] += 0.25
+            return subprocess.CompletedProcess(argv, 0)
+        with mock.patch.object(run_shard.time, "monotonic", side_effect=lambda: clock[0]), mock.patch.object(run_shard, "stop_heartbeat", side_effect=shutdown):
+            _, console, metadata, _ = self.run_direct(child)
+        self.assertEqual([row["durationSeconds"] for row in metadata["invocations"]], [0.25, 0.25])
+        self.assertEqual(console.count("elapsed=0.250s"), 2)
+
     def test_start_and_end_lines_identify_each_assignment_on_the_console(self):
         _, console, _, exit_code = self.run_direct(child_writing_sentinels([0, 7]))
         self.assertEqual(exit_code, 7)
@@ -418,6 +432,20 @@ class RunShardProgressTests(unittest.TestCase):
                 for thread in started:
                     self.assertGreaterEqual(thread.join_calls, 1)
                     self.assertFalse(thread.is_alive())
+
+
+    def test_heartbeat_stop_is_bounded_when_console_writer_is_blocked(self):
+        stop = threading.Event()
+        unblock = threading.Event()
+        thread = threading.Thread(target=unblock.wait, daemon=True)
+        thread.start()
+        try:
+            self.assertFalse(run_shard.stop_heartbeat(stop, thread, timeout=0.01))
+            self.assertTrue(stop.is_set())
+        finally:
+            unblock.set()
+            thread.join(timeout=1)
+        self.assertFalse(thread.is_alive())
 
 
 if __name__ == "__main__":

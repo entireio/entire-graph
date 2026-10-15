@@ -612,6 +612,8 @@ func TestMergeSearchRelatedSitesResultCount(t *testing.T) {
 		{name: "full pool exchanges two redundant tails", topK: 10, redundant: 2, want: 2},
 		{name: "full pool reduces block to one legal exchange", topK: 10, redundant: 1, want: 1},
 		{name: "spare slot keeps both sites with one exchange", topK: 11, redundant: 1, want: 2},
+		{name: "normal overflow absorbs extra redundant locator", topK: 9, redundant: 2, want: 1},
+		{name: "normal overflow still funds both sites", topK: 8, redundant: 4, want: 2},
 		{name: "last file mentions cannot fund sites", topK: 10, want: 0},
 		{name: "rendered source cannot fund a slot", topK: 10, redundant: 2, protectSource: true, want: 1},
 		{name: "byte and count limits both bind", topK: 10, redundant: 2, tightBytes: true, want: 2},
@@ -619,7 +621,7 @@ func TestMergeSearchRelatedSitesResultCount(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			results := mergeTestResults(10, "head source")
-			for _, index := range []int{5, 7}[:tc.redundant] {
+			for _, index := range []int{5, 7, 8, 9}[:tc.redundant] {
 				results[index].FilePath = results[0].FilePath
 				results[index].Snippet = strings.Repeat("x", 1200)
 			}

@@ -257,3 +257,25 @@ func TestMergeSearchContractContextNoBlocksIsIdentity(t *testing.T) {
 		t.Fatalf("merged has %d entries, want the original %d", len(merged), len(results))
 	}
 }
+
+func TestMergeSearchContractCardSurvivesExpandedRelatedPool(t *testing.T) {
+	for _, withTest := range []bool{false, true} {
+		results := contractPayload()
+		blocks := searchContractContext{card: contractCard()}
+		if withTest {
+			entry := contractTestEntry()
+			blocks.test = &entry
+			blocks.note = &SearchCoverageNote{Symbol: "head", Total: 2}
+		}
+		merged, card, note, tests, entries := mergeSearchContractContext(results, blocks, 0, len(results)-2)
+		if !reflect.DeepEqual(merged, results) {
+			t.Fatal("slot-free card displaced existing related results")
+		}
+		if !reflect.DeepEqual(card, contractCard()) || entries != len(contractCard()) {
+			t.Fatal("expanded related pool dropped slot-free card")
+		}
+		if note != nil || tests != 0 {
+			t.Fatal("covering test exceeded the available result slots")
+		}
+	}
+}

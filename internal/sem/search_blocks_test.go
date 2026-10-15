@@ -5,6 +5,43 @@ import (
 	"testing"
 )
 
+func TestContextBlockBudgetValidatesFileOutlineCostAndCap(t *testing.T) {
+	outline := []SearchFileOutline{{FilePath: "a.go"}}
+	baseCost := SearchFileOutlineCost(outline)
+	for _, tc := range []struct {
+		name              string
+		pathBytes, offset int
+		omit              bool
+		want              string
+	}{
+		{name: "valid additive outline", pathBytes: len("a.go")},
+		{name: "exact cap", pathBytes: len("a.go") + searchOutlineMaxBytes - baseCost},
+		{name: "underreported", pathBytes: len("a.go"), offset: -1, want: "file outline byte accounting mismatch"},
+		{name: "missing body", pathBytes: len("a.go"), omit: true, want: "file outline byte accounting mismatch"},
+		{name: "over cap", pathBytes: len("a.go") + searchOutlineMaxBytes - baseCost + 1, want: "file outline exceeds its allowance"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outlines := []SearchFileOutline{{FilePath: strings.Repeat("a", tc.pathBytes)}}
+			response := SearchResponse{FileOutlines: outlines, Stats: SearchStats{
+				ResultBytes: 1000, ContextBudgetBytes: 1000,
+				FileOutlineBytes: SearchFileOutlineCost(outlines) + tc.offset,
+			}}
+			if tc.omit {
+				response.FileOutlines = nil
+			}
+			response.Stats.ContextBlockBytes = searchContextBlockBytes(response.Stats)
+			err := validateSearchContextBlockBudget(response)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestSearchAuxiliaryBlocksShareResultSlots(t *testing.T) {
 	for _, tc := range []struct {
 		name                                string
