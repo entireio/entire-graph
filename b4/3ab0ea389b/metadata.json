@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "b43ab0ea389b",
+  "strategy": "manual-commit",
+  "branch": "codex/batch242-final-check",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/agents.md",
+    "internal/agentsetup/claude_hook.go",
+    "internal/agentsetup/claude_hook_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b4/3ab0ea389b/0/metadata.json",
+      "transcript": "/b4/3ab0ea389b/0/full.jsonl",
+      "compact_transcript": "/b4/3ab0ea389b/0/transcript.jsonl",
+      "content_hash": "/b4/3ab0ea389b/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 28810,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1999104,
+    "output_tokens": 7361,
+    "api_call_count": 12
+  }
+}
