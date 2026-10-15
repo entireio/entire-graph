@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +42,7 @@ type goSignatureKey struct {
 
 type goFileImports struct {
 	signatures  map[goSignatureCacheKey]goSignatureKey
+	budgetFiles map[string]bool
 	mu          sync.Mutex
 	readContent contentReader
 	modules     goModuleIndex
@@ -179,10 +181,41 @@ func (x *goFileImports) signatureKey(symbol SymbolRecord) goSignatureKey {
 	}
 	var result goSignatureKey
 	if scope := x.forFile(symbol.FilePath); scope != nil {
-		result.text, result.known = goSignatureEvidenceKey(symbol.Signature, scope)
+		walk := &goEvidenceWalk{seen: map[string]bool{}}
+		result.text, result.known = goSignatureEvidenceKeyWithWalk(symbol.Signature, scope, walk)
+		if walk.exhausted {
+			if x.budgetFiles == nil {
+				x.budgetFiles = map[string]bool{}
+			}
+			x.budgetFiles[symbol.FilePath] = true
+		}
 	}
 	x.signatures[cacheKey] = result
 	return result
+}
+
+// partialFailures is read after relation workers finish. The same lock used by
+// signature matching keeps this deterministic if a future caller reads earlier.
+func (x *goFileImports) partialFailures() []PartialFailure {
+	if x == nil {
+		return nil
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	paths := make([]string, 0, len(x.budgetFiles))
+	for path := range x.budgetFiles {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	failures := make([]PartialFailure, 0, len(paths))
+	for _, path := range paths {
+		failures = append(failures, PartialFailure{
+			Code: "E_GO_SIGNATURE_BUDGET_EXCEEDED", Severity: "warning", FilePath: path,
+			EffectOnCompleteness: "Go signature evidence exceeded its work or key-size budget; inferred interface implementation calls omitted where signatures cannot be compared",
+			Detail:               "Signature evidence expansion exceeded the bounded type-node or aggregate key-byte limit",
+		})
+	}
+	return failures
 }
 
 func compareGoSignatures(want, got string, a, b *goTypeScope) goTypeComparison {
@@ -197,7 +230,10 @@ func compareGoSignatures(want, got string, a, b *goTypeScope) goTypeComparison {
 	return goTypeMatch
 }
 func goSignatureEvidenceKey(signature string, scope *goTypeScope) (string, bool) {
-	walk := &goEvidenceWalk{seen: map[string]bool{}}
+	return goSignatureEvidenceKeyWithWalk(signature, scope, &goEvidenceWalk{seen: map[string]bool{}})
+}
+
+func goSignatureEvidenceKeyWithWalk(signature string, scope *goTypeScope, walk *goEvidenceWalk) (string, bool) {
 	normalized, ok := goNormalizedMethodSignatureWithWalk(signature, walk)
 	if !ok {
 		return "", false

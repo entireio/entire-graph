@@ -6470,6 +6470,12 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 	}
 
+	if recordFailure != nil {
+		for _, failure := range goFileImportIndex.partialFailures() {
+			recordFailure(failure)
+		}
+	}
+
 	if needsOverrides {
 		for _, r := range overrideRelations(inheritanceEdges, methodsByContainer) {
 			if shouldStop != nil && shouldStop() {
@@ -24890,6 +24896,13 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 			}
 		}
 		detail := goRouteRegistrationsDetailed(content, constantsByFile.forFile(file.Path, content))
+		if detail.parseFailed {
+			failures = append(failures, PartialFailure{
+				Code: "E_PARSE_ERROR", Severity: "warning", FilePath: file.Path,
+				EffectOnCompleteness: "Go route binding parse failed; only conservative named-handler token recovery retained and generic route-literal fallback omitted",
+				Detail:               "Go parser rejected the source, including package-clause recovery",
+			})
+		}
 		if detail.exhausted {
 			failures = append(failures, PartialFailure{
 				Code:                 "E_GO_ROUTE_BUDGET_EXCEEDED",
