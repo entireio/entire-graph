@@ -18,20 +18,59 @@ import (
 func TestNormalGuideStaysDirective(t *testing.T) {
 	t.Parallel()
 
-	const obligation = "Your FIRST action on any task that requires finding code MUST be ONE Graph query"
+	const obligation = "Your first action on a task that requires finding code MUST be a Graph query"
 
-	// The command is pinned whole, --format agent included. That flag is not incidental:
-	// the default json rendering measured 17595 B against the agent rendering's 6011 B for
-	// the same query and the same results, so a guide that drops it silently triples what
-	// every agent pays to follow it. See the cost note in guide.go.
-	const command = `entire graph query --repo . --profile full --format agent --query "<task>"`
+	// The obligation covers EVERY question, not the first one. "MUST be ONE Graph query" was
+	// obeyed to the letter in a fresh-environment baseline: one query, then grep and sed for the
+	// rest of the task, zero def/neighbors/impact calls even on a blast-radius task.
+	const everyQuestion = "each later locate or relationship question MUST also go through Graph"
+
+	// The commands are pinned whole. --format agent is a cost decision (json measured 17595 B
+	// against agent's 6011 B for the same results; see guide.go), --head is the cache (every
+	// unflagged baseline call rebuilt the working tree for 13-16 s), --profile full is what makes
+	// query --head reuse the cache `index` warms, and 4096 is the budget study 5 measured best.
+	// impact rejects --format agent and def's agent format is its text format, so those two lines
+	// must not ask for it.
+	commands := []string{
+		`entire graph query --repo . --profile full --head --format agent --max-context-bytes 4096 --query "<task>"`,
+		`entire graph def --repo . --head --max-context-bytes 4096 <Name>`,
+		`entire graph neighbors --repo . --head --format agent --max-context-bytes 4096 --symbol <Name> --direction in`,
+		`entire graph impact --repo . --head --max-context-bytes 4096 --symbol <Name>`,
+	}
+
+	// Each of these is an obligation the baseline showed agents skipping or misreading.
+	obligations := map[string]string{
+		"grep is for literals only":   "Use grep/rg only for literal strings, config",
+		"grep is not for references":  "not grep, for definitions, callers, references and dependents",
+		"--head is the default":       "Drop --head only when the answer depends on uncommitted edits",
+		"no timeout wrapper":          "it needs no timeout wrapper",
+		"coverage notice is not loss": "It does not mean the results are partial",
+	}
 
 	for name, guide := range map[string]string{"GraphGuide": GraphGuide, "CombinedGuide": CombinedGuide} {
 		if !strings.Contains(guide, obligation) {
 			t.Errorf("%s lost the first-action obligation: agents do not call a tool they are told is optional", name)
 		}
-		if !strings.Contains(guide, command) {
-			t.Errorf("%s no longer shows the exact command to run", name)
+		if !strings.Contains(guide, everyQuestion) {
+			t.Errorf("%s lost the every-question obligation: a first-query-only rule is followed once and then grep takes over", name)
+		}
+		for _, command := range commands {
+			if !strings.Contains(guide, command) {
+				t.Errorf("%s no longer shows the exact command %q", name, command)
+			}
+		}
+		// Compared with whitespace folded, so rewrapping the guide does not trip the pin.
+		flat := strings.Join(strings.Fields(guide), " ")
+		for what, text := range obligations {
+			if !strings.Contains(flat, strings.Join(strings.Fields(text), " ")) {
+				t.Errorf("%s lost an obligation (%s): %q", name, what, text)
+			}
+		}
+		// "ONE" capped graph use at a single call. No cap of any spelling may come back.
+		for _, cap := range []string{"ONE Graph query", "one Graph query", "a single Graph query", "only once"} {
+			if strings.Contains(guide, cap) {
+				t.Errorf("%s reintroduced a one-query cap %q", name, cap)
+			}
 		}
 
 		// Each of these shipped, and each is an exit a model takes almost always, because
