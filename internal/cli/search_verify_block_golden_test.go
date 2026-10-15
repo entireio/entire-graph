@@ -21,8 +21,9 @@ import (
 // The non-agent formats remain checked against the historical combined golden, while
 // TestSearchVerifyBlockDefaultIsExplicitOn verifies the current public default/flag/env
 // equivalence end to end. Regenerate only the integration golden with
-// VERIFY_BLOCK_GOLDEN_OUT=testdata/verify_block_default_golden_integration.json
-// go test -run TestVerifyBlockGoldenGenerate ./internal/cli.
+//
+//	VERIFY_BLOCK_GOLDEN_OUT=testdata/verify_block_default_golden_integration.json \
+//	    go test -run TestVerifyBlockGoldenGenerate ./internal/cli
 const verifyBlockGoldenPath = "testdata/verify_block_default_golden_integration.json"
 const verifyBlockLegacyGoldenPath = "testdata/verify_block_default_golden_pre306_3d047d40.json"
 
