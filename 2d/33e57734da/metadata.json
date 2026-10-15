@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "2d33e57734da",
+  "strategy": "manual-commit",
+  "branch": "codex/trail214-ranking-evidence",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CHANGELOG.md",
+    "docs/search.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/2d/33e57734da/0/metadata.json",
+      "transcript": "/2d/33e57734da/0/full.jsonl",
+      "compact_transcript": "/2d/33e57734da/0/transcript.jsonl",
+      "content_hash": "/2d/33e57734da/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1375,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 379904,
+    "output_tokens": 759,
+    "api_call_count": 1
+  }
+}
