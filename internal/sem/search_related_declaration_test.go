@@ -206,3 +206,63 @@ func TestSearchRelatedDeclarationMergeBudget(t *testing.T) {
 		})
 	}
 }
+
+// Keep the real parser-to-provider-to-related-locator path in the contract:
+// annotation start and declaration name line must not be conflated in the
+// metadata conversion that the in-memory selection tests intentionally bypass.
+func TestSearchRelatedDeclarationFromParsedAnnotatedSource(t *testing.T) {
+	const source = `class Handler {
+  @Policy(
+    name = "alphaHandler"
+  )
+  public void alphaHandler() {
+    validate("alpha");
+  }
+
+  @Policy(
+    name = "betaHandler"
+  )
+  public void betaHandler() {
+    validate("beta");
+  }
+}
+`
+	repo := t.TempDir()
+	writeFile(t, repo, "Handler.java", source)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "parsed-related")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var anchor, peer SymbolRecord
+	byID := map[string]SymbolRecord{}
+	byFile := map[string][]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		byID[symbol.ID] = symbol
+		byFile[symbol.FilePath] = append(byFile[symbol.FilePath], symbol)
+		switch symbol.Name {
+		case "alphaHandler":
+			anchor = symbol
+		case "betaHandler":
+			peer = symbol
+		}
+	}
+	if anchor.ID == "" || peer.ID == "" || peer.StartLine != 9 || peer.nameLine != 12 {
+		t.Fatalf("parsed fixture: anchor=%+v peer=%+v", anchor, peer)
+	}
+	relations := append(snapshot.Relations, RelationRecord{Type: "SIMILAR_TO", FromID: anchor.ID, ToID: peer.ID})
+	for _, kind := range []searchRelatedKind{searchRelatedSibling, searchRelatedNearDupe} {
+		var sites []searchRelatedSite
+		if kind == searchRelatedSibling {
+			sites = searchRelatedSiblingSites(anchor, buildSearchQuery("handler"), relations, byID, byFile, nil, nil)
+		} else {
+			sites = searchRelatedNearDuplicateSites(anchor, buildSearchQuery("handler"), relations, byID, byFile, nil, nil)
+		}
+		if len(sites) != 1 || sites[0].symbol.ID != peer.ID || sites[0].line != 12 {
+			t.Fatalf("%s parsed sites: %+v", kind, sites)
+		}
+		result, ok := searchRelatedResult(sites[0], strings.Split(strings.TrimSuffix(source, "\n"), "\n"))
+		if !ok || result.SnippetStartLine != 12 || result.Snippet != "  public void betaHandler() {" {
+			t.Fatalf("%s parsed locator: %+v, ok=%v", kind, result, ok)
+		}
+	}
+}
