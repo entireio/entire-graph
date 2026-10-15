@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "dc335b755de1",
+  "strategy": "manual-commit",
+  "branch": "codex/batch242-final-check",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/agentguide_commands_integration_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/dc/335b755de1/0/metadata.json",
+      "transcript": "/dc/335b755de1/0/full.jsonl",
+      "compact_transcript": "/dc/335b755de1/0/transcript.jsonl",
+      "content_hash": "/dc/335b755de1/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6872,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 683904,
+    "output_tokens": 2564,
+    "api_call_count": 6
+  }
+}
