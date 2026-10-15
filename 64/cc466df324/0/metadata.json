@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "64cc466df324",
+  "session_id": "01a1304c-f8bd-78e0-8932-e7da79a54f3b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-15T07:19:35.905532Z",
+  "branch": "codex/trail214-ranking-evidence",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "bench/search/README.md",
+    "bench/search/corpus-idf-results.json"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6.1-sol",
+  "checkpoint_transcript_start": 11918,
+  "transcript_lines_at_start": 11918,
+  "compact_transcript_start": 1431,
+  "token_usage": {
+    "input_tokens": 38295,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4445056,
+    "output_tokens": 15985,
+    "api_call_count": 13
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-15T07:19:35.431058Z",
+    "agent_lines": 11,
+    "agent_removed": 1,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 11,
+    "total_lines_changed": 12,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
