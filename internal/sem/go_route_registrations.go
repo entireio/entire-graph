@@ -48,10 +48,11 @@ type goRouteInline struct {
 // composed). The pattern-level route literal fallback must not read those
 // spans: their route is decided here.
 type goRouteDetail struct {
-	regs      []goHTTPRouteRegistration
-	inline    []goRouteInline
-	masks     [][2]int
-	exhausted bool
+	regs        []goHTTPRouteRegistration
+	inline      []goRouteInline
+	masks       [][2]int
+	exhausted   bool
+	parseFailed bool
 }
 
 var goRouteMethodNames = map[string]bool{
@@ -80,7 +81,7 @@ func goRouteRegistrationsDetailed(content string, constants map[string]string) g
 		// No registration here, but a Group/Route/Mount/PathPrefix/
 		// StripPrefix prefix is still not a route of this file.
 		receivers := resolveGoRouteReceivers(content, constants)
-		return goRouteDetail{masks: receivers.masks, exhausted: receivers.exhausted}
+		return goRouteDetail{masks: receivers.masks, exhausted: receivers.exhausted, parseFailed: !receivers.parsed && !receivers.exhausted}
 	}
 	receivers := resolveGoRouteReceivers(content, constants)
 	switch {
@@ -93,7 +94,10 @@ func goRouteRegistrationsDetailed(content string, constants map[string]string) g
 		detail.masks = receivers.masks
 		return detail
 	default:
-		return goRouteEmit(goRouteFallbackRegistrations(content), constants)
+		detail := goRouteEmit(goRouteFallbackRegistrations(content), constants)
+		detail.masks = receivers.masks
+		detail.parseFailed = true
+		return detail
 	}
 }
 

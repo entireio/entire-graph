@@ -284,6 +284,11 @@ func resolveGoRouteReceiversWithBudget(content string, constants map[string]stri
 		fset = token.NewFileSet()
 		file, err = parser.ParseFile(fset, "", clause+content, parser.SkipObjectResolution|parser.ParseComments)
 		if err != nil {
+			// Token recovery may keep named registrations, but generic literal
+			// inference must not revisit comments, group prefixes or unknown scopes.
+			if len(content) > 0 {
+				receivers.masks = [][2]int{{0, len(content)}}
+			}
 			return receivers
 		}
 		shift = len(clause)
