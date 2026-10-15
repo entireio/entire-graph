@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "cbef37a1c583",
+  "strategy": "manual-commit",
+  "branch": "codex/batch207-ready",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/test.yml",
+    "bench/locate/test_review_guards.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/cb/ef37a1c583/0/metadata.json",
+      "transcript": "/cb/ef37a1c583/0/full.jsonl",
+      "compact_transcript": "/cb/ef37a1c583/0/transcript.jsonl",
+      "content_hash": "/cb/ef37a1c583/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 10039,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1050368,
+    "output_tokens": 3317,
+    "api_call_count": 7
+  }
+}
