@@ -65,8 +65,9 @@ or task resolution. Do not reread the same unchanged span merely to duplicate it
 The marker never waives a read your editing tool requires before it changes a file:
 when the tool requires one, perform that read. If you cannot establish that a span is
 unchanged since the query, treat it as changed and read it.
-An unmarked result is not certified: it may be a partial window or a whole body whose
-marker did not fit. Retrieve only the specific additional span, surrounding context,
+An unmarked result is not certified: it may be a locator, a partial window, or a whole
+body the producer did not certify. A certified body that cannot fit with its marker
+becomes an unmarked locator. Retrieve only the specific additional span, surrounding context,
 caller, contract, or second site required for the task. If edits, formatting, generation,
 checkout, or another writer may have changed the relevant source, verify that current
 span before reusing remembered output. A --head result does not cover working-tree

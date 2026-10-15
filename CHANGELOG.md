@@ -27,11 +27,13 @@ auto-generated notes on
 - Under a binding budget, agent-format search now keeps every ranked location with its rank, name and score, and shares the remaining bytes towards the head of the ranking, passing any share a result cannot use on to the others. The top hit no longer degrades to a bare `path:line *` to fit one more body line.
 - Upgraded the Go toolchain to 1.27.
 - Improved snapshot, search, and analyze performance and substantially reduced memory allocation, and made `stats` return a fast, single-line answer instead of a full rescan.
-- Stats and statusline now show a signed, explicitly unvalidated 1:1 context model, retaining losses and distinguishing unavailable comparisons from zero; legacy JSON fields remain compatible.
+- Stats leads with observed follow-up rates and a signed modeled balance; the statusline retains its explicitly unvalidated 1:1 context model. Both retain losses and distinguish unavailable comparisons from zero; legacy JSON fields remain compatible.
 - Aligned Graph's trail runners with Brain's and hardened CI with Windows test sharding and safer nightly prerelease publishing.
 
 ### Fixed
 
+- Stats attributes located paths only to result rows, excludes diagnostic and quoted-source paths, and no longer credits a shared follow-up read as an avoided read.
+- Preserved editing-tool read prerequisites and unknown-freshness fallback in every generated guide, with a guard keeping the checked-in activation artifact synchronized with the installer.
 - The normal agent guide no longer caps graph use at ONE query: it asks for a Graph call on each locate or relationship question, names `def`, `neighbors` and `impact` for follow-ups, and gives every command with `--head` and a 4 KiB budget. Agents following the old wording ran one uncached query, then switched to grep.
 - Corrected search term-rarity weighting to use repository-wide content frequencies when exact counts are available, with inspected-sample fallback when they are not. This can change result ordering without changing symbols or the output schema.
 - Corrected transcript exploration classification for quoted commands, pipeline tails and writes; added signed stats model totals while retaining legacy JSON fields. Search `stats.context_block_bytes` now includes file outlines and validates their measured cost and independent cap.

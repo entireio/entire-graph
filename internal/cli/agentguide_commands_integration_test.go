@@ -2,11 +2,35 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/entireio/entire-graph/internal/agentsetup"
 )
+
+// The preview is the installer's render path. Keep the version-controlled
+// activation artifact in sync so existing and newly initialized agents agree.
+func TestCheckedInGuideMatchesInstallerPreview(t *testing.T) {
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join(repo, ".entire", "agent-guide.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"agent-guide", "--repo", repo, "--normal"}); err != nil {
+		t.Fatal(err)
+	}
+	// Git may check documentation out with CRLF on Windows; compare its text.
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Fatal("checked-in guide differs from the installer preview; regenerate it with agent-guide")
+	}
+}
 
 // Execute the complete shipped examples, rather than accepting their flags one
 // at a time. Placeholder substitution is the only adaptation besides pointing

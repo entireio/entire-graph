@@ -159,21 +159,29 @@ back to the per-user cache directory.
 
 ## Reports and the status line
 
-`entire graph stats --repo .` prints a signed **1:1 context model** from local
-session transcripts, not measured savings. It assumes each observed graph locate
-result replaces one exploration result at that session's average result size,
-subtracts graph bytes, retains negative sessions, and roughly converts bytes/4
-to estimated tokens. A positive value is a modeled reduction; a negative value
-is a modeled increase. This does not control task quality, query equivalence or
-output truncation and cannot establish causal or billed-token savings.
+`entire graph stats --repo .` leads with **observed follow-up** from local session
+transcripts: the next five calls after a locate result arrived classify it as a
+re-query, a read of a named file, no follow-up, censored, an error, or ineligible.
+Only result rows name located files; coverage, VERIFY and quoted source do not.
+A read shared by multiple results is a follow-up for all of them, with its span
+attributed to one result. All classes reconcile to the observed-result denominator.
+An absent follow-up is not proof of an avoided call.
+
+The signed modeled balance assumes each no-follow-up result replaced one average
+exploration result of its session, subtracts all locate-result bytes and converts
+bytes/4 to estimated tokens. It retains losses and states its credited population.
+Task quality, query equivalence and output truncation are not controlled, so this
+cannot establish causal or billed-token savings.
 
 The comparison is `unavailable` unless a session has both result types; an
 available zero can also be cancellation between positive and negative sessions.
 `--verbose` includes observed usage, transcript-reported tokens, comparison
-population and assumptions. `--format json` remains additive and independent
-of `--verbose`: human output uses `estimated_savings_est_tokens_unfloored` and
-`sessions_with_savings_comparison`. Legacy positive-only savings, percentage and
-graph-first fields are retained for compatibility, not endorsed as evidence.
+population and assumptions, plus the legacy unvalidated 1:1 context model.
+`--format json` remains additive and independent of `--verbose`. The status line
+continues to use `estimated_savings_est_tokens_unfloored` and
+`sessions_with_savings_comparison`; the default stats headline uses the observed
+follow-up and `modeled_balance_*` fields. Legacy positive-only savings, percentage
+and graph-first fields are retained for compatibility, not endorsed as evidence.
 
 `--since` prunes transcripts by file mtime before parsing them, and unchanged
 transcripts are memoised under the cache directory keyed on file identity plus

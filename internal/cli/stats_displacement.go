@@ -2,10 +2,15 @@ package cli
 
 import (
 	"encoding/json"
+	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 // Observed follow-up.
@@ -25,7 +30,10 @@ import (
 //   - FOLLOW-UP READ: first, the agent read a file whose path overlaps a path the result named.
 //     Sub-bucketed by line span: OVERLAPPING (the read covers lines the result actually delivered),
 //     DIFFERENT REGION (both spans known, disjoint) or UNKNOWN SPAN (a span is unknown, or the file
-//     was edited in between so delivered lines may be stale).
+//     was edited in between so delivered lines may be stale). One read is span-attributed to ONE
+//     result (the latest delivered). Any other result whose named file that same read opened is a
+//     SHARED READ: still a follow-up read, never NO FOLLOW-UP, but not counted again in a span
+//     sub-bucket.
 //   - NO FOLLOW-UP: a full window of followUpWindow calls was observed after delivery and none of
 //     them qualified.
 //   - CENSORED: fewer than followUpWindow calls followed delivery before the transcript ended, and
@@ -51,19 +59,21 @@ const (
 	followUpReadOverlapping = "o"
 	followUpReadDifferent   = "g"
 	followUpReadUnknownSpan = "u"
+	followUpReadShared      = "s" // the read was span-attributed to a sibling result
 	followUpCensored        = "c"
 	followUpError           = "e"
 	followUpIneligible      = "x"
 )
 
-// followUpReadClasses are the three FOLLOW-UP READ sub-buckets.
-var followUpReadClasses = []string{followUpReadOverlapping, followUpReadDifferent, followUpReadUnknownSpan}
+// followUpReadClasses are the four FOLLOW-UP READ sub-buckets.
+var followUpReadClasses = []string{followUpReadOverlapping, followUpReadDifferent, followUpReadUnknownSpan, followUpReadShared}
 
 // graphLookupVerbs are graph verbs that answer "where is X / what touches X". Any of them after a
 // delivered locate result is a re-query. Meta verbs (stats, index, doctor, help, ...) are not.
 var graphLookupVerbs = map[string]bool{
 	"query": true, "search": true, "neighbors": true, "impact": true, "def": true, "explain": true,
-	"symbols": true, "edges": true, "snapshot-query": true,
+	"symbols": true, "edges": true,
+	"snapshot": true, "snapshot-query": true,
 }
 
 // shellSearchCommands / shellReadCommands split bashExploreCommands into "asks again" and "opens a
@@ -223,22 +233,83 @@ func shellStageOperands(stage string) []string {
 	return operands
 }
 
-// graphOutputPathPattern matches file-path-shaped tokens in graph output, text or JSON: optional
-// directories, then a name with a lowercase extension (`internal/cli/stats.go`, `main.go`). The
-// lowercase-extension rule keeps Go selectors like `fmt.Errorf` or `store.List` from being read
-// as paths. Extensionless files (Makefile, Dockerfile) are NOT matched — see the help text.
-var graphOutputPathPattern = regexp.MustCompile(`[A-Za-z0-9_@+~./-]*[A-Za-z0-9_-]\.[a-z][a-z0-9]{0,7}\b`)
+// Named paths come from a graph answer's RESULT ROWS only.
+//
+// A graph result names a file when it LOCATES something in it. Everything else the renderers print
+// around the rows is about the run, not the answer: the Index:/latency line, the Coverage: and
+// Completeness: banners and their "- warning"/"- partial" diagnostic lines (which name the files
+// that FAILED to parse), the VERIFY: block (a command to run), LOW CONFIDENCE:, the compact "!"/"C:"
+// forms of all of those, and prose such as "No search results." or "No symbols matched". Reading
+// paths out of the whole output made a zero-result query that printed a degraded-coverage banner
+// look like an answer naming that file — eligible, and then credited as NO FOLLOW-UP.
+//
+// So text output yields only LOCATED tokens: a path immediately followed by ":<line>", which is how
+// every result row prints (query/search "1. path:10-20", neighbors/impact "Name (path:40)", def
+// "path:6  function Foo", call-site windows "  path:4-6", closed-set sites), plus the two row forms
+// that carry no line — impact's co-change "- path [detail]" and "CONTAINER MAP path [n lines]".
+// JSON output yields "file_path" values outside the diagnostic sections, whether it is the whole
+// output or one line of it (after an echoed header, or in a persisted-output preview that clipped
+// it). A response that says it found nothing ("No search results.", or an empty "results" array)
+// names nothing.
+
+// graphPathToken is a file-path-shaped token: optional directories, then a name with a lowercase
+// extension. The lowercase-extension rule keeps Go selectors like `fmt.Errorf` from being read as
+// paths. Extensionless files (Makefile, Dockerfile) are NOT matched — see the help text.
+const graphPathToken = `[A-Za-z0-9_@+~./-]*[A-Za-z0-9_-]\.[a-z][a-z0-9]{0,7}`
+
+var (
+	// graphLocatedPathPattern: a path token followed by ":<digit>", not glued to a preceding
+	// path character (RE2 has no lookbehind, so the boundary is consumed as group 0's prefix).
+	graphLocatedPathPattern = regexp.MustCompile(`(?:^|[^A-Za-z0-9_@+~./-])(` + graphPathToken + `):[0-9]`)
+	// Located tokens count only in renderer record rows, never ordinary source text.
+	graphLocatedRowPattern = regexp.MustCompile(`^(?:[ \t]*(?:[0-9]+\. )?` + graphPathToken + `:[0-9]|(?:Focus|Impact): .* \(` + graphPathToken + `:[0-9]|[-<>] .* \(` + graphPathToken + `:[0-9]|[ \t]+(?:owner|also declared|supertypes|implemented by|fields|nested|impl [^:]+): .*` + graphPathToken + `:[0-9])`)
+	// graphLinelessRowPattern: the two result-row forms that name a file without a line.
+	graphLinelessRowPattern = regexp.MustCompile(`^(?:- |CONTAINER MAP )(` + graphPathToken + `) \[`)
+	graphRankedRowPattern   = regexp.MustCompile(`^[0-9]+\. ` + graphPathToken + `:[0-9]`)
+	// graphSnippetLinePattern: a numbered source line inside a delivered window ("  4 | code",
+	// "   6→ code"). Its text is repository content, not a row.
+	graphSnippetLinePattern = regexp.MustCompile(`^\s*[0-9]+\s*(?:\||→)`)
+)
+
+// graphNoResultsLine is what query/search print when nothing matched.
+const graphNoResultsLine = "No search results."
+
+// graphTextSingleLineHeads are column-0 heads of one-line, non-result records.
+var graphTextSingleLineHeads = []string{
+	"Index:", "Index not cached", "LOW CONFIDENCE:", "!", "C:", "No symbols matched", "No exact match",
+	"Blast radius:", searchForgeryNoticePrefix,
+}
+
+// graphJSONDiagnosticKeys are JSON members that describe the run, not the answer. Their file_path
+// values name files that failed to parse or were skipped, never located results.
+var graphJSONDiagnosticKeys = map[string]bool{
+	"completeness": true, "completeness_scope": true, "partial_failures": true, "warnings": true,
+	"verify_command": true, "stats": true, "tree": true, "repo_root": true,
+}
 
 // maxGraphOutputPaths bounds per-call memory on adversarially large outputs.
 const maxGraphOutputPaths = 512
 
+// graphKnownExtensions is the provider's own extension set. A slash-less token must carry one of
+// them, so prose such as "e.g." or a lowercase selector like `store.list` is not a file.
+var graphKnownExtensions = sync.OnceValue(func() map[string]bool {
+	known := map[string]bool{}
+	for _, extension := range sem.Capabilities().SupportedFileExtensions {
+		known[strings.ToLower(extension)] = true
+	}
+	return known
+})
+
 func graphOutputPaths(text string) []string {
-	matches := graphOutputPathPattern.FindAllString(text, -1)
+	candidates, ok := graphJSONOutputPaths(text)
+	if !ok {
+		candidates = graphTextOutputPaths(text)
+	}
 	seen := map[string]bool{}
 	var paths []string
-	for _, match := range matches {
-		path := normaliseOverlapPath(match)
-		if path == "" || seen[path] {
+	for _, candidate := range candidates {
+		path := normaliseOverlapPath(candidate)
+		if path == "" || seen[path] || !plausibleGraphPath(path) {
 			continue
 		}
 		seen[path] = true
@@ -248,6 +319,188 @@ func graphOutputPaths(text string) []string {
 		}
 	}
 	return paths
+}
+
+// plausibleGraphPath rejects slash-less tokens whose extension the provider does not index.
+func plausibleGraphPath(path string) bool {
+	if strings.Contains(path, "/") {
+		return true
+	}
+	return graphKnownExtensions()[strings.ToLower(filepath.Ext(path))]
+}
+
+// graphJSONResultKeys open the answer sections of query/search, neighbors, impact and def JSON.
+var graphJSONResultKeys = map[string]bool{
+	"results": true, "matches": true, "match_bodies": true, "definitions": true, "focus": true, "callers": true, "callees": true,
+	"type_consumers": true, "data_flows": true, "co_changes": true, "siblings": true, "declarations": true,
+}
+
+var (
+	// The value is a whole JSON string literal, escapes included, decoded before use.
+	graphJSONFilePathPattern = regexp.MustCompile(`"file_path"\s*:\s*("(?:[^"\\]|\\.)*")`)
+	graphJSONOpenerPattern   = regexp.MustCompile(`"([A-Za-z_]+)"\s*:\s*[\[{]`)
+)
+
+// graphJSONOutputPaths handles output that is a JSON object. ok=false means "not JSON": the caller
+// applies the text rules. Output that parses whole is walked; output that starts like a JSON object
+// but does not parse (clipped by `| head`, truncated) is scanned in order, keeping only file_path
+// values that follow an answer-section opener and no later diagnostic-section opener.
+func graphJSONOutputPaths(text string) ([]string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "{") {
+		return nil, false
+	}
+	var root map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &root); err != nil {
+		return graphClippedJSONPaths(trimmed), true
+	}
+	if results, isList := root["results"].([]any); isList && len(results) == 0 {
+		return nil, true
+	}
+	var paths []string
+	var walk func(value any)
+	walk = func(value any) {
+		if len(paths) >= maxGraphOutputPaths {
+			return
+		}
+		switch typed := value.(type) {
+		case map[string]any:
+			// Sorted, so the same output always names its paths in the same order.
+			for _, key := range slices.Sorted(maps.Keys(typed)) {
+				child := typed[key]
+				if graphJSONDiagnosticKeys[key] {
+					continue
+				}
+				if path, isString := child.(string); isString && key == "file_path" {
+					paths = append(paths, path)
+					continue
+				}
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	return paths, true
+}
+
+// graphClippedJSONPaths scans unparseable JSON. Sections are tracked by their opening key only, so a
+// nested object (an endpoint, a symbol) never changes which section a file_path belongs to, and a
+// path before any answer section (the run's own diagnostics) is never taken.
+func graphClippedJSONPaths(text string) []string {
+	openers := graphJSONOpenerPattern.FindAllStringSubmatchIndex(text, -1)
+	var paths []string
+	inAnswer := false
+	next := 0
+	for _, match := range graphJSONFilePathPattern.FindAllStringSubmatchIndex(text, -1) {
+		for ; next < len(openers) && openers[next][0] < match[0]; next++ {
+			key := text[openers[next][2]:openers[next][3]]
+			switch {
+			case graphJSONResultKeys[key]:
+				inAnswer = true
+			case graphJSONDiagnosticKeys[key]:
+				inAnswer = false
+			}
+		}
+		var path string
+		if inAnswer && json.Unmarshal([]byte(text[match[2]:match[3]]), &path) == nil {
+			paths = append(paths, path)
+			if len(paths) >= maxGraphOutputPaths {
+				break
+			}
+		}
+	}
+	return paths
+}
+
+// graphTextOutputPaths applies the row rules to text/agent output, skipping diagnostic blocks.
+func graphTextOutputPaths(text string) []string {
+	const (
+		blockNone        = iota
+		blockDiagnostics // Coverage:/Completeness: then "- ..." lines
+		blockVerify      // VERIFY: then indented lines
+	)
+	block := blockNone
+	var paths []string
+	seenSearchRow := false
+	emptySearchResponse := false
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimRight(line, "\r")
+		switch block {
+		case blockDiagnostics:
+			if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+				continue
+			}
+		case blockVerify:
+			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+				continue
+			}
+		}
+		block = blockNone
+		if graphRankedRowPattern.MatchString(line) {
+			seenSearchRow = true
+			emptySearchResponse = false
+		} else if strings.HasPrefix(line, "Index:") || strings.HasPrefix(line, "Index not cached") {
+			// A chained invocation starts a new response; source-body text remains
+			// subject to the renderer's record quarantine.
+			seenSearchRow = false
+			emptySearchResponse = false
+		}
+		if emptySearchResponse {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "{") {
+			if seenSearchRow {
+				// A JSON-looking line in a search body is source, not another response.
+				continue
+			}
+			// A JSON response printed after other text (an echo header, a persisted-output
+			// preview) is one line: it gets the JSON rules, parsed or clipped.
+			linePaths, _ := graphJSONOutputPaths(line)
+			paths = append(paths, linePaths...)
+			continue
+		}
+		switch {
+		case strings.TrimSpace(line) == graphNoResultsLine:
+			// This response located nothing, but an earlier chained response may
+			// already have named real hits. Keep those paths.
+			emptySearchResponse = true
+			continue
+		case strings.HasPrefix(line, "Coverage:") || strings.HasPrefix(line, "Completeness:"):
+			block = blockDiagnostics
+			continue
+		case strings.HasPrefix(line, "VERIFY:"):
+			block = blockVerify
+			continue
+		case hasAnyPrefix(line, graphTextSingleLineHeads) || graphSnippetLinePattern.MatchString(line):
+			continue
+		}
+		if match := graphLinelessRowPattern.FindStringSubmatch(line); match != nil {
+			paths = append(paths, match[1])
+		}
+		if !graphLocatedRowPattern.MatchString(line) {
+			continue
+		}
+		for _, match := range graphLocatedPathPattern.FindAllStringSubmatch(line, -1) {
+			paths = append(paths, match[1])
+		}
+		if len(paths) >= maxGraphOutputPaths {
+			break
+		}
+	}
+	return paths
+}
+
+func hasAnyPrefix(line string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // graphDeliveredSpans returns, per file, the source lines a search response actually delivered:
@@ -367,9 +620,12 @@ func readSubclass(locate, read timelineEntry, edited []string) string {
 
 // classifyFollowUp decides the class of the locate result at timeline[index], scanning the window
 // that starts at its DELIVERY — calls issued before the result arrived (a parallel batch, or calls
-// made while it was outstanding) are not reactions to it. claimed makes read attribution exclusive:
-// a read already attributed to a later-delivered result is skipped, so one read is never credited
-// to two results.
+// made while it was outstanding) are not reactions to it. claimed keeps the SPAN sub-buckets
+// exclusive: a read already span-attributed to a later-delivered result makes this one a SHARED
+// READ. The class describes the first matching follow-up event, not every read
+// in the window; a later unclaimed read cannot replace that event. It must not be skipped: two parallel answers naming the same file and one read of it are
+// two answers the agent followed up, and skipping the read let the second one run out its window
+// and be credited as NO FOLLOW-UP.
 func classifyFollowUp(timeline []timelineEntry, index, window int, claimed map[int]bool) string {
 	entry := timeline[index]
 	switch {
@@ -389,8 +645,11 @@ func classifyFollowUp(timeline []timelineEntry, index, window int, claimed map[i
 		case timelineEdit:
 			edited = append(edited, next.paths...)
 		case timelineRead:
-			if claimed[at] || !pathsOverlap(entry.paths, next.paths) {
+			if !pathsOverlap(entry.paths, next.paths) {
 				continue
+			}
+			if claimed[at] {
+				return followUpReadShared
 			}
 			claimed[at] = true
 			return readSubclass(entry, next, edited)

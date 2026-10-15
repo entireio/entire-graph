@@ -32,7 +32,9 @@ import (
 // v2: summaryCall carries a follow-up class (Disp), request-relative (never released).
 // v3: the class is delivery-relative with error/censored/ineligible outcomes. A v2 memo's classes
 // mean something else and must never be served alongside v3 ones.
-const statsCacheSchema = "v3"
+// v4: named paths come from result rows only (a zero-result answer is ineligible), and a read
+// span-attributed to a sibling result is a shared read ("s"), not skipped. v3 "n" over-credits.
+const statsCacheSchema = "v4"
 
 // Small scopes skip memo overhead only when both their file count and total size are small.
 const statsCacheMinTranscripts = 8

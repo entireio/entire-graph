@@ -68,8 +68,10 @@ Stream and record formats are specified in
 ## Report
 
 `stats` is a human-facing, read-only report of graph vs grep/read usage in
-local coding-agent transcripts, with a signed, unvalidated 1:1 context model
-(not measured savings) and explicit comparison availability. It is not part of the agent workflow; see
+local coding-agent transcripts. Its headline shows observed follow-up rates and a
+signed modeled balance with its assumption and comparison population. An absent
+follow-up does not prove an avoided call or measured savings. `--verbose` also
+retains the legacy unvalidated 1:1 context model. It is not part of the agent workflow; see
 [trust and security](trust-and-security.md) for what it reads.
 
 The shell classifier is a heuristic over transcript text, not a shell interpreter.

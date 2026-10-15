@@ -56,7 +56,8 @@ const followUpModelText = "Observed follow-up (an observational proxy, not a mea
 	"issued AFTER that result was delivered, in the same transcript. ERROR: the result was an error. INELIGIBLE: " +
 	"it was empty or named no file. RE-QUERY: another graph lookup, Grep, Glob or shell search came first. " +
 	"FOLLOW-UP READ: the agent first read a file whose path overlaps one the result named (overlapping lines, a " +
-	"different region, or unknown span - unknown when a span is not known or the file was edited in between). " +
+	"different region, or unknown span - unknown when a span is not known or the file was edited in between - " +
+	"or shared, when the same read was span-attributed to another result). " +
 	"CENSORED: the transcript ended before K calls and nothing qualified. NO FOLLOW-UP: K calls were observed " +
 	"and none qualified. Absence of a follow-up is not an observed avoided call: the task may have ended, " +
 	"failed, changed direction or used another source. The modeled balance ASSUMES each no-follow-up result " +
@@ -64,9 +65,10 @@ const followUpModelText = "Observed follow-up (an observational proxy, not a mea
 	"every locate result's bytes (errors, censored and ineligible included), sums signed results over sessions " +
 	"with both result types and converts at ~4 bytes/token; it is not measured savings. Limits: path overlap " +
 	"is a suffix match on extension-bearing paths (extensionless files are missed; a same-named file at a " +
-	"matching suffix can match; a path merely mentioned counts as named); delivered line spans are known only " +
-	"when the whole output parsed as a search response; one read is attributed to at most one result (the " +
-	"latest delivered); work delegated to a subagent is not in the caller's window."
+	"matching suffix can match; only result rows name a file, never coverage diagnostics, VERIFY or prose, and " +
+	"\"No search results.\" names nothing); delivered line spans are known only when the whole output parsed " +
+	"as a search response; one read is span-attributed to one result (the latest delivered) and is a shared " +
+	"read for any other result naming that file; work delegated to a subagent is not in the caller's window."
 
 // substitutionRatio is how many exploration calls one graph locate call is assumed to displace.
 // This is an unvalidated counterfactual, not an empirical coefficient for these transcripts.
@@ -237,13 +239,14 @@ type statsResponse struct {
 	DisplacementWindowCalls int `json:"follow_up_window_calls"`
 	// The GraphLocate* class counts partition the observed locate results (CreditedGraphCalls)
 	// over EVERY session in the window; each *Rate divides by that same total. FollowUpRead is the
-	// sum of its three span sub-buckets.
+	// sum of its four sub-buckets: three span buckets (each read counted once) plus shared reads.
 	GraphLocateDisplaced           int     `json:"graph_locate_no_follow_up"`
 	GraphLocateRequery             int     `json:"graph_locate_requery"`
 	GraphLocateReadAnyway          int     `json:"graph_locate_follow_up_read"`
 	GraphLocateReadOverlapping     int     `json:"graph_locate_follow_up_read_overlapping"`
 	GraphLocateReadDifferentRegion int     `json:"graph_locate_follow_up_read_different_region"`
 	GraphLocateReadUnknownSpan     int     `json:"graph_locate_follow_up_read_unknown_span"`
+	GraphLocateReadShared          int     `json:"graph_locate_follow_up_read_shared"`
 	GraphLocateCensored            int     `json:"graph_locate_censored"`
 	GraphLocateError               int     `json:"graph_locate_error"`
 	GraphLocateIneligible          int     `json:"graph_locate_ineligible"`
@@ -1154,7 +1157,8 @@ func graphVerbFromCommand(command string) (string, bool) {
 				continue
 			}
 			base := filepath.Base(word)
-			if commandPrefixes[base] {
+			if commandPrefixes[base] || base == "timeout" {
+				index = skipGraphWrapperArgs(base, fields, index)
 				continue
 			}
 			rest := fields[index+1:]
@@ -1177,6 +1181,45 @@ func graphVerbFromCommand(command string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// graphWrapperValueFlags are wrapper options whose value is the NEXT word (`nice -n 15`,
+// `timeout -s KILL 60`, `env -u NAME`, `sudo -u user`, `xargs -I {}`).
+var graphWrapperValueFlags = map[string]map[string]bool{
+	"nice":    {"-n": true, "--adjustment": true},
+	"timeout": {"-s": true, "--signal": true, "-k": true, "--kill-after": true},
+	"env":     {"-u": true, "--unset": true, "-C": true, "--chdir": true},
+	"sudo":    {"-u": true, "-g": true, "-C": true, "-D": true, "-h": true, "-p": true, "-U": true},
+	"xargs":   {"-I": true, "-n": true, "-P": true, "-L": true, "-s": true, "-d": true, "-E": true, "-a": true},
+}
+
+// skipGraphWrapperArgs returns the index of the wrapper's last own word, so the caller resumes at
+// the wrapped command: its options (and an option's value), and timeout's DURATION operand.
+// Without this `nice -n 15 entire graph query` read "-n" as the command word and the call was
+// counted nowhere. `command -v`/`-V` only looks a name up, so it ends the segment.
+func skipGraphWrapperArgs(wrapper string, fields []string, index int) int {
+	valueFlags := graphWrapperValueFlags[wrapper]
+	for index+1 < len(fields) {
+		next := shellWord(fields[index+1])
+		if next == "--" {
+			index++
+			break
+		}
+		if len(next) < 2 || !strings.HasPrefix(next, "-") {
+			break
+		}
+		if wrapper == "command" && (next == "-v" || next == "-V") {
+			return len(fields)
+		}
+		index++
+		if valueFlags[next] {
+			index++
+		}
+	}
+	if wrapper == "timeout" && index+1 < len(fields) {
+		index++ // DURATION
+	}
+	return index
 }
 
 // firstSemVerb matches the `entire sem <verb>` form. The CLI's own agent instructions recommend
@@ -1743,6 +1786,7 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 		report.GraphLocateReadOverlapping += acc.displacement[followUpReadOverlapping]
 		report.GraphLocateReadDifferentRegion += acc.displacement[followUpReadDifferent]
 		report.GraphLocateReadUnknownSpan += acc.displacement[followUpReadUnknownSpan]
+		report.GraphLocateReadShared += acc.displacement[followUpReadShared]
 		report.GraphLocateCensored += acc.displacement[followUpCensored]
 		report.GraphLocateError += acc.displacement[followUpError]
 		report.GraphLocateIneligible += acc.displacement[followUpIneligible]
@@ -1774,7 +1818,7 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 	report.EstimatedSavingsTokensUnfloored = report.EstimatedSavingsBytesUnfloored / bytesPerToken
 	report.ObservedNetTokens = report.ObservedNetBytes / bytesPerToken
 	report.GraphLocateReadAnyway = report.GraphLocateReadOverlapping + report.GraphLocateReadDifferentRegion +
-		report.GraphLocateReadUnknownSpan
+		report.GraphLocateReadUnknownSpan + report.GraphLocateReadShared
 	if classified := followUpClassified(*report); classified > 0 {
 		rate := func(count int) float64 { return roundTo(float64(count)/float64(classified), 4) }
 		report.NoFollowUpRate = rate(report.GraphLocateDisplaced)
@@ -1977,10 +2021,11 @@ func writeStatsText(out io.Writer, report statsResponse) {
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, followUpSummary(report))
-	fmt.Fprintf(out, "  no follow-up %s · re-query %s · read named file %s (overlapping %s, different region %s, unknown span %s) · censored %s · error %s · ineligible %s\n",
+	fmt.Fprintf(out, "  no follow-up %s · re-query %s · read named file %s (overlapping %s, different region %s, unknown span %s, shared %s) · censored %s · error %s · ineligible %s\n",
 		humanInt(int64(report.GraphLocateDisplaced)), humanInt(int64(report.GraphLocateRequery)),
 		humanInt(int64(report.GraphLocateReadAnyway)), humanInt(int64(report.GraphLocateReadOverlapping)),
 		humanInt(int64(report.GraphLocateReadDifferentRegion)), humanInt(int64(report.GraphLocateReadUnknownSpan)),
+		humanInt(int64(report.GraphLocateReadShared)),
 		humanInt(int64(report.GraphLocateCensored)), humanInt(int64(report.GraphLocateError)),
 		humanInt(int64(report.GraphLocateIneligible)))
 	for _, line := range wrapText(followUpModelText, 88) {
@@ -1996,6 +2041,10 @@ func writeStatsText(out io.Writer, report statsResponse) {
 	for _, line := range wrapText(savingsModelText, 88) {
 		fmt.Fprintf(out, "  %s\n", line)
 	}
+}
+
+func percent(rate float64) string {
+	return fmt.Sprintf("%.0f%%", rate*100)
 }
 
 func humanInt(value int64) string {
@@ -2034,8 +2083,4 @@ func wrapText(text string, width int) []string {
 		lines = append(lines, current)
 	}
 	return lines
-}
-
-func percent(rate float64) string {
-	return fmt.Sprintf("%.0f%%", rate*100)
 }

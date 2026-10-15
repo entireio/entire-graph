@@ -82,6 +82,23 @@ func TestEveryGuideRefreshesPossiblyChangedSource(t *testing.T) {
 	}
 }
 
+func TestEveryGuidePreservesRequiredReadsAndUnknownFreshness(t *testing.T) {
+	t.Parallel()
+	for name, guide := range conditionalReadGuides() {
+		t.Run(name, func(t *testing.T) {
+			for _, required := range []string{
+				"The marker never waives a read your editing tool requires before it changes a file",
+				"when the tool requires one, perform that read",
+				"If you cannot establish that a span is unchanged since the query, treat it as changed and read it",
+			} {
+				if !strings.Contains(guide, required) {
+					t.Errorf("rendered guide missing read prerequisite %q", required)
+				}
+			}
+		})
+	}
+}
+
 func TestStrictCompletenessDoesNotExemptStaleOrMissingSource(t *testing.T) {
 	t.Parallel()
 	for name, guide := range conditionalReadGuides() {

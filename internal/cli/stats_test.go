@@ -983,6 +983,11 @@ func TestStatsHeadlineIsPlainTextWhenOutputIsNotATerminal(t *testing.T) {
 		if strings.Contains(out.String(), "\x1b[") || !strings.Contains(out.String(), "observed follow-up of 1 graph locate results") || !strings.Contains(out.String(), "modeled balance +4 est. tokens") || !strings.Contains(out.String(), "not measured savings") {
 			t.Fatalf("unexpected summary: %q", out.String())
 		}
+		out.Reset()
+		writeStatsSummary(&out, statsResponse{Sessions: 1, SessionsDirFound: true, SessionsWithSavingsComparison: 1, EstimatedSavingsTokensUnfloored: 4})
+		if strings.Contains(out.String(), "\x1b[") || !strings.Contains(out.String(), "observed follow-up: no graph locate results") {
+			t.Fatalf("legacy model must not invent observed results: %q", out.String())
+		}
 	}
 }
 

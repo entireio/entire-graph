@@ -160,11 +160,13 @@ The headline reports **observed follow-up**, an observational proxy: each observ
 `query`/`search`/`neighbors`/`impact` result is classified by the next 5 tool calls issued AFTER
 its delivery, in the same transcript — error, ineligible (empty or no file named), re-query
 (graph lookup, `Grep`, `Glob`, shell search), follow-up read of a named file (overlapping lines /
-different region / unknown span), censored (transcript ended first), or no follow-up. Every class
+different region / unknown span / shared), censored (transcript ended first), or no follow-up. Every class
 is counted in one reconcilable denominator (`graph_locate_*`, `*_rate`). The signed
 `modeled_balance_*` credits only no-follow-up results, and only under the stated assumption that
 each replaced one average exploration result; absence of a follow-up is not an observed avoided
-call. Path overlap is a suffix match on extension-bearing paths.
+call. Path overlap is a suffix match on extension-bearing paths named by result rows;
+coverage diagnostics, VERIFY and source-body mentions name no located file. One read is
+span-attributed to one result and counted as shared for other results naming that file.
 
 The legacy 1:1 model (`--verbose`, `estimated_savings_*`) assumes each observed locate result replaces ONE
 exploration result, priced using that session's average exploration bytes/result, then subtracts
