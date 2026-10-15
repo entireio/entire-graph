@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "75f1463e3d9b",
+  "session_id": "01a1304c-f8bd-78e0-8932-e7da79a54f3b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-15T10:45:48.957482Z",
+  "branch": "codex/batch219-gates",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/search_span_merge.go",
+    "internal/sem/search_span_merge_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6.1-sol",
+  "checkpoint_transcript_start": 12960,
+  "transcript_lines_at_start": 12960,
+  "compact_transcript_start": 1549,
+  "token_usage": {
+    "input_tokens": 4818,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1198336,
+    "output_tokens": 2563,
+    "api_call_count": 5
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-15T10:45:47.966221Z",
+    "agent_lines": 42,
+    "agent_removed": 0,
+    "human_added": 7,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 49,
+    "total_lines_changed": 50,
+    "agent_percentage": 84,
+    "metric_version": 2
+  }
+}
