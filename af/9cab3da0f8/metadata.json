@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "af9cab3da0f8",
+  "strategy": "manual-commit",
+  "branch": "codex/batch236-ready",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/search_exact_name.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/af/9cab3da0f8/0/metadata.json",
+      "transcript": "/af/9cab3da0f8/0/full.jsonl",
+      "compact_transcript": "/af/9cab3da0f8/0/transcript.jsonl",
+      "content_hash": "/af/9cab3da0f8/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6056,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1815936,
+    "output_tokens": 3900,
+    "api_call_count": 6
+  }
+}
