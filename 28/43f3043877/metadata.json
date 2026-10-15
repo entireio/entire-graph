@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "2843f3043877",
+  "strategy": "manual-commit",
+  "branch": "codex/batch244-followups",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/stats_displacement_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/28/43f3043877/0/metadata.json",
+      "transcript": "/28/43f3043877/0/full.jsonl",
+      "compact_transcript": "/28/43f3043877/0/transcript.jsonl",
+      "content_hash": "/28/43f3043877/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 105683,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 7877760,
+    "output_tokens": 49612,
+    "api_call_count": 36
+  }
+}
