@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "b941adb2ea6b",
+  "strategy": "manual-commit",
+  "branch": "codex/batch207-gates",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/test.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b9/41adb2ea6b/0/metadata.json",
+      "transcript": "/b9/41adb2ea6b/0/full.jsonl",
+      "compact_transcript": "/b9/41adb2ea6b/0/transcript.jsonl",
+      "content_hash": "/b9/41adb2ea6b/0/content_hash.txt",
+      "prompt": "/b9/41adb2ea6b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6346248,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 249827840,
+    "output_tokens": 966389,
+    "api_call_count": 1588
+  }
+}
