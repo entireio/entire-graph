@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "0e0db8f24c3c",
+  "strategy": "manual-commit",
+  "branch": "codex/trail200-eval-gaps",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/search_blocks.go",
+    "internal/sem/search_blocks_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0e/0db8f24c3c/0/metadata.json",
+      "transcript": "/0e/0db8f24c3c/0/full.jsonl",
+      "compact_transcript": "/0e/0db8f24c3c/0/transcript.jsonl",
+      "content_hash": "/0e/0db8f24c3c/0/content_hash.txt",
+      "prompt": "/0e/0db8f24c3c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5250101,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 207097216,
+    "output_tokens": 809747,
+    "api_call_count": 1403
+  }
+}
