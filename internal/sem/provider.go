@@ -5075,8 +5075,13 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 	}
 	if spec.emits("HANDLES_ROUTE") {
-		goRoutes, goInline, masks := goHTTPRouteRelations(files, recordsByFile, readContent, constantsByFile)
+		goRoutes, goInline, masks, routeFailures := goHTTPRouteRelations(files, recordsByFile, readContent, constantsByFile)
 		goRouteMasks = masks
+		if recordFailure != nil {
+			for _, failure := range routeFailures {
+				recordFailure(failure)
+			}
+		}
 		for _, r := range goRoutes {
 			if shouldStop != nil && shouldStop() {
 				return
@@ -24856,8 +24861,9 @@ func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, sy
 // goHTTPRouteRelations returns the Go route relations with a named local
 // handler, the inline-handler relations (attributed to the enclosing symbol),
 // and per file the byte spans of every route argument the pass decided.
-func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, constantsByFile *fileStringConstants) ([]expressRouteRelation, []expressRouteRelation, map[string][][2]int) {
+func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, constantsByFile *fileStringConstants) ([]expressRouteRelation, []expressRouteRelation, map[string][][2]int, []PartialFailure) {
 	var relations, inline []expressRouteRelation
+	var failures []PartialFailure
 	masks := map[string][][2]int{}
 	seen := map[string]bool{}
 	inlineSeen := map[string]bool{}
@@ -24884,6 +24890,15 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 			}
 		}
 		detail := goRouteRegistrationsDetailed(content, constantsByFile.forFile(file.Path, content))
+		if detail.exhausted {
+			failures = append(failures, PartialFailure{
+				Code:                 "E_GO_ROUTE_BUDGET_EXCEEDED",
+				Severity:             "warning",
+				FilePath:             file.Path,
+				EffectOnCompleteness: "Go route analysis exceeded its work budget; HANDLES_ROUTE relations and literal fallback omitted for this file",
+				Detail:               "Scoped Go receiver and middleware resolution exhausted its bounded step budget",
+			})
+		}
 		if len(detail.masks) > 0 {
 			masks[file.Path] = detail.masks
 		}
@@ -24971,7 +24986,7 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		}
 		return relations[i].Handler.ID < relations[j].Handler.ID
 	})
-	return relations, inline, masks
+	return relations, inline, masks, failures
 }
 
 // goRouteEnclosingSymbol is the innermost non-type symbol spanning line.

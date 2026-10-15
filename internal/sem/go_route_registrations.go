@@ -48,9 +48,10 @@ type goRouteInline struct {
 // composed). The pattern-level route literal fallback must not read those
 // spans: their route is decided here.
 type goRouteDetail struct {
-	regs   []goHTTPRouteRegistration
-	inline []goRouteInline
-	masks  [][2]int
+	regs      []goHTTPRouteRegistration
+	inline    []goRouteInline
+	masks     [][2]int
+	exhausted bool
 }
 
 var goRouteMethodNames = map[string]bool{
@@ -78,14 +79,15 @@ func goRouteRegistrationsDetailed(content string, constants map[string]string) g
 		}
 		// No registration here, but a Group/Route/Mount/PathPrefix/
 		// StripPrefix prefix is still not a route of this file.
-		return goRouteDetail{masks: resolveGoRouteReceivers(content, constants).masks}
+		receivers := resolveGoRouteReceivers(content, constants)
+		return goRouteDetail{masks: receivers.masks, exhausted: receivers.exhausted}
 	}
 	receivers := resolveGoRouteReceivers(content, constants)
 	switch {
 	case receivers.exhausted:
 		// No receiver in the file is trusted; the route arguments are still
 		// known, so the literal fallback does not re-emit them either.
-		return goRouteDetail{masks: receivers.masks}
+		return goRouteDetail{masks: receivers.masks, exhausted: true}
 	case receivers.parsed:
 		detail := goRouteEmit(receivers.regs, constants)
 		detail.masks = receivers.masks
