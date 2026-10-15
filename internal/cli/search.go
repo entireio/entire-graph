@@ -1873,6 +1873,22 @@ func writeAgentSearchPayload(out interface{ Write([]byte) (int, error) }, respon
 		exactAnchors, exactOmitted = agentExactNameAnchors(results, response.Query)
 		exactNote = agentExactNameOmittedLine(exactOmitted, len(exactAnchors), render.topK, render.sessionCapped)
 	}
+	// Prefix variants and source-protection passes often offer the same width.
+	// Reuse that deterministic fit instead of repeating declaration scans. Bound
+	// retained payload bytes independently of an explicitly unbounded caller cap.
+	fitted := make(map[int][]byte)
+	retained := 0
+	fitResults := func(width int) []byte {
+		if block, ok := fitted[width]; ok {
+			return block
+		}
+		block := fitAgentSearchResults(results, width)
+		if len(block) <= (1<<20)-retained {
+			fitted[width] = block
+			retained += len(block)
+		}
+		return block
+	}
 	const (
 		protectRankedSource = iota
 		protectMinimalSource
@@ -1966,7 +1982,7 @@ func writeAgentSearchPayload(out interface{ Write([]byte) (int, error) }, respon
 									_, err := out.Write(payload)
 									return true, err
 								}
-								formatted := fitAgentSearchResults(results, remaining)
+								formatted := fitResults(remaining)
 								if (mode == protectMinimalSource || mode == protectHeadSource) && !agentSearchBlockCarriesSource(formatted) {
 									// Replace only the first locator; retain every tail locator
 									// already seated, unless every such source plan failed.
@@ -3050,6 +3066,15 @@ func agentSearchFocusWindow(view agentSearchBlockView, budget int) ([]byte, int,
 func agentSearchFocusWindowFromTier(view agentSearchBlockView, budget, firstTier int) ([]byte, int, int) {
 	result, lines, snippetStart, focus, focusLine := view.result, view.lines, view.first, view.focus, view.focusLine
 	name, tag, scored := view.name, view.tag, view.scored
+	// Candidate byte costs are additive. Measure ranges with prefix sums and
+	// construct only the winning header/body, rather than joining every window.
+	prefix := make([]int, len(lines)+1)
+	digits := make([]int, len(lines))
+	for i, line := range lines {
+		prefix[i+1] = prefix[i] + len(line) + 1
+		digits[i] = len(strconv.Itoa(snippetStart + i))
+	}
+	bases := agentSearchLocationHeaders(result.Rank, result.FilePath, 0, 0, focusLine, name, tag, scored, "")
 	for tier := firstTier; tier < agentSearchLocationHeaderTiers; tier++ {
 		if tier == agentSearchMinimalHeaderTier && firstTier != agentSearchMinimalHeaderTier {
 			if located := fitAgentSearchRankedLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget); located != nil {
@@ -3057,27 +3082,29 @@ func agentSearchFocusWindowFromTier(view agentSearchBlockView, budget, firstTier
 			}
 		}
 		for span := len(lines); span > 0; span-- {
-			leftMin := max(0, focus-span+1)
-			leftMax := min(focus, len(lines)-span)
+			leftMin, leftMax := max(0, focus-span+1), min(focus, len(lines)-span)
 			bestBalance, bestLeft := len(lines)+1, -1
-			var best []byte
 			for left := leftMin; left <= leftMax; left++ {
 				right := left + span - 1
-				text := strings.Join(lines[left:right+1], "\n")
-				header := agentSearchLocationHeaders(result.Rank, result.FilePath, snippetStart+left, snippetStart+right, focusLine, name, tag, scored, "")[tier]
-				candidate := []byte(header + text + "\n")
-				if budget <= 0 || len(candidate) <= budget {
-					balance := focus - left - (right - focus)
-					if balance < 0 {
-						balance = -balance
-					}
-					if best == nil || balance < bestBalance {
-						best, bestBalance, bestLeft = candidate, balance, left
-					}
+				headerCost := len(bases[tier]) - 1 + digits[left]
+				if tier != agentSearchMinimalHeaderTier && right != left {
+					headerCost += 1 + digits[right]
+				}
+				if budget > 0 && headerCost+prefix[right+1]-prefix[left] > budget {
+					continue
+				}
+				balance := focus - left - (right - focus)
+				if balance < 0 {
+					balance = -balance
+				}
+				if bestLeft < 0 || balance < bestBalance {
+					bestBalance, bestLeft = balance, left
 				}
 			}
-			if best != nil {
-				return best, bestLeft, bestLeft + span - 1
+			if bestLeft >= 0 {
+				right := bestLeft + span - 1
+				header := agentSearchLocationHeaders(result.Rank, result.FilePath, snippetStart+bestLeft, snippetStart+right, focusLine, name, tag, scored, "")[tier]
+				return []byte(header + strings.Join(lines[bestLeft:right+1], "\n") + "\n"), bestLeft, right
 			}
 		}
 	}
