@@ -17,7 +17,8 @@ Activation is per repository. From the repository root:
 entire graph init-agents --repo .
 ```
 
-The command manages three repository paths:
+The command manages three repository paths, plus one per-user Claude Code
+settings file:
 
 - `.entire/agent-guide.md`: the complete operating guide for coding agents.
   It is regenerated on every successful run, so manual edits do not survive.
@@ -27,6 +28,29 @@ The command manages three repository paths:
   existing managed block while preserving other content.
 - `CLAUDE.md`: a Claude Code entry point whose managed block is selected from
   the repository's existing instruction-file topology.
+- `.claude/settings.local.json`: a Claude Code `SubagentStart` hook running
+  `entire graph hook claude-subagent-start`. Claude Code's built-in Explore and
+  Plan subagents do not load `CLAUDE.md`; the hook adds a short graph directive
+  (the guide's command lines, under 1 KiB) to every subagent's context, and
+  prints nothing outside a git work tree. The file is intended to stay per-user
+  and untracked:
+  existing keys and hooks are preserved, the hook is added once, and a rerun
+  leaves the file unchanged. `init-agents` refuses, before writing anything,
+  settings that are not a JSON object, and a `.claude` or settings file that is
+  a symlink, hard link or other non-regular file. `--no-claude-hook` skips this
+  file. To remove the hook, delete its `SubagentStart` entry.
+
+The installer preserves your ignore policy; it does not automatically ignore
+`.claude/settings.local.json`. Add `/.claude/settings.local.json` to your root
+`.gitignore` (or repository-local `.git/info/exclude`) before committing files.
+Claude Code only adds its automatic ignore when Claude itself writes the file;
+that does not cover a file created by this installer. See the official
+[local-settings rules](https://code.claude.com/docs/en/settings).
+
+On macOS/Linux the hook uses a POSIX shell wrapper. On Windows it explicitly
+selects PowerShell, with syntax supported by PowerShell 5.1 and later, so it does
+not require Git Bash. Both wrappers suppress an unavailable/older Graph binary's
+error and return success. See Claude's [hook shell selection](https://code.claude.com/docs/en/hooks#command-hook-fields).
 
 The direct managed block contains a pointer to the generated guide. Its
 identifying lines are:
@@ -130,6 +154,13 @@ ambiguous.
 
 If either path or marker layout fails preflight, the command stops before
 creating or changing `.entire/agent-guide.md`, `AGENTS.md`, or `CLAUDE.md`.
+Preflight validates the current inputs, not future write access. Installation is
+not one transaction across the guide and settings files. A later permission,
+disk-full, or concurrent-change error can leave the guides installed without the
+hook. The command returns an error; fix its cause and rerun to finish, or rerun
+with `--no-claude-hook` to keep only guide activation. Existing settings are not
+rolled back over a concurrent writer's changes.
+
 After preflight succeeds, a rerun:
 
 - regenerates `.entire/agent-guide.md`;
