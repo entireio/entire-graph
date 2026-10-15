@@ -98,7 +98,7 @@ var graphVerbs = map[string]bool{
 	"checkpoint": true, "analyze": true, "doctor": true, "capabilities": true,
 	"snapshot": true, "snapshot-query": true, "symbols": true, "edges": true, "index": true,
 	"stats": true, "def": true, "explain": true, "verify": true, "health": true,
-	"agent-guide": true, "init-agents": true, "version": true, "help": true,
+	"agent-guide": true, "init-agents": true, "hook": true, "version": true, "help": true,
 }
 
 // semGraphVerbs are the `entire sem` subcommands that answer the same structural question the
