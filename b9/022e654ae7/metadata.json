@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "b9022e654ae7",
+  "strategy": "manual-commit",
+  "branch": "codex/trail212-integration-gaps",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/test.yml",
+    "CHANGELOG.md",
+    "README.md",
+    "docs/commands.md",
+    "hooks/hooks.json",
+    "internal/cli/stats_test.go",
+    "internal/sem/search_blocks.go",
+    "internal/sem/search_blocks_test.go",
+    "mise.toml",
+    "scripts/entire-graph-prompt-context.py",
+    "scripts/entire-graph-prompt-context_integration_test.py",
+    "scripts/entire-graph-prompt-context_test.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b9/022e654ae7/0/metadata.json",
+      "transcript": "/b9/022e654ae7/0/full.jsonl",
+      "compact_transcript": "/b9/022e654ae7/0/transcript.jsonl",
+      "content_hash": "/b9/022e654ae7/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 53588,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 6208256,
+    "output_tokens": 29324,
+    "api_call_count": 22
+  }
+}
