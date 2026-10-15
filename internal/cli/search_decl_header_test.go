@@ -128,7 +128,7 @@ func TestAgentBlockDeclarationLineNumbersRecoverable(t *testing.T) {
 			StartLine: first, EndLine: first + n - 1, FocusLine: first + declIndex + 4 + rng.Intn(n-declIndex-4),
 			SnippetStartLine: first, SnippetEndLine: first + n - 1,
 			SymbolStartLine: first, SymbolEndLine: first + n - 1, SymbolName: "target", QualifiedName: "target",
-			Signals: []string{"complete-symbol"}, MergedDeclLines: merged, Snippet: strings.Join(lines, "\n"),
+			Signals: []string{"body"}, MergedDeclLines: merged, Snippet: strings.Join(lines, "\n"),
 		}
 		for b := 0; b < 25; b++ {
 			budget := 30 + rng.Intn(1500)
@@ -157,7 +157,7 @@ func TestAgentBlockKeepsCandidateDeclarationTheWindowShowed(t *testing.T) {
 		Rank: 1, Score: 20, FilePath: "app/handlers.py", StartLine: first, EndLine: first + len(lines) - 1,
 		FocusLine: first + 9, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
 		SymbolStartLine: first, SymbolEndLine: first + len(lines) - 1, SymbolName: "target", QualifiedName: "Handler.target",
-		Signals: []string{"complete-symbol"}, Snippet: strings.Join(lines, "\n"),
+		Signals: []string{"body"}, Snippet: strings.Join(lines, "\n"),
 	}
 	if index, _ := agentSearchDeclIndex(lines, first, first, first+len(lines)-1, "target"); index != 0 {
 		t.Fatalf("fixture premise: the finder must take the keyword argument (index 0), took %d", index)

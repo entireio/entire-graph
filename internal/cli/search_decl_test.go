@@ -67,7 +67,7 @@ func (f declFixture) build(first, bodyLines int) (sem.SearchResult, string) {
 		SnippetStartLine: first, SnippetEndLine: end,
 		SymbolStartLine: first, SymbolEndLine: end,
 		SymbolName: f.symbol, QualifiedName: f.symbol, Kind: "function",
-		Signals: []string{"complete-symbol"},
+		Signals: []string{"body"},
 		Snippet: strings.Join(lines, "\n"),
 	}, lines[declIndex]
 }
@@ -443,7 +443,7 @@ func TestAgentBlockMergedSpanShowsAbsorbedDeclarations(t *testing.T) {
 		StartLine: first, EndLine: first + len(lines) - 1, FocusLine: first + 31,
 		SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
 		SymbolStartLine: first, SymbolEndLine: first + 32, SymbolName: "survivor", QualifiedName: "survivor",
-		Signals: []string{"complete-symbol", "contiguous-span"}, MergedRanks: []int{1, 2},
+		Signals: []string{"body", "contiguous-span"}, MergedRanks: []int{1, 2},
 		MergedDeclLines: []int{first + absorbedAt},
 		Snippet:         strings.Join(lines, "\n"),
 	}

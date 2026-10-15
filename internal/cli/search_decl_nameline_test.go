@@ -30,7 +30,7 @@ func declNameLineFixture(pre, annos, body, first int) ([]string, sem.SearchResul
 		Rank: 1, Score: 20, FilePath: "src/main/java/a/Svc.java", StartLine: first, EndLine: last,
 		FocusLine: last - 1, SnippetStartLine: first, SnippetEndLine: last,
 		SymbolStartLine: first + pre, SymbolEndLine: last, SymbolNameLine: first + pre + annos,
-		SymbolName: "target", QualifiedName: "Svc.target", Signals: []string{"complete-symbol"},
+		SymbolName: "target", QualifiedName: "Svc.target", Signals: []string{"body"},
 		Snippet: strings.Join(lines, "\n"),
 	}
 }
@@ -131,7 +131,7 @@ func TestAgentBlockAbsorbedParserRegionNeverLess(t *testing.T) {
 		result := sem.SearchResult{Rank: 1, Score: 50, FilePath: "src/Cfg.java", StartLine: first, EndLine: first + len(lines) - 1,
 			FocusLine: first + focus, SnippetStartLine: first, SnippetEndLine: first + len(lines) - 1,
 			SymbolStartLine: first, SymbolEndLine: first + regionTop - 2, SymbolNameLine: first, SymbolName: "load",
-			QualifiedName: "Cfg.load", Signals: []string{"complete-symbol", "contiguous-span"}, MergedRanks: []int{1, 2},
+			QualifiedName: "Cfg.load", Signals: []string{"body", "contiguous-span"}, MergedRanks: []int{1, 2},
 			MergedDeclLines: []int{first + declared}, MergedDeclStarts: []int{first + regionTop}, Snippet: strings.Join(lines, "\n")}
 		for budget := 80; budget <= 2600; budget += 13 {
 			view := agentSearchBlockViewOf(result)

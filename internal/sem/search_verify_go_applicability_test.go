@@ -292,3 +292,20 @@ func TestSearchVerifyGoNativeProbePreservesManifestBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchVerifyGoIgnoresCoveringTestOutsideCandidateModule(t *testing.T) {
+	evidence := searchVerifyTestEvidence(map[string]string{
+		"service/go.mod":        "module example.com/service\n",
+		"service/pkg/widget.go": "package pkg\n",
+		"tests/test_widget.py":  "",
+	})
+	subject := searchVerifySubject{sourcePath: "service/pkg/widget.go", testPath: "tests/test_widget.py", testEvidence: "covering test"}
+	got := deriveSearchVerifyGo("service", subject, &evidence)
+	if got == nil || got.Command != searchVerifyRunIn("service", "go test ./pkg") {
+		t.Fatalf("outside covering test must retain the edited Go package: %+v", got)
+	}
+	subject.testPath = "service/tests/test_widget.py"
+	if got := deriveSearchVerifyGo("service", subject, &evidence); got != nil {
+		t.Fatalf("inside Python covering test must still select its own runner: %+v", got)
+	}
+}

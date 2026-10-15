@@ -71,3 +71,15 @@ Stream and record formats are specified in
 local coding-agent transcripts, with a signed, unvalidated 1:1 context model
 (not measured savings) and explicit comparison availability. It is not part of the agent workflow; see
 [trust and security](trust-and-security.md) for what it reads.
+
+The shell classifier is a heuristic over transcript text, not a shell interpreter.
+It recognizes quoted operators, pipeline heads, redirects and here-documents;
+commands nested in substitutions, subshells or compound shell syntax are not a
+complete inventory of executed reads. No transcript commands are executed.
+
+`stats.context_block_bytes` in search responses now includes `file_outline_bytes`.
+Existing responses with outlines can therefore report larger totals without a
+larger payload. The field totals the costed context blocks, not all response
+metadata. Stats reports retain the legacy positive-only savings fields and add
+signed `estimated_savings_bytes_unfloored` and
+`estimated_savings_est_tokens_unfloored` fields that keep modeled losses.

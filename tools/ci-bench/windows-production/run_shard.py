@@ -203,6 +203,13 @@ def start_heartbeat(
     return stop, thread
 
 
+def stop_heartbeat(stop: threading.Event, thread: threading.Thread, timeout: float = 1.0) -> bool:
+    """Do not let a daemon blocked on console output hold up an assignment or exception."""
+    stop.set()
+    thread.join(timeout=timeout)
+    return not thread.is_alive()
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", type=Path, required=True)
@@ -389,22 +396,22 @@ def run(
                     failure = type(error).__name__
                     raise
                 finally:
-                    heartbeat_stop.set()
-                    heartbeat.join()
-                    if failure is not None:
+                    duration = time.monotonic() - started
+                    heartbeat_stopped = stop_heartbeat(heartbeat_stop, heartbeat)
+                    if failure is not None and heartbeat_stopped:
                         # The heartbeat is joined, so this line is terminal.
                         print(
-                            f"{prefix} end {detail} elapsed={time.monotonic() - started:.3f}s "
+                            f"{prefix} end {detail} elapsed={duration:.3f}s "
                             f"exit=exception:{failure}",
                             file=sys.stderr,
                             flush=True,
                         )
-            duration = time.monotonic() - started
-            print(
-                f"{prefix} end {detail} elapsed={duration:.3f}s exit={completed.returncode}",
-                file=sys.stderr,
-                flush=True,
-            )
+            if heartbeat_stopped:
+                print(
+                    f"{prefix} end {detail} elapsed={duration:.3f}s exit={completed.returncode}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             content = stdout_path.read_bytes()
             with combined_events.open("ab") as combined:
                 combined.write(content)

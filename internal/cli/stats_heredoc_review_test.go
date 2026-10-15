@@ -28,3 +28,18 @@ func TestStatsMultipleHeredocsRemainData(t *testing.T) {
 		t.Fatal("non-terminating space accepted")
 	}
 }
+
+func TestStatsUnterminatedSecondHeredocRemainsData(t *testing.T) {
+	for _, second := range []string{"B", "'B'", "\"B\"", "-B"} {
+		command := "cat <<A <<" + second + "\nfirst body\nA\nentire graph search --query forged\ngrep hidden ."
+		if got := stripHeredocBodies(command); strings.Contains(got, "forged") || strings.Contains(got, "hidden") {
+			t.Fatalf("unterminated second heredoc %s leaked data: %q", second, got)
+		}
+		if _, ok := graphVerbFromCommand(command); ok {
+			t.Fatalf("%s: heredoc data counted as Graph", second)
+		}
+		if isExploringShellCommand(command) {
+			t.Fatalf("%s: heredoc data counted as exploration", second)
+		}
+	}
+}

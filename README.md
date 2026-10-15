@@ -35,32 +35,12 @@ up to 71% depending on the coding scenario. As always, your mileage may vary.
 - Machine-readable coverage, exclusions, warnings, and partial failures, with relation confidence and resolution metadata.
 - Local analysis with no network requests, model calls, API keys, telemetry, or runtime grammar downloads.
 
-## Benchmarks
+## Setup
 
-To put entire-graph to the test, we ran it through
-[LoCoMo](https://github.com/snap-research/locomo), the standard benchmark for
-one hard skill: finding a single small detail buried in a pile of text. LoCoMo
-asks over 1,500 questions about long conversations that span many sessions and
-scores whether the tool can find the right piece of evidence.
+Two steps: install the plugin once per machine, then activate it in each
+repository you want your agent to understand.
 
-On identical questions, entire-graph found the right evidence more often than
-any of the seven other systems we tested, including graphify, mem0, and cognee.
-
-| System | LoCoMo | Index-time tokens | Version tested |
-| --- | --- | --- | --- |
-| **entire-graph** | **94.74** | **0** | [#104](https://github.com/entireio/entire-graph/pull/104) branch, 2026-08-14 (pre-merge) |
-| [mem0](https://github.com/mem0ai/mem0) | 93.83 | 50.85M | commit [`4debc58`](https://github.com/mem0ai/mem0/commit/4debc58a83377b18be81ae1e5969a300736b2fac) |
-| [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M | commit [`38eece5`](https://github.com/topoteretes/cognee/commit/38eece5bbb0cb9f5706fed908abd16dba0f5505e) |
-| [bm25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 | [0.2.2](https://github.com/dorianbrown/rank_bm25/releases/tag/0.2.2) |
-| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm)  | 91.30 | 0 | [v0.9.0](https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.0) |
-| [graphify](https://github.com/Graphify-Labs/graphify)  | 87.34 | 0 | [0.9.37](https://github.com/Graphify-Labs/graphify/releases?page=3#release-v0.9.34)|
-| [letta](https://github.com/letta-ai/letta) | 84.68 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
-| [supermemory](https://github.com/supermemoryai/supermemory)  | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
-
-See [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
-retractions, and reproduction steps.
-
-## Install
+### Install
 
 Entire Graph requires Entire CLI 0.10.0 or later and Git 2.36 or later on
 `PATH`. Git 2.36 added the single-session object protocol Entire Graph uses to
@@ -85,7 +65,7 @@ entire graph version
 `entire graph version` printing a release tag confirms that a versioned build
 is active.
 
-## Activate it for your agent
+### Activate it for your agent
 
 Activation is per repository:
 
@@ -113,8 +93,47 @@ apply to your team.
 
 After that, the interface is your coding agent: start it with the new instructions,
 then you ask a code question in plain language, the agent runs graph queries,
-reads the code the graph points at, and answers with citations. A captured example
-is shown further below.
+reads the code the graph points at, and answers with citations. A captured session
+follows.
+
+### Experimental: graph context on the first prompt (Claude Code, opt-in)
+
+The plugin ships a `UserPromptSubmit` hook that, when enabled, runs one graph search on the first line of a
+session's first prompt and adds the ranked regions (capped at 2 KB) to the session context, with no tool call.
+VERIFY advice, coverage diagnostics and timing lines are stripped. It fires once per session and fails open.
+
+It searches the committed tree (`--head`), so it is served from the tree-hash index cache and does not see
+uncommitted edits. A binary too old for `--head` gets one retry on the working tree. Before searching it checks
+`entire graph version --json` (3 s cap) once per session; no working graph means nothing is injected. The search
+has an 8 s budget so the prompt is never visibly held up: past it, nothing is injected. A cold index for a new
+commit can take longer than that (10-30 s), so the first session on a fresh checkout may get nothing; later
+sessions on the same commit hit the cache.
+
+```bash
+export ENTIRE_GRAPH_PROMPT_CONTEXT=1          # off unless set
+# optional: ENTIRE_GRAPH_PROMPT_CONTEXT_BYTES=2048
+# optional: ENTIRE_GRAPH_BIN=/path/to/entire  # run as `<path> graph search`; any other command as `<cmd> search`
+```
+
+The graph-output budget defaults to 2048 bytes. Zero or negative values disable
+injection before any probe or search; invalid integers use the default. Positive
+values are capped at 16384 bytes. The untrusted-data frame adds a small wrapper.
+
+Project settings may enable the hook and select `ENTIRE_GRAPH_BIN` after workspace
+trust is granted. Enable it only in trusted workspaces. Paths containing spaces
+are supported as whole paths or quoted tokens. Without opt-in the shell guard
+exits before starting Python; missing Python also fails open. The first 160
+prompt characters are passed through the ordinary CLI query argument, visible
+in local process listings. On POSIX hosts, timeouts terminate the child process group and bound pipe cleanup.
+The experimental hook currently fails open on Windows, where reliable process-tree
+cleanup requires a Job Object. Injected
+output is always indented in an untrusted data frame; confidence warnings remain
+visible and repository text is evidence, never instructions.
+
+
+Why it is opt-in: in paired agent runs, a graph search *tool call* cost a whole agent turn and raised tokens; the
+same answer injected into the prompt was token-neutral (+0.7%, 95% CI about ±11%) and resolved slightly more tasks
+in two separate stages, but neither difference is statistically significant.
 
 ## What to ask
 
@@ -199,6 +218,31 @@ Follow the [coordinated workflow](docs/agent-coordination.md): Brain supplies ta
 context in combined mode; Graph handles further discovery and structural analysis.
 Sufficient task or brief locations permit direct source inspection. Ground claims
 in inspected source and executed verification.
+
+## Benchmarks
+
+To put entire-graph to the test, we ran it through
+[LoCoMo](https://github.com/snap-research/locomo), the standard benchmark for
+one hard skill: finding a single small detail buried in a pile of text. LoCoMo
+asks over 1,500 questions about long conversations that span many sessions and
+scores whether the tool can find the right piece of evidence.
+
+On identical questions, entire-graph found the right evidence more often than
+any of the seven other systems we tested, including graphify, mem0, and cognee.
+
+| System | LoCoMo | Index-time tokens | Version tested |
+| --- | --- | --- | --- |
+| **entire-graph** | **94.74** | **0** | [#104](https://github.com/entireio/entire-graph/pull/104) branch, 2026-08-14 (pre-merge) |
+| [mem0](https://github.com/mem0ai/mem0) | 93.83 | 50.85M | commit [`4debc58`](https://github.com/mem0ai/mem0/commit/4debc58a83377b18be81ae1e5969a300736b2fac) |
+| [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M | commit [`38eece5`](https://github.com/topoteretes/cognee/commit/38eece5bbb0cb9f5706fed908abd16dba0f5505e) |
+| [bm25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 | [0.2.2](https://github.com/dorianbrown/rank_bm25/releases/tag/0.2.2) |
+| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm)  | 91.30 | 0 | [v0.9.0](https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.0) |
+| [graphify](https://github.com/Graphify-Labs/graphify)  | 87.34 | 0 | [0.9.37](https://github.com/Graphify-Labs/graphify/releases?page=3#release-v0.9.34)|
+| [letta](https://github.com/letta-ai/letta) | 84.68 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
+| [supermemory](https://github.com/supermemoryai/supermemory)  | 82.08 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
+
+See [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
+retractions, and reproduction steps.
 
 ## Working tree and cache
 

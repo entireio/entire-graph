@@ -10,13 +10,35 @@ permissions:
   contents: read
 
 jobs:
+  locate-benchmark-guards:
+    runs-on: ubuntu-latest
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with: { go-version: "1.27.x" }
+      - uses: actions/setup-python@v7.0.0
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - run: go build -o entire-graph ./cmd/entire-graph
+      - run: python3 -m unittest discover -s bench/locate -p 'test_*.py'
+      - run: python3 bench/locate/head_to_head.py --test --require-orchestration
+        env:
+          ENTIRE_GRAPH_BIN: ${{ github.workspace }}/entire-graph
+      - run: python3 bench/locate/replay_qualify.py --test
+      - run: python3 bench/locate/seal_run.py --test
+
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
       - run: go vet ./...
       - run: |
@@ -34,10 +56,10 @@ jobs:
   notices:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
       - run: sh scripts/gen-notices.sh --check
 
@@ -47,10 +69,10 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
       - run: go build ./...
 
@@ -60,10 +82,10 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
       # Keep the named package budget consistent with the Windows shard policy.
       - run: go test -timeout 30m ./...
@@ -75,10 +97,10 @@ jobs:
     outputs:
       shard-matrix: ${{ steps.shard-matrix.outputs.value }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
@@ -115,7 +137,7 @@ jobs:
           "value=$matrix" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - name: Upload immutable Windows test bundle
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
@@ -134,17 +156,17 @@ jobs:
       matrix:
         shard: ${{ fromJSON(needs.windows-test-prepare.outputs.shard-matrix) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
@@ -164,7 +186,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Upload shard evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-test-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/windows-test-shard-${{ matrix.shard }}
@@ -177,17 +199,17 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
@@ -206,7 +228,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Upload non-heavy package evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-test-other
           path: ${{ runner.temp }}/windows-test-other
@@ -218,10 +240,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
@@ -234,21 +256,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           pattern: windows-test-shard-*
           path: ${{ runner.temp }}/windows-test-shards
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: windows-test-other
           path: ${{ runner.temp }}/windows-test-other
@@ -261,7 +283,7 @@ jobs:
             --output "${{ runner.temp }}/windows-test-verification.json"
       - name: Upload verification report
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-test-verification
           path: ${{ runner.temp }}/windows-test-verification.json
@@ -294,7 +316,7 @@ jobs:
   bm25-adapter:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-python@v7.0.0
@@ -308,7 +330,7 @@ jobs:
   locomo-summary-gate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-python@v7.0.0
@@ -320,19 +342,34 @@ jobs:
   # No windows-latest: the script targets /bin/sh.
   statusline:
     strategy:
-      # Without this, one platform's failure CANCELS the other, and a cancelled job is
-      # reported as a failure -- so a single flake on ubuntu presents as both platforms
-      # failing, which reads like a real cross-platform regression. It cost a full
-      # investigation of an innocent PR. Let both platforms finish and report.
+      # Let both platforms finish so a failure preserves independent diagnostics.
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
       - run: go build -o entire-graph ./cmd/entire-graph
       - run: sh scripts/entire-graph-statusline_test.sh
+
+  # Exercise both hermetic failure paths and the hook's contract with the real Go renderer.
+  # No windows-latest: the tests build fake binaries as /bin/sh scripts and use `kill -9`.
+  # python3 ships on both runners, so no setup-python.
+  prompt-context-hook:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with: { go-version: "1.27.x" }
+      - run: go build -o entire-graph ./cmd/entire-graph
+      - run: python3 scripts/entire-graph-prompt-context_test.py
+      - run: ENTIRE_GRAPH_TEST_BIN=./entire-graph python3 scripts/entire-graph-prompt-context_integration_test.py

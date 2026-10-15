@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	hashpkg "hash"
 	"io"
 	"io/fs"
 	"math/rand/v2"
@@ -255,7 +256,7 @@ func (entry cacheEntry) open() (*os.File, error) {
 // portable os.Root cannot also pin the object's lexical ancestry, and that process already has the
 // authority needed to move existing cache artifacts through the same namespace.
 func (entry cacheEntry) write(temporaryPrefix string, value any) error {
-	_, err := entry.writeDigest(temporaryPrefix, value)
+	_, err := entry.writeValue(temporaryPrefix, value, false)
 	return err
 }
 
@@ -266,6 +267,11 @@ type cacheDigest [sha256.Size]byte
 // know its artifact landed intact compares that with entry.digest instead of decoding the file
 // back, which would hold a second copy of the value in memory beside the one it just wrote.
 func (entry cacheEntry) writeDigest(temporaryPrefix string, value any) (cacheDigest, error) {
+	return entry.writeValue(temporaryPrefix, value, true)
+}
+
+// writeValue hashes only explicit verified persists; interactive cache writes need no digest.
+func (entry cacheEntry) writeValue(temporaryPrefix string, value any, withDigest bool) (cacheDigest, error) {
 	if err := os.MkdirAll(entry.root, 0o700); err != nil {
 		return cacheDigest{}, err
 	}
@@ -299,8 +305,13 @@ func (entry cacheEntry) writeDigest(temporaryPrefix string, value any) (cacheDig
 	}
 	// The digest covers exactly the bytes handed to the file. The gzip stream is buffered on the
 	// way in so the encoder's many small flushes do not each become a write system call.
-	hash := sha256.New()
-	buffered := bufio.NewWriterSize(io.MultiWriter(temporary, hash), 1<<16)
+	var digestHash hashpkg.Hash
+	var destination io.Writer = temporary
+	if withDigest {
+		digestHash = sha256.New()
+		destination = io.MultiWriter(temporary, digestHash)
+	}
+	buffered := bufio.NewWriterSize(destination, 1<<16)
 	writer := gzip.NewWriter(buffered)
 	if err := encodeCacheValue(writer, value); err != nil {
 		_ = writer.Close()
@@ -326,7 +337,9 @@ func (entry cacheEntry) writeDigest(temporaryPrefix string, value any) (cacheDig
 	}
 	removeTemporary = false
 	var digest cacheDigest
-	copy(digest[:], hash.Sum(nil))
+	if digestHash != nil {
+		copy(digest[:], digestHash.Sum(nil))
+	}
 	return digest, nil
 }
 
