@@ -24924,8 +24924,14 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 				inlineRegs = append(inlineRegs, goRouteInline{Route: registration.Route, Offset: registration.offset})
 			}
 		}
+		// Line lookup by binary search over the file's newline offsets, computed once: counting
+		// newlines up to each registration was quadratic in a file with many inline handlers.
+		var newlines []int
+		if len(inlineRegs) > 0 {
+			newlines = newlineOffsets(content)
+		}
 		for _, registration := range inlineRegs {
-			from, ok := goRouteEnclosingSymbol(recordsByFile[file.Path], 1+strings.Count(content[:registration.Offset], "\n"))
+			from, ok := goRouteEnclosingSymbol(recordsByFile[file.Path], lineAtOffset(newlines, registration.Offset))
 			if !ok {
 				continue
 			}
