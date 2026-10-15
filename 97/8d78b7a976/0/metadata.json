@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "978d78b7a976",
+  "session_id": "01a1304c-f8bd-78e0-8932-e7da79a54f3b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-15T10:34:09.664839Z",
+  "branch": "codex/batch216-ready",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/stats.go",
+    "internal/cli/stats_heredoc_review_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6.1-sol",
+  "checkpoint_transcript_start": 12644,
+  "transcript_lines_at_start": 12644,
+  "compact_transcript_start": 1508,
+  "token_usage": {
+    "input_tokens": 7846,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1423744,
+    "output_tokens": 3872,
+    "api_call_count": 8
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-15T10:34:09.153044Z",
+    "agent_lines": 89,
+    "agent_removed": 19,
+    "human_added": 14,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 103,
+    "total_lines_changed": 126,
+    "agent_percentage": 85.71428571428571,
+    "metric_version": 2
+  }
+}
