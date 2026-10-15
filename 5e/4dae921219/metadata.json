@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "5e4dae921219",
+  "strategy": "manual-commit",
+  "branch": "codex/batch236-budget-perf",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/cli_rev2_decl_test.go",
+    "internal/cli/search.go",
+    "internal/cli/search_quarantined_floor_test.go",
+    "internal/cli/stats_test.go",
+    "internal/sem/go_route_fallback_review_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5e/4dae921219/0/metadata.json",
+      "transcript": "/5e/4dae921219/0/full.jsonl",
+      "compact_transcript": "/5e/4dae921219/0/transcript.jsonl",
+      "content_hash": "/5e/4dae921219/0/content_hash.txt",
+      "prompt": "/5e/4dae921219/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6991341,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 283735808,
+    "output_tokens": 1073494,
+    "api_call_count": 1698
+  }
+}
