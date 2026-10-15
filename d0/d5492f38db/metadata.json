@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "d0d5492f38db",
+  "strategy": "manual-commit",
+  "branch": "codex/batch241-ready",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/go_route_strip_source_bound_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d0/d5492f38db/0/metadata.json",
+      "transcript": "/d0/d5492f38db/0/full.jsonl",
+      "compact_transcript": "/d0/d5492f38db/0/transcript.jsonl",
+      "content_hash": "/d0/d5492f38db/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 23633,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2143360,
+    "output_tokens": 5206,
+    "api_call_count": 15
+  }
+}
