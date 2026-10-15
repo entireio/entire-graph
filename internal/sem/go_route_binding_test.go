@@ -471,6 +471,10 @@ func TestGoRouteBindingBudgetExhaustionOmitsEverything(t *testing.T) {
 	if !receivers.exhausted {
 		t.Fatalf("expected the step budget to be exhausted for depth %d", depth)
 	}
+	detail := goRouteRegistrationsDetailed(content, nil)
+	if len(detail.masks) != 1 || detail.masks[0] != [2]int{0, len(content)} || !detail.exhausted {
+		t.Fatalf("exhaustion must mask the WHOLE file, including later fallback literals: %+v", detail)
+	}
 	if regs := goRouteRegistrationsWithin(t, content); len(regs) != 0 {
 		t.Fatalf("exhausted resolution still emitted %d routes, e.g. %v", len(regs), regs[0])
 	}

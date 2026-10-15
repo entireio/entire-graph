@@ -34,7 +34,8 @@ import (
 // nothing else in the key binds the producer's code — the provider version is "dev" for every
 // local build — so only the namespace can keep those lines from being served as authoritative.
 // Bump it again whenever the name-line producer's rules change.
-const searchSnapshotCacheVersion = "search-snapshot-v18-" + IdentityRevision
+// v19 retires route edges from the old sixteen-round parameter-taint cutoff.
+const searchSnapshotCacheVersion = "search-snapshot-v19-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
