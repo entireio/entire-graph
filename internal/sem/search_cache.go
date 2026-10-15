@@ -36,7 +36,8 @@ import (
 // Bump it again whenever the name-line producer's rules change.
 // v19 retires route edges from the old sixteen-round parameter-taint cutoff.
 // v20 retires warning text that incorrectly described every command family as worktree-default.
-const searchSnapshotCacheVersion = "search-snapshot-v20-" + IdentityRevision
+// v21 retires malformed-route literal guesses and undisclosed signature-budget loss.
+const searchSnapshotCacheVersion = "search-snapshot-v21-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
