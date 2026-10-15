@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "bc793e028295",
+  "strategy": "manual-commit",
+  "branch": "codex/trail212-integration-gaps",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "scripts/entire-graph-statusline_test.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bc/793e028295/0/metadata.json",
+      "transcript": "/bc/793e028295/0/full.jsonl",
+      "compact_transcript": "/bc/793e028295/0/transcript.jsonl",
+      "content_hash": "/bc/793e028295/0/content_hash.txt",
+      "prompt": "/bc/793e028295/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5631105,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 223830912,
+    "output_tokens": 878128,
+    "api_call_count": 1460
+  }
+}
