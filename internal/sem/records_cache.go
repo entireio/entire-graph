@@ -26,7 +26,8 @@ import (
 // v12 retires HANDLES_ROUTE streams produced before scoped Go receiver and
 // middleware analysis; unchanged consumer trees must not replay those edges.
 // v13 retires route records from the old sixteen-round parameter-taint cutoff.
-const providerRecordsCacheVersion = "provider-records-v13-" + IdentityRevision
+// v14 retires warning text that incorrectly described every command family as worktree-default.
+const providerRecordsCacheVersion = "provider-records-v14-" + IdentityRevision
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+commit+tree+mode+profile+
