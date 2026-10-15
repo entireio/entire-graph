@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "1b8ed533fb4d",
+  "strategy": "manual-commit",
+  "branch": "codex/batch236-ready",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/search_verify_block_golden_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/1b/8ed533fb4d/0/metadata.json",
+      "transcript": "/1b/8ed533fb4d/0/full.jsonl",
+      "compact_transcript": "/1b/8ed533fb4d/0/transcript.jsonl",
+      "content_hash": "/1b/8ed533fb4d/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 15093,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1146496,
+    "output_tokens": 6341,
+    "api_call_count": 3
+  }
+}
