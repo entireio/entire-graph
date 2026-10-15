@@ -97,30 +97,45 @@ func TestGoRouteObserveStripPrefixValueIsBoundedOnCyclicAndDeepSources(t *testin
 	}
 }
 
-// stripSourceReferenceOpaque is an independent model of the walk: follow at
-// most goRouteStripSourceMaxDepth links; an escaped write makes the origin
-// opaque, a source-free binding ends the walk with its own middleware flag, and
-// running out of depth (a cycle or an over-deep chain) is opaque. Rewrite
-// middleware on an intermediate link is observed by the future (watching) walk
-// but skipped by the immediate one, so the model declines to decide (known is
-// false) for such a chain rather than encode one walk's choice.
-func stripSourceReferenceOpaque(start *goRouteBinding, escapedWrites map[*goRouteBinding]bool) (opaque, known bool) {
+// stripSourceReferenceOpaque independently models both observation modes.
+// Immediate observation copies the terminal binding's value; future observation
+// watches every capture link, so intermediate rewrite middleware also taints it.
+// Escaped writes and a chain exceeding the bound are opaque in either mode.
+func stripSourceReferenceOpaque(start *goRouteBinding, escapedWrites map[*goRouteBinding]bool, future bool) bool {
 	current := start
-	intermediateMiddleware := false
 	for depth := 0; depth < goRouteStripSourceMaxDepth; depth++ {
-		if escapedWrites[current] {
-			return true, true
+		if current == nil || escapedWrites[current] {
+			return true
+		}
+		if future && current.stripPrefixMiddleware {
+			return true
 		}
 		if current.stripPrefixSource == nil {
-			if current.stripPrefixMiddleware {
-				return true, true
-			}
-			return false, !intermediateMiddleware
+			return current.stripPrefixMiddleware
 		}
-		intermediateMiddleware = intermediateMiddleware || current.stripPrefixMiddleware
 		current = current.stripPrefixSource
 	}
-	return true, true
+	return true
+}
+
+func TestGoRouteStripPrefixIntermediateMiddlewareModes(t *testing.T) {
+	for _, future := range []bool{false, true} {
+		t.Run(fmt.Sprintf("future=%v", future), func(t *testing.T) {
+			chain := stripSourceChain(3)
+			chain[1].stripPrefixMiddleware = true
+			r := newStripSourceBoundResolver()
+			origin := &goRouteOrigin{}
+			if observeWithinStripBound(r, goRouteBinding{stripPrefixSource: chain[0]}, origin, future) {
+				t.Fatal("bounded chain exhausted")
+			}
+			if origin.opaque != future {
+				t.Fatalf("intermediate middleware: opaque=%v, want %v", origin.opaque, future)
+			}
+			if want := stripSourceReferenceOpaque(chain[0], r.escapedStripPrefixWrites, future); want != future {
+				t.Fatalf("model skipped mode distinction: got %v, want %v", want, future)
+			}
+		})
+	}
 }
 
 // FuzzGoRouteObserveStripPrefixValueBounded builds an arbitrary source graph,
@@ -172,7 +187,7 @@ func FuzzGoRouteObserveStripPrefixValueBounded(f *testing.F) {
 		if observeWithinStripBound(r, value, origin, future) {
 			t.Fatalf("observation exhausted the %d-step bound", goRouteStripObserveStepBound)
 		}
-		if want, known := stripSourceReferenceOpaque(source, r.escapedStripPrefixWrites); known && origin.opaque != want {
+		if want := stripSourceReferenceOpaque(source, r.escapedStripPrefixWrites, future); origin.opaque != want {
 			t.Fatalf("origin.opaque = %v, reference model says %v (future=%v)", origin.opaque, want, future)
 		}
 	})
