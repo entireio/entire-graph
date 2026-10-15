@@ -664,3 +664,30 @@ func TestSearchSnapshotKeyDiscriminatesFileCap(t *testing.T) {
 		t.Fatal("capped and uncapped search snapshots share a key")
 	}
 }
+
+// Upgrading a dev build on an unchanged consumer tree must retire route records
+// produced before scoped Go receiver/middleware binding existed. Provider and
+// identity versions are deliberately unchanged in this scenario.
+func TestProviderRecordsCacheRejectsPreScopedGoRouteProducer(t *testing.T) {
+	repo, cacheDir := t.TempDir(), t.TempDir()
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+	records := []byte(`{"record_type":"relation","type":"HANDLES_ROUTE","to_id":"external:route:/old"}` + "\n")
+	if err := storeProviderRecordsForTest(t.Context(), repo, "dev", "same-tree", "snapshot", cacheDir, options, records, nil); err != nil {
+		t.Fatal(err)
+	}
+	control, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "same-tree", "same-tree", "snapshot", cacheDir, options)
+	if err != nil || !hit || !bytes.Equal(control, records) {
+		t.Fatalf("current producer control: hit=%v err=%v records=%q", hit, err, control)
+	}
+	// Even a legacy artifact copied into the current address must be refused.
+	rewriteCachedJSON(t, soleCacheArtifact(t, cacheDir), func(object map[string]any) {
+		object["cache_version"] = "provider-records-v11-4"
+	})
+	stale, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "same-tree", "same-tree", "snapshot", cacheDir, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit {
+		t.Fatalf("replayed pre-scoped-route producer records: %s", stale)
+	}
+}
