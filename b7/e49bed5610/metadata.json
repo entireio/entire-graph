@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "b7e49bed5610",
+  "strategy": "manual-commit",
+  "branch": "codex/trail243-cache-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/cache_history_shallow_review_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/records_cache.go",
+    "internal/sem/records_cache_history_transaction_test.go",
+    "internal/sem/search_cache_scope_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b7/e49bed5610/0/metadata.json",
+      "transcript": "/b7/e49bed5610/0/full.jsonl",
+      "compact_transcript": "/b7/e49bed5610/0/transcript.jsonl",
+      "content_hash": "/b7/e49bed5610/0/content_hash.txt",
+      "prompt": "/b7/e49bed5610/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8772693,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 380332160,
+    "output_tokens": 1467812,
+    "api_call_count": 2281
+  }
+}
