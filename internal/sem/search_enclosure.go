@@ -1237,7 +1237,7 @@ func seatForcedSearchUnits(
 			if searchResultRendersSource(control, tail) {
 				continue
 			}
-			terse := tersifySearchResult(trialPlan[tail], searchEnclosureTailSnippetLines)
+			terse := tersifySearchResultKeepingDeclaration(trialPlan[tail], searchEnclosureTailSnippetLines)
 			size := serializedSearchResultBytes(terse)
 			if size >= trialSizes[tail] {
 				continue
