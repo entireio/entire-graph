@@ -14,6 +14,23 @@ import (
 	"testing"
 )
 
+// The streaming encoder is the goexperiment.jsonv2 file, and Go 1.27 (the go.mod floor, and the
+// version CI, mise and release builds use) enables that experiment by default. The streaming
+// bound in TestCacheEntryWriteStreamsEncoding applies only when that file is compiled, so a build
+// that silently fell back to the buffering encoder would pass it vacuously. Only an explicit
+// GOEXPERIMENT=nojsonv2 (the CI step that exercises the fallback) may compile the fallback; the
+// toolchain records that opt-out in runtime.Version() as an "X:nojsonv2" suffix.
+func TestDefaultBuildCompilesStreamingCacheEncoder(t *testing.T) {
+	if cacheEncodeStreams {
+		return
+	}
+	if strings.Contains(runtime.Version(), "nojsonv2") {
+		t.Skipf("%s selects the buffering fallback on purpose", runtime.Version())
+	}
+	t.Fatalf("this build compiled the buffering cache encoder (cache_encode_legacy.go) without GOEXPERIMENT=nojsonv2; "+
+		"cache writes would hold the whole encoding in memory and the streaming test is vacuous (toolchain %s)", runtime.Version())
+}
+
 // cacheEntry.write used json.Encoder, which marshals the whole value into one buffer before
 // writing. Persisting a large snapshot therefore held the snapshot plus its entire uncompressed
 // encoding. The write must stream: allocation during a write has to stay far below the size of

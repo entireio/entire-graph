@@ -84,12 +84,16 @@ question through it. Do not automatically install, configure, or repair tools.
 // Completeness is a one-way certificate for displayed source, not a freshness or
 // dependency guarantee. An unmarked result may retain a whole body the producer
 // did not certify. Target follow-up reads at missing or possibly changed source; this does
-// not relax the separate initial-query obligation. Rendered-guide tests check these
+// not relax the separate initial-query obligation. A certificate never waives a tool-required
+// read, and unknown freshness defaults to a read. Rendered-guide tests check these
 // instructions, not consuming-agent behavior or savings.
 const verificationGuide = `Inspect the source Graph displays at useful locations before editing. A result marked [complete]
 certifies a structurally whole displayed body, unchanged by rendering, for the source
 view observed by that query. It does not certify dependencies, later source freshness,
 or task resolution. Do not reread the same unchanged span merely to duplicate it.
+The marker never waives a read your editing tool requires before it changes a file:
+when the tool requires one, perform that read. If you cannot establish that a span is
+unchanged since the query, treat it as changed and read it.
 An unmarked result is not certified: it may be a locator, a partial window, or a whole
 body the producer did not certify. A certified body that cannot fit with its marker
 becomes an unmarked locator. Retrieve only the specific additional span, surrounding context,

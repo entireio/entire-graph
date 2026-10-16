@@ -210,6 +210,10 @@ func TestGoSignatureNormalizationSharesConstructionBudget(t *testing.T) {
 		{name: "params", signature: "M(a,b T)", normalized: "(T,T)()", canonicalBytes: 1, aggregateBytes: 8},
 		{name: "results", signature: "M() (a,b T)", normalized: "()(T,T)", canonicalBytes: 1, aggregateBytes: 8},
 		{name: "params and results", signature: "M(a,b T) (c,d U)", normalized: "(T,T)(U,U)", canonicalBytes: 2, aggregateBytes: 12},
+		// Unnamed lists: each canonical type text is its own allocation and the join copies it
+		// into a second one, so aggregate construction is canonical bytes plus the joined key.
+		// That is one charge per allocation, not a double charge for one output.
+		{name: "unnamed params and result", signature: "M(map[string] int, chan T) error", normalized: "(map[string]int,chan T)(error)", canonicalBytes: 25, aggregateBytes: 55},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
