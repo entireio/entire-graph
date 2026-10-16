@@ -176,6 +176,8 @@ func TestFollowUpClassifiesEachClass(t *testing.T) {
 		{"requery-glob-tool", with(graphSearch(namedStats), dispCall{name: "Glob", input: map[string]any{"pattern": "*.go"}, result: "m"}), "requery"},
 		{"requery-shell-rg", with(graphSearch(namedStats), bashCall("cd /repo && rg -n foo .", "m")), "requery"},
 		{"requery-graph-lookup", with(graphSearch(namedStats), bashCall("entire graph def Foo", "d")), "requery"},
+		{"requery-graph-snapshot", with(graphSearch(namedStats), bashCall("entire graph snapshot --repo . --format ndjson", "{}")), "requery"},
+		{"requery-graph-snapshot-query", with(graphSearch(namedStats), bashCall("entire graph snapshot-query --input graph.compact.ndjson --symbol Foo", "{}")), "requery"},
 		{"read-tool-of-locator-is-unknown-span", with(graphSearch(namedStats), readFile("/abs/repo/internal/cli/stats.go", "body")), "unknown"},
 		{"shell-sed-read-is-unknown-span", with(graphSearch(namedStats), bashCall("sed -n '760,790p' internal/cli/stats.go", "body")), "unknown"},
 		// Graph pointed at X, agent read Y: not a follow-up read, and not a re-query.

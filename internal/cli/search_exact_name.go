@@ -153,8 +153,8 @@ func exactNameLineDefines(line, name, ext string) bool {
 		if len(before) == len(line[:at]) {
 			continue // the keyword must be separated from the name
 		}
-		if ext == ".go" && strings.HasSuffix(before, ")") && strings.HasPrefix(strings.TrimSpace(before), "func") {
-			return true // a Go method: func (r *T) name
+		if ext == ".go" && exactNameGoMethodDeclares(before, line[at+len(name):]) {
+			return true // a Go method: func (r *T) name(
 		}
 		word := len(before)
 		for word > 0 && exactNameIdentByte(before[word-1]) {
@@ -167,6 +167,40 @@ func exactNameLineDefines(line, name, ext string) bool {
 		}
 	}
 	return false
+}
+
+// exactNameGoMethodDeclares reports whether a name occurrence with before (right-trimmed) on its
+// left and after on its right names a Go method declaration: before is exactly `func` and one
+// balanced receiver group, `func (r *T[K])`, and the name is followed by its parameter list or type
+// parameters. A function's RESULT type is not its name: `func DefaultOptions() Options {`,
+// `func (o Options) Merge(other Options) Options {` and `func G[U any](x U) Options {` all end in
+// `)` before the name, and none of them defines Options.
+func exactNameGoMethodDeclares(before, after string) bool {
+	rest, ok := strings.CutPrefix(strings.TrimLeft(before, " \t"), "func")
+	if !ok {
+		return false
+	}
+	rest = strings.TrimLeft(rest, " \t")
+	if !strings.HasPrefix(rest, "(") {
+		return false
+	}
+	depth := 0
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 && i != len(rest)-1 {
+				return false // the receiver closes before the name: a result type or a second group
+			}
+		}
+	}
+	if depth != 0 {
+		return false
+	}
+	after = strings.TrimLeft(after, " \t")
+	return strings.HasPrefix(after, "(") || strings.HasPrefix(after, "[")
 }
 
 // exactNameLeadLine reports whether a line directly above a declaration belongs to it: a comment,
