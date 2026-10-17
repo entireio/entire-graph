@@ -362,7 +362,7 @@ var commandDocs = []commandDoc{
 		group:   groupAnalyze,
 		summary: "Entity-level change list for a commit vs its first parent",
 		usage:   []string{"entire graph commit [rev] [--json] [--progress] [--max-seconds n] [--repo path]"},
-		long:    "Entity-level change list (added / removed / renamed / signature-changed / body-changed) with a heuristic dependent count, so a signature change with many dependents stands out. Stops cleanly after --max-seconds and emits the partial result with W_ANALYSIS_BUDGET_EXCEEDED warnings listing what was skipped.",
+		long:    "Entity-level change list (added / removed / renamed / signature-changed / body-changed) with a heuristic dependent count, so a signature change with many dependents stands out. Stops cleanly after --max-seconds and emits the partial result with W_ANALYSIS_BUDGET_EXCEEDED warnings listing what was skipped. --repo must name the checkout root; subdirectories are rejected.",
 		args: []argDoc{
 			{name: "rev", desc: "Commit to analyze (default: HEAD)"},
 		},
@@ -374,7 +374,7 @@ var commandDocs = []commandDoc{
 		group:   groupAnalyze,
 		summary: "Entity-level change list between two refs",
 		usage:   []string{"entire graph diff --base <rev> --head <rev> [--json] [--progress] [--max-seconds n] [--repo path] [-- path...]"},
-		long:    "Entity-level change list between two refs, with heuristic dependent counts. High dependent counts on a signature change mean run tests first. `analyze` is an alias for this command. Stops cleanly after --max-seconds and emits the partial result with W_ANALYSIS_BUDGET_EXCEEDED warnings.",
+		long:    "Entity-level change list between two refs, with heuristic dependent counts. High dependent counts on a signature change mean run tests first. `analyze` is an alias for this command. Stops cleanly after --max-seconds and emits the partial result with W_ANALYSIS_BUDGET_EXCEEDED warnings. --repo must name the checkout root; subdirectories are rejected.",
 		flags: append([]flagDoc{
 			{name: "--base", arg: "rev", def: "HEAD~1", desc: "Base revision"},
 			{name: "--head", arg: "rev", def: "HEAD", desc: "Head revision"},
@@ -392,7 +392,7 @@ var commandDocs = []commandDoc{
 		group:   groupAnalyze,
 		summary: "Analyze the commit behind an Entire-Checkpoint trailer",
 		usage:   []string{"entire graph checkpoint <checkpoint-id> [--json] [--repo path]"},
-		long:    "Runs the entity-level change analysis for the commit referenced by an Entire-Checkpoint trailer. Useful when reviewing whether a checkpoint is safe to keep, revert, or continue.",
+		long:    "Runs the entity-level change analysis for the commit referenced by an Entire-Checkpoint trailer. Useful when reviewing whether a checkpoint is safe to keep, revert, or continue. --repo must name the checkout root; subdirectories are rejected.",
 		args: []argDoc{
 			{name: "<checkpoint-id>", desc: "The checkpoint ID to analyze"},
 		},

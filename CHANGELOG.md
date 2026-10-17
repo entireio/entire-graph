@@ -23,6 +23,7 @@ auto-generated notes on
 
 ### Changed
 
+- `graph diff`, `commit`, and `checkpoint` now reject a subdirectory passed to `--repo` instead of returning root-wide changes that disagree with subdirectory-scoped snapshots.
 - `graph query --format agent` with no `--max-context-bytes` now uses the smallest of 4 KiB, 8 KiB or 16 KiB that still shows both the first printed block and the best-ranked result exactly as an unbounded render does, and 24 KiB only when none does. An explicit budget is honoured exactly. Every candidate render keeps the exact-name answer, VERIFY block, declaration rows and session-replay rules of an explicit budget; an exact-identifier query is still rendered at the 24 KiB ceiling.
 - Under a binding budget, agent-format search now keeps every ranked location with its rank, name and score, and shares the remaining bytes towards the head of the ranking, passing any share a result cannot use on to the others. The top hit no longer degrades to a bare `path:line *` to fit one more body line.
 - Upgraded the Go toolchain to 1.27.

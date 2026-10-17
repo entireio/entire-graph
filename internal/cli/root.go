@@ -918,7 +918,7 @@ func runCommit(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := sem.EnsureGitMetadataSafeForSubprocess(repo); err != nil {
+	if err := requireRangeRepoRoot(ctx, repo, "commit"); err != nil {
 		return err
 	}
 	base, err := gitutil.FirstParent(ctx, repo, rev)
@@ -944,6 +944,9 @@ func runCheckpoint(ctx context.Context, opts Options, args []string) error {
 	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {
+		return err
+	}
+	if err := requireRangeRepoRoot(ctx, repo, "checkpoint"); err != nil {
 		return err
 	}
 	result, err := sem.AnalyzeCheckpoint(ctx, repo, rest[0])
@@ -1093,7 +1096,24 @@ func runDiff(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := requireRangeRepoRoot(ctx, repo, "diff"); err != nil {
+		return err
+	}
 	return analyzeAndPrint(ctx, opts, repo, parsed.base, parsed.head, parsed.paths, parsed.common)
+}
+
+func requireRangeRepoRoot(ctx context.Context, repo, command string) error {
+	if err := sem.EnsureGitMetadataSafeForSubprocess(repo); err != nil {
+		return err
+	}
+	prefix, err := gitutil.RepoPrefix(ctx, repo)
+	if err != nil {
+		return err
+	}
+	if prefix != "" {
+		return fmt.Errorf("%s requires --repo to name the checkout root; subdirectories are not supported", command)
+	}
+	return nil
 }
 
 func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, error) {

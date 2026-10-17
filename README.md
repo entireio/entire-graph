@@ -252,6 +252,12 @@ Add `--head` to ask about the committed tree instead. Bulk streams
 (`snapshot`, `symbols`, `edges`) and ref-based analysis (`diff`, `commit`)
 default to committed state.
 
+Range commands (`diff`, its alias `analyze`, `commit`, and `checkpoint`) require
+`--repo` to name the checkout root, including the root of a linked worktree.
+They reject subdirectories rather than silently analyzing the entire checkout.
+To narrow a diff, use root-relative path filters, for example
+`entire graph diff --repo /path/to/checkout --base main --head HEAD -- src/`.
+
 Queries can write a derivative local cache; they never modify repository files.
 Default working-tree queries always build fresh and do not load or store cache
 entries. A `--head` query can reuse a snapshot keyed to the committed tree and
