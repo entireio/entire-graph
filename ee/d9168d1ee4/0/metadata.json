@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "eed9168d1ee4",
+  "session_id": "01a1491d-38d3-7c33-a2a6-595311c2667b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-17T10:39:43.801407Z",
+  "branch": "codex/review-trail262",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 587767,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 29748224,
+    "output_tokens": 68081,
+    "api_call_count": 204
+  },
+  "session_metrics": {
+    "turn_count": 2
+  }
+}

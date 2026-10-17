@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "eed9168d1ee4",
+  "strategy": "manual-commit",
+  "branch": "codex/review-trail262",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/ee/d9168d1ee4/0/metadata.json",
+      "transcript": "/ee/d9168d1ee4/0/full.jsonl",
+      "compact_transcript": "/ee/d9168d1ee4/0/transcript.jsonl",
+      "content_hash": "/ee/d9168d1ee4/0/content_hash.txt",
+      "prompt": "/ee/d9168d1ee4/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 587767,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 29748224,
+    "output_tokens": 68081,
+    "api_call_count": 204
+  }
+}
