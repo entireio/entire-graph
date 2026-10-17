@@ -1,15 +1,13 @@
 package cli
 
-import (
-	"encoding/json"
-	"github.com/entireio/entire-graph/internal/sem"
-)
+import "github.com/entireio/entire-graph/internal/sem"
 
 // An embedded SearchResult would promote its MarshalJSON and hide record_type.
 type searchResultRecord struct{ Result sem.SearchResult }
 
 func (record searchResultRecord) MarshalJSON() ([]byte, error) {
-	body, err := json.Marshal(record.Result)
+	// Preserve the outer NDJSON encoder's HTML-escaping choice as well.
+	body, err := record.Result.MarshalJSON()
 	if err != nil {
 		return nil, err
 	}
