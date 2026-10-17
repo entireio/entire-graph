@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "7330381547d2",
+  "strategy": "manual-commit",
+  "branch": "codex/trail247-reviewed-parent",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/operations.md",
+    "docs/search.md",
+    "internal/cli/edges_cache_dir_test.go",
+    "internal/sem/search_verify_scope.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/73/30381547d2/0/metadata.json",
+      "transcript": "/73/30381547d2/0/full.jsonl",
+      "compact_transcript": "/73/30381547d2/0/transcript.jsonl",
+      "content_hash": "/73/30381547d2/0/content_hash.txt",
+      "prompt": "/73/30381547d2/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 9370457,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 403586688,
+    "output_tokens": 1570727,
+    "api_call_count": 2425
+  }
+}
