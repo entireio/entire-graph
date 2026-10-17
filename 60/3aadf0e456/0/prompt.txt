@@ -1,0 +1,15 @@
+Review the open trails in the current repository. Verify live state and select the next batch of up to 10, using dependencies, readiness, risk, and supersession to make educated choices. State the selected batch briefly, then work autonomously. Do not expand beyond it.
+
+For each selected trail:
+
+- Review its changes, confidence and risk evaluations, and unresolved findings.
+- Close it if it is demonstrably superseded.
+- Bring its branch up to date, resolve conflicts, and fix code, test, and documentation gaps.
+- Check whether evaluation complaints reflect genuine gaps or missing visibility into verification.
+- Get CI and required evaluations green for the exact final commit. Recheck findings and mergeability after any changes.
+- Approve and merge it yourself if the change is low-risk and all normal gates pass. Do not bypass protections.
+- If it requires a product, policy, security, compatibility, or other consequential decision, complete the technical work first and bring me the concrete decision.
+
+Keep looping until every selected trail is merged, closed, or ready for my decision. Preserve unrelated work, follow the repository’s agent instructions, and use isolated worktrees where appropriate.
+
+Only interrupt me for decisions you genuinely need. Finish with a concise list of outcomes and any trails awaiting my review. Use native Entire trail links, not GitHub links.
