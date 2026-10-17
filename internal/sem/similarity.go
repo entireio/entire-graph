@@ -60,7 +60,16 @@ func splitmix64(state *uint64) uint64 {
 // edges between them. Only function/method bodies with enough shingles are
 // considered. Signatures are computed per symbol and the shingle sets are
 // discarded immediately, so memory stays bounded on large repositories.
-func similarityRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+// similarityRelations is a whole-repository producer: it used to materialize
+// its entire result before returning, so the caller's per-record stop guard
+// could not run until the whole pass was done. The signature pass is
+// superlinear -- symbolBlockFromLines re-scans an enclosing symbol's whole body
+// once per nested symbol -- and measured 6.1s of work charged to a budget that
+// had already expired on one 2k-nested-function file. shouldStop is nil
+// whenever the caller has no deadline, so an unbudgeted build carries no check
+// and produces exactly the relations it produced before.
+func similarityRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, shouldStop func() bool) []RelationRecord {
+	halt := func() bool { return shouldStop != nil && shouldStop() }
 	type sig struct {
 		id        string
 		signature [minHashCount]uint64
@@ -74,12 +83,18 @@ func similarityRelations(recordsByFile map[string][]SymbolRecord, readContent co
 	sort.Strings(paths)
 
 	for _, path := range paths {
+		if halt() {
+			return nil
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
 		}
 		lines := strings.Split(content, "\n")
 		for _, symbol := range recordsByFile[path] {
+			if halt() {
+				return nil
+			}
 			if symbol.Kind != "function" && symbol.Kind != "method" {
 				continue
 			}
@@ -99,6 +114,9 @@ func similarityRelations(recordsByFile map[string][]SymbolRecord, readContent co
 	candidates := map[[2]int]struct{}{}
 	capped := false
 	for band := 0; band < lshBands && !capped; band++ {
+		if halt() {
+			return nil
+		}
 		buckets := map[uint64][]int{}
 		for idx := range sigs {
 			key := bandKey(sigs[idx].signature, band)
@@ -111,7 +129,17 @@ func similarityRelations(recordsByFile map[string][]SymbolRecord, readContent co
 			keys = append(keys, key)
 		}
 		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-		for _, key := range keys {
+		for keyIdx, key := range keys {
+			// One band's bucket set can hold thousands of entries even though
+			// each bucket's own O(k^2) expansion is capped by maxBucketMembers:
+			// the halt() above only fires once per band, so a band with many
+			// buckets built its entire candidate contribution — up to the
+			// 2,000,000-pair global cap — without a single budget poll in
+			// between. Polled every budgetPollStride buckets like the other
+			// bounded scans in this package.
+			if keyIdx%budgetPollStride == 0 && halt() {
+				return nil
+			}
 			group := buckets[key]
 			if len(group) > maxBucketMembers {
 				continue // mass-duplication bucket: skip its O(k^2) pairs (noise + the explosion source)
@@ -145,6 +173,9 @@ func similarityRelations(recordsByFile map[string][]SymbolRecord, readContent co
 
 	var relations []RelationRecord
 	for _, pair := range pairs {
+		if halt() {
+			return nil
+		}
 		score := signatureSimilarity(sigs[pair[0]].signature, sigs[pair[1]].signature)
 		if score < similarThreshold {
 			continue

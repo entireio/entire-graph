@@ -14,6 +14,17 @@ import (
 // is not. Used to decide whether to draw a live progress bar and whether to
 // render a human summary instead of JSON.
 func isTerminal(w io.Writer) bool {
+	// Run wraps stdout and stderr so a blocked pipe cannot swallow a signal
+	// (see contextChunkWriter), so the sink reaching here is a wrapper, not the
+	// file. Unwrap to the concrete writer first or every caller would be told
+	// its terminal is a pipe.
+	for {
+		inner, ok := w.(interface{ Unwrap() io.Writer })
+		if !ok {
+			break
+		}
+		w = inner.Unwrap()
+	}
 	f, ok := w.(*os.File)
 	if !ok {
 		return false

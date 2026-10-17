@@ -4,6 +4,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLanguageForShebang(t *testing.T) {
@@ -217,7 +218,7 @@ func TestProcessProviderFileDoesNotRestreamKnownOversizedShebang(t *testing.T) {
 		},
 	}
 
-	result := processProviderFile(t.Context(), source, profileSpec{}, 1024, 0, path)
+	result := processProviderFile(t.Context(), newBudgetGate(t.Context(), time.Time{}, nil), source, profileSpec{}, 1024, 0, path)
 	if result.file == nil || result.file.Language != "Bash" {
 		t.Fatalf("oversized shebang result = %#v, want Bash file record", result)
 	}
@@ -243,7 +244,7 @@ func TestSnapshotPreservesWorkingTreeShebangLanguageWhenOversized(t *testing.T) 
 		},
 	}
 
-	result := processProviderFile(t.Context(), source, profileSpec{}, 2048, 0, path)
+	result := processProviderFile(t.Context(), newBudgetGate(t.Context(), time.Time{}, nil), source, profileSpec{}, 2048, 0, path)
 	if result.file == nil || result.file.Language != "Bash" {
 		t.Fatalf("oversized working-tree shebang result = %#v, want Bash file record", result)
 	}
