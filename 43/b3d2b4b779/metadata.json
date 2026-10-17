@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "43b3d2b4b779",
+  "strategy": "manual-commit",
+  "branch": "codex/trail221-semantic-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/combined_replay_identity_review_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/43/b3d2b4b779/0/metadata.json",
+      "transcript": "/43/b3d2b4b779/0/full.jsonl",
+      "compact_transcript": "/43/b3d2b4b779/0/transcript.jsonl",
+      "content_hash": "/43/b3d2b4b779/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 76101,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 3193600,
+    "output_tokens": 6923,
+    "api_call_count": 34
+  }
+}
