@@ -256,7 +256,14 @@ func (entry cacheEntry) open() (*os.File, error) {
 // portable os.Root cannot also pin the object's lexical ancestry, and that process already has the
 // authority needed to move existing cache artifacts through the same namespace.
 func (entry cacheEntry) write(temporaryPrefix string, value any) error {
-	_, err := entry.writeValue(temporaryPrefix, value, false)
+	_, err := entry.writeValue(temporaryPrefix, value, false, nil)
+	return err
+}
+
+// writeCommitting permits a last cancellation check after the temporary artifact is
+// complete and immediately before publication. A veto preserves the existing entry.
+func (entry cacheEntry) writeCommitting(temporaryPrefix string, value any, beforeCommit func() error) error {
+	_, err := entry.writeValue(temporaryPrefix, value, false, beforeCommit)
 	return err
 }
 
@@ -267,11 +274,11 @@ type cacheDigest [sha256.Size]byte
 // know its artifact landed intact compares that with entry.digest instead of decoding the file
 // back, which would hold a second copy of the value in memory beside the one it just wrote.
 func (entry cacheEntry) writeDigest(temporaryPrefix string, value any) (cacheDigest, error) {
-	return entry.writeValue(temporaryPrefix, value, true)
+	return entry.writeValue(temporaryPrefix, value, true, nil)
 }
 
 // writeValue hashes only explicit verified persists; interactive cache writes need no digest.
-func (entry cacheEntry) writeValue(temporaryPrefix string, value any, withDigest bool) (cacheDigest, error) {
+func (entry cacheEntry) writeValue(temporaryPrefix string, value any, withDigest bool, beforeCommit func() error) (cacheDigest, error) {
 	if err := os.MkdirAll(entry.root, 0o700); err != nil {
 		return cacheDigest{}, err
 	}
@@ -328,6 +335,11 @@ func (entry cacheEntry) writeValue(temporaryPrefix string, value any, withDigest
 	}
 	if err := temporary.Close(); err != nil {
 		return cacheDigest{}, err
+	}
+	if beforeCommit != nil {
+		if err := beforeCommit(); err != nil {
+			return cacheDigest{}, err
+		}
 	}
 	// Rename, not a write through the destination: renameat replaces a symlink sitting at the
 	// artifact name instead of following it, so the one component an attacker can predict without

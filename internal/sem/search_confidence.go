@@ -161,6 +161,17 @@ func AssessSearchConfidence(response SearchResponse) SearchConfidence {
 	if len(results) == 0 {
 		return SearchConfidence{}
 	}
+	// The rule is calibrated on LEXICAL relevance. Rows the opt-in semantic channel synthesized
+	// carry no lexical score (SearchResult.SemanticOnly), so they are neither a weak top score
+	// nor half of a tie; the assessment reads the lexically scored rows in their delivered order.
+	// A payload holding only such rows has nothing this rule can vouch for.
+	if lexical := searchLexicallyScoredResults(results); len(lexical) != len(results) {
+		if len(lexical) == 0 {
+			return SearchConfidence{Low: true, TopFiles: len(searchDistinctFiles(results)),
+				Reason: "no result has a lexical score; every hit is a semantic nomination"}
+		}
+		results = lexical
+	}
 	window := results
 	if len(window) > lowConfidenceWindow {
 		window = window[:lowConfidenceWindow]
@@ -211,3 +222,30 @@ func AssessSearchConfidence(response SearchResponse) SearchConfidence {
 
 // LowConfidenceScoreCeiling exposes the calibrated ceiling for renderers and tests.
 func LowConfidenceScoreCeiling() float64 { return lowConfidenceTopScore }
+
+func searchLexicallyScoredResults(results []SearchResult) []SearchResult {
+	for index := range results {
+		if results[index].SemanticOnly() {
+			out := append([]SearchResult(nil), results[:index]...)
+			for _, result := range results[index+1:] {
+				if !result.SemanticOnly() {
+					out = append(out, result)
+				}
+			}
+			return out
+		}
+	}
+	return results
+}
+
+func searchDistinctFiles(results []SearchResult) map[string]bool {
+	window := results
+	if len(window) > lowConfidenceWindow {
+		window = window[:lowConfidenceWindow]
+	}
+	files := make(map[string]bool, len(window))
+	for _, result := range window {
+		files[result.FilePath] = true
+	}
+	return files
+}
