@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "6787235b3997",
+  "strategy": "manual-commit",
+  "branch": "codex/review-trail102",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/semantic-provider-requirements.md",
+    "internal/cli/root.go",
+    "internal/cli/signal_exit_status_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/67/87235b3997/0/metadata.json",
+      "transcript": "/67/87235b3997/0/full.jsonl",
+      "compact_transcript": "/67/87235b3997/0/transcript.jsonl",
+      "content_hash": "/67/87235b3997/0/content_hash.txt",
+      "prompt": "/67/87235b3997/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 842274,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 51878144,
+    "output_tokens": 116809,
+    "api_call_count": 376
+  }
+}
