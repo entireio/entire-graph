@@ -3,7 +3,7 @@ package sem
 import (
 	"fmt"
 	"net/http/httptest"
-	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -79,16 +79,9 @@ func rr2WarmArms(t *testing.T, repo, query string, maxBytes int) (off, on Search
 	return off, on
 }
 
-// RR2-SPANMERGE: warm path, lexical rank 1 in B' is the gold symbol. In C' the channel seats a
-// semantic-only neighbour from the SAME file at rank 1 (E-first); both get complete bodies; the
-// same-file span merge absorbs the lexical gold row into the semantic survivor, which keeps ITS OWN
-// symbol_start_line/end_line. The eval's (file, symbol-span overlap) scorer then scores B' a hit
-// at rank 1 and C' a MISS — the falsifier's "B' top-3 dropped" fires on an artifact of rendering.
-func TestSemanticRereview2SpanMergeAbsorbsLexicalGold(t *testing.T) {
-	// ACCEPTED (D1): the same-file span merge keeps the survivor's symbol identity by design; the
-	// absorbed row's text is in the span (merged_ranks says so) and the eval scorer handles merged
-	// spans (not changed here). Kept as a runnable record of the counterexample: ENTIRE_GRAPH_RUN_ACCEPTED=1.
-	skipAcceptedRereview2(t, "D1 span merge absorbs a lexical row; the eval scorer handles merged spans")
+// A same-file merge retains the semantic survivor's identity while preserving
+// the absorbed lexical target in the displayed span and source text.
+func TestSemanticRereview2SpanMergePreservesLexicalGoldText(t *testing.T) {
 	repo := t.TempDir()
 	initRepo(t, repo)
 	var src strings.Builder
@@ -102,7 +95,7 @@ func TestSemanticRereview2SpanMergeAbsorbsLexicalGold(t *testing.T) {
 	}
 	src.WriteString("}\n")
 	writeFile(t, repo, "srv/handler.go", src.String())
-	goldStart, goldEnd := 4, 17
+	goldStart, goldEnd := 4, 18
 	writeFile(t, repo, "srv/other.go", "package srv\n\n// Other is unrelated.\nfunc Other() int {\n\treturn 1\n}\n")
 	git(t, repo, "add", "-A")
 	git(t, repo, "commit", "-m", "fixture")
@@ -110,21 +103,41 @@ func TestSemanticRereview2SpanMergeAbsorbsLexicalGold(t *testing.T) {
 	t.Logf("OFF:\n%s", strings.Join(rr2PrimaryRows(off.Results), "\n"))
 	t.Logf("ON:\n%s", strings.Join(rr2PrimaryRows(on.Results), "\n"))
 	offRank, offHit := rr2Hit(off.Results, "srv/handler.go", goldStart, goldEnd, 10)
-	onRank, onHit := rr2Hit(on.Results, "srv/handler.go", goldStart, goldEnd, 10)
-	t.Logf("gold QuitServer 4-17: OFF hit=%v rank=%d ; ON hit=%v rank=%d ; ON merged_spans=%d", offHit, offRank, onHit, onRank, on.Stats.MergedSpans)
-	if offHit && offRank <= 3 && !onHit {
-		t.Errorf("DEFECT: B' top-3 gold (rank %d) is absent from C' under the eval scorer (span merge absorbed it)", offRank)
+	if !offHit || offRank > 3 {
+		t.Fatalf("fixture did not put the lexical target in the baseline top three: hit=%t rank=%d", offHit, offRank)
+	}
+	if len(on.Results) == 0 || on.Stats.MergedSpans == 0 {
+		t.Fatal("fixture did not exercise semantic span merging")
+	}
+	merged := on.Results[0]
+	if merged.FilePath != "srv/handler.go" || merged.SymbolName != "AbandonStalled" ||
+		merged.SymbolStartLine <= goldEnd || merged.Section != "" || len(merged.MergedRanks) < 2 {
+		t.Fatalf("merge lost the survivor identity or absorbed-rank provenance: %+v", merged)
+	}
+	if merged.StartLine > goldStart || merged.EndLine < goldEnd ||
+		merged.SnippetStartLine > goldStart || merged.SnippetEndLine < goldEnd ||
+		!strings.Contains(merged.Snippet, "func QuitServer() string") ||
+		!strings.Contains(merged.Snippet, `return "quit server"`) {
+		t.Fatalf("merge lost the lexical target's displayed source: %+v", merged)
 	}
 }
 
-func TestSemanticRereview2SpanMergeDebug(t *testing.T) {
+func TestSemanticRereview2SpanMergePreservesRangeAndRanks(t *testing.T) {
 	results := []SearchResult{
 		{Rank: 1, FilePath: "a.go", StartLine: 7, EndLine: 11, SnippetStartLine: 7, SnippetEndLine: 11, Signals: []string{"complete-symbol"}},
 		{Rank: 2, FilePath: "a.go", StartLine: 2, EndLine: 6, SnippetStartLine: 2, SnippetEndLine: 6, Signals: []string{"complete-symbol"}},
 	}
 	read := func(string) (string, bool) { return strings.Repeat("x\n", 12), true }
 	out, spans, _ := mergeSameFileSearchSpans(results, read, 24*1024)
-	t.Logf("spans=%d out=%+v", spans, out)
+	if spans != 1 || len(out) != 1 {
+		t.Fatalf("want one merged row, got spans=%d rows=%+v", spans, out)
+	}
+	if out[0].StartLine != 2 || out[0].EndLine != 11 ||
+		out[0].SnippetStartLine != 2 || out[0].SnippetEndLine != 11 ||
+		!slices.Equal(out[0].MergedRanks, []int{1, 2}) ||
+		out[0].Snippet != strings.TrimSuffix(strings.Repeat("x\n", 10), "\n") {
+		t.Fatalf("merge lost source range, text or rank provenance: %+v", out[0])
+	}
 }
 
 // RR2-RELATED-DISPLACE: related sites are funded byte-neutrally by DISPLACING tail locators whose
@@ -179,29 +192,21 @@ func TestSemanticRereview2RelatedSiteDisplacesPushedLexicalTop3(t *testing.T) {
 	}
 }
 
-// RR2-ALLDOCS: B' payload of only non-code hits keeps them PRIMARY (all-docs fallback); one
-// semantic code row in C' flips every lexical docs row to section docs-and-fixtures, so a primary-
-// only scorer stops seeing rows B' scored.
+// The all-docs primary-row fallback ends when a semantic code row is present;
+// the lexical documentation rows remain visible in the docs-and-fixtures section.
 func TestSemanticRereview2AllDocsFallbackFlipsOnSemanticCodeRow(t *testing.T) {
-	// ACCEPTED (D3): the all-docs fallback keys on the payload having no code row at all; a semantic
-	// code row legitimately ends that condition. Record only: ENTIRE_GRAPH_RUN_ACCEPTED=1.
-	skipAcceptedRereview2(t, "D3 all-docs fallback ends when any code row is present")
 	q := buildSearchQuery("quit server")
 	b := []SearchResult{{Rank: 1, FilePath: "docs/quit.md"}, {Rank: 2, FilePath: "fixtures/server.json"}}
 	c := []SearchResult{{Rank: 1, FilePath: "srv/pool.go", Signals: []string{semanticSignal, semanticOnlySignal}},
 		{Rank: 2, FilePath: "docs/quit.md"}, {Rank: 3, FilePath: "fixtures/server.json"}}
 	b = assignSearchSections(b, q)
 	c = assignSearchSections(c, q)
-	t.Logf("B' sections: %q %q ; C' sections: %q %q %q", b[0].Section, b[1].Section, c[0].Section, c[1].Section, c[2].Section)
-	if b[0].Section == "" && c[1].Section != "" {
-		t.Errorf("DEFECT(minor): lexical docs row primary in B', sectioned %q in C'", c[1].Section)
+	if len(b) != 2 || len(c) != 3 || c[0].FilePath != "srv/pool.go" || c[0].Section != "" {
+		t.Fatalf("section assignment lost rows or the primary code row: off=%+v on=%+v", b, c)
 	}
-}
-
-// skipAcceptedRereview2 skips a counterexample whose behaviour was reviewed and kept as designed.
-func skipAcceptedRereview2(t *testing.T, reason string) {
-	t.Helper()
-	if os.Getenv("ENTIRE_GRAPH_RUN_ACCEPTED") == "" {
-		t.Skip("accepted behaviour: " + reason)
+	for i, row := range b {
+		if row.Section != "" || c[i+1].FilePath != row.FilePath || c[i+1].Section != "docs-and-fixtures" {
+			t.Fatalf("documentation row was lost or assigned the wrong section: off=%+v on=%+v", row, c[i+1])
+		}
 	}
 }
