@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "b5405e495ac2",
+  "session_id": "01a1491d-38d3-7c33-a2a6-595311c2667b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-17T19:00:57.286866Z",
+  "branch": "codex/pr343-range-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CHANGELOG.md",
+    "README.md",
+    "internal/cli/range_repo_scope_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 1395092,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 83614976,
+    "output_tokens": 184717,
+    "api_call_count": 642
+  },
+  "session_metrics": {
+    "turn_count": 8
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-17T19:00:57.03396Z",
+    "agent_lines": 140,
+    "agent_removed": 18,
+    "human_added": 52375,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 52515,
+    "total_lines_changed": 54165,
+    "agent_percentage": 0.2917012831164036,
+    "metric_version": 2
+  }
+}
