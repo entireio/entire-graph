@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
@@ -35,7 +37,21 @@ type Options struct {
 }
 
 func Execute(version string, args []string) error {
-	return Run(context.Background(), Options{
+	// Translate SIGINT/SIGTERM into context cancellation. Every Git subprocess
+	// is built with exec.CommandContext, so cancellation kills it; without this
+	// the default signal action ends only this process and leaves a running
+	// `git grep` child orphaned and burning CPU. After the first signal the
+	// default action is restored, so a second one still terminates at once.
+	// SIGKILL cannot be intercepted, and macOS has no parent-death signal, so a
+	// SIGKILLed parent still orphans its children until they next write to the
+	// closed stdout pipe (SIGPIPE).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return Run(ctx, Options{
 		Version: version,
 		Env:     EnvFromOS(),
 		Stdout:  os.Stdout,
@@ -113,6 +129,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runAgentGuide(opts, args[1:])
 	case "init-agents":
 		return runInitAgents(opts, args[1:])
+	case "hook":
+		return runHook(opts, args[1:])
 	case "version", "--version", "-v":
 		if len(args) > 1 && args[1] == "--json" {
 			return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(map[string]string{
@@ -376,36 +394,22 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if filterActive && mode == "symbols" {
 		return fmt.Errorf("--to/--from/--relation filter relations; use `edges` (not `symbols`)")
 	}
+	// Serve from the committed-record cache when possible. The cache is keyed on
+	// the exact HEAD commit and tree, the mode, and output-affecting options, so
+	// an unchanged HEAD skips the expensive re-index. It is deliberately bypassed
+	// for --worktree, whose source cannot be pinned to one tree, and for SCIP.
+	//
+	// A targeted edge query (--to/--from/--relation) reads and fills the SAME
+	// entry an unfiltered `edges` run does and filters it, because its output is
+	// exactly that stream's header, matching relations and summary. It used to
+	// take no cache at all, so `--cache-dir` was accepted and silently ignored and
+	// every "callers of X" rebuilt the whole graph.
+	cacheMode := mode
 	if filterActive {
-		var matched int
-		if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
-			capture(record)
-			switch r := record.(type) {
-			case sem.RelationRecord:
-				if !relationMatches(r, flags) {
-					return nil
-				}
-				matched++
-				return encodeRecord(r)
-			case sem.FileRecord, sem.ExternalRecord, sem.SymbolRecord:
-				return nil // suppressed for a targeted edge query
-			default: // header, summary
-				return encodeRecord(record)
-			}
-		}); err != nil {
-			return err
-		}
-		warnIfPartial(opts.Stderr, flags.Worktree, summary)
-		fmt.Fprintf(opts.Stderr, "graph: %d edge(s) matched (--to=%q --from=%q --relation=%s)\n",
-			matched, flags.To, flags.From, strings.Join(flags.Relation, ","))
-		return nil
+		cacheMode = "edges"
+	} else if compact {
+		cacheMode = "snapshot:compact-ndjson-v1"
 	}
-
-	// Whole-graph dump (no targeted filter): serve from the committed-record
-	// cache when possible. The cache is keyed on the exact HEAD commit and tree,
-	// the mode, and output-affecting options, so an unchanged HEAD skips the
-	// expensive re-index. It is deliberately bypassed for --worktree and, by
-	// returning above, for targeted queries.
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	useCache := !flags.DisableCache && !flags.Worktree && !scip && cacheDir != ""
 	var commit, tree string
@@ -428,17 +432,12 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			useCache = false
 		}
 	}
-	cacheMode := mode
-	if compact {
-		cacheMode = "snapshot:compact-ndjson-v1"
-	}
 	var recordsCache *sem.ProviderRecordsCacheTransaction
 	if useCache {
 		recordsCache, err = sem.BeginProviderRecordsCache(cacheContext, repo, opts.Version, commit, tree, cacheMode, cacheDir, options)
 		if err != nil {
 			// Cache setup is optional. The uncached stream below will surface any
 			// policy-input error that also prevents a correct build.
-			useCache = false
 			recordsCache = nil
 		} else {
 			// Pin matcher construction to the exact policy bytes that keyed this
@@ -446,6 +445,67 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			options = recordsCache.Options()
 		}
 	}
+	recordBuf := boundedRecordBuffer{limit: providerRecordsCacheMaxBytes}
+
+	if filterActive {
+		reportMatched := func(matched int) {
+			fmt.Fprintf(opts.Stderr, "graph: %d edge(s) matched (--to=%q --from=%q --relation=%s)\n",
+				matched, flags.To, flags.From, strings.Join(flags.Relation, ","))
+		}
+		if recordsCache != nil {
+			if records, cachedSummary, hit := recordsCache.Load(); hit {
+				filtered, matched, ok := filterCachedEdgeRecords(records, flags)
+				if ok {
+					// Same wrap as the unfiltered hit below: escaping is idempotent, and an
+					// entry written before the C1 rule must not reach the terminal raw.
+					if _, err := termsafe.NewJSONWriter(opts.Stdout).Write(filtered); err != nil {
+						return err
+					}
+					warnIfPartial(opts.Stderr, flags.Worktree, cachedSummary)
+					reportMatched(matched)
+					return nil
+				}
+			}
+		}
+		// On a miss, the unfiltered edges stream is teed into the cache entry while
+		// only the matching relations reach stdout, so the next targeted query on
+		// this tree, whatever it asks, is a hit.
+		var cacheRecord func(any) error
+		if recordsCache != nil {
+			cacheRecord = newRecordEncoder(&recordBuf)
+		}
+		var matched int
+		if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
+			capture(record)
+			if cacheRecord != nil && includeRecord("edges", record) {
+				if err := cacheRecord(record); err != nil {
+					return err
+				}
+			}
+			switch r := record.(type) {
+			case sem.RelationRecord:
+				if !relationMatches(r, flags) {
+					return nil
+				}
+				matched++
+				return encodeRecord(r)
+			case sem.FileRecord, sem.ExternalRecord, sem.SymbolRecord:
+				return nil // suppressed for a targeted edge query
+			default: // header, summary
+				return encodeRecord(record)
+			}
+		}); err != nil {
+			return err
+		}
+		warnIfPartial(opts.Stderr, flags.Worktree, summary)
+		reportMatched(matched)
+		if recordsCache != nil && !recordBuf.overflowed {
+			// Best effort: a failed cache write never fails the command.
+			_ = recordsCache.Store(recordBuf.buffer.Bytes(), summary, snapshotHeader)
+		}
+		return nil
+	}
+
 	if recordsCache != nil {
 		if records, cachedSummary, hit := recordsCache.Load(); hit {
 			// Replayed bytes need the same wrap the encoder below gets. This path does
@@ -470,7 +530,6 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// its ENTIRE output in memory — proportional to the whole graph, on exactly the large repositories
 	// the streaming contract exists for. Past the cap the buffer is released and the entry is not
 	// stored: the cache is best effort, the stream is not.
-	recordBuf := boundedRecordBuffer{limit: providerRecordsCacheMaxBytes}
 	if recordsCache != nil {
 		encodeRecord = newRecordEncoder(io.MultiWriter(opts.Stdout, &recordBuf))
 	}
@@ -584,6 +643,44 @@ func warnIfPartial(w io.Writer, worktree bool, s *sem.SnapshotSummary) {
 	default:
 		fmt.Fprintf(w, "   The graph is incomplete; treat query results as partial.\n")
 	}
+}
+
+// filterCachedEdgeRecords applies a targeted edge query to a cached `edges`
+// stream, which holds only the header, relations and summary (includeRecord):
+// relation lines pass when they match and everything else passes, exactly as
+// the uncached targeted stream decides. Lines are passed through as stored, so a
+// hit is byte-identical to the miss that wrote it. A line that does not decode reports !ok, and the caller
+// rebuilds rather than trusting an entry it cannot read.
+func filterCachedEdgeRecords(records []byte, flags providerFlags) ([]byte, int, bool) {
+	var filtered bytes.Buffer
+	matched := 0
+	for len(records) > 0 {
+		line := records
+		if index := bytes.IndexByte(records, '\n'); index >= 0 {
+			line, records = records[:index+1], records[index+1:]
+		} else {
+			records = nil
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var kind sem.ProviderRecord
+		if err := json.Unmarshal(line, &kind); err != nil {
+			return nil, 0, false
+		}
+		if kind.RecordType == "relation" {
+			var relation sem.RelationRecord
+			if err := json.Unmarshal(line, &relation); err != nil {
+				return nil, 0, false
+			}
+			if !relationMatches(relation, flags) {
+				continue
+			}
+			matched++
+		}
+		filtered.Write(line)
+	}
+	return filtered.Bytes(), matched, true
 }
 
 // includeRecord filters streamed records for the symbols and edges modes, which

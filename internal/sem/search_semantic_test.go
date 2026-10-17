@@ -51,6 +51,8 @@ type fakeEmbedder struct {
 	model    string
 	requests atomic.Int32
 	queries  atomic.Int32
+	// Optional timing receipt for the hanging request, excluding surrounding search work.
+	hangFinished chan time.Duration
 }
 
 func (fake *fakeEmbedder) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -76,9 +78,13 @@ func (fake *fakeEmbedder) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			http.Error(writer, "boom", http.StatusInternalServerError)
 			return
 		case "hang":
+			started := time.Now()
 			select {
 			case <-request.Context().Done():
 			case <-time.After(5 * time.Second):
+			}
+			if fake.hangFinished != nil {
+				fake.hangFinished <- time.Since(started)
 			}
 			return
 		case "garbage":
@@ -333,6 +339,9 @@ func TestSemanticChannelFailsOpen(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			fake := &fakeEmbedder{mode: tc.mode}
+			if tc.mode == "hang" {
+				fake.hangFinished = make(chan time.Duration, 1)
+			}
 			server := httptest.NewServer(fake)
 			endpoint := server.URL
 			if tc.closed {
@@ -344,7 +353,6 @@ func TestSemanticChannelFailsOpen(t *testing.T) {
 			if tc.model != "" {
 				model = tc.model
 			}
-			started := time.Now()
 			response := semanticSearch(t, repo, cacheDir,
 				&SemanticConfig{Endpoint: endpoint, Model: model, QueryTimeout: 300 * time.Millisecond}, nil)
 			if response.Stats.SemanticStatus != tc.wantStatus {
@@ -359,8 +367,18 @@ func TestSemanticChannelFailsOpen(t *testing.T) {
 			if countWarnings(response.Warnings, "W_SEMANTIC_UNAVAILABLE") != 1 {
 				t.Fatalf("want exactly one W_SEMANTIC_UNAVAILABLE warning, got %+v", response.Warnings)
 			}
-			if tc.mode == "hang" && time.Since(started) > 4*time.Second {
-				t.Fatalf("hang was not bounded by the query timeout: %s", time.Since(started))
+			if tc.mode == "hang" {
+				// QueryTimeout bounds the embedding HTTP request, not source inspection,
+				// parsing or lexical fallback. Observe the server's request lifetime so
+				// race instrumentation and concurrent searches do not inflate that bound.
+				select {
+				case elapsed := <-fake.hangFinished:
+					if elapsed > 4*time.Second {
+						t.Fatalf("hanging request was not canceled within the query timeout allowance: %s", elapsed)
+					}
+				case <-time.After(4 * time.Second):
+					t.Fatal("embedding request remained active after lexical fallback")
+				}
 			}
 			if tc.mode != "" && fake.queries.Load() == 0 {
 				t.Fatalf("NON-VACUITY: the failure mode %q was never exercised", tc.mode)

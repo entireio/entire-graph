@@ -7,6 +7,11 @@ import doccomment_bench as D
 import replay_qualify as R
 import head_to_head as H
 class ReviewGuards(unittest.TestCase):
+    def test_unsealed_smoke_has_no_arm_entry_seal(self):
+        self.assertIsNone(H.seal_present_at_arm_entry(None, None))
+    def test_trailing_ampersand_is_not_a_redirect(self):
+        self.assertEqual(R._neutralise_redirect_amps("command &"), "command &")
+        self.assertEqual(R._neutralise_redirect_amps("command 2>&1"), "command 2>@1")
     def test_failed_symbol_stream_is_refused(self):
         with patch.object(D.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="{partial}", stderr="failure")):
             with self.assertRaises(SystemExit): D.build_cases("binary", "/repo", 3)

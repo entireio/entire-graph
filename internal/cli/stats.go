@@ -42,12 +42,33 @@ const savingsModelText = "Model (assumption, not a measurement): assume each obs
 	"token approximation. Unmatched queries, transformed or truncated outputs, and task quality " +
 	"are not controlled. Transcripts cannot establish what would have been read instead or causal " +
 	"billed-token savings. Legacy JSON savings fields retain their positive-only floor for " +
-	"compatibility; the headline uses the signed unfloored fields."
+	"compatibility; the status line uses the signed unfloored fields, and the stats headline uses " +
+	"observed follow-up rates instead of this assumption."
 
 // bytesPerToken is the standard rough transcript-accounting conversion. Tool results are raw
 // text, so token counts are not recorded per call anywhere; 4 bytes/token is the usual
 // approximation and is stated in the output. Actual ratios depend on the content and tokenizer.
 const bytesPerToken = 4
+
+// followUpModelText documents the headline. Carried verbatim in JSON and --verbose.
+const followUpModelText = "Observed follow-up (an observational proxy, not a measurement of calls avoided): " +
+	"each graph locate result (query/search/neighbors/impact) is classified by the next K tool calls the agent " +
+	"issued AFTER that result was delivered, in the same transcript. ERROR: the result was an error. INELIGIBLE: " +
+	"it was empty or named no file. RE-QUERY: another graph lookup, Grep, Glob or shell search came first. " +
+	"FOLLOW-UP READ: the agent first read a file whose path overlaps one the result named (overlapping lines, a " +
+	"different region, or unknown span - unknown when a span is not known or the file was edited in between - " +
+	"or shared, when the same read was span-attributed to another result). " +
+	"CENSORED: the transcript ended before K calls and nothing qualified. NO FOLLOW-UP: K calls were observed " +
+	"and none qualified. Absence of a follow-up is not an observed avoided call: the task may have ended, " +
+	"failed, changed direction or used another source. The modeled balance ASSUMES each no-follow-up result " +
+	"replaced one exploration result priced at that session's average exploration bytes/result, subtracts " +
+	"every locate result's bytes (errors, censored and ineligible included), sums signed results over sessions " +
+	"with both result types and converts at ~4 bytes/token; it is not measured savings. Limits: path overlap " +
+	"is a suffix match on extension-bearing paths (extensionless files are missed; a same-named file at a " +
+	"matching suffix can match; only result rows name a file, never coverage diagnostics, VERIFY or prose, and " +
+	"\"No search results.\" names nothing); delivered line spans are known only when the whole output parsed " +
+	"as a search response; one read is span-attributed to one result (the latest delivered) and is a shared " +
+	"read for any other result naming that file; work delegated to a subagent is not in the caller's window."
 
 // substitutionRatio is how many exploration calls one graph locate call is assumed to displace.
 // This is an unvalidated counterfactual, not an empirical coefficient for these transcripts.
@@ -79,7 +100,7 @@ var graphVerbs = map[string]bool{
 	"checkpoint": true, "analyze": true, "doctor": true, "capabilities": true,
 	"snapshot": true, "snapshot-query": true, "symbols": true, "edges": true, "index": true,
 	"stats": true, "def": true, "explain": true, "verify": true, "health": true,
-	"agent-guide": true, "init-agents": true, "version": true, "help": true,
+	"agent-guide": true, "init-agents": true, "hook": true, "version": true, "help": true,
 }
 
 // semGraphVerbs are the `entire sem` subcommands that answer the same structural question the
@@ -205,6 +226,45 @@ type statsResponse struct {
 	// SessionsWithSavingsComparison counts sessions containing at least one observed graph
 	// locate result and one observed exploration result. Availability is not causal validity.
 	SessionsWithSavingsComparison int `json:"sessions_with_savings_comparison"`
+
+	// --- observed follow-up (replaces the assumed 1:1 substitution in the headline) ----------
+	//
+	// Go field names DisplacementWindowCalls, GraphLocateDisplaced, GraphLocateReadAnyway and
+	// ObservedNet* are kept stable because an independently authored review fixture
+	// (stats_observed_independent_review_test.go) binds to them. Their JSON keys and every human
+	// label use the observational names: no_follow_up, follow_up_read, modeled_balance.
+
+	// DisplacementWindowCalls is K: how many tool calls issued after a locate result's delivery are
+	// inspected to classify it.
+	DisplacementWindowCalls int `json:"follow_up_window_calls"`
+	// The GraphLocate* class counts partition the observed locate results (CreditedGraphCalls)
+	// over EVERY session in the window; each *Rate divides by that same total. FollowUpRead is the
+	// sum of its four sub-buckets: three span buckets (each read counted once) plus shared reads.
+	GraphLocateDisplaced           int     `json:"graph_locate_no_follow_up"`
+	GraphLocateRequery             int     `json:"graph_locate_requery"`
+	GraphLocateReadAnyway          int     `json:"graph_locate_follow_up_read"`
+	GraphLocateReadOverlapping     int     `json:"graph_locate_follow_up_read_overlapping"`
+	GraphLocateReadDifferentRegion int     `json:"graph_locate_follow_up_read_different_region"`
+	GraphLocateReadUnknownSpan     int     `json:"graph_locate_follow_up_read_unknown_span"`
+	GraphLocateReadShared          int     `json:"graph_locate_follow_up_read_shared"`
+	GraphLocateCensored            int     `json:"graph_locate_censored"`
+	GraphLocateError               int     `json:"graph_locate_error"`
+	GraphLocateIneligible          int     `json:"graph_locate_ineligible"`
+	NoFollowUpRate                 float64 `json:"no_follow_up_rate"`
+	RequeryRate                    float64 `json:"requery_rate"`
+	FollowUpReadRate               float64 `json:"follow_up_read_rate"`
+	CensoredRate                   float64 `json:"censored_rate"`
+	ErrorRate                      float64 `json:"error_rate"`
+	IneligibleRate                 float64 `json:"ineligible_rate"`
+	// ObservedNetBytes credits only NO FOLLOW-UP results at the session's average exploration
+	// price (an assumption) and subtracts every locate result's bytes. Signed, summed over the
+	// comparison population (SessionsWithSavingsComparison), unavailable when that is 0.
+	// ModeledBalanceCreditedResults is how many no-follow-up results that population credited.
+	ObservedNetBytes              int64  `json:"modeled_balance_bytes"`
+	ObservedNetTokens             int64  `json:"modeled_balance_est_tokens"`
+	ModeledBalanceCreditedResults int    `json:"modeled_balance_credited_results"`
+	ComparableGraphLocateResults  int    `json:"comparable_graph_locate_results"`
+	FollowUpModel                 string `json:"follow_up_model"`
 }
 
 func runStats(ctx context.Context, opts Options, args []string) error {
@@ -266,6 +326,9 @@ func runStats(ctx context.Context, opts Options, args []string) error {
 		Since:             flags.Since,
 		SavingsModel:      savingsModelText,
 		SubstitutionRatio: substitutionRatio,
+		// K is reported even when nothing was classified, so a reader can always see the window.
+		DisplacementWindowCalls: followUpWindow,
+		FollowUpModel:           followUpModelText,
 		// non-nil so JSON never emits null for the tables
 		GraphByVerb:       []statsCount{},
 		ExplorationByKind: []statsCount{},
@@ -437,6 +500,8 @@ type contentBlock struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
 	Text      string          `json:"text"`
+	// IsError is set on a tool_result the tool reported as failed.
+	IsError bool `json:"is_error"`
 }
 
 // --- one transcript file's contribution -------------------------------------------------
@@ -450,6 +515,9 @@ type summaryCall struct {
 	Kind      string `json:"k,omitempty"`
 	Bytes     int64  `json:"b,omitempty"`
 	HasResult bool   `json:"r,omitempty"`
+	// Disp is the observed follow-up class (followUp* codes) of a graph locate call with a
+	// result; empty otherwise.
+	Disp string `json:"d,omitempty"`
 }
 
 // summaryUsage is one assistant message's billed usage, kept per message.id so the same message
@@ -486,6 +554,12 @@ type fileScanner struct {
 	pending  map[string]int // tool_use id -> index into summary.Calls
 	seenUse  map[string]bool
 	usageIdx map[string]int // message id -> index into summary.Usage
+	// timeline is every distinct tool call in file order, for the follow-up window;
+	// locateAt maps a locate call's summary.Calls index to its timeline entry; deliveries counts
+	// locate results in arrival order.
+	timeline   []timelineEntry
+	locateAt   map[int]int
+	deliveries int
 }
 
 func newFileScanner() *fileScanner {
@@ -493,6 +567,7 @@ func newFileScanner() *fileScanner {
 		pending:  map[string]int{},
 		seenUse:  map[string]bool{},
 		usageIdx: map[string]int{},
+		locateAt: map[int]int{},
 	}
 }
 
@@ -562,15 +637,23 @@ func (s *fileScanner) consumeToolUse(block contentBlock) {
 		}
 		s.seenUse[block.ID] = true
 	}
+	entry := timelineFromToolUse(block)
 	call, ok := classifyToolUse(block)
 	if !ok {
+		s.timeline = append(s.timeline, entry)
 		return
 	}
 	call.ID = block.ID
 	s.summary.Calls = append(s.summary.Calls, call)
+	index := len(s.summary.Calls) - 1
 	if block.ID != "" {
-		s.pending[block.ID] = len(s.summary.Calls) - 1
+		s.pending[block.ID] = index
 	}
+	if entry.kind == timelineLocate {
+		entry.callIndex = index
+		s.locateAt[index] = len(s.timeline)
+	}
+	s.timeline = append(s.timeline, entry)
 }
 
 // classifyToolUse puts a tool_use in the graph bucket, the exploration bucket, or neither.
@@ -592,8 +675,18 @@ func (s *fileScanner) consumeToolResult(block contentBlock) {
 	// Dropping the pending entry is what stops a repeated tool_result from being billed twice
 	// against the same call: the second one finds nothing pending.
 	delete(s.pending, block.ToolUseID)
-	s.summary.Calls[index].Bytes = int64(len(toolResultText(block.Content)))
+	text := toolResultText(block.Content)
+	s.summary.Calls[index].Bytes = int64(len(text))
 	s.summary.Calls[index].HasResult = true
+	if at, ok := s.locateAt[index]; ok {
+		// The follow-up window starts HERE, at delivery: calls already issued are not reactions.
+		entry := &s.timeline[at]
+		entry.hasResult, entry.isError = true, block.IsError
+		entry.deliveredAt, entry.deliverSeq = len(s.timeline), s.deliveries
+		s.deliveries++
+		entry.paths = graphOutputPaths(text)
+		entry.delivered = graphDeliveredSpans(text)
+	}
 }
 
 func summariseTranscript(path string) (fileSummary, bool) {
@@ -623,6 +716,7 @@ func summariseTranscript(path string) (fileSummary, bool) {
 		// A truncated or over-long line is treated like a malformed line, not a hard failure.
 		scanner.summary.Malformed++
 	}
+	scanner.finishFollowUp()
 	return scanner.summary, true
 }
 
@@ -640,18 +734,21 @@ type sessionAcc struct {
 	seenCalls           map[string]summaryCall
 	usageByID           map[string]statsTokens
 	unkeyed             statsTokens
+	// displacement counts observed follow-up classes of locate calls with results.
+	displacement map[string]int
 }
 
 func newSessionAcc() *sessionAcc {
 	return &sessionAcc{
-		verbCalls:   map[string]int{},
-		verbResults: map[string]int{},
-		verbBytes:   map[string]int64{},
-		kindCalls:   map[string]int{},
-		kindResults: map[string]int{},
-		kindBytes:   map[string]int64{},
-		seenCalls:   map[string]summaryCall{},
-		usageByID:   map[string]statsTokens{},
+		verbCalls:    map[string]int{},
+		verbResults:  map[string]int{},
+		verbBytes:    map[string]int64{},
+		kindCalls:    map[string]int{},
+		kindResults:  map[string]int{},
+		kindBytes:    map[string]int64{},
+		seenCalls:    map[string]summaryCall{},
+		usageByID:    map[string]statsTokens{},
+		displacement: map[string]int{},
 	}
 }
 
@@ -671,11 +768,12 @@ func (a *sessionAcc) merge(summary fileSummary) {
 				// A replay can complete a call whose first copy had no result.
 				// Keep its original classification and count the result only once.
 				if !previous.HasResult && call.HasResult {
-					previous.HasResult, previous.Bytes = true, call.Bytes
+					previous.HasResult, previous.Bytes, previous.Disp = true, call.Bytes, call.Disp
 					a.seenCalls[call.ID] = previous
 					if previous.Verb != "" {
 						a.verbResults[previous.Verb]++
 						a.verbBytes[previous.Verb] += call.Bytes
+						a.countDisplacement(previous)
 					} else {
 						a.kindResults[previous.Kind]++
 						a.kindBytes[previous.Kind] += call.Bytes
@@ -690,6 +788,7 @@ func (a *sessionAcc) merge(summary fileSummary) {
 			if call.HasResult {
 				a.verbResults[call.Verb]++
 				a.verbBytes[call.Verb] += call.Bytes
+				a.countDisplacement(call)
 			}
 			if a.firstLocate == "" {
 				a.firstLocate = "graph"
@@ -720,6 +819,14 @@ func (a *sessionAcc) merge(summary fileSummary) {
 	a.unkeyed.CacheWrite += summary.Unkeyed.CacheWrite
 	a.unkeyed.CacheRead += summary.Unkeyed.CacheRead
 	a.unkeyed.Output += summary.Unkeyed.Output
+}
+
+// countDisplacement records a locate result's class. A class-less locate result (which the scanner
+// never produces) is left out of every class and therefore never credited.
+func (a *sessionAcc) countDisplacement(call summaryCall) {
+	if graphLocateVerbs[call.Verb] && call.HasResult && call.Disp != "" {
+		a.displacement[call.Disp]++
+	}
 }
 
 // tokens folds the per-message usage into the session's billed total. Integer addition is
@@ -1042,6 +1149,29 @@ func graphVerbFromToolUse(block contentBlock) (string, bool) {
 }
 
 func graphVerbFromCommand(command string) (string, bool) {
+	return graphVerbFromCommandDepth(command, 0)
+}
+
+// graphVerbFromCommandDepth classifies the top-level segments first and then every command
+// substitution body, recursively. The substitution is masked as ONE opaque word at the top level
+// (see shellQuoteMask), so a call inside `x=$(cd /repo && entire graph impact ...)` is reached only
+// here. isExploringShellCommandDepth recurses identically: both arms must see the same commands.
+func graphVerbFromCommandDepth(command string, depth int) (string, bool) {
+	if verb, ok := graphVerbFromSegments(command); ok {
+		return verb, true
+	}
+	if depth >= maxSubstitutionDepth {
+		return "", false
+	}
+	for _, body := range shellSubstitutionBodies(command) {
+		if verb, ok := graphVerbFromCommandDepth(body, depth+1); ok {
+			return verb, true
+		}
+	}
+	return "", false
+}
+
+func graphVerbFromSegments(command string) (string, bool) {
 	for _, segment := range splitShellSegments(command) {
 		fields := strings.Fields(segment)
 		for index := 0; index < len(fields); index++ {
@@ -1050,7 +1180,8 @@ func graphVerbFromCommand(command string) (string, bool) {
 				continue
 			}
 			base := filepath.Base(word)
-			if commandPrefixes[base] {
+			if commandPrefixes[base] || base == "timeout" {
+				index = skipGraphWrapperArgs(base, fields, index)
 				continue
 			}
 			rest := fields[index+1:]
@@ -1073,6 +1204,45 @@ func graphVerbFromCommand(command string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// graphWrapperValueFlags are wrapper options whose value is the NEXT word (`nice -n 15`,
+// `timeout -s KILL 60`, `env -u NAME`, `sudo -u user`, `xargs -I {}`).
+var graphWrapperValueFlags = map[string]map[string]bool{
+	"nice":    {"-n": true, "--adjustment": true},
+	"timeout": {"-s": true, "--signal": true, "-k": true, "--kill-after": true},
+	"env":     {"-u": true, "--unset": true, "-C": true, "--chdir": true},
+	"sudo":    {"-u": true, "-g": true, "-C": true, "-D": true, "-h": true, "-p": true, "-U": true},
+	"xargs":   {"-I": true, "-n": true, "-P": true, "-L": true, "-s": true, "-d": true, "-E": true, "-a": true},
+}
+
+// skipGraphWrapperArgs returns the index of the wrapper's last own word, so the caller resumes at
+// the wrapped command: its options (and an option's value), and timeout's DURATION operand.
+// Without this `nice -n 15 entire graph query` read "-n" as the command word and the call was
+// counted nowhere. `command -v`/`-V` only looks a name up, so it ends the segment.
+func skipGraphWrapperArgs(wrapper string, fields []string, index int) int {
+	valueFlags := graphWrapperValueFlags[wrapper]
+	for index+1 < len(fields) {
+		next := shellWord(fields[index+1])
+		if next == "--" {
+			index++
+			break
+		}
+		if len(next) < 2 || !strings.HasPrefix(next, "-") {
+			break
+		}
+		if wrapper == "command" && (next == "-v" || next == "-V") {
+			return len(fields)
+		}
+		index++
+		if valueFlags[next] {
+			index++
+		}
+	}
+	if wrapper == "timeout" && index+1 < len(fields) {
+		index++ // DURATION
+	}
+	return index
 }
 
 // firstSemVerb matches the `entire sem <verb>` form. The CLI's own agent instructions recommend
@@ -1153,7 +1323,17 @@ func explorationKindFromToolUse(block contentBlock) (string, bool) {
 // removes a further 4,502 on top of it, 36,805 in total (36.7%). The calls removed averaged 1,016
 // returned bytes against 3,117 for the ones kept, so the measured exploration price per call — the
 // thing the savings model divides by — rose 32.8%.
+//
+// Command substitutions are classified too, by the same rules applied to each body: the outer
+// statement's pipeline and write check are decided with the substitution masked, and then every
+// `$(...)`/backtick body is a command of its own. `files=$(cd internal && grep -rln Foo .)` is a
+// search; `cat $(git log --oneline | head -5) > summary.txt` is a write whose inner pipeline is
+// headed by `git log`, which locates nothing.
 func isExploringShellCommand(command string) bool {
+	return isExploringShellCommandDepth(command, 0)
+}
+
+func isExploringShellCommandDepth(command string, depth int) bool {
 	if command == "" {
 		return false
 	}
@@ -1165,7 +1345,137 @@ func isExploringShellCommand(command string) bool {
 			return true
 		}
 	}
+	if depth >= maxSubstitutionDepth {
+		return false
+	}
+	for _, body := range shellSubstitutionBodies(command) {
+		if isExploringShellCommandDepth(body, depth+1) {
+			return true
+		}
+	}
 	return false
+}
+
+// maxSubstitutionDepth bounds how deeply nested command substitutions are classified, so a
+// pathological command cannot make the recursion grow with its length.
+const maxSubstitutionDepth = 8
+
+// shellSubstitutionBodies returns the body of every OUTERMOST command substitution in a command,
+// in order: the text inside `$(...)` and inside a backtick pair. Bodies nested inside a body are
+// left for the caller's recursion. `$((...))` is arithmetic, not a command, and is skipped whole.
+//
+// Single-quoted text expands nothing and is skipped; double-quoted text DOES expand substitutions
+// (`x="$(entire graph search ...)"` runs the search), so it is scanned. Here-document bodies are
+// removed first, as everywhere else in this file. A substitution that never closes ends the scan:
+// its text was already split by the unmasked top-level reading shellQuoteMask falls back to.
+func shellSubstitutionBodies(command string) []string {
+	runes := []rune(stripHeredocBodies(command))
+	var bodies []string
+	inDouble := false
+	for index := 0; index < len(runes); index++ {
+		character := runes[index]
+		switch {
+		case character == '\\':
+			index++
+		case character == '\'' && !inDouble:
+			end := indexRuneFrom(runes, index+1, '\'')
+			if end < 0 {
+				return bodies
+			}
+			index = end
+		case character == '"':
+			inDouble = !inDouble
+		case character == '$' && index+1 < len(runes) && runes[index+1] == '(':
+			arithmetic := index+2 < len(runes) && runes[index+2] == '('
+			end := substitutionEnd(runes, index+2, substitutionParen)
+			if end < 0 {
+				return bodies
+			}
+			if !arithmetic {
+				bodies = append(bodies, string(runes[index+2:end]))
+			}
+			index = end
+		case character == '`':
+			end := substitutionEnd(runes, index+1, substitutionBacktick)
+			if end < 0 {
+				return bodies
+			}
+			bodies = append(bodies, string(runes[index+1:end]))
+			index = end
+		}
+	}
+	return bodies
+}
+
+const (
+	substitutionParen = iota
+	substitutionDouble
+	substitutionBacktick
+)
+
+// substitutionEnd returns the index of the rune that closes the construct opened just before start
+// — a `)` for `$(`, a backtick for a backtick — or -1 when it never closes. It tracks quotes,
+// escapes and nested constructs with an explicit stack, so nesting depth costs no Go stack.
+func substitutionEnd(runes []rune, start int, open int) int {
+	stack := []int{open}
+	for index := start; index < len(runes); index++ {
+		character := runes[index]
+		if character == '\\' {
+			index++
+			continue
+		}
+		opensSubstitution := character == '$' && index+1 < len(runes) && runes[index+1] == '('
+		switch stack[len(stack)-1] {
+		case substitutionBacktick:
+			// An unescaped backtick always closes; nothing nests inside without escaping.
+			if character == '`' {
+				stack = stack[:len(stack)-1]
+			}
+		case substitutionDouble:
+			switch {
+			case character == '"':
+				stack = stack[:len(stack)-1]
+			case opensSubstitution:
+				stack = append(stack, substitutionParen)
+				index++
+			case character == '`':
+				stack = append(stack, substitutionBacktick)
+			}
+		default: // substitutionParen
+			switch {
+			case character == '\'':
+				end := indexRuneFrom(runes, index+1, '\'')
+				if end < 0 {
+					return -1
+				}
+				index = end
+			case character == '"':
+				stack = append(stack, substitutionDouble)
+			case character == '`':
+				stack = append(stack, substitutionBacktick)
+			case opensSubstitution:
+				stack = append(stack, substitutionParen)
+				index++
+			case character == '(':
+				stack = append(stack, substitutionParen)
+			case character == ')':
+				stack = stack[:len(stack)-1]
+			}
+		}
+		if len(stack) == 0 {
+			return index
+		}
+	}
+	return -1
+}
+
+func indexRuneFrom(runes []rune, start int, target rune) int {
+	for index := start; index < len(runes); index++ {
+		if runes[index] == target {
+			return index
+		}
+	}
+	return -1
 }
 
 // shellCommandWord returns the command a stage runs — wrappers (`rtk`, `sudo`, `xargs`) and
@@ -1266,14 +1576,23 @@ func pipelineHeadStages(command string) []string {
 // the operators they look for — `|`, `;`, `&`, `>`, `<<` — is an operator inside quotes:
 // `git commit -m "fix: a; grep the logs"` is one commit, and `cat "odd>name.txt"` is a read.
 //
-// A command whose quotes do not balance gets an all-false mask: masking to end-of-string on an
-// unterminated quote would hide every later statement, and falling back to the unquoted reading is
-// this file's pre-existing behaviour, so the failure stays bounded.
+// Command substitution is masked the same way: in `cat $(git log | head -5) > out.txt` the `|`
+// belongs to the substituted command, and splitting the outer statement there hid its `> out.txt`
+// redirect from the write check. `$(...)` nests (and so does `$((...))` arithmetic); a backtick
+// substitution does not. Quotes inside a substitution are still tracked, so `$(grep ")" x)` closes
+// at the last parenthesis, not the quoted one.
+//
+// A command whose quotes or substitutions do not balance gets an all-false mask: masking to
+// end-of-string on an unterminated quote would hide every later statement, and falling back to the
+// unquoted reading is this file's pre-existing behaviour, so the failure stays bounded.
 func shellQuoteMask(runes []rune) []bool {
 	masked := make([]bool, len(runes))
 	var quote rune
+	depth := 0
+	backtick := false
 	for index := 0; index < len(runes); index++ {
 		character := runes[index]
+		inSubstitution := depth > 0 || backtick
 		switch {
 		case character == '\\' && quote != '\'':
 			masked[index] = true
@@ -1289,9 +1608,24 @@ func shellQuoteMask(runes []rune) []bool {
 		case character == '\'' || character == '"':
 			quote = character
 			masked[index] = true
+		case character == '$' && index+1 < len(runes) && runes[index+1] == '(':
+			masked[index], masked[index+1] = true, true
+			depth++
+			index++
+		case character == '(' && depth > 0:
+			masked[index] = true
+			depth++
+		case character == ')' && depth > 0:
+			masked[index] = true
+			depth--
+		case character == '`':
+			masked[index] = true
+			backtick = !backtick
+		case inSubstitution:
+			masked[index] = true
 		}
 	}
-	if quote != 0 {
+	if quote != 0 || depth != 0 || backtick {
 		return make([]bool, len(runes))
 	}
 	return masked
@@ -1329,7 +1663,7 @@ func stripHeredocBodies(command string) string {
 		kept = append(kept, lines[index])
 		openers := heredocOpeners(lines[index])
 		cursor, closed := index+1, len(openers) > 0
-		for _, opener := range openers {
+		for openerIndex, opener := range openers {
 			terminator := -1
 			for ; cursor < len(lines); cursor++ {
 				line := strings.TrimSuffix(lines[cursor], "\r")
@@ -1343,6 +1677,12 @@ func stripHeredocBodies(command string) string {
 				}
 			}
 			if terminator < 0 {
+				// A completed earlier body establishes this as a heredoc command.
+				// Shells consume the unfinished subsequent body through EOF; those
+				// bytes cannot become commands merely because its closer is absent.
+				if openerIndex > 0 {
+					return strings.Join(kept, "\n")
+				}
 				closed = false
 				break
 			}
@@ -1359,7 +1699,8 @@ func stripHeredocBodies(command string) string {
 //
 // It is deliberately conservative, because a false positive costs real commands: stripHeredocBodies
 // would discard the lines that follow. Three guards here, and stripHeredocBodies adds a fourth by
-// refusing to strip an unterminated body:
+// refusing to strip an unterminated first body. Once an earlier body closes,
+// unfinished subsequent bodies are unambiguous data through EOF:
 //
 //   - the `<<` must be OUTSIDE quotes, so `echo "count << 2"` opens nothing;
 //   - `<<<` is a here-STRING, whose data is on the same line;
@@ -1463,7 +1804,7 @@ func isWritingShellStage(stage string) bool {
 	case "cat":
 		return hasStdoutRedirect(stage) || heredocDelimiter(stage) != ""
 	case "sed":
-		return hasInPlaceFlag(stage)
+		return hasInPlaceFlag(stage) || hasStdoutRedirect(stage)
 	}
 	return false
 }
@@ -1627,6 +1968,20 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 		// Preserve the legacy positive-only sum; human output uses the signed model.
 		saved := acc.savingsBytes()
 		report.EstimatedSavingsBytesUnfloored += saved
+		report.GraphLocateDisplaced += acc.displacement[followUpNone]
+		report.GraphLocateRequery += acc.displacement[followUpRequery]
+		report.GraphLocateReadOverlapping += acc.displacement[followUpReadOverlapping]
+		report.GraphLocateReadDifferentRegion += acc.displacement[followUpReadDifferent]
+		report.GraphLocateReadUnknownSpan += acc.displacement[followUpReadUnknownSpan]
+		report.GraphLocateReadShared += acc.displacement[followUpReadShared]
+		report.GraphLocateCensored += acc.displacement[followUpCensored]
+		report.GraphLocateError += acc.displacement[followUpError]
+		report.GraphLocateIneligible += acc.displacement[followUpIneligible]
+		if locateResults > 0 && sessionExploreResults > 0 {
+			report.ObservedNetBytes += acc.modeledBalanceBytes()
+			report.ModeledBalanceCreditedResults += acc.displacement[followUpNone]
+			report.ComparableGraphLocateResults += locateResults
+		}
 		if saved > 0 {
 			report.EstimatedSavingsBytes += saved
 			report.SessionsWithPositiveSavings++
@@ -1648,6 +2003,18 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 	report.ExplorationReturnedTokens = report.ExplorationReturnedBytes / bytesPerToken
 	report.EstimatedSavingsTokens = report.EstimatedSavingsBytes / bytesPerToken
 	report.EstimatedSavingsTokensUnfloored = report.EstimatedSavingsBytesUnfloored / bytesPerToken
+	report.ObservedNetTokens = report.ObservedNetBytes / bytesPerToken
+	report.GraphLocateReadAnyway = report.GraphLocateReadOverlapping + report.GraphLocateReadDifferentRegion +
+		report.GraphLocateReadUnknownSpan + report.GraphLocateReadShared
+	if classified := followUpClassified(*report); classified > 0 {
+		rate := func(count int) float64 { return roundTo(float64(count)/float64(classified), 4) }
+		report.NoFollowUpRate = rate(report.GraphLocateDisplaced)
+		report.RequeryRate = rate(report.GraphLocateRequery)
+		report.FollowUpReadRate = rate(report.GraphLocateReadAnyway)
+		report.CensoredRate = rate(report.GraphLocateCensored)
+		report.ErrorRate = rate(report.GraphLocateError)
+		report.IneligibleRate = rate(report.GraphLocateIneligible)
+	}
 	if report.CreditedGraphCalls > 0 {
 		report.GraphBytesPerLocateCall = roundTo(
 			float64(report.GraphLocateReturnedBytes)/float64(report.CreditedGraphCalls), 2)
@@ -1733,7 +2100,39 @@ func writeStatsSummary(out io.Writer, report statsResponse) {
 			statsPrefix, termsafe.Line(report.Since))
 		return
 	}
-	fmt.Fprintf(out, "%s %s\n", statsPrefix, statsModelSummary(report))
+	fmt.Fprintf(out, "%s %s\n", statsPrefix, followUpSummary(report))
+}
+
+// followUpClassified is the reconcilable denominator: every observed locate result, in one class.
+func followUpClassified(report statsResponse) int {
+	return report.GraphLocateDisplaced + report.GraphLocateRequery + report.GraphLocateReadAnyway +
+		report.GraphLocateCensored + report.GraphLocateError + report.GraphLocateIneligible
+}
+
+// followUpSummary is the headline. It leads with what was OBSERVED (follow-up rates over every
+// observed locate result), and states the modeled balance only with its assumption and its own
+// population at the point of use, so it never reads as measured savings.
+func followUpSummary(report statsResponse) string {
+	classified := followUpClassified(report)
+	if classified == 0 {
+		return "observed follow-up: no graph locate results"
+	}
+	observed := fmt.Sprintf("observed follow-up of %s graph locate results (next %d calls after delivery): "+
+		"re-query %s, read named file %s, none %s, censored %s, error/ineligible %s",
+		humanInt(int64(classified)), report.DisplacementWindowCalls,
+		percent(report.RequeryRate), percent(report.FollowUpReadRate), percent(report.NoFollowUpRate),
+		percent(report.CensoredRate), percent(report.ErrorRate+report.IneligibleRate))
+	if report.SessionsWithSavingsComparison == 0 {
+		return observed + "; modeled balance unavailable (no session has both result types)"
+	}
+	signed := humanInt(report.ObservedNetTokens)
+	if report.ObservedNetTokens > 0 {
+		signed = "+" + signed
+	}
+	return fmt.Sprintf("%s; modeled balance %s est. tokens if each of %s no-follow-up results (of %s in %s sessions "+
+		"with both result types) replaced one average exploration result (assumed; not measured savings)",
+		observed, signed, humanInt(int64(report.ModeledBalanceCreditedResults)),
+		humanInt(int64(report.ComparableGraphLocateResults)), humanInt(int64(report.SessionsWithSavingsComparison)))
 }
 
 func statsModelSummary(report statsResponse) string {
@@ -1744,18 +2143,7 @@ func statsModelSummary(report statsResponse) string {
 	if report.EstimatedSavingsTokensUnfloored > 0 {
 		signed = "+" + signed
 	}
-	return "1:1 context model: " + signed + " est. tokens; not measured savings"
-}
-
-// statsGreen styles the headline for a terminal and degrades to plain text everywhere else,
-// using the same NO_COLOR / FORCE_COLOR / TERM / character-device rules as the rest of the
-// binary, so a pipe or a redirect never receives raw escape bytes.
-func statsGreen(out io.Writer, value string) string {
-	value = termsafe.Line(value)
-	if value == "" || !sem.ShouldUseColor(out) {
-		return value
-	}
-	return "\x1b[32m" + value + "\x1b[0m"
+	return "1:1 context model: " + signed + " est. tokens; not measured savings; assumes 100% displaced"
 }
 
 func writeStatsText(out io.Writer, report statsResponse) {
@@ -1817,6 +2205,19 @@ func writeStatsText(out io.Writer, report statsResponse) {
 	fmt.Fprintf(out, "  graph locate %s bytes/call · exploration %s bytes/call\n",
 		strconv.FormatFloat(report.GraphBytesPerLocateCall, 'f', -1, 64),
 		strconv.FormatFloat(report.ExplorationBytesPerCall, 'f', -1, 64))
+	fmt.Fprintln(out)
+
+	fmt.Fprintln(out, followUpSummary(report))
+	fmt.Fprintf(out, "  no follow-up %s · re-query %s · read named file %s (overlapping %s, different region %s, unknown span %s, shared %s) · censored %s · error %s · ineligible %s\n",
+		humanInt(int64(report.GraphLocateDisplaced)), humanInt(int64(report.GraphLocateRequery)),
+		humanInt(int64(report.GraphLocateReadAnyway)), humanInt(int64(report.GraphLocateReadOverlapping)),
+		humanInt(int64(report.GraphLocateReadDifferentRegion)), humanInt(int64(report.GraphLocateReadUnknownSpan)),
+		humanInt(int64(report.GraphLocateReadShared)),
+		humanInt(int64(report.GraphLocateCensored)), humanInt(int64(report.GraphLocateError)),
+		humanInt(int64(report.GraphLocateIneligible)))
+	for _, line := range wrapText(followUpModelText, 88) {
+		fmt.Fprintf(out, "  %s\n", line)
+	}
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, statsModelSummary(report))

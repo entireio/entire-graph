@@ -88,14 +88,24 @@ var commandDocs = []commandDoc{
 		name:    "init-agents",
 		group:   groupSetup,
 		summary: "Install the coding-agent guide into AGENTS.md/CLAUDE.md",
-		usage:   []string{"entire graph init-agents [--repo path] [--strict | --normal]"},
-		long:    "Writes one shared operating guide and managed AGENTS.md/CLAUDE.md references. Preserves repository Graph/Brain activation and the saved guidance mode. --strict saves mandatory tool-use rules for all enabled products; --normal resets to normal guidance. New repositories default to normal.",
+		usage:   []string{"entire graph init-agents [--repo path] [--strict | --normal] [--no-claude-hook]"},
+		long:    "Writes one shared operating guide and managed AGENTS.md/CLAUDE.md references. Preserves repository Graph/Brain activation and the saved guidance mode. --strict saves mandatory tool-use rules for all enabled products; --normal resets to normal guidance. New repositories default to normal.\n\nAlso registers a Claude Code SubagentStart hook (entire graph hook claude-subagent-start) in the per-user, untracked .claude/settings.local.json, merged into existing settings and added once. Claude Code's Explore and Plan subagents do not load CLAUDE.md; the hook gives them the graph directive. --no-claude-hook skips it.",
 		flags: []flagDoc{
 			{name: "--repo", arg: "path", desc: "Repository to install into (default: current repo)"},
 			{name: "--strict", desc: "Save strict guidance for all enabled products (exclusive with --normal)"},
 			{name: "--normal", desc: "Save normal guidance for all enabled products (exclusive with --strict)"},
+			{name: "--no-claude-hook", desc: "Do not register the Claude Code SubagentStart hook in .claude/settings.local.json"},
 		},
 		examples: []string{"entire graph init-agents --repo ."},
+	},
+	{
+		name:     "hook",
+		group:    groupSetup,
+		hidden:   true,
+		summary:  "Serve a coding-agent hook (run by the agent, not by hand)",
+		usage:    []string{"entire graph hook claude-subagent-start < event.json"},
+		long:     "claude-subagent-start reads a Claude Code SubagentStart event on stdin and prints {\"hookSpecificOutput\":{\"hookEventName\":\"SubagentStart\",\"additionalContext\":...}} carrying the compact graph directive, so subagents that do not load CLAUDE.md (Explore, Plan) still learn to use the graph. It prints nothing unless the event's cwd (else the current directory) is inside a git work tree, never builds an index, and fails open: malformed input prints nothing and exits 0. init-agents registers it.",
+		examples: []string{`echo '{"hook_event_name":"SubagentStart","cwd":"'"$PWD"'","agent_type":"Explore"}' | entire graph hook claude-subagent-start`},
 	},
 	{
 		name:    "agent-guide",
@@ -159,20 +169,24 @@ var commandDocs = []commandDoc{
 		},
 		long: "Ranked source regions for a plain-language description, with source and file:line inline, budgeted to drop straight into context. This is the first move for almost every locate task.\n\n" +
 			"By default query returns: ranked candidate fix sites (top hits as full function bodies), RELATED SITES, the COVERING TEST plus other tests over the same code (ALSO COVERING), SAME-CONCEPT LITERAL (every place the concept is named, tagged EDIT/CONSUMER/DOC), a VERIFY line (the narrowest test command for the file), and a CLOSED-SET WARNING when a switch over a sealed set would fail at runtime. The three reference blocks (container map, signature types, declaration card) are OFF by default because they cost turns in agent sessions; --reference-blocks all turns them on for interactive reading.\n\n" +
-			"--top-k only changes how many results come back; --deep additionally runs the exhaustive sparse (BM25) pass and fuses it with the semantic ranking (slower, reads every eligible file).\n\n" +
+			"--verify-block off (or --omit-verify, or " + envVerifyBlock + "=off) removes the VERIFY block and nothing else: the test command and the run-once/fix/stop advice that rides with it. That advice would help an agent with no tool just as much, so it exists for fair A/B comparisons (both arms get it, or neither). JSON then omits verify_command and reports stats.verify_omitted. In agent format the freed bytes go to ranked results under the same --max-context-bytes, so off is a different selection, not the on payload with lines deleted.\n\n" +
+			"--top-k caps normal results, including automatic related sites and covering tests, without changing retrieval strategy. Explicit --callee-hop may add called-helper results beyond that cap, under its existing byte-budget and ranked-source protections. --deep additionally runs the exhaustive sparse (BM25) pass and fuses it with the semantic ranking (slower, reads every eligible file).\n\n" +
 			"Ranking returns one region per unit, which is right for code and wrong for whole prose documents: one markdown document can hold the answer across several distant regions. So for prose the unit is the SECTION, not the file — a document's headed sections are ranked against every other section on their own scores, exactly as independent files would be (--document-resolution ranks a document as one unit instead). Separately, and on prose of any shape including headed documents, when fewer distinct units match than --top-k asked for, the spare slots are spent returning finer regions of the same document as results of their own (multi-resolution retrieval) — strictly additive, so it never displaces a unit and never breaches --max-context-bytes. --single-resolution turns that off. The two stack: a headed document can be ranked by section AND have spare slots filled with promoted passages, so a prose payload may carry both.",
 		flags: []flagDoc{
 			{name: "--query", arg: "text", desc: "The task or bug in one plain sentence; alternatively supply one final argument"},
 			{name: "--repo", arg: "path", desc: "Repository to search (default: current repo)"},
-			{name: "--top-k", arg: "n", def: "10", desc: "Number of results to return"},
+			{name: "--top-k", arg: "n", def: "10", desc: "Maximum normal results, including related/covering entries (--callee-hop may add helpers)"},
 			{name: "--format", arg: "text|json|ndjson|agent", def: "json", desc: "Output format; text is tiered for reading, agent is compact"},
 			{name: "--head", desc: "Search the committed tree (cached) instead of the working tree"},
 			{name: "--profile", arg: "syntax-only|fast|full", def: "fast", desc: "Parsing depth; use full for bug-fix/locate (call-graph active)"},
 			{name: "--deep", desc: "Also run the exhaustive BM25 pass and fuse it (slower)"},
+			{name: "--callee-hop", desc: "Add called-helper results beyond --top-k, subject to byte-budget and ranked-source protections"},
 			{name: "--single-resolution", desc: "One result per ranked unit; do not spend spare slots on finer regions of a prose document"},
 			{name: "--document-resolution", desc: "Rank a prose document as one unit; do not rank its sections separately"},
-			{name: "--max-context-bytes", arg: "n", def: "24576", desc: "Output byte budget; 0 = unbounded"},
+			{name: "--max-context-bytes", arg: "n", def: "24576", desc: "Output byte budget; 0 = unbounded. Unset with --format agent: the smallest of 4096/8192/16384 that shows the top hit whole, else 24576"},
 			{name: "--reference-blocks", arg: "all|container-map,signature-types,type-card", desc: "Turn reference blocks back on (off by default)"},
+			{name: "--verify-block", arg: "on|off", def: "on", desc: "off removes the VERIFY block (suggested test command plus its run/fix/stop advice) in every format; exists for fair A/B comparisons against an arm with no tool. Env: " + envVerifyBlock},
+			{name: "--omit-verify", desc: "Shorthand for --verify-block off"},
 			{name: "--max-indexed-files", arg: "n", desc: "Bound cold-search parsing to N files"},
 			{name: "--index-all-files", desc: "Widen cold-search parsing to every file"},
 			{name: "--cache-dir", arg: "path", desc: "Override the committed-tree cache directory"},
@@ -254,7 +268,7 @@ var commandDocs = []commandDoc{
 			{name: "--kind", arg: "kind", desc: "Disambiguate by symbol kind"},
 			{name: "--members", arg: "n", def: "15", desc: "Max members listed per group"},
 			{name: "--format", arg: "text|json", desc: "Output format"},
-			{name: "--max-context-bytes", arg: "n", def: "4096", desc: "Total text budget"},
+			{name: "--max-context-bytes", arg: "n", def: "4096", desc: "Total output budget, card and source, text or json, shared by all names; 0 = unbounded"},
 			{name: "--head", desc: "Query the committed tree (cached)"},
 		},
 		examples: []string{"entire graph def Result --repo ."},
@@ -417,11 +431,12 @@ var commandDocs = []commandDoc{
 	{
 		name:    "stats",
 		group:   groupAnalyze,
-		summary: "Signed 1:1 context model, not measured savings (--verbose for the full report)",
+		summary: "Observed follow-up of graph results, plus a signed modeled balance; not measured savings",
 		usage:   []string{"entire graph stats [--repo .] [--since 30d|7d|all] [--verbose] [--format text|json] [--sessions-dir path|--transcript path]"},
 		long: "A local, read-only report for humans (agents should not run it as part of a task). It reads the coding-agent session transcripts already on disk (~/.claude/projects/<path-slug>/*.jsonl).\n\n" +
-			"By DEFAULT it prints one line: a signed, unvalidated 1:1 context model, not measured savings. Negative sessions remain in the total; a missing comparison is unavailable rather than zero. --verbose adds observed graph/exploration counts, result bytes, transcript-reported usage, the comparison population and assumptions.\n\n" +
-			"The model assumes each observed graph locate result (query/search/neighbors/impact) replaces ONE exploration result at the same session's average bytes/result, then subtracts graph bytes and converts bytes/4 to estimated tokens. Larger graph results contribute a modeled loss. The substitution and token conversion are assumptions, not evidence of causal or billed-token savings. Legacy positive-only JSON fields remain unchanged.\n\n" +
+			"By DEFAULT it prints one line: OBSERVED FOLLOW-UP rates for graph locate results, then a signed modeled balance with its assumption and population. It is an observational proxy, not measured savings. Negative sessions remain in the total; a missing comparison is unavailable rather than zero. --verbose adds observed graph/exploration counts, result bytes, transcript-reported usage, every follow-up class, the legacy 1:1 model and assumptions.\n\n" +
+			"Observed follow-up: each graph locate result (query/search/neighbors/impact) is classified by the next 5 tool calls issued AFTER the result was delivered, in the same transcript. ERROR (the result was an error) and INELIGIBLE (empty, or named no file) located nothing. RE-QUERY: another graph lookup, Grep, Glob or shell search came first. FOLLOW-UP READ: the agent first read a file whose path overlaps one the result named, sub-bucketed as overlapping lines, a different region, unknown span, or shared (the same read was span-attributed to another result). CENSORED: the transcript ended before 5 calls and nothing qualified. NO FOLLOW-UP: 5 calls were observed and none qualified. Absence of a follow-up is not an observed avoided call. Every class is counted; the modeled balance ASSUMES each no-follow-up result replaced one average exploration result of its session, and subtracts every locate result's bytes. Limits: path overlap is a suffix match on extension-bearing paths named in result rows (extensionless files are missed; a same-named file elsewhere can match; coverage diagnostics, VERIFY and \"No search results.\" name nothing); delivered line spans are known only when the whole output parsed as a search response; anything after the 5-call window is invisible; one read is span-attributed to one result and is a shared read for any other result naming that file; subagent work is not in the caller's window.\n\n" +
+			"The legacy 1:1 model (--verbose, and the estimated_savings_* JSON keys) assumes each observed graph locate result (query/search/neighbors/impact) replaces ONE exploration result at the same session's average bytes/result, then subtracts graph bytes and converts bytes/4 to estimated tokens. Larger graph results contribute a modeled loss. The substitution and token conversion are assumptions, not evidence of causal or billed-token savings. Legacy positive-only JSON fields remain unchanged.\n\n" +
 			"--transcript narrows the whole report to ONE session (that transcript plus its subagent transcripts) instead of a whole project directory. Summaries of unchanged transcripts are memoised under the cache directory, keyed on file identity; --no-cache turns that off.",
 		flags: []flagDoc{
 			{name: "--repo", arg: "path", desc: "Repository whose sessions to report on (default: current repo)"},

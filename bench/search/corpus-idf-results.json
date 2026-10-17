@@ -1,0 +1,5198 @@
+{
+  "metric": "file-level first relevant rank within top 10, including normal result sections",
+  "limits": "Small developer-authored local corpus cohort; not an unbiased general relevance benchmark. Scoring is isolated on filesystem exports of pinned Git trees, with working-tree mode, a fixed 96-file semantic parse limit and GOMAXPROCS=4. Git preselection is not part of this metric; a separate baseline Git probe timed out. Wall times are not a speed benchmark.",
+  "manifest_sha256": "785a922edfaee6f5f891bc9cdb05fdba10439251ddc6ae754c8e5f53cf74bb47",
+  "commits": {
+    "graph": "bf9e98abc13286fe0823f9fae0b5a502ee343b57",
+    "brain": "8ddf23aeefbc374434320814f4eb099c8a408349",
+    "agents": "887356f06f517aa2f086140bcf22f91541df69ca"
+  },
+  "binary_sha256": {
+    "baseline": "5744aff3c235aa45f085be6f17b6a4b4e1a74e50e758ffeb23e75085d47e2ed9",
+    "candidate": "5eceaa1f69b3786630254c523b1284b49e3daeef89ba805ef761ea5b844c4c5d"
+  },
+  "results": [
+    {
+      "repo": "graph",
+      "query": "escape control bytes while preserving terminal line layout",
+      "gold": [
+        "internal/termsafe/termsafe.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": 6,
+        "paths": [
+          "internal/sem/parser.go",
+          "internal/sem/search_verify.go",
+          "internal/sem/parser.go",
+          "internal/sem/parser.go",
+          "internal/sem/search_verify.go",
+          "internal/termsafe/termsafe.go",
+          "internal/sem/provider.go",
+          "internal/sem/search.go",
+          "internal/sem/search_span_merge.go",
+          "internal/sem/types.go"
+        ],
+        "seconds": 16.804,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "Go": {
+              "files": 77,
+              "symbols": 5518
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 4
+            },
+            "Markdown": {
+              "files": 1,
+              "symbols": 7
+            },
+            "Python": {
+              "files": 11,
+              "symbols": 189
+            }
+          },
+          "relations": {
+            "CALLS": 5211,
+            "CONFIGURES": 4,
+            "CONSTRUCTS": 27,
+            "CONTAINS": 2452,
+            "DEFINES": 5722,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 762
+          },
+          "health": {
+            "source_files": 89,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 77,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 11,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      },
+      "candidate": {
+        "rank": 4,
+        "paths": [
+          "internal/sem/parser.go",
+          "internal/sem/search_verify.go",
+          "internal/sem/parser.go",
+          "internal/termsafe/termsafe.go",
+          "internal/sem/search_verify.go",
+          "internal/cli/search_session.go",
+          "internal/cli/search_forgery.go",
+          "internal/sem/provider.go",
+          "internal/sem/parser.go",
+          "internal/sem/parser.go"
+        ],
+        "seconds": 16.798,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "Go": {
+              "files": 77,
+              "symbols": 5518
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 4
+            },
+            "Markdown": {
+              "files": 1,
+              "symbols": 7
+            },
+            "Python": {
+              "files": 11,
+              "symbols": 189
+            }
+          },
+          "relations": {
+            "CALLS": 5211,
+            "CONFIGURES": 4,
+            "CONSTRUCTS": 27,
+            "CONTAINS": 2452,
+            "DEFINES": 5722,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 762
+          },
+          "health": {
+            "source_files": 89,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 77,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 11,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      }
+    },
+    {
+      "repo": "graph",
+      "query": "escape control bytes while preserving terminal line layout",
+      "gold": [
+        "internal/termsafe/termsafe.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": 2,
+        "paths": [
+          "internal/sem/parser.go",
+          "internal/termsafe/termsafe.go",
+          "internal/cli/search.go",
+          "internal/cli/search_session.go",
+          "internal/sem/search_verify.go",
+          "internal/cli/def.go",
+          "internal/cli/root.go",
+          "internal/cli/search_session.go",
+          "internal/sem/parser.go",
+          "internal/cli/search_session.go"
+        ],
+        "seconds": 25.242,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "Go": {
+              "files": 77,
+              "symbols": 5518
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 4
+            },
+            "Markdown": {
+              "files": 1,
+              "symbols": 7
+            },
+            "Python": {
+              "files": 11,
+              "symbols": 189
+            }
+          },
+          "relations": {
+            "ACCESSES": 51,
+            "CALLS": 10299,
+            "CONFIGURES": 4,
+            "CONSTRUCTS": 27,
+            "CONTAINS": 2452,
+            "DATA_FLOWS": 3431,
+            "DEFINES": 5722,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 762,
+            "PARAM_TYPE": 1172,
+            "READS_FIELD": 1268,
+            "RETURNS_TYPE": 725,
+            "SIMILAR_TO": 182,
+            "USES_TYPE": 2195,
+            "WRITES_FIELD": 359
+          },
+          "health": {
+            "source_files": 89,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 77,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 11,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      },
+      "candidate": {
+        "rank": 2,
+        "paths": [
+          "internal/sem/parser.go",
+          "internal/termsafe/termsafe.go",
+          "internal/sem/search_verify.go",
+          "internal/cli/search.go",
+          "internal/cli/search_session.go",
+          "internal/cli/def.go",
+          "internal/cli/root.go",
+          "internal/cli/search_session.go",
+          "internal/sem/parser.go",
+          "internal/cli/search_session.go"
+        ],
+        "seconds": 25.238,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "Go": {
+              "files": 77,
+              "symbols": 5518
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 4
+            },
+            "Markdown": {
+              "files": 1,
+              "symbols": 7
+            },
+            "Python": {
+              "files": 11,
+              "symbols": 189
+            }
+          },
+          "relations": {
+            "ACCESSES": 51,
+            "CALLS": 10299,
+            "CONFIGURES": 4,
+            "CONSTRUCTS": 27,
+            "CONTAINS": 2452,
+            "DATA_FLOWS": 3431,
+            "DEFINES": 5722,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 762,
+            "PARAM_TYPE": 1172,
+            "READS_FIELD": 1268,
+            "RETURNS_TYPE": 725,
+            "SIMILAR_TO": 182,
+            "USES_TYPE": 2195,
+            "WRITES_FIELD": 359
+          },
+          "health": {
+            "source_files": 89,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 77,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 11,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      }
+    },
+    {
+      "repo": "graph",
+      "query": "resolve git repository root from a linked worktree",
+      "gold": [
+        "internal/gitutil/git.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": null,
+        "paths": [
+          "internal/cli/root.go",
+          "internal/sem/provider.go",
+          "internal/sem/sweep_open_other.go",
+          "internal/cli/root.go",
+          "internal/cli/def.go",
+          "internal/cli/explain.go",
+          "internal/cli/impact.go",
+          "internal/sem/git_path_other.go",
+          "internal/sem/ignore.go",
+          "internal/cli/root_test.go"
+        ],
+        "seconds": 17.705,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 10
+            },
+            "Git Ignore": {
+              "files": 3,
+              "symbols": 3
+            },
+            "Go": {
+              "files": 65,
+              "symbols": 5108
+            },
+            "JSON": {
+              "files": 3,
+              "symbols": 50
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 109
+            },
+            "Python": {
+              "files": 8,
+              "symbols": 152
+            }
+          },
+          "relations": {
+            "CALLS": 4812,
+            "CONFIGURES": 50,
+            "CONSTRUCTS": 23,
+            "CONTAINS": 2246,
+            "DEFINES": 5432,
+            "HANDLES_ROUTE": 1,
+            "HANDLES_TOOL": 11,
+            "IMPORTS": 717
+          },
+          "health": {
+            "source_files": 77,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 65,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 8,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": null,
+        "paths": [
+          "internal/cli/root.go",
+          "internal/sem/provider.go",
+          "internal/sem/sweep_open_other.go",
+          "internal/cli/root.go",
+          "internal/cli/def.go",
+          "internal/cli/explain.go",
+          "internal/cli/impact.go",
+          "internal/sem/ignore.go",
+          "internal/agentsetup/files.go",
+          "internal/cli/root_test.go"
+        ],
+        "seconds": 17.703,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 10
+            },
+            "Git Ignore": {
+              "files": 3,
+              "symbols": 3
+            },
+            "Go": {
+              "files": 65,
+              "symbols": 5108
+            },
+            "JSON": {
+              "files": 3,
+              "symbols": 50
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 109
+            },
+            "Python": {
+              "files": 8,
+              "symbols": 152
+            }
+          },
+          "relations": {
+            "CALLS": 4812,
+            "CONFIGURES": 50,
+            "CONSTRUCTS": 23,
+            "CONTAINS": 2246,
+            "DEFINES": 5432,
+            "HANDLES_ROUTE": 1,
+            "HANDLES_TOOL": 11,
+            "IMPORTS": 717
+          },
+          "health": {
+            "source_files": 77,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 65,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 8,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "graph",
+      "query": "resolve git repository root from a linked worktree",
+      "gold": [
+        "internal/gitutil/git.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": 2,
+        "paths": [
+          "internal/cli/root.go",
+          "internal/gitutil/git.go",
+          "internal/sem/provider.go",
+          "internal/sem/sweep_open_other.go",
+          "internal/cli/root.go",
+          "internal/cli/def.go",
+          "internal/cli/explain.go",
+          "internal/cli/impact.go",
+          "internal/agentsetup/brain_state.go",
+          "internal/cli/agents.go"
+        ],
+        "seconds": 25.775,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 10
+            },
+            "Git Ignore": {
+              "files": 3,
+              "symbols": 3
+            },
+            "Go": {
+              "files": 65,
+              "symbols": 5108
+            },
+            "JSON": {
+              "files": 3,
+              "symbols": 50
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 109
+            },
+            "Python": {
+              "files": 8,
+              "symbols": 152
+            }
+          },
+          "relations": {
+            "ACCESSES": 41,
+            "CALLS": 9997,
+            "CONFIGURES": 50,
+            "CONSTRUCTS": 23,
+            "CONTAINS": 2246,
+            "DATA_FLOWS": 3201,
+            "DEFINES": 5432,
+            "HANDLES_ROUTE": 1,
+            "HANDLES_TOOL": 11,
+            "IMPORTS": 717,
+            "PARAM_TYPE": 1009,
+            "READS_FIELD": 1085,
+            "RETURNS_TYPE": 584,
+            "SIMILAR_TO": 139,
+            "TESTS": 1,
+            "USES_TYPE": 1896,
+            "WRITES_FIELD": 284
+          },
+          "health": {
+            "source_files": 77,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 65,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 8,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 2,
+        "paths": [
+          "internal/cli/root.go",
+          "internal/gitutil/git.go",
+          "internal/sem/provider.go",
+          "internal/sem/sweep_open_other.go",
+          "internal/cli/root.go",
+          "internal/cli/def.go",
+          "internal/cli/explain.go",
+          "internal/cli/impact.go",
+          "internal/agentsetup/brain_state.go",
+          "internal/cli/agents.go"
+        ],
+        "seconds": 25.837,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 10
+            },
+            "Git Ignore": {
+              "files": 3,
+              "symbols": 3
+            },
+            "Go": {
+              "files": 65,
+              "symbols": 5108
+            },
+            "JSON": {
+              "files": 3,
+              "symbols": 50
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 109
+            },
+            "Python": {
+              "files": 8,
+              "symbols": 152
+            }
+          },
+          "relations": {
+            "ACCESSES": 41,
+            "CALLS": 9997,
+            "CONFIGURES": 50,
+            "CONSTRUCTS": 23,
+            "CONTAINS": 2246,
+            "DATA_FLOWS": 3201,
+            "DEFINES": 5432,
+            "HANDLES_ROUTE": 1,
+            "HANDLES_TOOL": 11,
+            "IMPORTS": 717,
+            "PARAM_TYPE": 1009,
+            "READS_FIELD": 1085,
+            "RETURNS_TYPE": 584,
+            "SIMILAR_TO": 139,
+            "TESTS": 1,
+            "USES_TYPE": 1896,
+            "WRITES_FIELD": 284
+          },
+          "health": {
+            "source_files": 77,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 65,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 8,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "graph",
+      "query": "load cached complete search snapshot",
+      "gold": [
+        "internal/sem/search_cache.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "internal/sem/search_cache.go",
+          "internal/sem/search.go",
+          "internal/sem/cache_entry.go",
+          "internal/sem/cache_policy.go",
+          "internal/sem/search_cache.go",
+          "internal/sem/records_cache.go",
+          "internal/sem/provider.go",
+          "internal/sem/search_cache.go",
+          "internal/sem/cache_policy.go"
+        ],
+        "seconds": 16.085,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 4
+            },
+            "C": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 75,
+              "symbols": 5377
+            },
+            "JSON": {
+              "files": 3,
+              "symbols": 28
+            },
+            "Markdown": {
+              "files": 3,
+              "symbols": 21
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 9,
+              "symbols": 162
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "CALLS": 5011,
+            "CONFIGURES": 33,
+            "CONSTRUCTS": 31,
+            "CONTAINS": 2396,
+            "DEFINES": 5599,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 706
+          },
+          "health": {
+            "source_files": 87,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "C": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 75,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 9,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "internal/sem/search_cache.go",
+          "internal/sem/search.go",
+          "internal/sem/cache_entry.go",
+          "internal/sem/cache_policy.go",
+          "internal/sem/search_cache.go",
+          "internal/sem/records_cache.go",
+          "internal/sem/provider.go",
+          "internal/sem/search_cache.go",
+          "internal/sem/cache_policy.go"
+        ],
+        "seconds": 16.064,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 4
+            },
+            "C": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 75,
+              "symbols": 5377
+            },
+            "JSON": {
+              "files": 3,
+              "symbols": 28
+            },
+            "Markdown": {
+              "files": 3,
+              "symbols": 21
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 9,
+              "symbols": 162
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "CALLS": 5011,
+            "CONFIGURES": 33,
+            "CONSTRUCTS": 31,
+            "CONTAINS": 2396,
+            "DEFINES": 5599,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 706
+          },
+          "health": {
+            "source_files": 87,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "C": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 75,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 9,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      }
+    },
+    {
+      "repo": "graph",
+      "query": "load cached complete search snapshot",
+      "gold": [
+        "internal/sem/search_cache.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "internal/sem/search_cache.go",
+          "internal/sem/search.go",
+          "internal/sem/cache_entry.go",
+          "internal/sem/cache_policy.go",
+          "internal/sem/search_cache.go",
+          "internal/sem/records_cache.go",
+          "internal/sem/provider.go",
+          "internal/sem/search_cache.go",
+          "internal/sem/cache_policy.go"
+        ],
+        "seconds": 23.03,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 4
+            },
+            "Go": {
+              "files": 75,
+              "symbols": 5377
+            },
+            "JSON": {
+              "files": 3,
+              "symbols": 28
+            },
+            "Markdown": {
+              "files": 3,
+              "symbols": 21
+            },
+            "Objective-C": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 9,
+              "symbols": 162
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "ACCESSES": 50,
+            "CALLS": 9954,
+            "CONFIGURES": 33,
+            "CONSTRUCTS": 31,
+            "CONTAINS": 2396,
+            "DATA_FLOWS": 3336,
+            "DEFINES": 5599,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 706,
+            "PARAM_TYPE": 1330,
+            "READS_FIELD": 1342,
+            "RETURNS_TYPE": 694,
+            "SIMILAR_TO": 134,
+            "USES_TYPE": 2285,
+            "WRITES_FIELD": 338
+          },
+          "health": {
+            "source_files": 87,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 75,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Objective-C": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 9,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "internal/sem/search_cache.go",
+          "internal/sem/search.go",
+          "internal/sem/cache_entry.go",
+          "internal/sem/cache_policy.go",
+          "internal/sem/search_cache.go",
+          "internal/sem/records_cache.go",
+          "internal/sem/provider.go",
+          "internal/sem/search_cache.go",
+          "internal/sem/cache_policy.go"
+        ],
+        "seconds": 23.045,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 4
+            },
+            "Go": {
+              "files": 75,
+              "symbols": 5377
+            },
+            "JSON": {
+              "files": 3,
+              "symbols": 28
+            },
+            "Markdown": {
+              "files": 3,
+              "symbols": 21
+            },
+            "Objective-C": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 9,
+              "symbols": 162
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "ACCESSES": 50,
+            "CALLS": 9954,
+            "CONFIGURES": 33,
+            "CONSTRUCTS": 31,
+            "CONTAINS": 2396,
+            "DATA_FLOWS": 3336,
+            "DEFINES": 5599,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 706,
+            "PARAM_TYPE": 1330,
+            "READS_FIELD": 1342,
+            "RETURNS_TYPE": 694,
+            "SIMILAR_TO": 134,
+            "USES_TYPE": 2285,
+            "WRITES_FIELD": 338
+          },
+          "health": {
+            "source_files": 87,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 75,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Objective-C": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 9,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      }
+    },
+    {
+      "repo": "graph",
+      "query": "count transcript exploration calls and estimated token savings",
+      "gold": [
+        "internal/cli/stats.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": 3,
+        "paths": [
+          "internal/cli/callsite.go",
+          "internal/cli/neighbors.go",
+          "internal/cli/stats.go",
+          "internal/cli/impact.go",
+          "internal/cli/callsite.go",
+          "internal/sem/types.go",
+          "internal/sem/parser.go",
+          "internal/sem/call_scanners.go",
+          "internal/cli/impact.go",
+          "internal/cli/callsite.go"
+        ],
+        "seconds": 15.027,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "C": {
+              "files": 11,
+              "symbols": 183
+            },
+            "Go": {
+              "files": 66,
+              "symbols": 5279
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 11
+            },
+            "Markdown": {
+              "files": 7,
+              "symbols": 183
+            },
+            "Patch": {
+              "files": 3,
+              "symbols": 3
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 78
+            }
+          },
+          "relations": {
+            "CALLS": 4979,
+            "CONFIGURES": 11,
+            "CONSTRUCTS": 31,
+            "CONTAINS": 2311,
+            "DEFINES": 5741,
+            "HANDLES_ROUTE": 1,
+            "HANDLES_TOOL": 7,
+            "IMPORTS": 580
+          },
+          "health": {
+            "source_files": 83,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "C": {
+                "source_files": 11,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 66,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "internal/cli/stats.go",
+          "internal/cli/callsite.go",
+          "internal/cli/stats.go",
+          "internal/cli/neighbors.go",
+          "internal/cli/impact.go",
+          "internal/cli/callsite.go",
+          "internal/cli/stats.go",
+          "internal/cli/help.go",
+          "internal/cli/stats.go",
+          "internal/cli/impact.go"
+        ],
+        "seconds": 15.03,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "C": {
+              "files": 11,
+              "symbols": 183
+            },
+            "Go": {
+              "files": 66,
+              "symbols": 5279
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 11
+            },
+            "Markdown": {
+              "files": 7,
+              "symbols": 183
+            },
+            "Patch": {
+              "files": 3,
+              "symbols": 3
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 78
+            }
+          },
+          "relations": {
+            "CALLS": 4979,
+            "CONFIGURES": 11,
+            "CONSTRUCTS": 31,
+            "CONTAINS": 2311,
+            "DEFINES": 5741,
+            "HANDLES_ROUTE": 1,
+            "HANDLES_TOOL": 7,
+            "IMPORTS": 580
+          },
+          "health": {
+            "source_files": 83,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "C": {
+                "source_files": 11,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 66,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "graph",
+      "query": "count transcript exploration calls and estimated token savings",
+      "gold": [
+        "internal/cli/stats.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": 3,
+        "paths": [
+          "internal/cli/callsite.go",
+          "internal/cli/neighbors.go",
+          "internal/cli/stats.go",
+          "internal/cli/impact.go",
+          "internal/cli/callsite.go",
+          "internal/sem/types.go",
+          "internal/sem/parser.go",
+          "internal/sem/call_scanners.go",
+          "internal/sem/call_scanners.go",
+          "internal/cli/impact.go"
+        ],
+        "seconds": 22.21,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "C": {
+              "files": 1,
+              "symbols": 15
+            },
+            "C++": {
+              "files": 10,
+              "symbols": 1073
+            },
+            "Go": {
+              "files": 66,
+              "symbols": 5279
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 11
+            },
+            "Markdown": {
+              "files": 7,
+              "symbols": 183
+            },
+            "Patch": {
+              "files": 3,
+              "symbols": 3
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 78
+            }
+          },
+          "relations": {
+            "ACCESSES": 53,
+            "CALLS": 9627,
+            "CONFIGURES": 11,
+            "CONSTRUCTS": 31,
+            "CONTAINS": 3030,
+            "DATA_FLOWS": 3270,
+            "DEFINES": 6646,
+            "EXTENDS": 1,
+            "HANDLES_ROUTE": 1,
+            "HANDLES_TOOL": 7,
+            "IMPORTS": 580,
+            "INHERITS": 1,
+            "PARAM_TYPE": 1258,
+            "READS_FIELD": 1306,
+            "RETURNS_TYPE": 726,
+            "SIMILAR_TO": 150,
+            "USES_TYPE": 2272,
+            "WRITES_FIELD": 346
+          },
+          "health": {
+            "source_files": 83,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "C": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "C++": {
+                "source_files": 10,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 66,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "internal/cli/stats.go",
+          "internal/cli/callsite.go",
+          "internal/cli/stats.go",
+          "internal/cli/neighbors.go",
+          "internal/cli/impact.go",
+          "internal/cli/callsite.go",
+          "internal/cli/stats.go",
+          "internal/cli/neighbors.go",
+          "internal/cli/stats.go",
+          "internal/cli/impact.go"
+        ],
+        "seconds": 22.227,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "C": {
+              "files": 1,
+              "symbols": 15
+            },
+            "C++": {
+              "files": 10,
+              "symbols": 1073
+            },
+            "Go": {
+              "files": 66,
+              "symbols": 5279
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 11
+            },
+            "Markdown": {
+              "files": 7,
+              "symbols": 183
+            },
+            "Patch": {
+              "files": 3,
+              "symbols": 3
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 78
+            }
+          },
+          "relations": {
+            "ACCESSES": 53,
+            "CALLS": 9627,
+            "CONFIGURES": 11,
+            "CONSTRUCTS": 31,
+            "CONTAINS": 3030,
+            "DATA_FLOWS": 3270,
+            "DEFINES": 6646,
+            "EXTENDS": 1,
+            "HANDLES_ROUTE": 1,
+            "HANDLES_TOOL": 7,
+            "IMPORTS": 580,
+            "INHERITS": 1,
+            "PARAM_TYPE": 1258,
+            "READS_FIELD": 1306,
+            "RETURNS_TYPE": 726,
+            "SIMILAR_TO": 150,
+            "USES_TYPE": 2272,
+            "WRITES_FIELD": 346
+          },
+          "health": {
+            "source_files": 83,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "C": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "C++": {
+                "source_files": 10,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 66,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "graph",
+      "query": "fit agent search result headers within the byte budget",
+      "gold": [
+        "internal/cli/search.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "internal/cli/search.go",
+          "internal/cli/search_exact_name.go",
+          "internal/cli/search_forgery.go",
+          "internal/cli/search_exact_name.go",
+          "internal/cli/search_session.go",
+          "internal/cli/search_budget_escape_test.go",
+          "internal/sem/search.go",
+          "internal/cli/search_exact_name.go"
+        ],
+        "seconds": 16.764,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "C": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 78,
+              "symbols": 4804
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 28
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 89
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 106
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "CALLS": 4538,
+            "CONFIGURES": 33,
+            "CONSTRUCTS": 28,
+            "CONTAINS": 2063,
+            "DEFINES": 5038,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 9,
+            "IMPORTS": 610
+          },
+          "health": {
+            "source_files": 85,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "C": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 78,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "internal/cli/search.go",
+          "internal/cli/search_exact_name.go",
+          "internal/cli/search_forgery.go",
+          "internal/cli/search_budget_escape_test.go",
+          "internal/cli/search_exact_name.go",
+          "internal/cli/search_session.go",
+          "internal/sem/search.go",
+          "internal/sem/search_typecard.go"
+        ],
+        "seconds": 16.762,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "C": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 78,
+              "symbols": 4804
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 28
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 89
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 106
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "CALLS": 4538,
+            "CONFIGURES": 33,
+            "CONSTRUCTS": 28,
+            "CONTAINS": 2063,
+            "DEFINES": 5038,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 9,
+            "IMPORTS": 610
+          },
+          "health": {
+            "source_files": 85,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "C": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 78,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "graph",
+      "query": "fit agent search result headers within the byte budget",
+      "gold": [
+        "internal/cli/search.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "internal/cli/search.go",
+          "internal/termsafe/termsafe.go",
+          "internal/cli/search_exact_name.go",
+          "internal/cli/search_exact_name.go",
+          "internal/cli/search_session.go",
+          "internal/cli/search_budget_escape_test.go",
+          "internal/sem/search.go",
+          "internal/cli/search_exact_name.go",
+          "internal/cli/search_agent_test.go"
+        ],
+        "seconds": 24.516,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "Go": {
+              "files": 78,
+              "symbols": 4804
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 28
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 89
+            },
+            "Objective-C": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 106
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "ACCESSES": 50,
+            "CALLS": 9050,
+            "CONFIGURES": 33,
+            "CONSTRUCTS": 28,
+            "CONTAINS": 2063,
+            "DATA_FLOWS": 3004,
+            "DEFINES": 5038,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 9,
+            "IMPORTS": 610,
+            "PARAM_TYPE": 1222,
+            "READS_FIELD": 1160,
+            "RETURNS_TYPE": 609,
+            "SIMILAR_TO": 144,
+            "USES_TYPE": 2019,
+            "WRITES_FIELD": 259
+          },
+          "health": {
+            "source_files": 85,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 78,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Objective-C": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "internal/cli/search.go",
+          "internal/termsafe/termsafe.go",
+          "internal/sem/search_closedset.go",
+          "internal/sem/search_container_map.go",
+          "internal/sem/search_literals.go",
+          "internal/sem/search_verify.go",
+          "internal/cli/search_exact_name.go",
+          "internal/cli/search_budget_escape_test.go",
+          "internal/cli/search_agent_test.go"
+        ],
+        "seconds": 24.511,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 1,
+              "symbols": 4
+            },
+            "Go": {
+              "files": 78,
+              "symbols": 4804
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 28
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 89
+            },
+            "Objective-C": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 106
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "ACCESSES": 50,
+            "CALLS": 9050,
+            "CONFIGURES": 33,
+            "CONSTRUCTS": 28,
+            "CONTAINS": 2063,
+            "DATA_FLOWS": 3004,
+            "DEFINES": 5038,
+            "HANDLES_ROUTE": 2,
+            "HANDLES_TOOL": 9,
+            "IMPORTS": 610,
+            "PARAM_TYPE": 1222,
+            "READS_FIELD": 1160,
+            "RETURNS_TYPE": 609,
+            "SIMILAR_TO": 144,
+            "USES_TYPE": 2019,
+            "WRITES_FIELD": 259
+          },
+          "health": {
+            "source_files": 85,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 78,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Objective-C": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "brain",
+      "query": "session privacy tombstone exclusion",
+      "gold": [
+        "internal/cli/session_privacy.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": 3,
+        "paths": [
+          "internal/cli/session_privacy_verify.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/session_privacy.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/session_privacy.go",
+          "internal/cli/distill_cmd.go",
+          "internal/cli/memory_admin.go",
+          "internal/cli/episodes.go",
+          "internal/cli/history.go",
+          "internal/cli/session_privacy_hardening_test.go"
+        ],
+        "seconds": 21.714,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 13
+            },
+            "Go": {
+              "files": 51,
+              "symbols": 4323
+            },
+            "JSON": {
+              "files": 21,
+              "symbols": 870
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 14,
+              "symbols": 773
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "CALLS": 5403,
+            "CONFIGURES": 875,
+            "CONSTRUCTS": 171,
+            "CONTAINS": 2267,
+            "DEFINES": 5985,
+            "HANDLES_ROUTE": 202,
+            "HANDLES_TOOL": 9,
+            "IMPORTS": 865
+          },
+          "health": {
+            "source_files": 69,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 51,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 14,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          },
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-security.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      },
+      "candidate": {
+        "rank": 3,
+        "paths": [
+          "internal/cli/session_privacy_verify.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/session_privacy.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/session_privacy.go",
+          "internal/cli/distill_cmd.go",
+          "internal/cli/memory_admin.go",
+          "internal/cli/episodes.go",
+          "internal/cli/history.go",
+          "internal/cli/session_privacy_hardening_test.go"
+        ],
+        "seconds": 21.707,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 13
+            },
+            "Go": {
+              "files": 51,
+              "symbols": 4323
+            },
+            "JSON": {
+              "files": 21,
+              "symbols": 870
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 14,
+              "symbols": 773
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "CALLS": 5403,
+            "CONFIGURES": 875,
+            "CONSTRUCTS": 171,
+            "CONTAINS": 2267,
+            "DEFINES": 5985,
+            "HANDLES_ROUTE": 202,
+            "HANDLES_TOOL": 9,
+            "IMPORTS": 865
+          },
+          "health": {
+            "source_files": 69,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 51,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 14,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          },
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-security.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      }
+    },
+    {
+      "repo": "brain",
+      "query": "session privacy tombstone exclusion",
+      "gold": [
+        "internal/cli/session_privacy.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": 3,
+        "paths": [
+          "internal/cli/session_privacy_verify.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/session_privacy.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/session_privacy.go",
+          "internal/cli/distill_cmd.go",
+          "internal/cli/memory_admin.go",
+          "internal/cli/episodes.go",
+          "internal/cli/history.go",
+          "internal/cli/session_privacy_hardening_test.go"
+        ],
+        "seconds": 30.922,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 13
+            },
+            "Go": {
+              "files": 51,
+              "symbols": 4323
+            },
+            "JSON": {
+              "files": 21,
+              "symbols": 870
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 14,
+              "symbols": 773
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "ACCESSES": 5,
+            "CALLS": 10006,
+            "CONFIGURES": 875,
+            "CONSTRUCTS": 171,
+            "CONTAINS": 2267,
+            "DATA_FLOWS": 3440,
+            "DEFINES": 5985,
+            "EXTENDS": 18,
+            "HANDLES_GRAPHQL": 14,
+            "HANDLES_ROUTE": 202,
+            "HANDLES_TOOL": 9,
+            "IMPORTS": 865,
+            "INHERITS": 18,
+            "PARAM_TYPE": 1025,
+            "READS_FIELD": 365,
+            "RETURNS_TYPE": 536,
+            "SIMILAR_TO": 90,
+            "USES_TYPE": 1592,
+            "WRITES_FIELD": 49
+          },
+          "health": {
+            "source_files": 69,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 51,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 14,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          },
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-security.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      },
+      "candidate": {
+        "rank": 3,
+        "paths": [
+          "internal/cli/session_privacy_verify.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/session_privacy.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/session_privacy.go",
+          "internal/cli/distill_cmd.go",
+          "internal/cli/memory_admin.go",
+          "internal/cli/episodes.go",
+          "internal/cli/history.go",
+          "internal/cli/session_privacy_hardening_test.go"
+        ],
+        "seconds": 30.816,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 13
+            },
+            "Go": {
+              "files": 51,
+              "symbols": 4323
+            },
+            "JSON": {
+              "files": 21,
+              "symbols": 870
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 14,
+              "symbols": 773
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "ACCESSES": 5,
+            "CALLS": 10006,
+            "CONFIGURES": 875,
+            "CONSTRUCTS": 171,
+            "CONTAINS": 2267,
+            "DATA_FLOWS": 3440,
+            "DEFINES": 5985,
+            "EXTENDS": 18,
+            "HANDLES_GRAPHQL": 14,
+            "HANDLES_ROUTE": 202,
+            "HANDLES_TOOL": 9,
+            "IMPORTS": 865,
+            "INHERITS": 18,
+            "PARAM_TYPE": 1025,
+            "READS_FIELD": 365,
+            "RETURNS_TYPE": 536,
+            "SIMILAR_TO": 90,
+            "USES_TYPE": 1592,
+            "WRITES_FIELD": 49
+          },
+          "health": {
+            "source_files": 69,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 51,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 14,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-review.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          },
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": ".entire/runners/trail-security.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      }
+    },
+    {
+      "repo": "brain",
+      "query": "virtual conversation session outline adjacent context expansion",
+      "gold": [
+        "internal/cli/conversation_session.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "internal/cli/conversation_session.go",
+          "internal/cli/conversation.go",
+          "internal/cli/retrieve.go",
+          "internal/cli/conversation_multiconcept.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/memory_admin.go",
+          "internal/cli/conversation_session.go",
+          "internal/cli/retrieve.go",
+          "internal/cli/retrieve_cmd.go",
+          "internal/cli/conversation_session_test.go"
+        ],
+        "seconds": 25.94,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 3,
+              "symbols": 20
+            },
+            "Go": {
+              "files": 42,
+              "symbols": 4158
+            },
+            "JSON": {
+              "files": 24,
+              "symbols": 4507
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 186
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 16,
+              "symbols": 704
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 4
+            }
+          },
+          "relations": {
+            "CALLS": 4524,
+            "CONFIGURES": 4512,
+            "CONSTRUCTS": 104,
+            "CONTAINS": 2179,
+            "DEFINES": 9585,
+            "HANDLES_ROUTE": 186,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 790
+          },
+          "health": {
+            "source_files": 62,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 3,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 42,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 16,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": "benchmarks/agent-brain/mined-candidates/entire-cli-mined-0fccf698a.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "internal/cli/conversation_session.go",
+          "internal/cli/conversation.go",
+          "internal/cli/retrieve.go",
+          "internal/cli/conversation_multiconcept.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/memory_admin.go",
+          "internal/cli/conversation_session.go",
+          "internal/cli/retrieve.go",
+          "internal/cli/retrieve_cmd.go",
+          "internal/cli/conversation_session_test.go"
+        ],
+        "seconds": 25.938,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 3,
+              "symbols": 20
+            },
+            "Go": {
+              "files": 42,
+              "symbols": 4158
+            },
+            "JSON": {
+              "files": 24,
+              "symbols": 4507
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 186
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 16,
+              "symbols": 704
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 4
+            }
+          },
+          "relations": {
+            "CALLS": 4524,
+            "CONFIGURES": 4512,
+            "CONSTRUCTS": 104,
+            "CONTAINS": 2179,
+            "DEFINES": 9585,
+            "HANDLES_ROUTE": 186,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 790
+          },
+          "health": {
+            "source_files": 62,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 3,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 42,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 16,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": "benchmarks/agent-brain/mined-candidates/entire-cli-mined-0fccf698a.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      }
+    },
+    {
+      "repo": "brain",
+      "query": "virtual conversation session outline adjacent context expansion",
+      "gold": [
+        "internal/cli/conversation_session.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "internal/cli/conversation_session.go",
+          "internal/cli/conversation.go",
+          "internal/cli/retrieve.go",
+          "internal/cli/conversation_multiconcept.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/memory_admin.go",
+          "internal/cli/conversation_session.go",
+          "internal/cli/retrieve.go",
+          "internal/cli/retrieve_cmd.go",
+          "internal/cli/conversation_session_test.go"
+        ],
+        "seconds": 44.879,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 3,
+              "symbols": 20
+            },
+            "Go": {
+              "files": 42,
+              "symbols": 4158
+            },
+            "JSON": {
+              "files": 24,
+              "symbols": 4507
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 186
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 16,
+              "symbols": 704
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 4
+            }
+          },
+          "relations": {
+            "ACCESSES": 5,
+            "CALLS": 8925,
+            "CONFIGURES": 4512,
+            "CONSTRUCTS": 104,
+            "CONTAINS": 2179,
+            "DATA_FLOWS": 2963,
+            "DEFINES": 9585,
+            "EXTENDS": 15,
+            "HANDLES_GRAPHQL": 14,
+            "HANDLES_ROUTE": 186,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 790,
+            "INHERITS": 15,
+            "PARAM_TYPE": 849,
+            "READS_FIELD": 204,
+            "RETURNS_TYPE": 536,
+            "SIMILAR_TO": 72,
+            "USES_TYPE": 1410,
+            "WRITES_FIELD": 43
+          },
+          "health": {
+            "source_files": 62,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 3,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 42,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 16,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": "benchmarks/agent-brain/mined-candidates/entire-cli-mined-0fccf698a.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "internal/cli/conversation_session.go",
+          "internal/cli/conversation.go",
+          "internal/cli/retrieve.go",
+          "internal/cli/conversation_multiconcept.go",
+          "internal/cli/memory_abstract.go",
+          "internal/cli/memory_admin.go",
+          "internal/cli/conversation_session.go",
+          "internal/cli/retrieve.go",
+          "internal/cli/retrieve_cmd.go",
+          "internal/cli/conversation_session_test.go"
+        ],
+        "seconds": 44.893,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 3,
+              "symbols": 20
+            },
+            "Go": {
+              "files": 42,
+              "symbols": 4158
+            },
+            "JSON": {
+              "files": 24,
+              "symbols": 4507
+            },
+            "Markdown": {
+              "files": 5,
+              "symbols": 186
+            },
+            "Patch": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Python": {
+              "files": 16,
+              "symbols": 704
+            },
+            "TOML": {
+              "files": 1,
+              "symbols": 5
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 4
+            }
+          },
+          "relations": {
+            "ACCESSES": 5,
+            "CALLS": 8925,
+            "CONFIGURES": 4512,
+            "CONSTRUCTS": 104,
+            "CONTAINS": 2179,
+            "DATA_FLOWS": 2963,
+            "DEFINES": 9585,
+            "EXTENDS": 15,
+            "HANDLES_GRAPHQL": 14,
+            "HANDLES_ROUTE": 186,
+            "HANDLES_TOOL": 10,
+            "IMPORTS": 790,
+            "INHERITS": 15,
+            "PARAM_TYPE": 849,
+            "READS_FIELD": 204,
+            "RETURNS_TYPE": 536,
+            "SIMILAR_TO": 72,
+            "USES_TYPE": 1410,
+            "WRITES_FIELD": 43
+          },
+          "health": {
+            "source_files": 62,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 3,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 42,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 16,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": [
+          {
+            "code": "E_MINIFIED",
+            "severity": "warning",
+            "file_path": "benchmarks/agent-brain/mined-candidates/entire-cli-mined-0fccf698a.json",
+            "effect_on_semantic_completeness": "file record emitted but symbol parsing skipped",
+            "detail": "file appears minified/bundled (very long lines); not analyzed as source"
+          }
+        ]
+      }
+    },
+    {
+      "repo": "agents",
+      "query": "read Hermes transcript assistant messages",
+      "gold": [
+        "agents/entire-agent-hermes/internal/hermes/transcript.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": null,
+        "paths": [
+          "agents/entire-agent-grok/internal/grok/native_transcript.go",
+          "agents/entire-agent-grok/internal/grok/transcript.go",
+          "agents/entire-agent-grok/internal/grok/native_transcript.go",
+          "agents/entire-agent-amp/internal/protocol/protocol.go",
+          "agents/entire-agent-amp/internal/amp/transcript.go",
+          "agents/entire-agent-amp/internal/amp/session_jsonl.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "agents/entire-agent-amp/internal/protocol/protocol.go",
+          "agents/entire-agent-grok/internal/grok/transcript.go",
+          "agents/entire-agent-grok/internal/grok/transcript.go"
+        ],
+        "seconds": 5.089,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 71,
+              "symbols": 2737
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 8,
+              "symbols": 169
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 11
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "CALLS": 802,
+            "CONFIGURES": 24,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1682,
+            "DEFINES": 3005,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 483
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 71,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": null,
+        "paths": [
+          "agents/entire-agent-grok/internal/grok/native_transcript.go",
+          "agents/entire-agent-grok/internal/grok/transcript.go",
+          "agents/entire-agent-grok/internal/grok/native_transcript.go",
+          "agents/entire-agent-amp/internal/protocol/protocol.go",
+          "agents/entire-agent-amp/internal/amp/transcript.go",
+          "agents/entire-agent-amp/internal/amp/session_jsonl.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "e2e/agents/hermes.go",
+          "agents/entire-agent-amp/internal/protocol/protocol.go"
+        ],
+        "seconds": 5.089,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 71,
+              "symbols": 2737
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 8,
+              "symbols": 169
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 11
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "CALLS": 802,
+            "CONFIGURES": 24,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1682,
+            "DEFINES": 3005,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 483
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 71,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "agents",
+      "query": "read Hermes transcript assistant messages",
+      "gold": [
+        "agents/entire-agent-hermes/internal/hermes/transcript.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": null,
+        "paths": [
+          "agents/entire-agent-grok/internal/grok/native_transcript.go",
+          "agents/entire-agent-grok/internal/grok/transcript.go",
+          "agents/entire-agent-grok/internal/grok/native_transcript.go",
+          "agents/entire-agent-amp/internal/protocol/protocol.go",
+          "e2e/agents/hermes.go",
+          "agents/entire-agent-amp/internal/amp/transcript.go",
+          "agents/entire-agent-amp/internal/amp/session_jsonl.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "agents/entire-agent-goose/internal/protocol/protocol.go"
+        ],
+        "seconds": 6.702,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 71,
+              "symbols": 2737
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 8,
+              "symbols": 169
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 11
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "ACCESSES": 4,
+            "ASYNC_CALLS": 1,
+            "CALLS": 2394,
+            "CONFIGURES": 24,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1682,
+            "DATA_FLOWS": 558,
+            "DEFINES": 3005,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 483,
+            "LISTENS_ON": 3,
+            "PARAM_TYPE": 262,
+            "READS_FIELD": 57,
+            "RETURNS_TYPE": 95,
+            "SIMILAR_TO": 895,
+            "USES_TYPE": 482,
+            "WRITES_FIELD": 24
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 71,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": null,
+        "paths": [
+          "agents/entire-agent-grok/internal/grok/native_transcript.go",
+          "agents/entire-agent-grok/internal/grok/transcript.go",
+          "agents/entire-agent-grok/internal/grok/native_transcript.go",
+          "e2e/agents/hermes.go",
+          "agents/entire-agent-amp/internal/protocol/protocol.go",
+          "agents/entire-agent-amp/internal/amp/transcript.go",
+          "agents/entire-agent-amp/internal/amp/session_jsonl.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "agents/entire-agent-goose/internal/protocol/protocol.go",
+          "e2e/agents/hermes.go"
+        ],
+        "seconds": 6.694,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 71,
+              "symbols": 2737
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 8,
+              "symbols": 169
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 11
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "ACCESSES": 4,
+            "ASYNC_CALLS": 1,
+            "CALLS": 2394,
+            "CONFIGURES": 24,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1682,
+            "DATA_FLOWS": 558,
+            "DEFINES": 3005,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 483,
+            "LISTENS_ON": 3,
+            "PARAM_TYPE": 262,
+            "READS_FIELD": 57,
+            "RETURNS_TYPE": 95,
+            "SIMILAR_TO": 895,
+            "USES_TYPE": 482,
+            "WRITES_FIELD": 24
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 71,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "agents",
+      "query": "load Hermes YAML configuration without modifying it",
+      "gold": [
+        "agents/entire-agent-hermes/internal/hermes/config.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/agent_test.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "e2e/agents/hermes.go",
+          "e2e/agents/agent.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-amp/internal/amp/hooks_test.go"
+        ],
+        "seconds": 5.665,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 47,
+              "symbols": 1283
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 7
+            },
+            "JavaScript": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Markdown": {
+              "files": 22,
+              "symbols": 438
+            },
+            "Python": {
+              "files": 8,
+              "symbols": 89
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 8
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 3,
+              "symbols": 13
+            }
+          },
+          "relations": {
+            "CALLS": 675,
+            "CONFIGURES": 20,
+            "CONTAINS": 660,
+            "DEFINES": 1848,
+            "HANDLES_ROUTE": 8,
+            "IMPORTS": 435
+          },
+          "health": {
+            "source_files": 61,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 47,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "JavaScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 8,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/agent_test.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "e2e/agents/hermes.go",
+          "e2e/agents/agent.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-amp/internal/amp/hooks_test.go"
+        ],
+        "seconds": 5.665,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 47,
+              "symbols": 1283
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 7
+            },
+            "JavaScript": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Markdown": {
+              "files": 22,
+              "symbols": 438
+            },
+            "Python": {
+              "files": 8,
+              "symbols": 89
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 8
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 3,
+              "symbols": 13
+            }
+          },
+          "relations": {
+            "CALLS": 675,
+            "CONFIGURES": 20,
+            "CONTAINS": 660,
+            "DEFINES": 1848,
+            "HANDLES_ROUTE": 8,
+            "IMPORTS": 435
+          },
+          "health": {
+            "source_files": 61,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 47,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "JavaScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 8,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "agents",
+      "query": "load Hermes YAML configuration without modifying it",
+      "gold": [
+        "agents/entire-agent-hermes/internal/hermes/config.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "e2e/agents/hermes.go",
+          "agents/entire-agent-hermes/internal/hermes/agent_test.go",
+          "e2e/agents/agent.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-amp/internal/amp/hooks_test.go"
+        ],
+        "seconds": 8.407,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 47,
+              "symbols": 1283
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 7
+            },
+            "JavaScript": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Markdown": {
+              "files": 22,
+              "symbols": 438
+            },
+            "Python": {
+              "files": 8,
+              "symbols": 89
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 8
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 3,
+              "symbols": 13
+            }
+          },
+          "relations": {
+            "ACCESSES": 1,
+            "ASYNC_CALLS": 1,
+            "CALLS": 2179,
+            "CONFIGURES": 20,
+            "CONTAINS": 660,
+            "DATA_FLOWS": 395,
+            "DEFINES": 1848,
+            "EXTENDS": 5,
+            "HANDLES_ROUTE": 8,
+            "IMPORTS": 435,
+            "INHERITS": 5,
+            "LISTENS_ON": 21,
+            "PARAM_TYPE": 128,
+            "READS_FIELD": 20,
+            "RETURNS_TYPE": 71,
+            "SIMILAR_TO": 167,
+            "TESTS": 1,
+            "USES_TYPE": 331,
+            "WRITES_FIELD": 1
+          },
+          "health": {
+            "source_files": 61,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 47,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "JavaScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 8,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/agent_test.go",
+          "e2e/agents/hermes.go",
+          "e2e/agents/agent.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-amp/internal/amp/hooks_test.go"
+        ],
+        "seconds": 8.409,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 47,
+              "symbols": 1283
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 7
+            },
+            "JavaScript": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Markdown": {
+              "files": 22,
+              "symbols": 438
+            },
+            "Python": {
+              "files": 8,
+              "symbols": 89
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 8
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 3,
+              "symbols": 13
+            }
+          },
+          "relations": {
+            "ACCESSES": 1,
+            "ASYNC_CALLS": 1,
+            "CALLS": 2179,
+            "CONFIGURES": 20,
+            "CONTAINS": 660,
+            "DATA_FLOWS": 395,
+            "DEFINES": 1848,
+            "EXTENDS": 5,
+            "HANDLES_ROUTE": 8,
+            "IMPORTS": 435,
+            "INHERITS": 5,
+            "LISTENS_ON": 21,
+            "PARAM_TYPE": 128,
+            "READS_FIELD": 20,
+            "RETURNS_TYPE": 71,
+            "SIMILAR_TO": 167,
+            "TESTS": 1,
+            "USES_TYPE": 331,
+            "WRITES_FIELD": 1
+          },
+          "health": {
+            "source_files": 61,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 47,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "JavaScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 8,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "agents",
+      "query": "Hermes plugin repository hook registry",
+      "gold": [
+        "agents/entire-agent-hermes/internal/hermes/hooks.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-amp/internal/protocol/protocol.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "agents/entire-agent-amp/internal/amp/hooks.go",
+          "e2e/agents/hermes.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go"
+        ],
+        "seconds": 6.039,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 69,
+              "symbols": 2460
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 21
+            },
+            "JavaScript": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Markdown": {
+              "files": 3,
+              "symbols": 68
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 66
+            },
+            "TOML": {
+              "files": 5,
+              "symbols": 25
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "CALLS": 744,
+            "CONFIGURES": 46,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1563,
+            "DEFINES": 2655,
+            "HANDLES_ROUTE": 8,
+            "IMPORTS": 478
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 69,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "JavaScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-amp/internal/protocol/protocol.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-amp/internal/amp/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "e2e/agents/hermes.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go"
+        ],
+        "seconds": 6.039,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 69,
+              "symbols": 2460
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 21
+            },
+            "JavaScript": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Markdown": {
+              "files": 3,
+              "symbols": 68
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 66
+            },
+            "TOML": {
+              "files": 5,
+              "symbols": 25
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "CALLS": 744,
+            "CONFIGURES": 46,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1563,
+            "DEFINES": 2655,
+            "HANDLES_ROUTE": 8,
+            "IMPORTS": 478
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 69,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "JavaScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "agents",
+      "query": "Hermes plugin repository hook registry",
+      "gold": [
+        "agents/entire-agent-hermes/internal/hermes/hooks.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-amp/internal/protocol/protocol.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "e2e/agents/hermes.go",
+          "agents/entire-agent-amp/internal/amp/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "agents/entire-agent-goose/internal/protocol/protocol.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go"
+        ],
+        "seconds": 7.159,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 69,
+              "symbols": 2460
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 21
+            },
+            "JavaScript": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Markdown": {
+              "files": 3,
+              "symbols": 68
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 66
+            },
+            "TOML": {
+              "files": 5,
+              "symbols": 25
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "ACCESSES": 3,
+            "ASYNC_CALLS": 1,
+            "CALLS": 2365,
+            "CONFIGURES": 46,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1563,
+            "DATA_FLOWS": 529,
+            "DEFINES": 2655,
+            "EXTENDS": 1,
+            "HANDLES_ROUTE": 8,
+            "IMPORTS": 478,
+            "INHERITS": 1,
+            "LISTENS_ON": 3,
+            "PARAM_TYPE": 236,
+            "READS_FIELD": 61,
+            "RETURNS_TYPE": 91,
+            "SIMILAR_TO": 905,
+            "USES_TYPE": 561,
+            "WRITES_FIELD": 25
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 69,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "JavaScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-amp/internal/protocol/protocol.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go",
+          "agents/entire-agent-hermes/internal/hermes/hooks.go",
+          "agents/entire-agent-amp/internal/amp/hooks.go",
+          "e2e/agents/hermes.go",
+          "agents/entire-agent-hermes/internal/hermes/plugin/__init__.py",
+          "agents/entire-agent-goose/internal/protocol/protocol.go",
+          "agents/entire-agent-hermes/internal/hermes/config.go"
+        ],
+        "seconds": 7.156,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 4,
+              "symbols": 5
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 69,
+              "symbols": 2460
+            },
+            "JSON": {
+              "files": 2,
+              "symbols": 21
+            },
+            "JavaScript": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Markdown": {
+              "files": 3,
+              "symbols": 68
+            },
+            "Python": {
+              "files": 5,
+              "symbols": 66
+            },
+            "TOML": {
+              "files": 5,
+              "symbols": 25
+            },
+            "TypeScript": {
+              "files": 1,
+              "symbols": 3
+            },
+            "YAML": {
+              "files": 1,
+              "symbols": 5
+            }
+          },
+          "relations": {
+            "ACCESSES": 3,
+            "ASYNC_CALLS": 1,
+            "CALLS": 2365,
+            "CONFIGURES": 46,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1563,
+            "DATA_FLOWS": 529,
+            "DEFINES": 2655,
+            "EXTENDS": 1,
+            "HANDLES_ROUTE": 8,
+            "IMPORTS": 478,
+            "INHERITS": 1,
+            "LISTENS_ON": 3,
+            "PARAM_TYPE": 236,
+            "READS_FIELD": 61,
+            "RETURNS_TYPE": 91,
+            "SIMILAR_TO": 905,
+            "USES_TYPE": 561,
+            "WRITES_FIELD": 25
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 69,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "JavaScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 5,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "TypeScript": {
+                "source_files": 1,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "agents",
+      "query": "read Kiro session JSONL transcript",
+      "gold": [
+        "agents/entire-agent-kiro/internal/kiro/session_jsonl.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/compact.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-kilo/internal/kilo/hooks.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-kiro/internal/kiro/jsonl_test.go"
+        ],
+        "seconds": 5.696,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 3
+            },
+            "Go": {
+              "files": 74,
+              "symbols": 2609
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 11,
+              "symbols": 214
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 10
+            }
+          },
+          "relations": {
+            "CALLS": 1163,
+            "CONFIGURES": 23,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1487,
+            "DEFINES": 2910,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 529
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 74,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/compact.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-kilo/internal/kilo/hooks.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/jsonl_test.go"
+        ],
+        "seconds": 5.695,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 3
+            },
+            "Go": {
+              "files": 74,
+              "symbols": 2609
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 11,
+              "symbols": 214
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 10
+            }
+          },
+          "relations": {
+            "CALLS": 1163,
+            "CONFIGURES": 23,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1487,
+            "DEFINES": 2910,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 529
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 74,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "agents",
+      "query": "read Kiro session JSONL transcript",
+      "gold": [
+        "agents/entire-agent-kiro/internal/kiro/session_jsonl.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/compact.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-kilo/internal/kilo/hooks.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-kiro/internal/kiro/jsonl_test.go"
+        ],
+        "seconds": 8.077,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 3
+            },
+            "Go": {
+              "files": 74,
+              "symbols": 2609
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 11,
+              "symbols": 214
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 10
+            }
+          },
+          "relations": {
+            "ACCESSES": 3,
+            "CALLS": 3008,
+            "CONFIGURES": 23,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1487,
+            "DATA_FLOWS": 725,
+            "DEFINES": 2910,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 529,
+            "LISTENS_ON": 3,
+            "PARAM_TYPE": 244,
+            "READS_FIELD": 53,
+            "RETURNS_TYPE": 91,
+            "SIMILAR_TO": 953,
+            "TESTS": 1,
+            "USES_TYPE": 507,
+            "WRITES_FIELD": 24
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 74,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/compact.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-kilo/internal/kilo/hooks.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/jsonl_test.go"
+        ],
+        "seconds": 8.075,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 3
+            },
+            "Go": {
+              "files": 74,
+              "symbols": 2609
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 11,
+              "symbols": 214
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 10
+            }
+          },
+          "relations": {
+            "ACCESSES": 3,
+            "CALLS": 3008,
+            "CONFIGURES": 23,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1487,
+            "DATA_FLOWS": 725,
+            "DEFINES": 2910,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 529,
+            "LISTENS_ON": 3,
+            "PARAM_TYPE": 244,
+            "READS_FIELD": 53,
+            "RETURNS_TYPE": 91,
+            "SIMILAR_TO": 953,
+            "TESTS": 1,
+            "USES_TYPE": 507,
+            "WRITES_FIELD": 24
+          },
+          "health": {
+            "source_files": 80,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 74,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "agents",
+      "query": "read Goose session JSONL transcript",
+      "gold": [
+        "agents/entire-agent-goose/internal/goose/session_jsonl.go"
+      ],
+      "profile": "fast",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-goose/internal/goose/transcript.go",
+          "agents/entire-agent-goose/internal/goose/compact.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kilo/internal/kilo/hooks.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-goose/internal/goose/transcript.go",
+          "agents/entire-agent-goose/internal/goose/jsonl_test.go"
+        ],
+        "seconds": 5.434,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 3
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 73,
+              "symbols": 2479
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 11,
+              "symbols": 213
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 10
+            }
+          },
+          "relations": {
+            "CALLS": 1026,
+            "CONFIGURES": 23,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1432,
+            "DEFINES": 2780,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 527
+          },
+          "health": {
+            "source_files": 79,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 73,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-goose/internal/goose/transcript.go",
+          "agents/entire-agent-goose/internal/goose/compact.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kilo/internal/kilo/hooks.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-goose/internal/goose/jsonl_test.go"
+        ],
+        "seconds": 5.434,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 3
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 73,
+              "symbols": 2479
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 11,
+              "symbols": 213
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 10
+            }
+          },
+          "relations": {
+            "CALLS": 1026,
+            "CONFIGURES": 23,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1432,
+            "DEFINES": 2780,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 527
+          },
+          "health": {
+            "source_files": 79,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 73,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    },
+    {
+      "repo": "agents",
+      "query": "read Goose session JSONL transcript",
+      "gold": [
+        "agents/entire-agent-goose/internal/goose/session_jsonl.go"
+      ],
+      "profile": "full",
+      "baseline": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-goose/internal/goose/transcript.go",
+          "agents/entire-agent-goose/internal/goose/compact.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kilo/internal/kilo/hooks.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-goose/internal/goose/transcript.go",
+          "agents/entire-agent-goose/internal/goose/jsonl_test.go"
+        ],
+        "seconds": 6.731,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 3
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 73,
+              "symbols": 2479
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 11,
+              "symbols": 213
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 10
+            }
+          },
+          "relations": {
+            "ACCESSES": 3,
+            "CALLS": 2785,
+            "CONFIGURES": 23,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1432,
+            "DATA_FLOWS": 656,
+            "DEFINES": 2780,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 527,
+            "LISTENS_ON": 3,
+            "PARAM_TYPE": 227,
+            "READS_FIELD": 53,
+            "RETURNS_TYPE": 81,
+            "SIMILAR_TO": 936,
+            "USES_TYPE": 482,
+            "WRITES_FIELD": 24
+          },
+          "health": {
+            "source_files": 79,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 73,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      },
+      "candidate": {
+        "rank": 1,
+        "paths": [
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-goose/internal/goose/transcript.go",
+          "agents/entire-agent-goose/internal/goose/compact.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-kiro/internal/kiro/transcript.go",
+          "agents/entire-agent-kiro/internal/kiro/session_jsonl.go",
+          "agents/entire-agent-kilo/internal/kilo/hooks.go",
+          "agents/entire-agent-goose/internal/goose/session_jsonl.go",
+          "agents/entire-agent-goose/internal/goose/jsonl_test.go"
+        ],
+        "seconds": 6.727,
+        "backend": "go-content",
+        "files_indexed": 96,
+        "completeness": {
+          "languages": {
+            "Bash": {
+              "files": 2,
+              "symbols": 3
+            },
+            "Git Ignore": {
+              "files": 1,
+              "symbols": 1
+            },
+            "Go": {
+              "files": 73,
+              "symbols": 2479
+            },
+            "JSON": {
+              "files": 1,
+              "symbols": 13
+            },
+            "Markdown": {
+              "files": 11,
+              "symbols": 213
+            },
+            "Python": {
+              "files": 4,
+              "symbols": 61
+            },
+            "TOML": {
+              "files": 2,
+              "symbols": 10
+            }
+          },
+          "relations": {
+            "ACCESSES": 3,
+            "CALLS": 2785,
+            "CONFIGURES": 23,
+            "CONSTRUCTS": 1,
+            "CONTAINS": 1432,
+            "DATA_FLOWS": 656,
+            "DEFINES": 2780,
+            "HANDLES_ROUTE": 7,
+            "IMPORTS": 527,
+            "LISTENS_ON": 3,
+            "PARAM_TYPE": 227,
+            "READS_FIELD": 53,
+            "RETURNS_TYPE": 81,
+            "SIMILAR_TO": 936,
+            "USES_TYPE": 482,
+            "WRITES_FIELD": 24
+          },
+          "health": {
+            "source_files": 79,
+            "flagged_files": 0,
+            "flagged_percentage": 0,
+            "intentional_skipped_files": 0,
+            "threshold_percentage": 5,
+            "status": "ok",
+            "languages": {
+              "Bash": {
+                "source_files": 2,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Go": {
+                "source_files": 73,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              },
+              "Python": {
+                "source_files": 4,
+                "flagged_files": 0,
+                "flagged_percentage": 0,
+                "intentional_skipped_files": 0
+              }
+            }
+          }
+        },
+        "partial_failures": []
+      }
+    }
+  ],
+  "summary": {
+    "baseline": {
+      "cases": 24,
+      "mrr_at_10": 0.6875,
+      "recall_at_1": 0.5833333333333334,
+      "recall_at_5": 0.8333333333333334,
+      "recall_at_10": 0.875
+    },
+    "candidate": {
+      "cases": 24,
+      "mrr_at_10": 0.7465277777777778,
+      "recall_at_1": 0.6666666666666666,
+      "recall_at_5": 0.875,
+      "recall_at_10": 0.875
+    }
+  },
+  "regressions": [],
+  "source_fingerprints": {
+    "baseline": "1ec74f08ab86ca82f76df956d9372c77309bbbbf36652ef6407f1ad212054fcb",
+    "candidate": "2dfa8dee582bd953d190240e4d2b2ec48c6ff16cb9d2ea7988bb1ade74a82272"
+  },
+  "changed_production_source_files": [
+    "internal/sem/search.go"
+  ],
+  "run_date": "2026-10-15",
+  "source_refs": {
+    "baseline_core_head": "5f9f6cfba223ceb64b8bcd404891df7fef818554",
+    "baseline_main_merge": "ba38a3e94e08cc9afaefeed3f7d01c6d0e8a572e",
+    "candidate_search_blob": "ce78d14ac7212edc4fa7e5e49fad433e06341448"
+  }
+}

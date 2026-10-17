@@ -239,8 +239,10 @@ func mergedSearchSpanResult(results []SearchResult, run []int, lines []string) (
 	start, end := first.SnippetStartLine, first.SnippetEndLine
 	regionStart, regionEnd := first.StartLine, first.EndLine
 	ranks := make([]int, 0, len(run))
+	allCallees := true
 	for _, index := range run {
 		member := results[index]
+		allCallees = allCallees && hasSearchSignal(member, searchCalleeHopSignal)
 		if member.Rank < results[survivor].Rank {
 			survivor = index
 		}
@@ -267,6 +269,11 @@ func mergedSearchSpanResult(results []SearchResult, run []int, lines []string) (
 	// which is exactly what MergedRanks and the "nothing elided" label say; renaming it after the
 	// widest thing it touches would report a container as the fix site.
 	span.Signals = appendUnique(append([]string(nil), span.Signals...), searchSpanMergedSignal)
+	// A span containing a normally ranked hit consumes a normal result slot,
+	// even when its best-ranked survivor was an explicitly added callee.
+	if !allCallees {
+		span.Signals = removeSearchSignal(span.Signals, searchCalleeHopSignal)
+	}
 	span.MergedRanks = ranks
 	// The span now holds every member's text, so it carries the best (lowest) pre-fusion lexical
 	// rank among them: a lexical head row folded into a semantic survivor must stay as protected
@@ -276,6 +283,7 @@ func mergedSearchSpanResult(results []SearchResult, run []int, lines []string) (
 			span.lexicalRank = member
 		}
 	}
+	span.MergedDeclLines, span.MergedDeclStarts = searchMergedDeclarations(results, run, survivor, lines, start, end)
 	return survivor, span, true
 }
 

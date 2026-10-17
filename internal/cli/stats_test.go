@@ -13,6 +13,24 @@ import (
 	"time"
 )
 
+// Quoted argument contents cannot create shell operators or change the command's purpose.
+func FuzzExplorationQuotedArguments(f *testing.F) {
+	for _, payload := range []string{"file.go", "a; grep b", "$(cat secret)", "`rg needle`", "x | tail -1", "'quoted'", "x\ncat y", "a>&b"} {
+		f.Add(payload)
+	}
+	f.Fuzz(func(t *testing.T, payload string) {
+		quoted := "'" + strings.ReplaceAll(payload, "'", "'\\''") + "'"
+		for _, command := range []struct {
+			prefix string
+			want   bool
+		}{{"cat ", true}, {"git commit -m ", false}} {
+			if got := isExploringShellCommand(command.prefix + quoted); got != command.want {
+				t.Fatalf("classification of %q = %v, want %v", command.prefix+quoted, got, command.want)
+			}
+		}
+	})
+}
+
 // --- fixture helpers ---------------------------------------------------------------------
 
 func statsTime(offset time.Duration) string {
@@ -933,8 +951,9 @@ func TestStatsDefaultOutputIsOneHeadlineLine(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("default output must be exactly one line, got %d:\n%s", len(lines), text)
 	}
-	// (840-40) modeled bytes -> +200 estimated tokens; not measured savings.
-	if lines[0] != "[entire-graph] 1:1 context model: +200 est. tokens; not measured savings" {
+	// The graph output names no file, so the result is INELIGIBLE and credits nothing: the 40 graph
+	// bytes are pure cost (-10 est. tokens). The 1:1 model (+200) stays one --verbose away.
+	if lines[0] != "[entire-graph] observed follow-up of 1 graph locate results (next 5 calls after delivery): re-query 0%, read named file 0%, none 0%, censored 0%, error/ineligible 100%; modeled balance -10 est. tokens if each of 0 no-follow-up results (of 1 in 1 sessions with both result types) replaced one average exploration result (assumed; not measured savings)" {
 		t.Fatalf("unexpected model headline = %q", lines[0])
 	}
 	for _, unwanted := range []string{"graph calls by verb", "session tokens (billed", "ESTIMATED SAVINGS", "assumption"} {
@@ -953,22 +972,22 @@ func TestStatsDefaultOutputIsOneHeadlineLine(t *testing.T) {
 	}
 }
 
-// TestStatsHeadlineIsPlainTextWhenOutputIsNotATerminal keeps ANSI bytes out of pipes and files.
+// Summary output remains plain text when terminal color settings are present.
 func TestStatsHeadlineIsPlainTextWhenOutputIsNotATerminal(t *testing.T) {
-	t.Setenv("NO_COLOR", "")
-	t.Setenv("FORCE_COLOR", "")
-	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "")
-	var out bytes.Buffer
-	if got := statsGreen(&out, "[entire-graph] ~1 tokens saved"); strings.Contains(got, "\x1b[") {
-		t.Fatalf("a non-terminal writer must not receive escapes, got %q", got)
-	}
-	t.Setenv("FORCE_COLOR", "1")
-	if got := statsGreen(&out, "x"); got != "\x1b[32mx\x1b[0m" {
-		t.Fatalf("forced colour = %q, want a green wrap", got)
-	}
-	t.Setenv("NO_COLOR", "1")
-	if got := statsGreen(&out, "x"); got != "x" {
-		t.Fatalf("NO_COLOR must win, got %q", got)
+	for _, force := range []string{"", "1"} {
+		t.Setenv("FORCE_COLOR", force)
+		var out bytes.Buffer
+		writeStatsSummary(&out, statsResponse{Sessions: 1, SessionsDirFound: true, SessionsWithSavingsComparison: 1,
+			GraphLocateDisplaced: 1, NoFollowUpRate: 1, DisplacementWindowCalls: 4,
+			ObservedNetTokens: 4, ModeledBalanceCreditedResults: 1, ComparableGraphLocateResults: 1})
+		if strings.Contains(out.String(), "\x1b[") || !strings.Contains(out.String(), "observed follow-up of 1 graph locate results") || !strings.Contains(out.String(), "modeled balance +4 est. tokens") || !strings.Contains(out.String(), "not measured savings") {
+			t.Fatalf("unexpected summary: %q", out.String())
+		}
+		out.Reset()
+		writeStatsSummary(&out, statsResponse{Sessions: 1, SessionsDirFound: true, SessionsWithSavingsComparison: 1, EstimatedSavingsTokensUnfloored: 4})
+		if strings.Contains(out.String(), "\x1b[") || !strings.Contains(out.String(), "observed follow-up: no graph locate results") {
+			t.Fatalf("legacy model must not invent observed results: %q", out.String())
+		}
 	}
 }
 

@@ -449,6 +449,16 @@ func searchRelatedCallSiteLine(relation RelationRecord, caller SymbolRecord) int
 	return caller.StartLine
 }
 
+// searchRelatedDeclarationLine uses the parser's binding-token line when it belongs to the
+// symbol, retaining the start-line fallback when declaration-name metadata is unavailable.
+func searchRelatedDeclarationLine(symbol SymbolRecord) int {
+	line := symbol.NameLine()
+	if symbol.StartLine > 0 && line >= symbol.StartLine && line <= symbol.EndLine {
+		return line
+	}
+	return symbol.StartLine
+}
+
 // searchRelatedSiblingSites collects members that stand in the same place as the anchor.
 //
 // Three routes, in decreasing directness of what the graph states:
@@ -487,7 +497,7 @@ func searchRelatedSiblingSites(
 		sites = append(sites, searchRelatedSite{
 			kind:     searchRelatedSibling,
 			symbol:   symbol,
-			line:     symbol.StartLine,
+			line:     searchRelatedDeclarationLine(symbol),
 			evidence: evidence,
 		})
 	}
@@ -595,7 +605,7 @@ func searchRelatedNearDuplicateSites(
 		sites = append(sites, searchRelatedSite{
 			kind:     searchRelatedNearDupe,
 			symbol:   symbol,
-			line:     symbol.StartLine,
+			line:     searchRelatedDeclarationLine(symbol),
 			strength: strength,
 		})
 	}
@@ -824,7 +834,8 @@ func searchRelatedSiteAlreadySurfaced(results []SearchResult, site searchRelated
 //   - The payload never grows: the merged result is at most as large, serialized, as the ranking
 //     it replaces (and never past hardBudget). Related-site entries are cheap enough that a tail
 //     locator normally funds one outright.
-//   - A related site costs at most ONE ranked hit. Without that cap a block of four could pay for
+//   - Existing callee-hop overflow may first be trimmed from legal redundant tail locators.
+//   - Beyond that overflow, a related site costs at most ONE ranked hit. Without that cap a block of four could pay for
 //     itself by dropping five or six tail hits, which trades away recall the ranking had already
 //     earned; with it, the block can only ever be an exchange of like for like.
 //   - The head is never displaced. searchEnclosureHeadRanks is where the allocator already stops
@@ -833,12 +844,15 @@ func searchRelatedSiteAlreadySurfaced(results []SearchResult, site searchRelated
 //     the lexical ranking put there, wherever fusion seated it (searchLexicalHeadRows).
 //   - The most sites wins, then the fewest displaced hits: a plan that keeps a ranked hit for
 //     free is strictly better than one that drops it for nothing.
+//   - topK caps the normal returned count, including related sites. Explicit callee-hop rows are
+//     exceptions to that cap. Spare slots or legal tail exchanges must fund every normal entry;
+//     byte savings alone cannot buy extra normal-result slots.
 //   - Ranks are renumbered so the payload keeps its 1..N invariant.
 func mergeSearchRelatedSites(
 	results []SearchResult,
 	sites []searchRelatedSite,
 	read contentReader,
-	hardBudget int,
+	hardBudget, topK int,
 ) ([]SearchResult, int) {
 	if len(results) == 0 || len(sites) == 0 {
 		return results, 0
@@ -870,14 +884,34 @@ func mergeSearchRelatedSites(
 	floor := minInt(len(results), searchEnclosureHeadRanks)
 	order := searchRelatedDisplacementOrder(results, floor)
 	for count := len(entries); count >= 1; count-- {
-		for drop := 0; drop <= minInt(count, len(order)); drop++ {
+		for drop := 0; drop <= minInt(count+maxInt(0, searchTopKResultCount(results)-topK), len(order)); drop++ {
+			if searchTopKResultCount(results)-drop+count > topK {
+				continue
+			}
 			merged := searchRelatedMergedPlan(results, entries[:count], order[:drop])
+			if searchTopKResultCount(merged) > topK {
+				continue
+			}
 			if serializedSearchResultBytes(merged) <= budget {
 				return merged, count
 			}
 		}
 	}
 	return results, 0
+}
+
+// searchTopKResultCount counts rows governed by the normal result cap. A callee-hop row that still
+// exists here survived its own byte-aware planner and remains the explicit exception documented for
+// --callee-hop. Counting the rows themselves, rather than the earlier CalleeHopSites statistic,
+// avoids crediting callees that a later same-file span merge absorbed.
+func searchTopKResultCount(results []SearchResult) int {
+	count := 0
+	for _, result := range results {
+		if !hasSearchSignal(result, searchCalleeHopSignal) {
+			count++
+		}
+	}
+	return count
 }
 
 // searchRelatedMergedPlan builds one merged payload: the ranking minus the displaced indices,

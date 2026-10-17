@@ -45,7 +45,7 @@ func polyglotSnapshot(rustFailures int, pythonFailures int) sem.ProviderSnapshot
 	}
 	snapshot.Header.Warnings = []sem.ProviderWarning{{
 		Code: worktreeProvenanceWarning, Severity: "warning",
-		EffectOnCompleteness: "snapshot records are read from the working tree because --worktree was requested",
+		EffectOnCompleteness: "snapshot records are read from the working tree; this is the default, and working-tree reads are never cached, so --head is the cacheable, committed-tree baseline",
 	}}
 	snapshot.Header.Stats.PartialFailures = len(snapshot.Header.PartialFailures)
 	snapshot.Header.Stats.CompletenessLevel = "degraded"

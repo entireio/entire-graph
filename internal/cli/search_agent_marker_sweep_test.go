@@ -142,52 +142,78 @@ func TestTheHugeFixtureActuallyProducesAClippedForcedUnit(t *testing.T) {
 	t.Fatal("ApplyRetryBudget not returned under --full-unit-top 1; the sweep fixture is not exercising the forced path")
 }
 
-// The other half, and the reason the sweep is not vacuous: the marker must still be emitted
-// for a symbol that genuinely is whole. Without this, deleting the feature entirely would
-// pass every falsifier in this file.
+// Positive cases must exercise a producer path that actually certifies the body.
+// Opportunistic enclosure widens a medium callable; --full-unit-top also certifies
+// an already-visible small callable. Neither case may silently skip.
 func TestTheRealSearchPathStillMarksAGenuinelyCompleteSymbol(t *testing.T) {
-	t.Parallel()
-	repo := hugeUnitRepo(t)
-	var out bytes.Buffer
-	if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
-		"query", "--repo", repo, "--query", "reports whether the retry budget is spent",
-		"--format", "agent", "--no-cache",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	rendered := out.String()
-	if !strings.Contains(rendered, "RetryBudgetExhausted") {
-		t.Skipf("ranking did not surface the small callable; nothing to assert:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, completeMarker) {
-		// KNOWN GAP, producer-side, and an ATTEMPTED FIX WAS REVERTED -- read this before
-		// trying the obvious one again.
-		//
-		// The snippet here provably covers its symbol (bounds 2-6 contain symbol 4-6) and
-		// carries no complete-symbol, because the signal is only assigned along the
-		// enclosure-widening path. Marking it from bounds after the allocator LOOKS correct
-		// and fails three ways, all measured:
-		//
-		//   1. It adds ~15 bytes of signal string per result AFTER the byte budget is
-		//      closed, so SearchResponse.Validate trips: "context exceeds byte budget:
-		//      6008 > 6000". This is precisely the post-allocator growth class of issue
-		//      #208, and the same reason assignSearchSections was moved ahead of the
-		//      fitter by #207.
-		//   2. complete-symbol is LOAD-BEARING for span merging
-		//      (search_enclosure.go:862) and callee-hop demotion
-		//      (search_callee.go:447,475). Adding it late changed which same-file regions
-		//      merged, breaking TestSearchRepositoryPreservesDistinctRegionsInOneFile and
-		//      TestSearchRepositoryExpandsSemanticNeighbor.
-		//   3. Moving the pass BEFORE the fitter to price the bytes does not work either:
-		//      the fitter is what shrinks snippets, so a mark made ahead of it can be
-		//      falsified by the very next pass. The durable fix is for the fitter to REMOVE
-		//      complete-symbol when it truncates, which is a producer contract change and
-		//      belongs with that package's owner.
-		//
-		// UN-SKIP CONDITION: restore the hard assertion when the producer assigns
-		// complete-symbol to already-complete snippets AND the fitter drops it on
-		// truncation. Reported over the peer channel with the failing test names.
-		t.Skipf("KNOWN GAP (producer): a whole callable rendered without %s; bounds-based fix reverted, see comment.\n%s",
-			completeMarker, rendered)
+	for _, forced := range []bool{false, true} {
+		name := "enclosure-upgrade"
+		if forced {
+			name = "forced-small-unit"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+			var function strings.Builder
+			function.WriteString("func RetryBudgetExhausted(attempt, budget int) bool {\n")
+			if !forced {
+				for i := 0; i < 12; i++ {
+					fmt.Fprintf(&function, "\tif attempt == %d {\n\t\treturn budget <= %d\n\t}\n", i, i)
+				}
+			}
+			function.WriteString("\treturn attempt >= budget\n}\n")
+			source := "package retry\n\n" + function.String()
+			write(t, repo, "retry.go", source)
+			// A phrase, not the bare identifier: an exact-identifier query is answered by the
+			// exact-name rows (search_exact_name.go), which never carry the marker. This test is
+			// about the ranked rendering of a certified body.
+			args := []string{"query", "--repo", repo, "--query", "whether the retry budget is exhausted", "--no-cache", "--max-context-bytes", "24576"}
+			if forced {
+				args = append(args, "--full-unit-top", "1")
+			}
+			var machine bytes.Buffer
+			if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &machine}, append(append([]string{}, args...), "--format", "json")); err != nil {
+				t.Fatal(err)
+			}
+			var response sem.SearchResponse
+			if err := json.Unmarshal(machine.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, result := range response.Results {
+				if result.SymbolName != "RetryBudgetExhausted" {
+					continue
+				}
+				complete, elided := false, false
+				for _, signal := range result.Signals {
+					complete = complete || signal == sem.CompleteSymbolSignal
+					elided = elided || signal == sem.FullUnitElidedSignal
+				}
+				if !complete || elided {
+					t.Fatalf("producer did not certify the fixture: signals=%v", result.Signals)
+				}
+				if !strings.Contains(result.Snippet, strings.TrimSuffix(function.String(), "\n")) {
+					t.Fatalf("producer returned a partial body: %q", result.Snippet)
+				}
+				found = true
+				break
+			}
+			if !found {
+				t.Fatal("query did not return the target callable")
+			}
+			var agent bytes.Buffer
+			if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &agent}, append(append([]string{}, args...), "--format", "agent")); err != nil {
+				t.Fatal(err)
+			}
+			marked := false
+			for _, line := range strings.Split(agent.String(), "\n") {
+				if strings.Contains(line, "RetryBudgetExhausted") && strings.Contains(line, completeMarker) {
+					marked = true
+				}
+			}
+			if !marked || !strings.Contains(agent.String(), strings.TrimSuffix(function.String(), "\n")) {
+				t.Fatalf("certified body was not rendered whole with its marker:\n%s", agent.String())
+			}
+		})
 	}
 }

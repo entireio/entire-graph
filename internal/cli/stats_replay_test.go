@@ -85,7 +85,7 @@ func TestStatsTruncatedGzipCache(t *testing.T) {
 }
 
 func TestStatsCacheBoundsDecompressedData(t *testing.T) {
-	payload := []byte(`{"schema":"v1","entries":{"` + strings.Repeat("a", 4096) + `":{}}}`)
+	payload := []byte(`{"schema":"` + statsCacheSchema + `","entries":{"` + strings.Repeat("a", 4096) + `":{}}}`)
 	var compressed bytes.Buffer
 	writer := gzip.NewWriter(&compressed)
 	if _, err := writer.Write(payload); err != nil {

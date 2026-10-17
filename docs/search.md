@@ -22,7 +22,10 @@ a surprising hit can be audited instead of trusted.
 
 Results are byte-budgeted to drop into an agent's context: top hits carry full
 snippets, later hits shrink to locators, and `--max-context-bytes` bounds the
-total (`0` removes the bound). `--top-k` sets the result count.
+total (`0` removes the bound). `--top-k` caps normal results, including automatic
+related sites and covering tests. Explicit `--callee-hop` is an exception: it may
+add called-helper results beyond that cap, under its existing byte-budget and
+ranked-source protections.
 
 ## What a response contains
 
@@ -41,6 +44,19 @@ The default format is JSON, one object per query:
   formats render it as a `VERIFY:` line. It is a suggestion constructed from
   repository contents; read it before running it (see
   [trust and security](trust-and-security.md)).
+  When no in-scope command can be derived for a subdirectory `--repo`, manifest
+  discovery may continue to the enclosing physical Git checkout root. The
+  emitted command uses `cd <absolute-physical-root> && ...`, including that local
+  path in its derivation evidence, so a symlinked scope cannot redirect a relative
+  parent walk into another checkout. `--head` reads committed manifests;
+  working-tree reads stay confined to that checkout and refuse symlinked files.
+  A subdirectory with its own build root keeps its in-scope command.
+  Language-specific suite fallbacks require a matching source or covering test;
+  a neighboring manifest alone does not assign an unrelated language's runner.
+  Native Go inputs require bounded, same-package evidence (and a real `import
+  "C"` for cgo inputs). This does not evaluate platform/build constraints or
+  infer SWIG-generated sources. The `targets` description distinguishes a whole
+  suite from an identified narrow command.
 - `stats`: counts, byte accounting, latency, and `index_cache_hit`.
 - `warnings`, `partial_failures`, `completeness`: machine-readable coverage:
   which languages and how many files/symbols/relations backed this answer, and
@@ -58,7 +74,39 @@ The default format is JSON, one object per query:
   (`Index: cache-hit (…ms) | Query: …ms | …`), degrading gracefully under
   tight byte budgets.
 
+## Complete bodies in agent output
+
+An agent result header may carry `[complete]` when the producer certified the
+whole primary symbol body and display preserves its source bytes. A clipped
+unit, a head window, or a body rewritten by terminal escaping or quarantine is
+not certified. File names and other metadata escape the reserved token so they
+cannot impersonate this header annotation. JSON/NDJSON retain the original data.
+Text output also omits the `complete-symbol` signal when display changes the body.
+
+The agent renderer prefers the whole certified body with its marker. If it
+cannot fit, it retains an unmarked source window or declaration when possible,
+then falls back to a locator. Unmarked source makes no completeness claim.
+Ordinary uncertified results retain excerpt fitting and trailing-line behavior. A genuine
+final source blank line is preserved only on the certified path; an ordinary
+line terminator does not become an extra source line.
+
+Marker absence is conservative: it does not prove that a body is incomplete.
+After allocation, selected primary results can also receive certification when
+identity, symbol bounds and exact source bytes agree and the signal fits the
+remaining serialized budget. Other already-visible callables may stay uncertified. `--full-unit-top` requests explicit unit expansion;
+a safety-clipped forced unit still cannot claim completeness. Renderer tests
+cover certification through both opportunistic enclosure and forced-unit paths
+without adding signals after the producer's byte budget has been finalized.
+
 ## Profiles
+
+Term-rarity weights use repository-wide content frequencies when the search can
+establish exact counts. Bounded or unread-file cases that cannot establish them
+fall back to statistics from the inspected sample. This corrects a bias from
+counting only files preselected for matching the query, and can change result
+order. Other ranking inputs, such as average candidate length, can still vary
+between backends. The [pinned scoring comparison](../bench/search/README.md)
+records a limited before/after cohort and its coverage boundaries.
 
 `query` defaults to `--profile fast` (shallow, high-precision call
 resolution). The installed agent guide asks for `--profile full`, which
@@ -129,3 +177,16 @@ that service and the local host: a different local process can bind its port.
 This is an exception to the default no-network/no-model behavior, with no remote
 endpoint support. Query `--no-network` disables the channel; index rejects
 `--no-network --semantic` before sending any request.
+Session replay requires a clean VCS revision stamped into the producing binary.
+Unstamped or modified builds always search again; a changed producer invalidates
+the stored answer. This identifies a source revision, not the toolchain or build
+flags. Binaries installed without VCS metadata trade replay reuse for freshness.
+
+Declaration rendering preserves the parser’s name line when an uncertified source
+window would otherwise omit it. Exact-identifier answers retain every matching
+definition or fall back to the ordinary ranking. Certified source keeps its whole
+body and completeness marker, including in exact-name answers; when that body
+cannot fit, the ordinary renderer may retain an unmarked declaration or source
+window before falling back to a locator. Additional passages
+cannot spend the primary location’s reserved space. Declaration floors are used
+only when they collectively fit, preserving the bounded rank-weighted allocator.

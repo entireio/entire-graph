@@ -168,8 +168,8 @@ func TestSemanticRereview2RelatedSiteDisplacesPushedLexicalTop3(t *testing.T) {
 		row("e4.go", "S4", 1, "semantic:embedding", "semantic:only"), row("u.go", "L4", 1),
 		row("e5.go", "S5", 1, "semantic:embedding", "semantic:only"), row("v.go", "L5", 1),
 	})
-	bOut, bSites := mergeSearchRelatedSites(append([]SearchResult(nil), bPrime...), []searchRelatedSite{site}, read, 24*1024)
-	cOut, cSites := mergeSearchRelatedSites(append([]SearchResult(nil), cPrime...), []searchRelatedSite{site}, read, 24*1024)
+	bOut, bSites := mergeSearchRelatedSites(append([]SearchResult(nil), bPrime...), []searchRelatedSite{site}, read, 24*1024, len(bPrime))
+	cOut, cSites := mergeSearchRelatedSites(append([]SearchResult(nil), cPrime...), []searchRelatedSite{site}, read, 24*1024, len(cPrime))
 	bRank, bHit := gold(bOut)
 	cRank, cHit := gold(cOut)
 	t.Logf("B': related=%d gold hit=%v rank=%d ; C': related=%d gold hit=%v rank=%d", bSites, bHit, bRank, cSites, cHit, cRank)

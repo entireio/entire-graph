@@ -615,7 +615,9 @@ func %sDelivery() {}
 	}
 	// Removing only two newly justified complete-symbol signals independently
 	// recovered the full previous JSON digest; source and order are unchanged.
-	assertSearchResultGolden(t, response.Results, "e9210f8962e96fc00a4141dfb3cd01d16bd3afc5a3e75aadb8c2dcd7a4a33647")
+	assertSearchResultGoldenWithoutNameLine(t, response.Results,
+		"6cc6dc4cc14e385f545a33b20896e6957c8813fd70f4f43013f8599e06442f59",
+		"e9210f8962e96fc00a4141dfb3cd01d16bd3afc5a3e75aadb8c2dcd7a4a33647")
 	identities := make([][3]any, len(response.Results))
 	for index, result := range response.Results {
 		if len(result.Passages) != 0 {
@@ -777,7 +779,9 @@ func Worker%d() {}
 	}
 	// Removing only two newly justified complete-symbol signals independently
 	// recovered the full previous JSON digest; source and order are unchanged.
-	assertSearchResultGolden(t, response.Results, "76f2907c82b6d8a21d2b1936094e8e647dfeb1142132ec846cae5eee8d0b5d2e")
+	assertSearchResultGoldenWithoutNameLine(t, response.Results,
+		"9ab477eecf353bb1e847ea521bc4bacc9bf4039d8c4954af06ef541623d594e9",
+		"76f2907c82b6d8a21d2b1936094e8e647dfeb1142132ec846cae5eee8d0b5d2e")
 	for _, result := range response.Results {
 		if containsString(result.Signals, "retrieval_mode=prose-parent") {
 			t.Fatalf("two-thirds prose corpus activated prose-parent mode: %#v", response.Results)
@@ -950,6 +954,19 @@ func assertSearchResultGolden(t *testing.T, results []SearchResult, want string)
 	if got != want {
 		t.Errorf("result JSON SHA-256 = %s, want %s", got, want)
 	}
+}
+
+// assertSearchResultGoldenWithoutNameLine checks the current golden and keeps the one recorded
+// before SymbolNameLine existed as a historical schema guard. That field is omitempty, so zeroing it
+// restores exactly the JSON the older golden hashed: a change in any other field fails one of the two.
+func assertSearchResultGoldenWithoutNameLine(t *testing.T, results []SearchResult, want, wantWithoutNameLine string) {
+	t.Helper()
+	assertSearchResultGolden(t, results, want)
+	normalized := append([]SearchResult(nil), results...)
+	for index := range normalized {
+		normalized[index].SymbolNameLine = 0
+	}
+	assertSearchResultGolden(t, normalized, wantWithoutNameLine)
 }
 
 func searchCandidateResults(candidates []searchCandidate) []SearchResult {

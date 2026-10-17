@@ -53,7 +53,7 @@ func TestSemanticLexicalHeadSurvivesLiftedLexicalRow(t *testing.T) {
 	}
 	src := strings.Repeat("func f() {}\n", 40)
 	site := searchRelatedSite{kind: "caller", symbol: SymbolRecord{ID: "caller1", Name: "caller1", FilePath: "q.go", StartLine: 30, EndLine: 33}, line: 31}
-	merged, sites := mergeSearchRelatedSites(results, []searchRelatedSite{site}, func(string) (string, bool) { return src, true }, 24*1024)
+	merged, sites := mergeSearchRelatedSites(results, []searchRelatedSite{site}, func(string) (string, bool) { return src, true }, 24*1024, len(results))
 	for _, row := range merged {
 		if row.SymbolID == "L5" {
 			return

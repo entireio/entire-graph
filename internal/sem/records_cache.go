@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -11,6 +12,8 @@ import (
 	"io"
 	"path/filepath"
 	"sort"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 // Provider records (the streamed snapshot/symbols/edges NDJSON emitted by the
@@ -23,7 +26,18 @@ import (
 // records carry a single evidence entry per edge rather than every flow; v10
 // retires entries written before truncated records counted what they dropped.
 // v11 retires streams carrying the old diagnostic-count completeness status.
-const providerRecordsCacheVersion = "provider-records-v11-" + IdentityRevision
+// v12 retires HANDLES_ROUTE streams produced before scoped Go receiver and
+// middleware analysis; unchanged consumer trees must not replay those edges.
+// v13 retires route records from the old sixteen-round parameter-taint cutoff.
+// v14 retires warning text that incorrectly described every command family as worktree-default.
+// v15 retires malformed-route literal guesses and undisclosed signature-budget loss.
+// v16 retires checkout-path keys and carries checkout roots plus relative scopes
+// for safe cross-worktree replay, and binds captured co-change history without
+// reusing older route-producer entries.
+// v17 retires routes omitted by closure-local writes and address escapes.
+// v18 retires bare routes from wrapped mounts and unbounded route masks.
+// v19 retires entries before unresolved route placement and Go 1.22 method patterns.
+const providerRecordsCacheVersion = "provider-records-v19-" + IdentityRevision
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+commit+tree+mode+profile+
@@ -35,15 +49,23 @@ type cachedProviderRecords struct {
 	// serialized under. It is the only thing in this envelope that distinguishes
 	// two wire shapes; see validCachedProviderRecords. Entries written before this
 	// field existed decode as "" and are correctly rejected as a different schema.
-	SchemaVersion   string           `json:"schema_version"`
-	ProviderVersion string           `json:"provider_version"`
-	Commit          string           `json:"commit"`
-	Tree            string           `json:"tree"`
-	Mode            string           `json:"mode"`
-	Profile         Profile          `json:"profile"`
-	MaxParseBytes   int              `json:"max_parse_bytes"`
-	Records         []byte           `json:"records"`
-	Summary         *SnapshotSummary `json:"summary,omitempty"`
+	SchemaVersion   string  `json:"schema_version"`
+	ProviderVersion string  `json:"provider_version"`
+	Commit          string  `json:"commit"`
+	Tree            string  `json:"tree"`
+	Mode            string  `json:"mode"`
+	Profile         Profile `json:"profile"`
+	MaxParseBytes   int     `json:"max_parse_bytes"`
+	// RepoRoot is the checkout the stream was built in, whose path the header
+	// line's repo_root carries. The key is path-free, so a hit from another
+	// worktree or clone at the same commit restamps that one field
+	// (restampProviderRecordsRepoRoot) and misses when it cannot.
+	RepoRoot string `json:"repo_root"`
+	// RepoScope is cacheCheckoutScope of RepoRoot. A hit from another checkout
+	// restamps repo_root only when that checkout has the same scope.
+	RepoScope string           `json:"repo_scope,omitempty"`
+	Records   []byte           `json:"records"`
+	Summary   *SnapshotSummary `json:"summary,omitempty"`
 }
 
 // providerRecordsKey derives the cache key for a record stream. It intentionally
@@ -61,14 +83,14 @@ type cachedProviderRecords struct {
 // store overwrites the other's and neither ever gets a warm cache. Validating
 // the schema after opening a schema-independent entry catches the wrong answer
 // but cannot stop the mutual eviction that produced it.
-func providerRecordsKey(absRepo, repositoryKey, providerVersion, commit, tree, mode string, options ProviderSnapshotOptions) (string, error) {
-	return providerRecordsKeyForSchema(SchemaVersion, absRepo, repositoryKey, providerVersion, commit, tree, mode, options)
+func providerRecordsKey(absRepo, repositoryKey, providerVersion, commit, tree, mode string, options ProviderSnapshotOptions, contexts ...context.Context) (string, error) {
+	return providerRecordsKeyForSchema(SchemaVersion, absRepo, repositoryKey, providerVersion, commit, tree, mode, options, contexts...)
 }
 
 // providerRecordsKeyForSchema takes the schema version explicitly so a test can
 // address the entry a build at another schema would have written. Production
 // reaches it only through providerRecordsKey, which supplies SchemaVersion.
-func providerRecordsKeyForSchema(schemaVersion, absRepo, repositoryKey, providerVersion, commit, tree, mode string, options ProviderSnapshotOptions) (string, error) {
+func providerRecordsKeyForSchema(schemaVersion, absRepo, repositoryKey, providerVersion, commit, tree, mode string, options ProviderSnapshotOptions, contexts ...context.Context) (string, error) {
 	policy, err := cachePolicyForOptions(absRepo, options)
 	if err != nil {
 		return "", err
@@ -82,15 +104,49 @@ func providerRecordsKeyForSchema(schemaVersion, absRepo, repositoryKey, provider
 	// all, so a build that disagrees about it must not reach this build's entries.
 	// See builtinSecretRulesDigest for why nothing else in this key separates them.
 	writeCacheKeyString(hash, "builtin-secret-rules", builtinSecretRulesDigest())
-	writeCacheKeyString(hash, "repository-path", absRepo)
+	// No checkout path: the stream is a function of the commit and the keyed
+	// options, so worktrees and clones at one commit share the entry, and Load
+	// restamps the header's repo_root for the checkout it serves.
+	//
 	// Repo identity PREFIXES EVERY SYMBOL ID this cache stores, so serving one repository's records
 	// to another hands back IDs attributed to the wrong project. Reproduced by re-pointing a remote:
 	// the warm run still reported gh/entireio/entire-graph after the checkout had become a fork.
 	// searchSnapshotKey already folds this in; this key did not.
+	// Unlike the search cache, the full key is hashed even for local/<basename>:
+	// these bytes are replayed verbatim, so an ID namespace cannot be rewritten.
 	writeCacheKeyString(hash, "repository-key", repositoryKey)
+	// Path-free is not scope-free: a `--repo <subdir>` stream lists only that
+	// subtree, with subdir-relative paths, at the same commit and tree as the
+	// root's. See the "repository-scope" term in searchSnapshotKeyForSchema.
+	writeCacheKeyString(hash, "repository-scope", cacheCheckoutScope(absRepo, contexts...))
 	writeCacheKeyString(hash, "provider-version", providerVersion)
 	writeCacheKeyString(hash, "commit", commit)
 	writeCacheKeyString(hash, "tree", tree)
+	if resolveProfile(options.Profile).emits("FILE_CHANGES_WITH") {
+		captured := options.historyCochanges
+		if captured == nil {
+			ctx := context.Background()
+			if len(contexts) > 0 && contexts[0] != nil {
+				ctx = contexts[0]
+			}
+			captured = &capturedFileCochanges{unavailable: true}
+			if gitMetadataSafeForSubprocessContext(ctx, absRepo) {
+				if pairs, err := gitutil.FileCochanges(ctx, absRepo, commit, 256); err == nil {
+					captured = &capturedFileCochanges{pairs: pairs}
+				}
+			}
+		}
+		if captured.unavailable {
+			writeCacheKeyString(hash, "history-unavailable-scope", filepath.Clean(absRepo))
+		}
+		writeCacheKeyString(hash, "history-cochanges", "begin")
+		for _, pair := range captured.pairs {
+			writeCacheKeyString(hash, "history-left", pair.Left)
+			writeCacheKeyString(hash, "history-right", pair.Right)
+			writeCacheKeyString(hash, "history-count", fmt.Sprint(pair.Count))
+		}
+	}
+
 	writeCacheKeyString(hash, "mode", mode)
 	writeCacheKeyString(hash, "profile", string(options.Profile))
 	writeCacheKeyString(hash, "max-parse-bytes", fmt.Sprintf("%d", options.MaxParseBytes))
@@ -111,8 +167,10 @@ func providerRecordsKeyForSchema(schemaVersion, absRepo, repositoryKey, provider
 // ProviderRecordsCacheTransaction pins the cache key and immutable ignore
 // policy used by one record-stream lookup/build/store cycle.
 type ProviderRecordsCacheTransaction struct {
+	ctx             context.Context
 	enabled         bool
 	entry           cacheEntry
+	absRepo         string
 	providerVersion string
 	repositoryKey   string
 	commit          string
@@ -126,6 +184,7 @@ type ProviderRecordsCacheTransaction struct {
 // Callers must build records with Options before calling Store.
 func BeginProviderRecordsCache(ctx context.Context, repo, providerVersion, commit, tree, mode, cacheDir string, options ProviderSnapshotOptions) (*ProviderRecordsCacheTransaction, error) {
 	transaction := &ProviderRecordsCacheTransaction{
+		ctx:             ctx,
 		providerVersion: providerVersion,
 		commit:          commit,
 		tree:            tree,
@@ -139,11 +198,29 @@ func BeginProviderRecordsCache(ctx context.Context, repo, providerVersion, commi
 	if err != nil {
 		return nil, err
 	}
+	transaction.absRepo = absRepo
+	// Preserve the caller's validation scope. A transaction may outlive setup,
+	// so it must not mint a safety receipt that later Load/Store calls reuse.
+	safe := gitMetadataSafeForSubprocessContext(ctx, absRepo)
 	transaction.options, err = CaptureProviderCachePolicy(absRepo, options)
 	if err != nil {
 		return nil, err
 	}
 	transaction.repositoryKey = repoKey(ctx, absRepo)
+	if resolveProfile(options.Profile).emits("FILE_CHANGES_WITH") {
+		captured := &capturedFileCochanges{unavailable: true}
+		if safe {
+			pairs, historyErr := gitutil.FileCochanges(ctx, absRepo, commit, 256)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if historyErr == nil {
+				captured = &capturedFileCochanges{pairs: pairs}
+			}
+		}
+		transaction.options.historyCochanges = captured
+	}
+
 	key, err := providerRecordsKey(
 		absRepo,
 		transaction.repositoryKey,
@@ -152,6 +229,7 @@ func BeginProviderRecordsCache(ctx context.Context, repo, providerVersion, commi
 		tree,
 		mode,
 		transaction.options,
+		ctx,
 	)
 	if err != nil {
 		return nil, err
@@ -189,7 +267,57 @@ func (transaction *ProviderRecordsCacheTransaction) Load() ([]byte, *SnapshotSum
 	) {
 		return nil, nil, false
 	}
-	return cache.Records, cache.Summary, true
+	// Restamp only between checkouts of the same scope (see cachedProviderRecords.RepoScope);
+	// the same root is the same checkout, so the scope lookup is paid only on a cross-checkout hit.
+	if cache.RepoRoot != transaction.absRepo && cache.RepoScope != cacheCheckoutScope(transaction.absRepo, transaction.ctx) {
+		return nil, nil, false
+	}
+	records, ok := restampProviderRecordsRepoRoot(cache.Records, cache.RepoRoot, transaction.absRepo)
+	if !ok {
+		return nil, nil, false
+	}
+	return records, cache.Summary, true
+}
+
+// restampProviderRecordsRepoRoot rewrites the header line's repo_root from the
+// checkout a stream was built in to the one replaying it, the only absolute path
+// a stream carries. Every other record is repository-relative.
+//
+// The stream is opaque bytes, so the rewrite is literal: the header is the first
+// line in both the native and the compact encoding, and the field is located by
+// re-encoding the recorded root exactly as the record encoders did (no HTML
+// escaping). Anything short of exactly one match in that line is a miss rather
+// than a guess, which also covers a root whose encoding the terminal-safety
+// wrapper altered.
+func restampProviderRecordsRepoRoot(records []byte, from, to string) ([]byte, bool) {
+	if from == to {
+		return records, true
+	}
+	if from == "" {
+		return nil, false
+	}
+	end := bytes.IndexByte(records, '\n')
+	if end < 0 {
+		return nil, false
+	}
+	oldField, newField := providerRecordsRepoRootField(from), providerRecordsRepoRootField(to)
+	if oldField == nil || newField == nil || bytes.Count(records[:end], oldField) != 1 {
+		return nil, false
+	}
+	header := bytes.Replace(records[:end], oldField, newField, 1)
+	restamped := make([]byte, 0, len(header)+len(records)-end)
+	restamped = append(restamped, header...)
+	return append(restamped, records[end:]...), true
+}
+
+func providerRecordsRepoRootField(root string) []byte {
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(root); err != nil {
+		return nil
+	}
+	return append([]byte(`"repo_root":`), bytes.TrimSuffix(encoded.Bytes(), []byte("\n"))...)
 }
 
 // Store persists records built with Options only when their observed header
@@ -207,11 +335,12 @@ func (transaction *ProviderRecordsCacheTransaction) Store(records []byte, summar
 		observed.RepoKey != transaction.repositoryKey ||
 		observed.Provider != ProviderName ||
 		observed.ProviderVersion != transaction.providerVersion ||
-		observed.Profile != string(transaction.options.Profile) {
+		observed.Profile != string(transaction.options.Profile) ||
+		(observed.RepoRoot != "" && observed.RepoRoot != transaction.absRepo) {
 		return fmt.Errorf(
-			"provider records snapshot provenance changed while building: got schema=%q commit=%q tree=%q repo=%q provider=%q version=%q profile=%q, want schema=%q commit=%q tree=%q repo=%q provider=%q version=%q profile=%q",
-			observed.SchemaVersion, observed.Commit, observed.Tree, observed.RepoKey, observed.Provider, observed.ProviderVersion, observed.Profile,
-			SchemaVersion, transaction.commit, transaction.tree, transaction.repositoryKey, ProviderName, transaction.providerVersion, transaction.options.Profile,
+			"provider records snapshot provenance changed while building: got schema=%q commit=%q tree=%q repo=%q provider=%q version=%q profile=%q root=%q, want schema=%q commit=%q tree=%q repo=%q provider=%q version=%q profile=%q root=%q",
+			observed.SchemaVersion, observed.Commit, observed.Tree, observed.RepoKey, observed.Provider, observed.ProviderVersion, observed.Profile, observed.RepoRoot,
+			SchemaVersion, transaction.commit, transaction.tree, transaction.repositoryKey, ProviderName, transaction.providerVersion, transaction.options.Profile, transaction.absRepo,
 		)
 	}
 	cache := cachedProviderRecords{
@@ -223,6 +352,8 @@ func (transaction *ProviderRecordsCacheTransaction) Store(records []byte, summar
 		Mode:            transaction.mode,
 		Profile:         transaction.options.Profile,
 		MaxParseBytes:   transaction.options.MaxParseBytes,
+		RepoRoot:        transaction.absRepo,
+		RepoScope:       cacheCheckoutScope(transaction.absRepo, transaction.ctx),
 		Records:         records,
 		Summary:         summary,
 	}

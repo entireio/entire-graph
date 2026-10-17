@@ -118,3 +118,45 @@ func TestAlreadyCompleteCertificationLeavesPublicNoHitResponseValid(t *testing.T
 		t.Fatal(err)
 	}
 }
+
+func TestAlreadyCompleteCallableKeepsWholeBodyOrLocatorAtPublicBudgets(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	const body = "def target():\n    return True"
+	write(t, repo, "a.py", body+"\n")
+	// A phrase: a bare identifier takes the exact-name answer, which never certifies.
+	args := []string{"query", "--repo", repo, "--query", "target returns true", "--profile", "syntax-only", "--worktree", "--no-cache"}
+	var machine bytes.Buffer
+	if err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: &machine}, append(args, "--format", "json")); err != nil {
+		t.Fatal(err)
+	}
+	var response sem.SearchResponse
+	if err := json.Unmarshal(machine.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) == 0 || !searchResultNeedsNoFollowUpRead(response.Results[0]) {
+		t.Fatal("fixture did not produce a certified callable")
+	}
+	for _, budget := range []int{64, 4096} {
+		var out bytes.Buffer
+		if err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, append(args, "--format", "agent", "--max-context-bytes", fmt.Sprint(budget))); err != nil {
+			t.Fatal(err)
+		}
+		if out.Len() > budget || !strings.Contains(out.String(), "a.py:1") {
+			t.Fatalf("budget %d lost bounds/location: %q", budget, out.String())
+		}
+		// The stack's declaration-row contract: a certified body that cannot fit with its marker
+		// may still show its declaration, unmarked; the marker appears only above the whole body.
+		whole := strings.Contains(out.String(), body)
+		marked := strings.Contains(out.String(), completeMarker)
+		if marked && !whole {
+			t.Fatalf("budget %d marked a partial body: %q", budget, out.String())
+		}
+		if whole && !marked && budget == 4096 {
+			t.Fatalf("budget %d showed the certified body without its marker: %q", budget, out.String())
+		}
+		if (budget == 4096) != whole {
+			t.Fatalf("budget %d unexpected whole-body state: %q", budget, out.String())
+		}
+	}
+}

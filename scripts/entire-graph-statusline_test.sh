@@ -618,24 +618,12 @@ for arg in "$@"; do
 	esac
 done
 if [ -n "$dir" ]; then key=$dir; else key=$repo; fi
-# A savings figure that is a function of the resolved scope, and INJECTIVELY so.
-#
-# This was `cksum % 900`, which folded the key into 900 buckets. The three fixture repos sit
-# under a fresh mktemp directory, so their keys are random, and the caller asserts all three
-# badges differ -- three random draws from 900 buckets collide about 0.33% of the time. That
-# is roughly one red job in 300 on a test whose subject has nothing to do with hashing, and it
-# reds PRs that changed no status-line code.
-#
-# The last path component is what actually varies between the three fixtures, so map it
-# directly. Distinctness is now guaranteed by construction rather than left to a hash, and the
-# property under test is unchanged: if the script resolved the launch directory instead of the
-# repository, all three would still collapse to one badge and the assertion would still fail.
-key=${key%/}
-case ${key##*/} in
-repo-a) n=101 ;;
-repo-b) n=202 ;;
-repo-c) n=303 ;;
-*) n=$(printf '%s' "$key" | cksum | awk '{ print ($1 % 900) + 100 }') ;;
+# Fixed distinct values test scope selection without random temporary-path checksum collisions.
+case $key in
+*/repo-a) n=101 ;;
+*/repo-b) n=202 ;;
+*/repo-c) n=303 ;;
+*) n=999 ;;
 esac
 printf '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"sessions_with_savings_comparison":1,"estimated_savings_est_tokens_unfloored":%s,"estimated_savings_pct_of_session_tokens":1}\n' "$n"
 STUB
@@ -647,6 +635,9 @@ SCOPE_B=$(run s-scope-b "$T" "$WORK/repo-b" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_S
 SCOPE_C=$(run s-scope-c "$T" "$WORK/repo-c" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_SCOPE=project ENTIRE_GRAPH_STATUSLINE_CACHE=0)
 assert_all_distinct 'scope=project reports per repository, not per launch directory' \
 	"$SCOPE_A" "$SCOPE_B" "$SCOPE_C"
+assert_has 'scope=project selects repository A' 'model +101 tok' "$SCOPE_A"
+assert_has 'scope=project selects repository B' 'model +202 tok' "$SCOPE_B"
+assert_has 'scope=project selects repository C' 'model +303 tok' "$SCOPE_C"
 
 RUN_BIN=$WORK/argstub
 

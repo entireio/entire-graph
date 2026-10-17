@@ -20,6 +20,14 @@ import (
 	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
+// EffectiveSearchTopK is the number of results a search with SearchOptions.TopK = topK is cut at.
+func EffectiveSearchTopK(topK int) int {
+	if topK <= 0 {
+		return defaultSearchTopK
+	}
+	return topK
+}
+
 const (
 	// Keep default search responses compact enough for agent context. Larger top-k and snippet
 	// defaults produced ~15KB responses that are repeatedly carried through later turns; this
@@ -108,6 +116,11 @@ type SearchOptions struct {
 	// nominationSnapshotFault is a deterministic test seam: when set, loading the semantic
 	// channel's nomination snapshot fails with its error instead of running. Nil in production.
 	nominationSnapshotFault func() error
+	// defaultIndexedFilesForTest replaces the DEFAULT preselection pool (the one
+	// used when MaxIndexedFiles is unset), so a few-file fixture can exercise a
+	// selective query that is not an explicit --max-indexed-files bound.
+	// Unexported and zero in production.
+	defaultIndexedFilesForTest int
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -167,6 +180,17 @@ type SearchOptions struct {
 	// VerifyPreFixStatus is one caller-computed line rendered verbatim as `PRE-FIX:` under the emitted
 	// command, capped at searchVerifyPreFixStatusMaxBytes.
 	VerifyPreFixStatus string
+	// OmitVerifyCommand suppresses the VERIFY block at its producer: no command is derived, the
+	// response carries no VerifyCommand (the JSON `verify_command` member is ABSENT, not null), and
+	// Stats.VerifyOmitted says so, so a structured consumer can tell "suppressed on request" from
+	// "nothing derivable". Off (the default) is byte-for-byte the payload without this field.
+	//
+	// It exists for fair A/B comparisons. The block is not retrieval: it carries a runnable test
+	// command plus run-once/fix/stop instructions that would help an arm with NO tool just as much,
+	// and the benchmark fairness rule is "both arms or neither". Suppressing it here, rather than
+	// scraping `VERIFY:` lines out of the rendered payload, cannot touch retrieved source text that
+	// happens to look like a VERIFY record.
+	OmitVerifyCommand bool
 	// CalleeHop admits the top hit's OUTGOING CALLS targets as candidate fix sites — up to three,
 	// same-repo and resolved only. Off by default.
 	//
@@ -292,6 +316,12 @@ type SearchResult struct {
 	QualifiedName   string   `json:"qualified_name,omitempty"`
 	Signature       string   `json:"signature,omitempty"`
 	Signals         []string `json:"signals"`
+	// SymbolNameLine is the line of the token that NAMES the enclosing symbol, as the parser saw
+	// it (see declaration_name_line.go). It differs from SymbolStartLine whenever annotations,
+	// attributes, decorators or a multi-line header precede the name. Absent (0) when the symbol
+	// came from an extractor with no parse tree; a consumer then falls back to
+	// DeclarationLineIndex. Additive: set only alongside SymbolStartLine, from the same symbol.
+	SymbolNameLine int `json:"symbol_name_line,omitempty"`
 	// Section groups a result for presentation. Empty (omitted) means the primary list of
 	// candidate fix sites; see search_section.go for the other values and why the grouping is
 	// a label rather than a filter.
@@ -307,6 +337,17 @@ type SearchResult struct {
 	// case; when it is present the snippet is the verbatim, unelided text of the whole range,
 	// which is the fact that stops a reader spending a turn bridging the gap itself.
 	MergedRanks []int `json:"merged_ranks,omitempty"`
+	// MergedDeclLines are the declaration lines (the line that names the symbol) of the members a
+	// merged span absorbed, ascending, when they lie inside the span. The survivor's own is not
+	// listed; its symbol fields carry it. They exist so a renderer that windows a merged span can
+	// still show the reader where each absorbed callable starts (search_decl_line.go). Present only
+	// on a merged span. Schema 1.x additive.
+	MergedDeclLines []int `json:"merged_decl_lines,omitempty"`
+	// MergedDeclStarts is parallel to MergedDeclLines: for each, the first line of that absorbed
+	// member's declaration region (its first line, clamped to the span) when the declaration line is
+	// the parser's name line, 0 when the text fallback found it. Absent when no entry is the
+	// parser's. A renderer keeps every line of a region it would otherwise have shown.
+	MergedDeclStarts []int `json:"merged_decl_starts,omitempty"`
 	// UnitStartLine/UnitEndLine are the TRUE span of the enclosing unit when --full-unit-top asked
 	// for that unit whole and searchFullUnitMaxLines clipped it. They are set ONLY on a clipped
 	// forced unit — their absence is the ordinary case and means the printed span IS the unit — and
@@ -457,6 +498,9 @@ type SearchStats struct {
 	FileOutlineBytes   int `json:"file_outline_bytes,omitempty"`
 	FileOutlineRows    int `json:"file_outline_rows,omitempty"`
 	VerifyCommandBytes int `json:"verify_command_bytes,omitempty"`
+	// VerifyOmitted is true when the caller suppressed the VERIFY block (SearchOptions.OmitVerifyCommand),
+	// so an absent verify_command is attributable to the request rather than to a failed derivation.
+	VerifyOmitted bool `json:"verify_omitted,omitempty"`
 	// VerifyExplainSuffixBytes is the caller-configured `| <explain cmd>` tail appended to the verify
 	// command. It is reported separately because it is fixed overhead the caller opted into, so it is
 	// added to the block's allowance instead of competing with the command the ranking derived.
@@ -1162,8 +1206,14 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if options.MaxRegionsPerFile <= 0 {
 		options.MaxRegionsPerFile = defaultSearchMaxRegionsPerFile
 	}
+	// An explicit --max-indexed-files bounds cold parsing, so it also rules out
+	// building the complete snapshot on a cold miss (see coldCompletePolicy).
+	explicitIndexedFileBound := options.MaxIndexedFiles > 0
 	if options.MaxIndexedFiles <= 0 {
 		options.MaxIndexedFiles = defaultSearchIndexedFiles(options.TopK)
+		if options.defaultIndexedFilesForTest > 0 {
+			options.MaxIndexedFiles = options.defaultIndexedFilesForTest
+		}
 		options.progressivePreselection = options.MaxIndexedFiles == defaultSearchMaxIndexedFiles
 	} else {
 		options.progressivePreselection = false
@@ -1473,6 +1523,14 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	snapshotOptions := baseSnapshotOptions
 	snapshotOptions.OnlyFiles = onlyFiles
+	snapshotOptions.coldComplete = coldCompletePolicy{
+		disabled:    explicitIndexedFileBound,
+		sourceFiles: selection.filesScanned,
+	}
+	var derivedFromComplete *SnapshotHeader
+	snapshotOptions.onCompleteDerivation = func(header SnapshotHeader) {
+		derivedFromComplete = &header
+	}
 	snapshot, cacheHit := preindexedSnapshot, preindexCacheHit
 	indexLatency := preindexLoadLatency
 	if len(selectedFiles) == 0 {
@@ -2041,7 +2099,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		sites := selectSearchRelatedSites(
 			results, anchors, q, snapshot.Relations, symbolsByID, symbolsByFile, read, searchRelatedSiteLimit,
 		)
-		results, stats.RelatedSites = mergeSearchRelatedSites(results, sites, read, options.MaxContextBytes)
+		results, stats.RelatedSites = mergeSearchRelatedSites(results, sites, read, options.MaxContextBytes, options.TopK)
 	}
 	// The three context blocks below share one budget. Their construction order is FIXED and
 	// load-bearing — see the policy in search_blocks.go. In short:
@@ -2065,7 +2123,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			options.IncludeTypeCard,
 		)
 		results, typeCard, coverageNote, stats.CoveringTests, stats.TypeCardEntries =
-			mergeSearchContractContext(results, context, options.MaxContextBytes)
+			mergeSearchContractContext(results, context, options.MaxContextBytes, options.TopK)
 	}
 	var signatureTypes []SearchSignatureType
 	if options.IncludeSignatureTypes {
@@ -2084,8 +2142,11 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// makes anyway — a repo-wide grep, a fumbled test invocation, and the read that discovers a
 	// switch it forgot to extend — which is the property the reference blocks above lack. They are
 	// additive and separately capped; see search_blocks.go.
+	verifyAboveScope, closeVerifyAboveScope := newSearchVerifyAboveScope(ctx, repo, snapshot.Header.Commit, useHead)
+	defer closeVerifyAboveScope()
 	verifyEvidence := searchVerifyEvidence{
 		read: read, files: selection.allFiles, prefix: options.VerifyPrefix, preFixStatus: options.VerifyPreFixStatus,
+		aboveScope: verifyAboveScope,
 	}
 	// The three agent-asked blocks read files the RANKING never asked for: a bounded set of files
 	// containing one literal, a handful of switch sites, and the build manifests above the top hit.
@@ -2124,7 +2185,12 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			}
 		}
 	}
-	verifyCommand := buildSearchVerifyCommand(results, verifyEvidence)
+	var verifyCommand *SearchVerifyCommand
+	if options.OmitVerifyCommand {
+		stats.VerifyOmitted = true
+	} else {
+		verifyCommand = buildSearchVerifyCommand(results, verifyEvidence)
+	}
 	if verifyCommand != nil && options.VerifyExplainCommand != "" {
 		// Compose here, in the emitted string, rather than asking the agent to compose. `explain`
 		// passes the build output through before appending declarations, so this stays a superset of
@@ -2216,7 +2282,8 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if results == nil {
 		results = []SearchResult{}
 	}
-	partialFailures := snapshot.Header.PartialFailures
+	diagnostics := searchDiagnosticsHeader(snapshot, derivedFromComplete, preindexedSnapshot, preindexCacheHit)
+	partialFailures := diagnostics.PartialFailures
 	if partialFailures == nil {
 		partialFailures = []PartialFailure{}
 	}
@@ -2237,11 +2304,35 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		CoverageNote:          coverageNote,
 		RepoIgnored:           selection.repoIgnored,
 		Stats:                 stats,
-		Warnings:              withRepoIgnoreDisclosure(snapshot.Header.Warnings, selection.repoIgnored),
+		Warnings:              withRepoIgnoreDisclosure(diagnostics.Warnings, selection.repoIgnored),
 		PartialFailures:       withRepoIgnorePartialFailures(partialFailures, selection.repoIgnored),
-		Completeness:          snapshot.Header.Completeness,
+		Completeness:          diagnostics.Completeness,
 		replayProvenancePaths: replayProvenancePaths,
 	}, nil
+}
+
+// searchDiagnosticsHeader picks the header a search reports its coverage diagnostics (warnings,
+// partial failures, completeness) from.
+//
+// When a complete snapshot of this tree is in hand, that is its header, not the selective view's.
+// The selective view is a function of preselection, and preselection differs between a cold query
+// and a warm one: cold, a small repository indexes every file (or builds the complete snapshot and
+// derives from it), while warm, a preindexed graph lets Git's exact tree grep pick the matching
+// files. The same query then reported `Coverage: degraded (... 1 partial failure)` cold and printed
+// no Coverage line at all on the cache hit, because the file that failed to parse was not among the
+// files the warm grep matched. The repository's parse health does not depend on which files a query
+// ranked, so the complete header answers it whichever path served the query; the no-hit path above
+// already reports the preindexed graph's health the same way.
+func searchDiagnosticsHeader(
+	snapshot ProviderSnapshot, derivedFrom *SnapshotHeader, preindexed ProviderSnapshot, preindexHit bool,
+) SnapshotHeader {
+	if derivedFrom != nil && derivedFrom.Tree == snapshot.Header.Tree && derivedFrom.RepoKey == snapshot.Header.RepoKey {
+		return *derivedFrom
+	}
+	if preindexHit && preindexed.Header.Tree == snapshot.Header.Tree && preindexed.Header.RepoKey == snapshot.Header.RepoKey {
+		return preindexed.Header
+	}
+	return snapshot.Header
 }
 
 // newSearchNeedleGrep is the needle index's Git route: it lists every file in the tree
@@ -3906,6 +3997,7 @@ func attachSparseCandidateSymbols(candidates []searchCandidate, symbolsByFile ma
 		candidate.aliases = append([]string(nil), symbol.Aliases...)
 		candidate.result.SymbolStartLine = symbol.StartLine
 		candidate.result.SymbolEndLine = symbol.EndLine
+		candidate.result.SymbolNameLine = symbol.nameLine
 	}
 }
 
@@ -4162,6 +4254,7 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 			Signature:        symbol.Signature,
 			SymbolStartLine:  symbol.StartLine,
 			SymbolEndLine:    symbol.EndLine,
+			SymbolNameLine:   symbol.nameLine,
 			Signals:          appendUnique(nil, signals...),
 			Snippet:          snippet,
 		},
@@ -5029,6 +5122,7 @@ func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []R
 					Signature:        symbol.Signature,
 					SymbolStartLine:  symbol.StartLine,
 					SymbolEndLine:    symbol.EndLine,
+					SymbolNameLine:   symbol.nameLine,
 					Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
 				},
 				aliases: append([]string(nil), symbol.Aliases...),

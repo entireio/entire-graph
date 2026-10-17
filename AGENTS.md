@@ -149,19 +149,31 @@ Local, read-only report over the coding-agent session transcripts already on dis
 (`~/.claude/projects/<path-slug>/*.jsonl`; `--sessions-dir` overrides the lookup). Reports graph
 calls per verb vs. exploration calls (`Read` whole-file / `Read` line-range / `Grep` / `Glob` /
 shell `grep|find|cat|head|tail|sed|awk`), observed result bytes, session tokens reported by transcript
-`usage`, and a signed **1:1 context model**, explicitly not measured savings.
+`usage`, and **observed follow-up** rates with a signed modeled balance, explicitly not measured savings.
 
 A shell call counts as exploration only when the LEADING stage of one of its pipelines runs a
 locate tool: `grep -rn foo . | head` does, `go test ./... 2>&1 | tail -40` does not, and a write
 (`cat > file`, a here-document, `tee`, `sed -i`) never does. `entire sem edges|symbols` counts as a
 graph call, like `entire graph <verb>`.
 
-The model assumes each observed `query`/`search`/`neighbors`/`impact` result replaces ONE
+The headline reports **observed follow-up**, an observational proxy: each observed
+`query`/`search`/`neighbors`/`impact` result is classified by the next 5 tool calls issued AFTER
+its delivery, in the same transcript — error, ineligible (empty or no file named), re-query
+(graph lookup, `Grep`, `Glob`, shell search), follow-up read of a named file (overlapping lines /
+different region / unknown span / shared), censored (transcript ended first), or no follow-up. Every class
+is counted in one reconcilable denominator (`graph_locate_*`, `*_rate`). The signed
+`modeled_balance_*` credits only no-follow-up results, and only under the stated assumption that
+each replaced one average exploration result; absence of a follow-up is not an observed avoided
+call. Path overlap is a suffix match on extension-bearing paths named by result rows;
+coverage diagnostics, VERIFY and source-body mentions name no located file. One read is
+span-attributed to one result and counted as shared for other results naming that file.
+
+The legacy 1:1 model (`--verbose`, `estimated_savings_*`) assumes each observed locate result replaces ONE
 exploration result, priced using that session's average exploration bytes/result, then subtracts
 graph result bytes. The 1:1 substitution is unvalidated; bytes/4 is only a rough token estimate.
 Queries, output truncation and task quality are not controlled, so this does not establish causal
-savings. Human output uses `estimated_savings_est_tokens_unfloored`, including negative sessions,
-and `sessions_with_savings_comparison` distinguishes an available zero from no comparison.
+savings. `estimated_savings_est_tokens_unfloored` keeps negative sessions (the status line reads
+it), and `sessions_with_savings_comparison` distinguishes an available zero from no comparison.
 Legacy positive-only savings, percentage and graph-first JSON fields remain for compatibility;
 they are not human-facing evidence of savings or behavior. No network; local parse-cache writes
 can be disabled with `--no-cache`.
@@ -176,9 +188,11 @@ what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status l
 ## Repository-specific workflow
 
 Follow `.entire/agent-guide.md`, generated from repository state. Both Graph-only
-and combined instructions make the same first-action obligation: the first action on
-any task that requires finding code is ONE
-`entire graph query --repo . --profile full --format agent --query "<task>"`.
+and combined instructions make the same obligation: the first action on any task that
+requires finding code is a Graph query,
+`entire graph query --repo . --profile full --head --format agent --max-context-bytes 4096 --query "<task>"`,
+and each later locate or relationship question also goes through Graph (`def`,
+`neighbors`, `impact`, all with `--head`), with grep reserved for literal text.
 That holds for small edits, follow-ups, tasks that already name the file, and tasks
 where a Brain brief has already reported locations — a brief reports where code is,
 not what depends on it. Combined instructions also begin substantive orientation with

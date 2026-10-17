@@ -24,7 +24,7 @@ func TestAgentGuidePrintsDoctrine(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"MUST be ONE Graph query",
+		"MUST be a Graph query",
 		"entire graph query",
 		"--profile full",
 		"VERIFY before stopping",
@@ -63,7 +63,7 @@ func TestInitAgentsInstallsAndIsIdempotent(t *testing.T) {
 	}
 	// The marker is the first-action obligation: it is what makes the guide worth installing,
 	// and it is the sentence that went missing when adoption collapsed. See guide.go.
-	if !strings.Contains(string(guide), "MUST be ONE Graph query") {
+	if !strings.Contains(string(guide), "MUST be a Graph query") {
 		t.Fatalf("guide content wrong:\n%s", guide)
 	}
 

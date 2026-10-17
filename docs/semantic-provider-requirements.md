@@ -305,6 +305,23 @@ Relation vocabulary:
   parser captured enough signature text to classify the reference.
 - `HANDLES_ROUTE` — a handler registers an HTTP route (path on a line carrying
   routing context: a verb/route method call or mapping decorator).
+  A Go route whose router is served under a prefix the source does not show
+  (a struct field holding a router, a `*fiber.App` or `*chi.Mux` parameter, a
+  `ServeMux` handed to a wrapper such as `otelhttp.NewHandler`) is emitted with
+  the path relative to that router, confidence lowered by 0.2 (0.66 named
+  handler, 0.5 enclosing symbol), `resolution: pattern` and a
+  `ROUTE_PREFIX_UNRESOLVED` warning code; it is not matched to `HTTP_CALLS`. A
+  router the source shows being rewritten (`http.StripPrefix`, rewrite
+  middleware, a stripping helper) or mounted where the prefix cannot be
+  composed is omitted.
+  Go receiver writes and address escapes follow lexical bindings: a shadowing
+  local or closure parameter does not invalidate an outer router with the same
+  name. If the route walk exhausts its work budget, registrations for that file
+  are omitted and `E_GO_ROUTE_BUDGET_EXCEEDED` reports the completeness loss.
+  Route masking shares that budget and masks the whole file on exhaustion.
+  Wrapped `Mount` arguments make nested router placement unknown. Losing a
+  captured middleware value's identity preserves evidence that it may rewrite
+  paths, so escaped or reassigned closures cannot invent bare routes.
 - `HANDLES_GRPC` / `HANDLES_GRAPHQL` / `HANDLES_TRPC` — service boundary edges
   from protobuf RPC declarations, GraphQL operation literals, JS/TS GraphQL
   resolver-map fields and modular resolver root objects (`Query`, `Mutation`,

@@ -159,3 +159,17 @@ func TestSemanticUnconfiguredTextAndAgentAreUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// Merging semantic headers with latency reservation must preserve the same body
+// and header rung at a fixed budget, regardless of the measured execution time.
+func TestSemanticAgentBodyIsIndependentOfLatencies(t *testing.T) {
+	for _, status := range []string{sem.SemanticStatusUsed, sem.SemanticStatusOffFlag, "unavailable:endpoint"} {
+		timings := []sem.SearchStats{
+			{SemanticStatus: status, SemanticResults: 3, IndexLatencyMS: 1, QueryLatencyMS: 1, PreselectLatencyMS: 1, TotalLatencyMS: 1},
+			{SemanticStatus: status, SemanticResults: 3, IndexLatencyMS: 99999999, QueryLatencyMS: 99999999, PreselectLatencyMS: 99999999, TotalLatencyMS: 99999999},
+		}
+		for _, budget := range []int{40, 64, 128, 256, 512, 1024, 2048, 4096} {
+			checkAgentSearchTimingDeterminism(t, budget, timings)
+		}
+	}
+}

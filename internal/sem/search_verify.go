@@ -156,6 +156,10 @@ type searchVerifyEvidence struct {
 	// prefix is the caller's --verify-prefix decorator, carried here because the derivations build the
 	// command string and the renderer must not have to re-parse it.
 	prefix string
+	// aboveScope resolves, on first use, the part of the checkout above the searched scope: nil, or
+	// false from it, when --repo is the git toplevel or no toplevel can be read. Lazy, because it
+	// costs a Git subprocess and is only consulted after every in-scope walk has declined.
+	aboveScope func() (searchVerifyAboveScope, bool)
 }
 
 // file returns a repository file's content, or false. It never reads more than
@@ -248,6 +252,17 @@ func buildSearchVerifyCommand(
 			command.Tier = searchVerifyTierSuite
 		}
 	}
+	runnerEvidence := &evidence
+	if command == nil {
+		// Still inside the search, the walks above stopped at --repo. When --repo is a subdirectory of
+		// the checkout the build manifest is routinely above it (a Go module's go.mod at the toplevel,
+		// a workspace's root package.json), and stopping there printed "none derivable" for a tree that
+		// has one. So the walk continues to the git toplevel, narrow before suite as it would have run
+		// from there. See deriveSearchVerifyAboveScope.
+		if above, aboveEvidence := deriveSearchVerifyAboveScope(subject, &evidence); above != nil {
+			command, runnerEvidence = above, aboveEvidence
+		}
+	}
 	if command == nil {
 		// Third rung: does what I just wrote PARSE? A different question from "does it behave", labelled
 		// as such, and the only rung that fires when no manifest in the tree licenses a test command.
@@ -258,7 +273,7 @@ func buildSearchVerifyCommand(
 	}
 	command.Prefix, command.PreFixStatus = evidence.prefix, evidence.preFixStatus
 	// The runner check ANNOTATES; it never suppresses. See searchVerifyRunnerNote.
-	command.RunnerMissing = searchVerifyRunnerMissing(command.Command, &evidence)
+	command.RunnerMissing = searchVerifyRunnerMissing(command.Command, runnerEvidence)
 	// DEGRADE, never delete. Returning nil on overflow reintroduced silent absence through a byte
 	// budget — the exact failure the residual floor exists to prevent. The command line is the
 	// irreducible part, so provenance yields first and the target second.
@@ -529,12 +544,28 @@ func searchVerifyMirrorTest(sourcePath string, evidence *searchVerifyEvidence) s
 // workspace stanza, or a monorepo leaf `package.json` with no test runner in it, is evidence about
 // the tree, not about how to run a test, so the walk continues outward to the manifest that is.
 func deriveSearchVerifyCommand(subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
-	dir := path.Dir(subject.sourcePath)
+	return searchVerifyWalk(searchVerifyStartDir(subject.sourcePath), subject, evidence, searchVerifyDerivations)
+}
+
+// searchVerifyStartDir is the directory a manifest walk for filePath begins in, "" for the root.
+func searchVerifyStartDir(filePath string) string {
+	dir := path.Dir(filePath)
 	if dir == "." || dir == "/" {
-		dir = ""
+		return ""
 	}
+	return dir
+}
+
+// searchVerifyWalk consults every derivation at dir and then at each ancestor up to and including
+// the root (""), and returns the first command any of them licenses.
+func searchVerifyWalk(
+	dir string,
+	subject searchVerifySubject,
+	evidence *searchVerifyEvidence,
+	derivations []func(string, searchVerifySubject, *searchVerifyEvidence) *SearchVerifyCommand,
+) *SearchVerifyCommand {
 	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
-		for _, derive := range searchVerifyDerivations {
+		for _, derive := range derivations {
 			if command := derive(dir, subject, evidence); command != nil {
 				return command
 			}
@@ -573,27 +604,7 @@ var searchVerifyDerivations = []func(string, searchVerifySubject, *searchVerifyE
 // and returns the first recognized ecosystem's canonical suite command. It does not require a
 // covering test; even when one exists, its manifest may not license a narrow command.
 func deriveSearchVerifySuiteCommand(subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
-	dir := path.Dir(subject.sourcePath)
-	if dir == "." || dir == "/" {
-		dir = ""
-	}
-	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
-		for _, derive := range searchVerifySuiteDerivations {
-			if command := derive(dir, subject, evidence); command != nil {
-				return command
-			}
-		}
-		if dir == "" {
-			break
-		}
-		parent := path.Dir(dir)
-		if parent == "." || parent == "/" || parent == dir {
-			dir = ""
-			continue
-		}
-		dir = parent
-	}
-	return nil
+	return searchVerifyWalk(searchVerifyStartDir(subject.sourcePath), subject, evidence, searchVerifySuiteDerivations)
 }
 
 // searchVerifySuiteDerivations mirrors searchVerifyDerivations, language-specific before generic, so
@@ -633,11 +644,11 @@ func searchVerifySuiteCommandLiteral(command, derived string) *SearchVerifyComma
 // A covering test can establish the ecosystem for native or generated sources.
 func searchVerifySuiteApplies(subject searchVerifySubject, ecosystem string) bool {
 	extensions := map[string]string{
-		"Cargo": ".rs .c .cc .cpp .h", "Maven": ".java .kt .scala .groovy", "Gradle": ".java .kt .kts .scala .groovy",
+		"Cargo": ".rs .c .cc .cpp .cxx .h .hh .hpp .hxx .m .mm", "Maven": ".java .kt .scala .groovy", "Gradle": ".java .kt .kts .scala .groovy",
 		"Node": ".js .jsx .mjs .cjs .ts .tsx .mts .cts .vue .svelte", "Composer": ".php", "Pytest": ".py .pyw",
-		"Ruby": ".rb", "CMake": ".c .cc .cpp .cxx .h .hh .hpp .hxx .m .mm",
+		"Ruby": ".rb .rake .gemspec", "CMake": ".c .cc .cpp .cxx .h .hh .hpp .hxx .m .mm",
 	}
-	manifests := map[string]string{"Cargo": "Cargo.toml Cargo.lock build.rs", "Maven": "pom.xml", "Gradle": "build.gradle build.gradle.kts settings.gradle settings.gradle.kts", "Node": "package.json package-lock.json yarn.lock pnpm-lock.yaml bun.lock bun.lockb", "Composer": "composer.json composer.lock phpunit.xml phpunit.xml.dist", "Pytest": "pytest.ini tox.ini setup.cfg pyproject.toml", "Ruby": "Gemfile Gemfile.lock .rspec", "CMake": "CMakeLists.txt"}
+	manifests := map[string]string{"Cargo": "Cargo.toml Cargo.lock build.rs", "Maven": "pom.xml", "Gradle": "build.gradle build.gradle.kts settings.gradle settings.gradle.kts", "Node": "package.json package-lock.json yarn.lock pnpm-lock.yaml bun.lock bun.lockb", "Composer": "composer.json composer.lock phpunit.xml phpunit.xml.dist", "Pytest": "pytest.ini tox.ini setup.cfg pyproject.toml", "Ruby": "Gemfile Gemfile.lock .rspec Rakefile", "CMake": "CMakeLists.txt"}
 	for _, file := range []string{subject.sourcePath, subject.testPath} {
 		if file == "" {
 			continue
@@ -1359,6 +1370,26 @@ var searchVerifyNodeLockfiles = []struct {
 // that reads and declares nothing reaching the leaf is not a failure to read — that is the reported
 // case, an unrelated project above a standalone package, and it declines.
 func searchVerifyNodeWorkspaceCovers(root, leaf string, evidence *searchVerifyEvidence) bool {
+	return searchVerifyNodeWorkspaceCoversWithin(root, leaf, evidence, map[string]bool{})
+}
+
+// searchVerifyNodeWorkspaceCoversWithin answers searchVerifyNodeWorkspaceCovers for one nested root,
+// once. The descent below tries every ancestor cut and each nested root cuts again, so a root is
+// reached once per way of splitting the path above it: a leaf 30 directories under manifests that
+// all declare `**/d*` was asked ~2^29 times. The answer for a root is a function of the root, the
+// fixed leaf and the manifests read under it, and a manifest's answer never changes once evidence has
+// first been asked for it (cached, recorded as missing, or refused for good once the read budget is
+// spent), so the first answer for a root is every later one.
+func searchVerifyNodeWorkspaceCoversWithin(root, leaf string, evidence *searchVerifyEvidence, decided map[string]bool) bool {
+	if covered, known := decided[root]; known {
+		return covered
+	}
+	covered := searchVerifyNodeWorkspaceCoversOnce(root, leaf, evidence, decided)
+	decided[root] = covered
+	return covered
+}
+
+func searchVerifyNodeWorkspaceCoversOnce(root, leaf string, evidence *searchVerifyEvidence, decided map[string]bool) bool {
 	relative, inside := searchVerifyRelative(root, leaf)
 	if !inside || relative == "" {
 		return false
@@ -1394,7 +1425,7 @@ func searchVerifyNodeWorkspaceCovers(root, leaf string, evidence *searchVerifyEv
 				continue
 			}
 			nested := searchVerifyJoin(root, strings.Join(segments[:cut], "/"))
-			if searchVerifyNodeWorkspaceCovers(nested, leaf, evidence) {
+			if searchVerifyNodeWorkspaceCoversWithin(nested, leaf, evidence, decided) {
 				return true
 			}
 			break
@@ -1469,38 +1500,51 @@ func searchVerifyNodeWorkspaceMatches(pattern string, segments []string) bool {
 }
 
 // searchVerifyNodeWorkspaceMatchesExpanded is the matcher proper, over a pattern whose brace groups
-// are already gone. It recurses only on its own tail, for `**`.
+// are already gone.
 func searchVerifyNodeWorkspaceMatchesExpanded(pattern string, segments []string) bool {
 	if searchVerifyNodeWorkspacePatternIsUnreadable(pattern) {
 		return true
 	}
-	patternSegments := strings.Split(pattern, "/")
-	for len(patternSegments) > 0 {
-		if patternSegments[0] == "**" {
-			if len(patternSegments) == 1 {
+	return searchVerifyNodeWorkspaceMatchesFrom(strings.Split(pattern, "/"), segments, 0, 0, map[[2]int]bool{})
+}
+
+// searchVerifyNodeWorkspaceMatchesFrom matches patternSegments[p:] against segments[s:]. A `**`
+// tries every split of the remaining segments, so re-deriving each (p, s) state is exponential in
+// the number of `**`: sixteen of them against a sixteen-deep path is ~6e8 attempts, and the pattern
+// comes from a manifest in the repository. The answer for a state depends on nothing but (p, s), so
+// a `**` state that failed once is recorded and never retried; every state is decided at most once.
+// A success returns straight up the stack, so only failures need remembering.
+func searchVerifyNodeWorkspaceMatchesFrom(patternSegments, segments []string, p, s int, failed map[[2]int]bool) bool {
+	for p < len(patternSegments) {
+		if patternSegments[p] == "**" {
+			if p == len(patternSegments)-1 {
 				return true
 			}
-			for skip := 0; skip <= len(segments); skip++ {
-				if searchVerifyNodeWorkspaceMatchesExpanded(
-					strings.Join(patternSegments[1:], "/"), segments[skip:]) {
+			state := [2]int{p, s}
+			if failed[state] {
+				return false
+			}
+			for skip := s; skip <= len(segments); skip++ {
+				if searchVerifyNodeWorkspaceMatchesFrom(patternSegments, segments, p+1, skip, failed) {
 					return true
 				}
 			}
+			failed[state] = true
 			return false
 		}
-		if len(segments) == 0 {
+		if s == len(segments) {
 			return false
 		}
-		matched, err := path.Match(patternSegments[0], segments[0])
+		matched, err := path.Match(patternSegments[p], segments[s])
 		if err != nil {
 			return true
 		}
 		if !matched {
 			return false
 		}
-		patternSegments, segments = patternSegments[1:], segments[1:]
+		p, s = p+1, s+1
 	}
-	return len(segments) == 0
+	return s == len(segments)
 }
 
 // searchVerifyNodeWorkspacePatternIsUnreadable reports whether a workspaces glob uses micromatch
@@ -1685,9 +1729,56 @@ func searchVerifyHasSection(content, heading string) bool {
 	return false
 }
 
-func searchVerifyPytestConfigDeclaresRunner(file, content string) bool {
-	for _, section := range searchVerifyPytestSections[path.Base(file)] {
+func searchVerifyIsPytestConfig(name, content string) bool {
+	for _, section := range searchVerifyPytestSections[name] {
 		if searchVerifyHasSection(content, section) {
+			return true
+		}
+	}
+	return name == "tox.ini" && searchVerifyToxInvokesPytest(content)
+}
+
+var searchVerifyINIKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// A tox testenv command is invocation evidence even without a [pytest] section.
+// Dependency names, descriptions and commands in other sections are not.
+func searchVerifyToxInvokesPytest(content string) bool {
+	inTestenv, inCommands := false, false
+	commandsIndent := 0
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			inTestenv = line == "[testenv]" || (strings.HasPrefix(line, "[testenv:") && strings.HasSuffix(line, "]"))
+			inCommands = false
+			continue
+		}
+		if !inTestenv {
+			continue
+		}
+		indent := len(raw) - len(strings.TrimLeft(raw, " \t"))
+		if inCommands && indent > commandsIndent {
+			// More-indented lines continue the current INI value, including '='.
+		} else if key, value, found := strings.Cut(line, "="); found && searchVerifyINIKey.MatchString(strings.TrimSpace(key)) {
+			option := strings.TrimSpace(key)
+			inCommands = option == "commands" || option == "commands_pre" || option == "commands_post"
+			commandsIndent = indent
+			line = strings.TrimSpace(value)
+		} else {
+			inCommands = false
+		}
+		if !inCommands || line == "" {
+			continue
+		}
+		// tox executes argv, not an implicit shell: 'echo x && pytest' and
+		// 'ENV=value pytest' do not invoke pytest. Never apply Node shell rules.
+		words, valid := searchVerifyShellWords(line)
+		if !valid || len(words) == 0 {
+			continue
+		}
+		if words[0] == "pytest" || (len(words) >= 3 && (words[0] == "python" || words[0] == "python3") && words[1] == "-m" && words[2] == "pytest") {
 			return true
 		}
 	}
@@ -1714,10 +1805,8 @@ func deriveSearchVerifySuitePytest(dir string, subject searchVerifySubject, evid
 		// often still works. Not always: where pytest is merely named and not installed, the
 		// derived VERIFY fails with "No module named pytest", and the agent is told to treat a
 		// failure as its own code's fault.
-		for _, section := range searchVerifyPytestSections[name] {
-			if searchVerifyHasSection(content, section) {
-				return searchVerifySuiteCommand(dir, "python -m pytest", candidate+" pytest config")
-			}
+		if searchVerifyIsPytestConfig(name, content) {
+			return searchVerifySuiteCommand(dir, "python -m pytest", candidate+" pytest config")
 		}
 	}
 	return nil
@@ -2285,12 +2374,14 @@ func searchVerifyTomlPackageName(content string) (string, bool) {
 // the covering test when there is one. The `-run` pattern is anchored: an unanchored name also runs
 // every test whose name contains it.
 func deriveSearchVerifyGo(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
-	// The selected covering test determines the narrow command's language. A
-	// Python integration test of Go code is not a Go package; let its own runner
-	// handle it, or let the suite tier fall back to the Go source's module.
-	targetPath := subject.testPath
-	if targetPath == "" {
-		targetPath = subject.sourcePath
+	// A covering test determines the language only when this module can target it.
+	// An outside test is ignored by the package selector below, so it must not
+	// suppress a narrow command for the edited Go package.
+	targetPath := subject.sourcePath
+	if subject.testPath != "" {
+		if _, inside := searchVerifyRelative(dir, subject.testPath); inside {
+			targetPath = subject.testPath
+		}
 	}
 	if !searchVerifyGoApplies(targetPath, evidence) {
 		return nil
@@ -2703,13 +2794,85 @@ func searchVerifyShellStatements(script string) ([]string, bool) {
 //
 // A runner counts when it is the HEAD of a statement, after environment assignments and the
 // usual wrappers are stepped over. Anything else -- a flag value, a path, prose -- does not.
+// searchVerifyShellWords preserves shell word boundaries through quoting and escapes.
+// It does not evaluate expansions; a quoted environment value cannot become a command.
+func searchVerifyShellWords(statement string) ([]string, bool) {
+	var words []string
+	var word strings.Builder
+	var quote byte
+	active := false
+	flush := func() {
+		if active {
+			words = append(words, word.String())
+			word.Reset()
+			active = false
+		}
+	}
+	for i := 0; i < len(statement); i++ {
+		c := statement[i]
+		if quote != 0 {
+			if c == quote {
+				// Keep substitutions opaque: `jest` is not a literal command name.
+				if quote == '`' {
+					word.WriteByte(c)
+				}
+				quote = 0
+				continue
+			}
+			if c == '\\' && (quote == '"' || quote == '`') && i+1 < len(statement) {
+				next := statement[i+1]
+				if strings.ContainsRune("\\$`\"\n", rune(next)) {
+					i++
+					if next != '\n' {
+						word.WriteByte(next)
+					}
+					continue
+				}
+			}
+			word.WriteByte(c)
+			continue
+		}
+		switch c {
+		case ' ', '\t', '\r', '\n':
+			flush()
+		case '`':
+			quote = c
+			word.WriteByte(c)
+			active = true
+		case '\'', '"':
+			quote = c
+			active = true
+		case '\\':
+			if i+1 >= len(statement) {
+				return nil, false
+			}
+			i++
+			if statement[i] != '\n' {
+				word.WriteByte(statement[i])
+				active = true
+			}
+		default:
+			word.WriteByte(c)
+			active = true
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	flush()
+	return words, true
+}
+
 func searchVerifyScriptInvokesRunner(script, runner string) bool {
 	statements, parsed := searchVerifyShellStatements(script)
 	if !parsed {
 		return false // a form we do not model: fail closed rather than guess
 	}
 	for _, statement := range statements {
-		fields := strings.Fields(statement)
+		fields, valid := searchVerifyShellWords(statement)
+		if !valid {
+			continue
+		}
 		index := 0
 		// Assignments and wrappers INTERLEAVE and must be consumed in one loop, not in two
 		// passes: `cross-env NODE_ENV=test jest` puts a wrapper before the assignment, and a
@@ -2735,6 +2898,9 @@ func searchVerifyScriptInvokesRunner(script, runner string) bool {
 				for index < len(fields) && (fields[index] == "-s" || fields[index] == "--silent") {
 					index++
 				}
+				continue
+			case "bunx":
+				index++
 				continue
 			case "npx":
 				// npx has options of its own -- moving it in with the environment wrappers
@@ -2842,7 +3008,7 @@ func deriveSearchVerifyPytest(dir string, subject searchVerifySubject, evidence 
 		if !ok {
 			continue
 		}
-		if !searchVerifyPytestConfigDeclaresRunner(candidate, content) {
+		if !searchVerifyIsPytestConfig(name, content) {
 			continue
 		}
 		config = candidate

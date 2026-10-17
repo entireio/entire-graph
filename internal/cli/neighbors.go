@@ -738,7 +738,10 @@ func writeAgentNeighborsBounded(out io.Writer, response neighborResponse, budget
 	if err := writeAgentNeighborsFull(&full, response); err != nil {
 		return err
 	}
-	if budget <= 0 || full.Len() <= budget {
+	// Charged at the header's reserved width, not its printed one: whether the full answer fits must
+	// not depend on how many digits the measured latencies have. See agent_latency.go.
+	header := relationLatencyHeader(response.IndexCacheHit, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS)
+	if budget <= 0 || full.Len()+header.slack() <= budget {
 		_, err := out.Write(full.Bytes())
 		return err
 	}
@@ -755,13 +758,8 @@ func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {
 	// on the bounded path too, where the caller buffers this output before
 	// trimming it. See writeTextSearch.
 	out = termsafe.NewWriter(out)
-	cacheState := "miss"
-	if response.IndexCacheHit {
-		cacheState = "hit"
-	}
-	fmt.Fprintf(out, "Index: cache-%s (%dms) | Query: %dms | Total: %dms\n",
-		cacheState, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS,
-	)
+	header := relationLatencyHeader(response.IndexCacheHit, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS)
+	out.Write(header.printed)
 	writeIndexCostNotice(out, response.IndexCacheHit, response.IndexCacheDisabled)
 	writeAgentNeighborCompleteness(out, response)
 	if len(response.Matches) == 0 {
@@ -842,12 +840,16 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 
 	var output bytes.Buffer
 	output.WriteString(marker)
+	// slack is what the latency line was charged beyond what it printed. Every fit below compares
+	// output.Len()+slack, so each decision is the one it would be over the reserved-width line and
+	// never depends on the measured latencies. See agent_latency.go.
+	slack := 0
 	appendVariant := func(variants ...string) bool {
 		for _, variant := range variants {
 			if variant == "" {
 				continue
 			}
-			if output.Len()+len(variant) <= budget {
+			if output.Len()+slack+len(variant) <= budget {
 				output.WriteString(variant)
 				return true
 			}
@@ -906,11 +908,15 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 	if response.endpointTruncated {
 		appendVariant("!neighbor-list-truncated; raise --limit\n", "!neighbors-truncated\n")
 	}
-	cacheState := "miss"
-	if response.IndexCacheHit {
-		cacheState = "hit"
+	cacheState := indexCacheState(response.IndexCacheHit)
+	latency := renderLatencyRung("I:%s/%d Q:%d T:%d\n", cacheState, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS)
+	if output.Len()+slack+len(latency.reserved) <= budget {
+		output.Write(latency.printed)
+		slack += latency.slack()
+	} else {
+		// Latency elided, with a width no measurement can change; the cache state survives.
+		appendVariant(fmt.Sprintf("I:%s/-\n", cacheState))
 	}
-	appendVariant(fmt.Sprintf("I:%s/%d Q:%d T:%d\n", cacheState, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS))
 
 	if len(response.Matches) > 0 && !response.DisambiguationRequired {
 		match := response.Matches[0]

@@ -13,7 +13,7 @@ Pass `--repo .` (or a path) when running outside an Entire session.
 
 | Command | What it does |
 | --- | --- |
-| `init-agents` | Writes `.entire/graph-agent.md` and managed blocks in `AGENTS.md`/`CLAUDE.md`. See [agent activation](agents.md). |
+| `init-agents` | Writes `.entire/agent-guide.md`, managed blocks in `AGENTS.md`/`CLAUDE.md`, and a Claude Code `SubagentStart` hook in `.claude/settings.local.json`. See [agent activation](agents.md). |
 | `agent-guide` | Prints the operating guide `init-agents` installs, for inspection or piping elsewhere. |
 | `index` | Prewarms one committed-tree cache variant before a batch of `--head` queries. Defaults to `--profile full`; see the [operations cache guide](operations.md#cache). |
 | `capabilities` | Reports semantic vs inventory-only languages, relation types, profiles, and features as JSON. Feature-detect with this before relying on a relation family. |
@@ -25,7 +25,7 @@ default**; `--head` switches to the committed tree.
 
 | Command | What it does |
 | --- | --- |
-| `query` | Ranked source regions for a plain-language query. Defaults: `--format json`, `--profile fast` (the installed agent guide asks for `--profile full --format agent`, which is ~2.9x cheaper than the json default for the same results). Formats: `json`, `ndjson`, `text`, `agent`. See [search results](search.md). |
+| `query` | Ranked source regions for a plain-language query. Defaults: `--format json`, `--profile fast` (the installed agent guide asks for `--profile full --head --format agent --max-context-bytes 4096`; agent is ~2.9x cheaper than the json default for the same results, and `--profile full --head` reuses the cache `index` warms). Formats: `json`, `ndjson`, `text`, `agent`. See [search results](search.md). |
 | `def` | One name's declaration, fields, and method surface. Default format is text. |
 | `explain` | Resolves symbols named by a failing build or test into definitions and context. |
 | `neighbors` | Direct relations of one symbol (`--relation`, `--direction`, `--depth 1\|2`). Ambiguous names return a definition list; disambiguate with `--file`. |
@@ -68,6 +68,25 @@ Stream and record formats are specified in
 ## Report
 
 `stats` is a human-facing, read-only report of graph vs grep/read usage in
-local coding-agent transcripts, with a signed, unvalidated 1:1 context model
-(not measured savings) and explicit comparison availability. It is not part of the agent workflow; see
+local coding-agent transcripts. Its headline shows observed follow-up rates and a
+signed modeled balance with its assumption and comparison population. An absent
+follow-up does not prove an avoided call or measured savings. `--verbose` also
+retains the legacy unvalidated 1:1 context model. It is not part of the agent workflow; see
 [trust and security](trust-and-security.md) for what it reads.
+
+The shell classifier is a heuristic over transcript text, not a shell interpreter.
+It recognizes quoted operators, pipeline heads, redirects and here-documents;
+commands nested in substitutions, subshells or compound shell syntax are not a
+complete inventory of executed reads. No transcript commands are executed.
+
+`stats.context_block_bytes` in search responses now includes `file_outline_bytes`.
+Existing responses with outlines can therefore report larger totals without a
+larger payload. The field totals the costed context blocks, not all response
+metadata. Stats reports retain the legacy positive-only savings fields and add
+signed `estimated_savings_bytes_unfloored` and
+`estimated_savings_est_tokens_unfloored` fields that keep modeled losses.
+
+For multi-name `def` requests, `--max-context-bytes` covers the entire invocation,
+including every card and body. A positive budget smaller than the number of names
+is rejected before indexing or writing output; zero remains unbounded. JSON
+requests also fail when their complete structural envelope cannot fit.

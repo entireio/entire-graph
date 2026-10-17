@@ -113,7 +113,9 @@ func TestCompleteSymbolRetainsSourceAtIndependentWireThresholds(t *testing.T) {
 		budget int
 		want   string
 	}{
-		{77, "retry.go:12 *\n\tremaining := budget - attempt\n\tif remaining <= 0 {\n"},
+		// At 77 bytes the declaration block (header 14 + declaration 54 = 68 bytes) fits and is
+		// preferred over a bare focus window; declaration, gap and focus together need 117.
+		{77, "retry.go:10 *\nfunc RetryBudgetExhausted(attempt, budget int) bool {\n"},
 		{231, "1. retry.go:10-17 RetryBudgetExhausted s=29.2 *\n" + body + "\n"},
 		{241, "1. retry.go:10-17 RetryBudgetExhausted s=29.2 [focus:12]\n" + body + "\n"},
 		{242, "1. retry.go:10-17 RetryBudgetExhausted [complete] s=29.2 *\n" + body + "\n"},

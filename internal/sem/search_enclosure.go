@@ -865,6 +865,13 @@ func widenSearchResultToEnclosure(result SearchResult, enclosure searchEnclosure
 	if enclosure.symbol.StartLine > 0 && enclosure.symbol.EndLine >= enclosure.symbol.StartLine {
 		result.SymbolStartLine = enclosure.symbol.StartLine
 		result.SymbolEndLine = enclosure.symbol.EndLine
+		// The name line belongs to the result's IDENTITY, not to the bounds: it changes only
+		// together with SymbolID/SymbolName (below, or here when the enclosure is the same
+		// symbol). The window and focus-elided returns keep the inner identity, so they must keep
+		// the inner symbol's name line too.
+		if enclosure.symbol.ID != "" && enclosure.symbol.ID == result.SymbolID {
+			result.SymbolNameLine = enclosure.symbol.nameLine
+		}
 	}
 	if enclosure.window {
 		// A window is readable code but not a whole callable. It gets its own signal so an agent
@@ -906,6 +913,7 @@ func widenSearchResultToEnclosure(result SearchResult, enclosure searchEnclosure
 		result.SymbolName = enclosure.symbol.Name
 		result.QualifiedName = enclosure.symbol.QualifiedName
 		result.Signature = enclosure.symbol.Signature
+		result.SymbolNameLine = enclosure.symbol.nameLine
 	}
 	return result
 }
@@ -1242,7 +1250,7 @@ func seatForcedSearchUnits(
 			if searchResultRendersSource(control, tail) {
 				continue
 			}
-			terse := tersifySearchResult(trialPlan[tail], searchEnclosureTailSnippetLines)
+			terse := tersifySearchResultKeepingDeclaration(trialPlan[tail], searchEnclosureTailSnippetLines)
 			size := serializedSearchResultBytes(terse)
 			if size >= trialSizes[tail] {
 				continue
@@ -1429,7 +1437,7 @@ func planWithDemotionFrom(
 	sizes := make([]int, len(plan))
 	for index := range plan {
 		if index >= cut {
-			plan[index] = tersifySearchResult(plan[index], tailLines)
+			plan[index] = tersifySearchResultKeepingDeclaration(plan[index], tailLines)
 		}
 		sizes[index] = serializedSearchResultBytes(plan[index])
 	}

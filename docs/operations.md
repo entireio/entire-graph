@@ -85,11 +85,17 @@ through the same writable namespace.
   `symbols`, `edges`). It is committed-tree only; `--worktree` streams always
   bypass it.
 
+Targeted `edges --to/--from/--relation` requests honor `--cache-dir` and reuse the
+same unfiltered `edges` entry. A hit filters its records without changing the
+matching output bytes. An unreadable entry or a record that cannot be decoded
+causes a rebuild before any cached prefix is printed; a successful bounded
+capture replaces the damaged entry. `--no-cache` bypasses both reads and writes.
+
 ### What a cache entry is keyed on
 
 A search-snapshot entry is a function of: the cache format version, the
-checkout path, the repository identity (derived from the Git remote), the
-provider version, the committed `HEAD` tree hash, the profile, the parse-size
+repository identity (derived from the Git remote; every remote-less
+`local/<name>` checkout shares one identity term), the provider version, the committed `HEAD` tree hash, the profile, the parse-size
 and file-count limits, any file-subset selection, the paths **and contents** of
 `--ignore-file`/`--include-file` inputs in caller order, and the contents of
 `.graphignore`. Change any of these and the next query builds a new entry;
@@ -99,10 +105,31 @@ term because working-tree snapshots cannot receive persistent keys.
 [ADR 0002](adr/0002-committed-tree-cache-key.md) records why the key is total
 over graph-shaping inputs.
 
+The checkout path is not a key term, so every worktree and clone at the same
+tree shares one entry. The checkout-relative scope is: a `--repo <subdir>` run
+indexes only that subtree, so it is keyed on Git's prefix for that directory
+and never shares an entry with the repository root, or with another
+subdirectory. On a hit the loader rewrites what is specific to the
+checkout serving it: `repo_root` (which `def`, `neighbors`, and `impact` read
+source through), the commit, and, for a remote-less checkout, the
+`local/<name>` namespace in every symbol and file ID.
+
 A provider-record entry binds the same graph-shaping inputs plus the exact
-commit and output mode. Exact commit identity is required because the cached
+commit and output mode, keyed on the full repository key; its header line's
+`repo_root` is restamped for the checkout replaying it. Exact commit identity is required because the cached
 opaque NDJSON header records it; unlike a structured search snapshot, that
 stream cannot be safely restamped on a same-tree cache hit.
+Full-profile record entries also bind the captured co-change evidence from the
+available local history. Full and shallow clones at one commit can expose
+different history; deepening a clone must not replay its earlier history. An
+unavailable history view remains private to that checkout. The transaction uses
+the same captured evidence for its key and build, so a history change during
+construction cannot poison another history view.
+
+A cache hit is a reuse signal, not a latency guarantee. Full-profile search
+hits refresh co-change relations from at most 256 local commits so a different
+available history cannot supply stale edges. A failed or canceled refresh is a
+miss, rather than a reported hit with silently removed history relations.
 
 ### Working-tree queries
 
@@ -159,21 +186,29 @@ back to the per-user cache directory.
 
 ## Reports and the status line
 
-`entire graph stats --repo .` prints a signed **1:1 context model** from local
-session transcripts, not measured savings. It assumes each observed graph locate
-result replaces one exploration result at that session's average result size,
-subtracts graph bytes, retains negative sessions, and roughly converts bytes/4
-to estimated tokens. A positive value is a modeled reduction; a negative value
-is a modeled increase. This does not control task quality, query equivalence or
-output truncation and cannot establish causal or billed-token savings.
+`entire graph stats --repo .` leads with **observed follow-up** from local session
+transcripts: the next five calls after a locate result arrived classify it as a
+re-query, a read of a named file, no follow-up, censored, an error, or ineligible.
+Only result rows name located files; coverage, VERIFY and quoted source do not.
+A read shared by multiple results is a follow-up for all of them, with its span
+attributed to one result. All classes reconcile to the observed-result denominator.
+An absent follow-up is not proof of an avoided call.
+
+The signed modeled balance assumes each no-follow-up result replaced one average
+exploration result of its session, subtracts all locate-result bytes and converts
+bytes/4 to estimated tokens. It retains losses and states its credited population.
+Task quality, query equivalence and output truncation are not controlled, so this
+cannot establish causal or billed-token savings.
 
 The comparison is `unavailable` unless a session has both result types; an
 available zero can also be cancellation between positive and negative sessions.
 `--verbose` includes observed usage, transcript-reported tokens, comparison
-population and assumptions. `--format json` remains additive and independent
-of `--verbose`: human output uses `estimated_savings_est_tokens_unfloored` and
-`sessions_with_savings_comparison`. Legacy positive-only savings, percentage and
-graph-first fields are retained for compatibility, not endorsed as evidence.
+population and assumptions, plus the legacy unvalidated 1:1 context model.
+`--format json` remains additive and independent of `--verbose`. The status line
+continues to use `estimated_savings_est_tokens_unfloored` and
+`sessions_with_savings_comparison`; the default stats headline uses the observed
+follow-up and `modeled_balance_*` fields. Legacy positive-only savings, percentage
+and graph-first fields are retained for compatibility, not endorsed as evidence.
 
 `--since` prunes transcripts by file mtime before parsing them, and unchanged
 transcripts are memoised under the cache directory keyed on file identity plus
@@ -314,3 +349,15 @@ newer-minor warning; do not suppress that warning without consumer-side evidence
 Brain also has a separately computed completeness/freshness axis: its legacy
 10% parse-error rule is not changed by this Graph release. Consumers requiring
 the same policy on that axis need a separate coordinated update.
+
+### Selective views derived from a complete cache
+
+A derived view retains the selected files and symbols, and filters the complete
+graph's resolved relations to selected endpoints (or external targets). It does
+not repeat name resolution against only the selection. An uncached selection
+may guess a same-named target or externalize an edge whose real target is not
+selected; the filtered view can omit those edges. Consequently, whole-snapshot
+parity with an uncached selection is not the contract. The tests bound dropped
+edge classes and check exact ranking on fixture queries, without proving
+universal ranking equality. This semantic choice accompanies the cache-sharing
+change and is part of its manual review.

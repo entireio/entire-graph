@@ -33,6 +33,7 @@ func TestSearchEchoRefusesSemanticConfigurationChange(t *testing.T) {
 	}
 	off := config{name: "unconfigured", env: EntireEnv{RepoRoot: repo}}
 	onA := config{name: "on", env: on}
+	verifyOff := config{name: "on/verify-off", env: on, extra: []string{"--verify-block", "off"}}
 	flagOff := config{name: "--no-semantic", env: on, extra: []string{"--no-semantic"}}
 	otherModel := config{name: "on/other-model", env: EntireEnv{RepoRoot: repo, SemanticEndpoint: server.URL, SemanticModel: "fake-embed-2"}}
 	otherEndpoint := config{name: "on/other-endpoint", env: EntireEnv{RepoRoot: repo, SemanticEndpoint: other.URL, SemanticModel: "fake-embed"}}
@@ -55,7 +56,7 @@ func TestSearchEchoRefusesSemanticConfigurationChange(t *testing.T) {
 	for _, format := range []string{"text", "agent"} {
 		for _, pair := range [][2]config{
 			{off, onA}, {onA, off}, {flagOff, onA}, {onA, flagOff}, {off, flagOff},
-			{onA, otherModel}, {onA, otherEndpoint},
+			{onA, otherModel}, {onA, otherEndpoint}, {onA, verifyOff}, {verifyOff, onA},
 		} {
 			first, second := pair[0], pair[1]
 			t.Run(format+"/"+first.name+"->"+second.name, func(t *testing.T) {
@@ -140,10 +141,10 @@ func TestSearchSessionStateOmitsSemanticWhenUnconfigured(t *testing.T) {
 		if err := json.Unmarshal(raw, &state); err != nil {
 			t.Fatal(err)
 		}
-		// Schema 4 readers are semantic-unaware and compare the schema for equality: a record this
+		// Schema 6 readers are semantic-unaware and compare the schema for equality: a record this
 		// writer persists must be invisible to them, or a downgraded binary would replay it across
 		// channel configurations.
-		if schema, _ := state["replay_schema"].(float64); schema <= 4 {
+		if schema, _ := state["replay_schema"].(float64); schema <= 6 {
 			t.Fatalf("%s: record uses semantic-unaware schema %v", c.name, state["replay_schema"])
 		}
 		_, has := state["semantic"]
