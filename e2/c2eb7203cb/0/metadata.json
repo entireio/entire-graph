@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "e2c2eb7203cb",
+  "session_id": "01a1491d-38d3-7c33-a2a6-595311c2667b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-17T14:22:02.935658Z",
+  "branch": "codex/trail221-semantic-review",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/search_result_json.go",
+    "internal/sem/search_semantic_json.go",
+    "internal/sem/search_semantic_json_review_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "checkpoint_transcript_start": 3928,
+  "transcript_lines_at_start": 3928,
+  "compact_transcript_start": 486,
+  "token_usage": {
+    "input_tokens": 39028,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 5532160,
+    "output_tokens": 8237,
+    "api_call_count": 45
+  },
+  "session_metrics": {
+    "turn_count": 6
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-17T14:22:02.74737Z",
+    "agent_lines": 43,
+    "agent_removed": 8,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 43,
+    "total_lines_changed": 51,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
