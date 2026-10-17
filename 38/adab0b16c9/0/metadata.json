@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "38adab0b16c9",
+  "session_id": "01a1491d-38d3-7c33-a2a6-595311c2667b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-17T10:34:53.922442Z",
+  "branch": "codex/review-trail229",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/go_route_mask_budget_test.go",
+    "internal/sem/go_route_mount_wrapper_review_test.go",
+    "internal/sem/pr312_escaped_may_facts_review_test.go",
+    "internal/sem/pr312_outer_setter_callback_review_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-6-astra",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 556159,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 25320576,
+    "output_tokens": 58674,
+    "api_call_count": 183
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-17T10:34:53.771434Z",
+    "agent_lines": 49,
+    "agent_removed": 5,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 49,
+    "total_lines_changed": 54,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}

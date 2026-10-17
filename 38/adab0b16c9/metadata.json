@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "38adab0b16c9",
+  "strategy": "manual-commit",
+  "branch": "codex/review-trail229",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/go_route_mask_budget_test.go",
+    "internal/sem/go_route_mount_wrapper_review_test.go",
+    "internal/sem/pr312_escaped_may_facts_review_test.go",
+    "internal/sem/pr312_outer_setter_callback_review_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/38/adab0b16c9/0/metadata.json",
+      "transcript": "/38/adab0b16c9/0/full.jsonl",
+      "compact_transcript": "/38/adab0b16c9/0/transcript.jsonl",
+      "content_hash": "/38/adab0b16c9/0/content_hash.txt",
+      "prompt": "/38/adab0b16c9/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 556159,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 25320576,
+    "output_tokens": 58674,
+    "api_call_count": 183
+  }
+}
