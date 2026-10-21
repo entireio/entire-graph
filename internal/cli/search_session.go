@@ -69,8 +69,11 @@ type searchSession struct {
 // BOTH modes under this one number. No earlier schema is accepted: a schema-4 or schema-5 reader
 // checks the producer but not the mode, and a schema-4 number was also once used for an off-mode
 // payload with no producer at all, so neither number can safely carry a mode-bound payload.
+//
+// 7: additionally, the payload is bound to the effective semantic channel configuration.
+// Earlier schemas cannot safely replay an answer across semantic endpoint/model changes.
 const (
-	searchSessionReplaySchema = 6
+	searchSessionReplaySchema = 7
 	// A normal search payload is budgeted in kilobytes. Keep a generous ceiling for callers that
 	// deliberately widen it, but never let an untrusted/stale session file allocate without bound.
 	maxSearchSessionStateBytes = 8 << 20
@@ -98,6 +101,9 @@ type searchSessionState struct {
 	Tree string `json:"tree,omitempty"`
 	// Producer is the binary that rendered the payload; see searchSessionProducer.
 	Producer string `json:"producer,omitempty"`
+	// Semantic is the semantic channel's effective configuration the payload was rendered under;
+	// see searchSessionScope.Semantic. Omitted when the channel is unconfigured.
+	Semantic string `json:"semantic,omitempty"`
 }
 
 // searchSessionScope identifies the repository view and wire format a payload describes.
@@ -131,6 +137,11 @@ type searchSessionScope struct {
 	// snippets and budget are the RECORDING binary's; replaying it after an upgrade serves the old
 	// ranking under a header saying the question was already answered.
 	Producer string
+	// Semantic is the semantic channel's effective configuration (sem.SemanticConfig.ReplayIdentity):
+	// "" unconfigured, "off" for --no-semantic, otherwise on + model + a HASH of the endpoint. A
+	// payload rendered with the channel on holds rows and a stats line the lexical one does not, and
+	// vice versa, so a payload recorded under one configuration never answers for another.
+	Semantic string
 	// OmitVerify is the resolved `--verify-block off`. It is part of the identity for the same
 	// reason Format is: the payload is opaque rendered bytes, so a payload recorded with VERIFY must
 	// never answer an omit-verify call (it would hand the no-VERIFY arm the block) and vice versa.
@@ -154,6 +165,7 @@ func (recorded searchSessionState) matches(live searchSessionScope) bool {
 		recorded.Producer == "" ||
 		live.Producer == "" ||
 		recorded.Producer != live.Producer ||
+		recorded.Semantic != live.Semantic ||
 		recorded.VerifyOmitted != live.OmitVerify {
 		return false
 	}
@@ -303,6 +315,7 @@ func (s *searchSession) record(
 	state.PolicyFingerprint = live.PolicyFingerprint
 	state.Repo, state.Tree, state.Format = live.Repo, live.Tree, live.Format
 	state.Producer = live.Producer
+	state.Semantic = live.Semantic
 	state.VerifyOmitted = live.OmitVerify
 	if state.Payload == "" && replayable && len(payload) <= maxSearchSessionStateBytes {
 		state.Query = query

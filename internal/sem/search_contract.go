@@ -97,7 +97,8 @@ func buildSearchContractContext(
 //     list an agent reads as "where do I edit".
 //   - The payload grows by at most searchContractAllowanceBytes, and never past hardBudget.
 //   - When hardBudget forces a choice, tail locators are displaced to pay — fewest first, and
-//     only ones whose file the payload still names somewhere else.
+//     only ones whose file the payload still names somewhere else, and never a row of the lexical
+//     head, wherever semantic fusion seated it (searchLexicalHeadRows).
 //   - The covering test also needs a normal-result slot under topK, funded by the same legal tail
 //     displacement. Explicit callee-hop rows are exceptions to that cap; cards and coverage notes
 //     live outside results and do not consume slots.
