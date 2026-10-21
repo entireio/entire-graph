@@ -1,0 +1,96 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "81617a0c52c1",
+  "session_id": "13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-21T04:18:28.593228Z",
+  "branch": "evis/cor-2196-graph-provider-records-cache-silently-never-stores-snapshots",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/root_test.go",
+    "internal/sem/records_cache_test.go",
+    "internal/sem/records_spool.go",
+    "internal/sem/records_spool_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "23706cde3ccc",
+  "checkpoint_transcript_start": 5375,
+  "transcript_lines_at_start": 5375,
+  "compact_transcript_start": 1110,
+  "token_usage": {
+    "input_tokens": 22,
+    "cache_creation_tokens": 23634,
+    "cache_read_tokens": 4333214,
+    "output_tokens": 12743,
+    "api_call_count": 11
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01MEtXESoaEy4sDCqoALNMBR",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "superpowers:brainstorming"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "52bcd3bc7407",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 24,
+        "end": 25,
+        "entry_ids": [
+          "1dba0e8f-2bc0-44bb-876e-4596f6de04fa"
+        ],
+        "tool_use_id": "toolu_01MEtXESoaEy4sDCqoALNMBR"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01MEtXESoaEy4sDCqoALNMBR"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: superpowers:brainstorming",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01X6Tqr92LxgjmWHoMUijJMK",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "entire:address-findings"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "52bcd3bc7407",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 2664,
+        "end": 2665,
+        "entry_ids": [
+          "4167775b-19e5-40e2-a6c9-f1749dbecb48"
+        ],
+        "tool_use_id": "toolu_01X6Tqr92LxgjmWHoMUijJMK"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01X6Tqr92LxgjmWHoMUijJMK"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: entire:address-findings",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 9
+  }
+}
