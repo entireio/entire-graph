@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "b1848bb6c81b",
+  "strategy": "manual-commit",
+  "branch": "evis/cor-2197-static-string-constants-single-scan",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "internal/sem/provider.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b1/848bb6c81b/0/metadata.json",
+      "transcript": "/b1/848bb6c81b/0/full.jsonl",
+      "compact_transcript": "/b1/848bb6c81b/0/transcript.jsonl",
+      "content_hash": "/b1/848bb6c81b/0/content_hash.txt",
+      "prompt": "/b1/848bb6c81b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 38,
+    "cache_creation_tokens": 1122472,
+    "cache_read_tokens": 9652995,
+    "output_tokens": 11025,
+    "api_call_count": 19
+  }
+}
