@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "60799fa58fa8",
+  "strategy": "manual-commit",
+  "branch": "evis/cor-2196-graph-provider-records-cache-silently-never-stores-snapshots",
+  "checkpoints_count": 8,
+  "files_touched": [
+    "internal/cli/edges_cache_dir_test.go",
+    "internal/cli/root.go",
+    "internal/cli/root_test.go",
+    "internal/cli/termsafe_machine_c1_cache_test.go",
+    "internal/sem/cache_entry.go",
+    "internal/sem/edge_provenance_cache_test.go",
+    "internal/sem/health_test.go",
+    "internal/sem/records_cache.go",
+    "internal/sem/records_cache_repo_root_test.go",
+    "internal/sem/records_cache_test.go",
+    "internal/sem/records_spool.go",
+    "internal/sem/records_spool_test.go",
+    "internal/sem/search_cache_scope_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/60/799fa58fa8/0/metadata.json",
+      "transcript": "/60/799fa58fa8/0/full.jsonl",
+      "compact_transcript": "/60/799fa58fa8/0/transcript.jsonl",
+      "content_hash": "/60/799fa58fa8/0/content_hash.txt",
+      "prompt": "/60/799fa58fa8/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1932,
+    "cache_creation_tokens": 16024658,
+    "cache_read_tokens": 419137507,
+    "output_tokens": 644446,
+    "api_call_count": 968
+  }
+}
