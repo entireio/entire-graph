@@ -47,6 +47,12 @@ const (
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
 	//
+	// Revision 6: Swift is parsed by the vendored tree-sitter-swift v0.7.4
+	// grammar instead of go-tree-sitter's 0.5.0 one. Files that failed to parse
+	// before (freestanding macros such as `#expect`, newer syntax) now yield
+	// different declarations, and the caches are keyed on the source tree, so
+	// revision-5 records must not be served for them.
+	//
 	// Revision 5: Julia declaration headers replace body-laden signatures.
 	// Same-name overload IDs hash the signature, so their #sig: suffixes change
 	// even for unchanged source. Consumers must refresh snapshots and recompute
@@ -65,7 +71,7 @@ const (
 	// `C.helper` (kind "method"). This re-keys every Python nested-callable
 	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
 	// real same-named members.
-	IdentityRevision     = "5"
+	IdentityRevision     = "6"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)

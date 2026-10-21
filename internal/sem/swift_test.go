@@ -673,3 +673,34 @@ func TestSwiftChainedReceiverCalls(t *testing.T) {
 		}
 	}
 }
+
+// Swift Testing's freestanding macros (`#expect`, `#require`) are Swift 5.9
+// macro expansions. The tree-sitter-swift 0.5.0 grammar bundled with
+// go-tree-sitter rejected them, so nearly every swift-testing test file
+// surfaced as an E_PARSE_ERROR partial failure.
+func TestSwiftTestingMacrosParse(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("ParserTests.swift", `import Testing
+
+struct ParserTests {
+    @Test func parsesValue() throws {
+        let value = try #require(Parser.parse("3"))
+        #expect(value == 3)
+    }
+}
+`)
+	if language != "Swift" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	found := false
+	for _, entity := range entities {
+		if entity.Name == "ParserTests.parsesValue" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("parsesValue missing from %#v", entities)
+	}
+}
