@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "02d42bfbb589",
+  "strategy": "manual-commit",
+  "branch": "evis/cor-2197-graph-full-profile-snapshot-spends-42-of-cpu-in-regex-flow",
+  "checkpoints_count": 13,
+  "files_touched": [
+    "internal/sem/flow_syntax.go",
+    "internal/sem/flow_syntax_test.go",
+    "internal/sem/golden_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/records_cache.go",
+    "internal/sem/search_cache.go",
+    "internal/sem/types.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/02/d42bfbb589/0/metadata.json",
+      "transcript": "/02/d42bfbb589/0/full.jsonl",
+      "compact_transcript": "/02/d42bfbb589/0/transcript.jsonl",
+      "content_hash": "/02/d42bfbb589/0/content_hash.txt",
+      "prompt": "/02/d42bfbb589/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 202,
+    "cache_creation_tokens": 2332430,
+    "cache_read_tokens": 44665559,
+    "output_tokens": 73009,
+    "api_call_count": 101
+  }
+}
