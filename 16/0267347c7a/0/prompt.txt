@@ -1,0 +1,174 @@
+this is merged: https://github.com/entireio/entire-graph/pull/353 
+
+can you validate it
+
+---
+
+<task-notification>
+<task-id>bte0w1bed</task-id>
+<tool-use-id>toolu_01NYghEJRA2uC6EQj4gPGHRY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/bte0w1bed.output</output-file>
+<status>completed</status>
+<summary>Background command "Validate merged 353: cold x2, warm, byte-compare, fixture" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b6gygs9nr</task-id>
+<tool-use-id>toolu_01U3GX4B1KKyUzj6ZPLfuMZo</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/b6gygs9nr.output</output-file>
+<status>completed</status>
+<summary>Background command "Interleaved A/B of pre-hoist vs post-hoist under same load" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+let's try the first solution. baseline before and after the implemenetaiotn to see the net result
+
+---
+
+<task-notification>
+<task-id>bwh2z6k4s</task-id>
+<tool-use-id>toolu_01SaEPTukuSnu8Nf3aK6TNsC</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/bwh2z6k4s.output</output-file>
+<status>completed</status>
+<summary>Background command "Profile batched build and interleaved A/B vs main" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b2zcpd5pl</task-id>
+<tool-use-id>toolu_018gz4uLaQyr2goJPE5dmR1f</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/b2zcpd5pl.output</output-file>
+<status>completed</status>
+<summary>Background command "Full sem suite on batched branch" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+/review-pr
+
+---
+
+<task-notification>
+<task-id>a4fb66ba503ec5644</task-id>
+<tool-use-id>toolu_01EFkALt1ofxM4GPhijER2j6</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/a4fb66ba503ec5644.output</output-file>
+<status>completed</status>
+<summary>Agent "Reuse review of batching diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>clean — no existing batching/chunking helper, bounded-batch channel pattern, or generic pipeline in this repo that the new code duplicates.
+
+Checked: `internal/sem` (`runIndexedPipeline` at /Users/evisdrenova/conductor/workspaces/entire-brain/denpasar/.context/entire-graph/internal/sem/provider_parallel.go:316 is the whole-result-per-index variant, not a record-batcher, and the streaming variant is deliberately the "bounded streaming" alternative to it), plus `internal/gitutil`, `internal/termsafe`, `internal/cli`, `internal/agentsetup`, `internal/filedigest`. Every `flush` closure hit in `internal/sem` (provider.go ~10757/11061/11230/11287/11823, search_verify.go ~2720/2804/3334) is a YAML/shell token accumulator, not a channel-batch flush. There is no shared util package, and `chan []T` appears nowhere else in `internal/`. `slices.Chunk` (available on go 1.27) chunks an existing slice and cannot serve a push-style `emit` callback, so it is not a substitute either.</result>
+<usage><subagent_tokens>50019</subagent_tokens><tool_uses>11</tool_uses><duration_ms>42833</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a107ef2418951286d</task-id>
+<tool-use-id>toolu_01XzftGfvt3SikGHYJwjqK9b</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/a107ef2418951286d.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplification review of batching diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Findings (2):
+
+**1. `internal/sem/provider_parallel_stream.go:68` — the per-record `workerCtx.Err()` check in the emit callback is now redundant with the `select`/`&lt;-workerCtx.Done()` in `flush`.**
+
+Cost: `workerCtx` is a `*cancelCtx`, whose `Err()` does `c.mu.Lock(); err := c.err; c.mu.Unlock()`. That is a lock/unlock pair on one mutex *shared by all workers*, once per record — ~250k contended lock acquisitions across eight goroutines, in the exact hot path this diff exists to de-cost. It is the last remaining per-record synchronization after the channel send was batched away, so it partially cancels the win the comment above it advertises.
+
+Simpler form: delete the three-line guard and let the callback be `batch = append(batch, value); if len(batch) == providerStreamBatchRecords { flush() }`. Cancellation is still observed once per 256 records by the `select` in `flush`, which drops the batch; the only difference is that a cancelled worker accumulates at most one more partial batch (≤256 records, already inside the documented bound) before `process` returns. Per-record cancellation responsiveness was never real anyway — `process` is what has to notice the context, and it gets `workerCtx` directly.
+
+**2. `internal/sem/provider_parallel_stream.go:60-61` — the `full` temp plus eager re-`make` is a more convoluted spelling of "send, then reset".**
+
+Cost: a reader has to reason about why the reassignment happens *before* the send (it does not need to — nothing touches `batch` during the send, since the callback is only invoked from this same goroutine). It also allocates the replacement buffer even on the cancellation path and on the final flush, where it is immediately garbage.
+
+Simpler form:
+```go
+flush := func() {
+	if len(batch) == 0 {
+		return
+	}
+	select {
+	case out.batches &lt;- batch:
+	case &lt;-workerCtx.Done():
+	}
+	batch = make([]T, 0, providerStreamBatchRecords)
+}
+```
+Same semantics, one fewer local, and the "hand off the slice, then start a fresh one" ordering reads in the order it happens.
+
+No dead code left behind: `providerStreamBufferRecords` has no remaining references, and the two new constants are both used (file + test). The long rationale comment at lines 8-20 is benchmark/decision context, not a restatement of the code — leave it. The test's new 6-line comment at `provider_parallel_stream_test.go:31` likewise explains why the threshold moved to `providerStreamBatchRecords`, which the code cannot say by itself.</result>
+<usage><subagent_tokens>50163</subagent_tokens><tool_uses>4</tool_uses><duration_ms>51716</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a48222914d0037d10</task-id>
+<tool-use-id>toolu_01CNJ78FcSRn2uceNKNph6GE</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/a48222914d0037d10.output</output-file>
+<status>completed</status>
+<summary>Agent "Altitude review of batching diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Verdict: the altitude is right.
+
+The measured 31% was `pthread_cond_signal` on the handoff, and the handoff is exactly what this layer owns — so the fix lands on the layer that caused the cost, as a general mechanism (batching applies to every `T`, every worker, every caller) rather than a special case.
+
+Specifically on the "deeper fix is encode-in-workers" hypothesis — I checked it and it does not hold as a root cause:
+
+- `/Users/evisdrenova/conductor/workspaces/entire-brain/denpasar/.context/entire-graph/internal/sem/provider.go:1476-1531` — the serial stage is not "a JSON encoder." Before `emit(r)` it does global dedup over `seenRelation`/`dataFlowEvidence`, profile filtering (`spec.emits`, `shallowRelationRetained`), evidence stripping that *mutates* `r`, external-record merging against `symbolsByID`/`filesByID`, and progress counting. Those are inherently single-threaded and need the struct, not bytes. Encoding in workers would mean encoding records that the serial stage then discards, and encoding a record whose `Evidence` the serial stage is about to nil out. Moving encoding upstream therefore requires first moving dedup/filter upstream — a much larger change, and not the thing the profile pointed at.
+- The shipped change *eases* that follow-up rather than foreclosing it: the pipeline stays generic over `T`, so a future `T = []byte` (or a pre-encoded struct) drops in with `chan []T` unchanged. Batching composes with byte handoff instead of competing with it.
+
+One minor note, follow-up at most, not a blocker:
+
+**File:** `/Users/evisdrenova/conductor/workspaces/entire-brain/denpasar/.context/entire-graph/internal/sem/provider_parallel_stream.go:21-24`
+**Summary:** The generic pipeline now carries a tuning constant (`256`) whose sizing justification in the comment ("a few MB across eight workers") is derived from `RelationRecord` at the single caller, so a record-count batch in a `T`-generic helper is implicitly caller-specific.
+**General alternative:** make the batch size a pipeline parameter (or a size-aware/opportunistic flush: flush early when the channel send would not block) so the bound is expressed by the caller that knows `sizeof(T)`. **Follow-up, and only if a second caller appears** — with exactly one production caller (`provider.go:6501`) plus tests, plumbing a knob now would be the over-abstraction, and the comment already discloses the assumption. Keep as-is in this PR.</result>
+<usage><subagent_tokens>60483</subagent_tokens><tool_uses>11</tool_uses><duration_ms>69435</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a0903c549f4478956</task-id>
+<tool-use-id>toolu_01Us6RtftHxxPUvs5TDjYGca</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/a0903c549f4478956.output</output-file>
+<status>completed</status>
+<summary>Agent "Efficiency review of batching diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Read the diff, the final file, the call site (`internal/sem/provider.go:6501`), and `RelationRecord` (`internal/sem/provider.go:410`).
+
+Sizing note first, since it changes the math: `RelationRecord` is **192 bytes** by value (8 string headers = 128B, float64 8B, two slice headers 48B, int 8B) — the ~500B figure counts string payloads, which live off-struct and are never copied. So a 256-cap batch is **48 KB**, still above the 32 KB large-object threshold, so every batch takes the mheap/pageAlloc path and is zeroed (the type has pointers).
+
+**Finding 1 — `/Users/evisdrenova/conductor/workspaces/entire-brain/denpasar/.context/entire-graph/internal/sem/provider_parallel_stream.go:68`**
+The per-record `workerCtx.Err()` survived the batching rewrite and is now the only per-record synchronization left in the hot path.
+Cost: `cancelCtx.Err()` takes `c.mu.Lock()`, and `workerCtx` is a *single* context shared by all 8 workers (created once at line 41), so this is ~250k contended acquisitions of one mutex from 8 cores — ~10-25 ms of lock time plus cacheline ping-pong on exactly the kind of cross-core traffic this diff set out to kill (the comment cites 31% in `pthread_cond_signal`).
+Cheaper: check cancellation once per batch instead of once per record — move the check into the `len(batch) == providerStreamBatchRecords` branch (flush already selects on `workerCtx.Done()`, so a cancelled worker still drops out there). 250k checks → ~1k. Same drop-on-cancel semantics, one fewer shared-mutex op per record.
+
+**Finding 2 — `.../provider_parallel_stream.go:61`**
+`flush` unconditionally allocates a replacement batch, including on the final flush at line 76, where the goroutine returns immediately after and the buffer is never written.
+Cost: one dead 48 KB zeroed large allocation per file = ~2000 × 48 KB ≈ **96 MB of allocate-and-discard per run**, ~40% of this function's total churn. The eager `make` at line 55 adds the same waste for every file that emits zero relations (inventory-only/unparseable files, of which there are many in a 2k-file tree).
+Cheaper: `batch = nil` in `flush`, and allocate in the emit closure on first append (`if batch == nil { batch = make([]T, 0, providerStreamBatchRecords) }`). Deletes both the final-flush buffer and the zero-record-file buffer; no API or ordering change.
+
+**Finding 3 — `.../provider_parallel_stream.go:55` and `:61` (lower confidence, biggest ceiling)**
+Every batch is freshly allocated even though the consumer is its exclusive owner the moment the loop at line 102-106 finishes.
+Cost: ~5000 allocations/run (2000 eager + ~1000 full-batch refills + ~2000 final flushes) × 48 KB ≈ **240 MB zeroed per snapshot**, all on the large-object path. That's roughly 25-40 ms of memset, ~5-10 ms of mheap allocation, and 1-2 extra GC cycles — call it 50-150 ms, low single-digit percent of a multi-second 2k-file snapshot. Also note the fixed 256 cap is oversized for the median file (250k/2k ≈ 125 records), so ~half of each eager buffer is zeroed and never touched.
+Cheaper: recycle. After the emit loop at line 106, hand the batch back through a small per-pipeline free list (buffered `chan []T` of capacity `workers*(providerStreamBufferBatches+2)`, or a `sync.Pool`), and have `flush` take `b := &lt;-free` / `b[:0]` instead of `make`. Steady state is ~32 live buffers (~1.5 MB) and ~zero allocations after warmup. Worth it only if a profile shows GC/`memclrNoHeapPointers` on this path — Findings 1 and 2 are strictly cheaper to implement and I'd do those first.
+
+Explicitly **not** flagged: the closure captures. `batch` escapes to the heap because both `flush` and the emit closure capture it, costing a pointer indirection and a write barrier per append — ~2-5 ms over 250k records, and unavoidable anyway since the emit closure escapes into `process`. Also not flagged: `for _, value := range batch` at line 102 costs one extra 192 B copy per record versus `for i := range batch { emit(index, batch[i]) }` — that's ~48 MB of memmove, ~5 ms, below your materiality bar (though it is a free one-line change if you are touching the loop anyway). Copy count is otherwise unchanged from the pre-diff per-send path (3 copies then, 3 now).</result>
+<usage><subagent_tokens>58458</subagent_tokens><tool_uses>8</tool_uses><duration_ms>152599</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bdpabe5h6</task-id>
+<tool-use-id>toolu_01Cr4pwF2ZNoUZHCmwgeRoAf</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/bdpabe5h6.output</output-file>
+<status>completed</status>
+<summary>Background command "Verify review fixes: tests, race, build, byte-compare" completed (exit code 0)</summary>
+</task-notification>
