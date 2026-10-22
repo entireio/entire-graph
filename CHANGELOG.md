@@ -30,6 +30,7 @@ auto-generated notes on
 - Improved snapshot, search, and analyze performance and substantially reduced memory allocation, and made `stats` return a fast, single-line answer instead of a full rescan.
 - Stats leads with observed follow-up rates and a signed modeled balance; the statusline retains its explicitly unvalidated 1:1 context model. Both retain losses and distinguish unavailable comparisons from zero; legacy JSON fields remain compatible.
 - Aligned Graph's trail runners with Brain's and hardened CI with Windows test sharding and safer nightly prerelease publishing.
+- Swift is now parsed with a vendored tree-sitter-swift 0.7.4 grammar instead of go-tree-sitter's 0.5.0 one, so swift-testing files using `#expect`/`#require`, `nonisolated(unsafe)` declarations and other Swift 5.9-6 syntax no longer surface as parse failures, and three Swift preprocessing masks the new grammar made harmful or unnecessary are gone. A lone attribute or `#else` branch inside `#if` above a declaration, `switch consume x`, and regex literals with `{n,m}` still fail to parse. The parser identity revision is bumped, so cached Swift snapshots are rebuilt.
 
 ### Fixed
 
