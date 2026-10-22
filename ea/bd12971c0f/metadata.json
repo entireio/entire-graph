@@ -1,0 +1,53 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "eabd12971c0f",
+  "strategy": "manual-commit",
+  "branch": "trail-275-entire-graph",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "README.md",
+    "docs/README.md",
+    "docs/agent-coordination.md",
+    "docs/agents.md",
+    "docs/brain-and-graph-boundaries.md",
+    "docs/commands.md",
+    "docs/readme-plan.md",
+    "docs/semantic-provider-requirements.md",
+    "docs/trust-and-security.md",
+    "internal/agentsetup/agents_test.go",
+    "internal/agentsetup/claude_hook.go",
+    "internal/agentsetup/claude_hook_unix_test.go",
+    "internal/agentsetup/files.go",
+    "internal/agentsetup/nested.go",
+    "internal/agentsetup/nested_test.go",
+    "internal/cli/agentguide_test.go",
+    "internal/cli/agents.go",
+    "internal/cli/help.go",
+    "internal/cli/help_test.go",
+    "internal/cli/hook.go",
+    "internal/cli/hook_test.go",
+    "internal/cli/root.go",
+    "internal/cli/setup_test.go",
+    "internal/cli/stats.go",
+    "scripts/entire-graph-statusline.sh",
+    "skills/stats/SKILL.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ea/bd12971c0f/0/metadata.json",
+      "transcript": "/ea/bd12971c0f/0/full.jsonl",
+      "compact_transcript": "/ea/bd12971c0f/0/transcript.jsonl",
+      "content_hash": "/ea/bd12971c0f/0/content_hash.txt",
+      "prompt": "/ea/bd12971c0f/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 146,
+    "cache_creation_tokens": 403170,
+    "cache_read_tokens": 11469126,
+    "output_tokens": 54748,
+    "api_call_count": 73
+  }
+}
