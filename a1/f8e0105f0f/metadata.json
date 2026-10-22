@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "a1f8e0105f0f",
+  "strategy": "manual-commit",
+  "branch": "evis/cor-2216-graph-own-the-queryable-store-durable-indexed-index-sqlite",
+  "checkpoints_count": 20,
+  "files_touched": [
+    "go.mod",
+    "go.sum",
+    "internal/sem/cache_encode_jsonv2.go",
+    "internal/sem/cache_encode_legacy.go",
+    "internal/sem/cache_entry.go",
+    "internal/sem/records_cache.go",
+    "internal/sem/records_spool.go",
+    "internal/sem/search_cache.go",
+    "internal/sem/search_store.go",
+    "internal/sem/search_store_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a1/f8e0105f0f/0/metadata.json",
+      "transcript": "/a1/f8e0105f0f/0/full.jsonl",
+      "compact_transcript": "/a1/f8e0105f0f/0/transcript.jsonl",
+      "content_hash": "/a1/f8e0105f0f/0/content_hash.txt",
+      "prompt": "/a1/f8e0105f0f/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 245,
+    "cache_creation_tokens": 3801140,
+    "cache_read_tokens": 86776176,
+    "output_tokens": 111819,
+    "api_call_count": 123,
+    "subagent_tokens": {
+      "input_tokens": 108,
+      "cache_creation_tokens": 335272,
+      "cache_read_tokens": 3235795,
+      "output_tokens": 39332,
+      "api_call_count": 54
+    }
+  }
+}
