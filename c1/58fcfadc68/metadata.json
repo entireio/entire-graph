@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "c158fcfadc68",
+  "strategy": "manual-commit",
+  "branch": "trail-275-entire-graph",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "CHANGELOG.md",
+    "internal/agentsetup/claude_hook.go",
+    "internal/cli/agents.go",
+    "internal/cli/setup_ui.go",
+    "internal/cli/setup_ui_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c1/58fcfadc68/0/metadata.json",
+      "transcript": "/c1/58fcfadc68/0/full.jsonl",
+      "compact_transcript": "/c1/58fcfadc68/0/transcript.jsonl",
+      "content_hash": "/c1/58fcfadc68/0/content_hash.txt",
+      "prompt": "/c1/58fcfadc68/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 94,
+    "cache_creation_tokens": 585139,
+    "cache_read_tokens": 12710859,
+    "output_tokens": 32167,
+    "api_call_count": 47
+  }
+}
