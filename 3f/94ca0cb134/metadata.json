@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "3f94ca0cb134",
+  "strategy": "manual-commit",
+  "branch": "evis/cor-2216-slice-2-indexed-store-reads",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "internal/cli/context.go",
+    "internal/cli/help.go",
+    "internal/cli/root.go",
+    "internal/sem/search_store.go",
+    "internal/sem/search_store_context.go",
+    "internal/sem/search_store_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3f/94ca0cb134/0/metadata.json",
+      "transcript": "/3f/94ca0cb134/0/full.jsonl",
+      "compact_transcript": "/3f/94ca0cb134/0/transcript.jsonl",
+      "content_hash": "/3f/94ca0cb134/0/content_hash.txt",
+      "prompt": "/3f/94ca0cb134/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 102,
+    "cache_creation_tokens": 2256121,
+    "cache_read_tokens": 27852794,
+    "output_tokens": 34348,
+    "api_call_count": 51,
+    "subagent_tokens": {
+      "input_tokens": 0,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0,
+      "output_tokens": 0,
+      "api_call_count": 0
+    }
+  }
+}
