@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "609f01e4f9da",
+  "strategy": "manual-commit",
+  "branch": "trail-275-entire-graph",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/agents.go",
+    "internal/cli/setup_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/60/9f01e4f9da/0/metadata.json",
+      "transcript": "/60/9f01e4f9da/0/full.jsonl",
+      "compact_transcript": "/60/9f01e4f9da/0/transcript.jsonl",
+      "content_hash": "/60/9f01e4f9da/0/content_hash.txt",
+      "prompt": "/60/9f01e4f9da/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 34,
+    "cache_creation_tokens": 246379,
+    "cache_read_tokens": 4006857,
+    "output_tokens": 5929,
+    "api_call_count": 17
+  }
+}

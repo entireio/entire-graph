@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "609f01e4f9da",
+  "session_id": "0f1f86cd-32e1-43e7-a97d-48e04381152b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-22T22:03:09.427634Z",
+  "branch": "trail-275-entire-graph",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/agents.go",
+    "internal/cli/setup_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "4e754508e05c",
+  "checkpoint_transcript_start": 620,
+  "transcript_lines_at_start": 620,
+  "compact_transcript_start": 127,
+  "token_usage": {
+    "input_tokens": 34,
+    "cache_creation_tokens": 246379,
+    "cache_read_tokens": 4006857,
+    "output_tokens": 5929,
+    "api_call_count": 17
+  },
+  "session_metrics": {
+    "turn_count": 4
+  }
+}
