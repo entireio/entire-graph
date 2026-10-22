@@ -1,0 +1,67 @@
+{
+  "cli_version": "0.11.7-nightly.202610202101.fedd31ca10",
+  "checkpoint_id": "4e2f46a2f157",
+  "session_id": "b197b77a-4e61-4aa9-8638-adfad6229baf",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-22T03:49:06.307412Z",
+  "branch": "alex/bump-certifi",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "bench/memory/FAIR-CONFIG.md",
+    "bench/memory/UPSTREAM.md",
+    "bench/memory/requirements-lock-py312.txt"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5-5[1m]",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 90,
+    "cache_creation_tokens": 40238,
+    "cache_read_tokens": 6046911,
+    "output_tokens": 16476,
+    "api_call_count": 40,
+    "subagent_tokens": {
+      "input_tokens": 48,
+      "cache_creation_tokens": 234352,
+      "cache_read_tokens": 2203602,
+      "output_tokens": 12872,
+      "api_call_count": 24
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01MCeKh4ugTqcE73nP9tabLs",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "trail"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 324,
+        "end": 325,
+        "entry_ids": [
+          "d83ae5e6-6fb3-4d5e-a8e9-a9a0ae888447"
+        ],
+        "tool_use_id": "toolu_01MCeKh4ugTqcE73nP9tabLs"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01MCeKh4ugTqcE73nP9tabLs"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: trail",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 6
+  }
+}

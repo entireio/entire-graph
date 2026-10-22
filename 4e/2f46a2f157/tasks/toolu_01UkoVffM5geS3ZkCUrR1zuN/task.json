@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01UkoVffM5geS3ZkCUrR1zuN",
+  "agent_id": "a2e4d7de29f91f6b2",
+  "subagent_type": "review-steward",
+  "task_description": "Steward PR 355 review loop",
+  "token_usage": {
+    "input_tokens": 40,
+    "cache_creation_tokens": 198657,
+    "cache_read_tokens": 2113253,
+    "output_tokens": 9933,
+    "api_call_count": 20
+  },
+  "started_at": "2026-10-22T14:05:08.661816+11:00",
+  "completed_at": "2026-10-22T14:20:32.604954+11:00"
+}

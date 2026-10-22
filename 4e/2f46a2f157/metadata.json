@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.11.7-nightly.202610202101.fedd31ca10",
+  "checkpoint_id": "4e2f46a2f157",
+  "strategy": "manual-commit",
+  "branch": "alex/bump-certifi",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "bench/memory/FAIR-CONFIG.md",
+    "bench/memory/UPSTREAM.md",
+    "bench/memory/requirements-lock-py312.txt"
+  ],
+  "sessions": [
+    {
+      "metadata": "/4e/2f46a2f157/0/metadata.json",
+      "transcript": "/4e/2f46a2f157/0/full.jsonl",
+      "compact_transcript": "/4e/2f46a2f157/0/transcript.jsonl",
+      "content_hash": "/4e/2f46a2f157/0/content_hash.txt",
+      "prompt": "/4e/2f46a2f157/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 90,
+    "cache_creation_tokens": 40238,
+    "cache_read_tokens": 6046911,
+    "output_tokens": 16476,
+    "api_call_count": 40,
+    "subagent_tokens": {
+      "input_tokens": 48,
+      "cache_creation_tokens": 234352,
+      "cache_read_tokens": 2203602,
+      "output_tokens": 12872,
+      "api_call_count": 24
+    }
+  }
+}
