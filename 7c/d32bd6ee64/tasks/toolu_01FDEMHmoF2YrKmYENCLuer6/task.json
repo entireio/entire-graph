@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01FDEMHmoF2YrKmYENCLuer6",
+  "agent_id": "a49665f99708e6493",
+  "subagent_type": "entire-search",
+  "task_description": "Search Entire history for init-agents fold",
+  "token_usage": {
+    "input_tokens": 18,
+    "cache_creation_tokens": 21059,
+    "cache_read_tokens": 14122,
+    "output_tokens": 1192,
+    "api_call_count": 2
+  },
+  "started_at": "2026-10-22T14:24:27.545011-07:00",
+  "completed_at": "2026-10-22T14:24:45.209028-07:00"
+}

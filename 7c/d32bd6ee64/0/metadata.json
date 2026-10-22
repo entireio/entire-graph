@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "7cd32bd6ee64",
+  "session_id": "a521ede5-24e8-4299-a8ed-aa1b93f45b1e",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-22T21:29:27.640708Z",
+  "branch": "remove-init-agents-docs",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/adr/0003-working-tree-search-snapshot-cache.md",
+    "internal/agentsetup/guide.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "b171dc914fa1",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 56,
+    "cache_creation_tokens": 89854,
+    "cache_read_tokens": 2335373,
+    "output_tokens": 21419,
+    "api_call_count": 28,
+    "subagent_tokens": {
+      "input_tokens": 18,
+      "cache_creation_tokens": 21059,
+      "cache_read_tokens": 14122,
+      "output_tokens": 1192,
+      "api_call_count": 2
+    }
+  }
+}
