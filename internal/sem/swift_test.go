@@ -723,3 +723,19 @@ func TestSwiftLeadingOperatorContinuationParses(t *testing.T) {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
 }
+
+// `@autoclosure() -> T?` has no space before the function type's empty
+// parameter list. Masking empty attribute calls (`@Option()`) for the 0.5.0
+// grammar also stripped that `()`, leaving an invalid parameter type.
+func TestSwiftAttributeBeforeEmptyFunctionTypeParses(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("TestUtils.swift", `public func assertNil<T>(block: @autoclosure() -> T?, _ message: String? = nil) {
+    XCTAssert(block() == nil, message ?? "")
+}
+`)
+	if language != "Swift" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}

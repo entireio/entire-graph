@@ -1457,12 +1457,8 @@ func maskSwiftUnsupportedSyntax(content string) string {
 			continue
 		}
 		text = maskSwiftPropertyWrapperPrefix(text)
-		text = maskSwiftEmptyAttributeCalls(text)
 		text = replacePatternSameLength(text, swiftTypedThrowsPattern, "throws")
 		if replacement, ok := maskSwiftAsyncForLine(text); ok {
-			text = replacement
-		}
-		if replacement, ok := maskSwiftOptionalBindingShorthand(text); ok {
 			text = replacement
 		}
 		if strings.Contains(text, `"""`) {
@@ -1572,12 +1568,6 @@ func swiftNextNonEmptyTrimmedLine(lines []string, start int) string {
 	return ""
 }
 
-func maskSwiftEmptyAttributeCalls(text string) string {
-	return swiftEmptyAttributeCallPattern.ReplaceAllStringFunc(text, func(match string) string {
-		return strings.TrimSuffix(match, "()") + strings.Repeat(" ", len("()"))
-	})
-}
-
 func swiftComputedStringPropertyHasRecoverableBody(lines []string) bool {
 	hasExpression := false
 	for _, line := range lines {
@@ -1593,22 +1583,6 @@ func swiftComputedStringPropertyHasRecoverableBody(lines []string) bool {
 		return false
 	}
 	return hasExpression
-}
-
-func maskSwiftPropertyWrapperPrefix(text string) string {
-	matches := swiftPropertyWrapperPrefixPattern.FindStringIndex(text)
-	if len(matches) != 2 {
-		return text
-	}
-	wrapperEnd := strings.LastIndex(text[:matches[1]], " var ")
-	if wrapperEnd < 0 {
-		wrapperEnd = strings.LastIndex(text[:matches[1]], " let ")
-	}
-	if wrapperEnd < 0 {
-		return text
-	}
-	declStart := wrapperEnd + 1
-	return text[:matches[0]] + strings.Repeat(" ", declStart-matches[0]) + text[declStart:]
 }
 
 func maskSwiftAsyncForLine(text string) (string, bool) {
@@ -1630,13 +1604,20 @@ func maskSwiftAsyncForLine(text string) (string, bool) {
 	return paddedReplacement(leadingWhitespace(text), replacement, len(text)), true
 }
 
-func maskSwiftOptionalBindingShorthand(text string) (string, bool) {
-	matches := swiftOptionalBindingShorthandPattern.FindStringSubmatchIndex(text)
-	if len(matches) != 4 {
-		return text, false
+func maskSwiftPropertyWrapperPrefix(text string) string {
+	matches := swiftPropertyWrapperPrefixPattern.FindStringIndex(text)
+	if len(matches) != 2 {
+		return text
 	}
-	replacement := "if true {"
-	return text[:matches[0]] + sameLengthReplacement(replacement, matches[1]-matches[0]) + text[matches[1]:], true
+	wrapperEnd := strings.LastIndex(text[:matches[1]], " var ")
+	if wrapperEnd < 0 {
+		wrapperEnd = strings.LastIndex(text[:matches[1]], " let ")
+	}
+	if wrapperEnd < 0 {
+		return text
+	}
+	declStart := wrapperEnd + 1
+	return text[:matches[0]] + strings.Repeat(" ", declStart-matches[0]) + text[declStart:]
 }
 
 var (
@@ -1644,8 +1625,6 @@ var (
 	cSharpBareAsyncArgumentPattern          = regexp.MustCompile(`([(,]\s*)async(\s*[,)])`)
 	cSharpDictionaryIndexInitializerPattern = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
 	swiftTypedThrowsPattern                 = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
-	swiftOptionalBindingShorthandPattern    = regexp.MustCompile(`\bif\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{`)
-	swiftEmptyAttributeCallPattern          = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*\(\)`)
 	swiftPropertyWrapperPrefixPattern       = regexp.MustCompile(`^(\s*)@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+(?:var|let)\s+`)
 	swiftComputedStringPropertyStartPattern = regexp.MustCompile(`^((?:(?:private|fileprivate|internal|public)\s+)?)var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|\[String\])\s*\{$`)
 	cControlIteratorMacroPattern            = regexp.MustCompile(`^(?:(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)|(?:foreach|foreach_ptr|foreach_node|foreach_oid|foreach_int|foreach_xid|foreach_delete_current|forboth|for_both_cell|forthree|for_fourth_cell|for_each_from|dlist_foreach(?:_modify)?|dclist_foreach(?:_modify)?|slist_foreach(?:_modify)?|hash_seq_search|SGITITERATE))\s*\(`)
