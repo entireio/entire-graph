@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.11.7-nightly.202610202101.fedd31ca10",
+  "checkpoint_id": "af3dfe488a7f",
+  "strategy": "manual-commit",
+  "branch": "alex/fix-vulns",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "bench/memory/FAIR-CONFIG.md",
+    "bench/memory/UPSTREAM.md",
+    "bench/memory/requirements-lock-py312.txt"
+  ],
+  "sessions": [
+    {
+      "metadata": "/af/3dfe488a7f/0/metadata.json",
+      "transcript": "/af/3dfe488a7f/0/full.jsonl",
+      "compact_transcript": "/af/3dfe488a7f/0/transcript.jsonl",
+      "content_hash": "/af/3dfe488a7f/0/content_hash.txt",
+      "prompt": "/af/3dfe488a7f/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 36,
+    "cache_creation_tokens": 101232,
+    "cache_read_tokens": 2091440,
+    "output_tokens": 7085,
+    "api_call_count": 18
+  }
+}
