@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01GHD71CkFxMVfquqe8yJtVR",
+  "agent_id": "a14d3b69967133440",
+  "subagent_type": "Explore",
+  "task_description": "Map graph query scoring pipeline",
+  "token_usage": {
+    "input_tokens": 28,
+    "cache_creation_tokens": 99524,
+    "cache_read_tokens": 945828,
+    "output_tokens": 7582,
+    "api_call_count": 14
+  },
+  "started_at": "2026-10-21T17:14:06.546196-07:00",
+  "completed_at": "2026-10-21T18:36:11.074133-07:00"
+}

@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_019BD824nQRRkW5n6wvqk62c",
+  "agent_id": "ad96627b4b53b5b4d",
+  "subagent_type": "Explore",
+  "task_description": "Efficiency+altitude review of store diff",
+  "token_usage": {
+    "input_tokens": 20,
+    "cache_creation_tokens": 72058,
+    "cache_read_tokens": 529627,
+    "output_tokens": 12528,
+    "api_call_count": 10
+  },
+  "started_at": "2026-10-21T17:49:01.456505-07:00",
+  "completed_at": "2026-10-21T18:36:11.162073-07:00"
+}

@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01EFkALt1ofxM4GPhijER2j6",
+  "agent_id": "a4fb66ba503ec5644",
+  "subagent_type": "Explore",
+  "task_description": "Reuse review of batching diff",
+  "token_usage": {
+    "input_tokens": 16,
+    "cache_creation_tokens": 49493,
+    "cache_read_tokens": 290853,
+    "output_tokens": 3114,
+    "api_call_count": 8
+  },
+  "started_at": "2026-10-21T15:38:04.596629-07:00",
+  "completed_at": "2026-10-21T18:36:10.95689-07:00"
+}

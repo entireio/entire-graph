@@ -1,0 +1,476 @@
+this is merged: https://github.com/entireio/entire-graph/pull/353 
+
+can you validate it
+
+---
+
+<task-notification>
+<task-id>bte0w1bed</task-id>
+<tool-use-id>toolu_01NYghEJRA2uC6EQj4gPGHRY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/bte0w1bed.output</output-file>
+<status>completed</status>
+<summary>Background command "Validate merged 353: cold x2, warm, byte-compare, fixture" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b6gygs9nr</task-id>
+<tool-use-id>toolu_01U3GX4B1KKyUzj6ZPLfuMZo</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/b6gygs9nr.output</output-file>
+<status>completed</status>
+<summary>Background command "Interleaved A/B of pre-hoist vs post-hoist under same load" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+let's try the first solution. baseline before and after the implemenetaiotn to see the net result
+
+---
+
+<task-notification>
+<task-id>bwh2z6k4s</task-id>
+<tool-use-id>toolu_01SaEPTukuSnu8Nf3aK6TNsC</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/bwh2z6k4s.output</output-file>
+<status>completed</status>
+<summary>Background command "Profile batched build and interleaved A/B vs main" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b2zcpd5pl</task-id>
+<tool-use-id>toolu_018gz4uLaQyr2goJPE5dmR1f</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/b2zcpd5pl.output</output-file>
+<status>completed</status>
+<summary>Background command "Full sem suite on batched branch" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+/review-pr
+
+---
+
+<task-notification>
+<task-id>a4fb66ba503ec5644</task-id>
+<tool-use-id>toolu_01EFkALt1ofxM4GPhijER2j6</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/a4fb66ba503ec5644.output</output-file>
+<status>completed</status>
+<summary>Agent "Reuse review of batching diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>clean — no existing batching/chunking helper, bounded-batch channel pattern, or generic pipeline in this repo that the new code duplicates.
+
+Checked: `internal/sem` (`runIndexedPipeline` at /Users/evisdrenova/conductor/workspaces/entire-brain/denpasar/.context/entire-graph/internal/sem/provider_parallel.go:316 is the whole-result-per-index variant, not a record-batcher, and the streaming variant is deliberately the "bounded streaming" alternative to it), plus `internal/gitutil`, `internal/termsafe`, `internal/cli`, `internal/agentsetup`, `internal/filedigest`. Every `flush` closure hit in `internal/sem` (provider.go ~10757/11061/11230/11287/11823, search_verify.go ~2720/2804/3334) is a YAML/shell token accumulator, not a channel-batch flush. There is no shared util package, and `chan []T` appears nowhere else in `internal/`. `slices.Chunk` (available on go 1.27) chunks an existing slice and cannot serve a push-style `emit` callback, so it is not a substitute either.</result>
+<usage><subagent_tokens>50019</subagent_tokens><tool_uses>11</tool_uses><duration_ms>42833</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a107ef2418951286d</task-id>
+<tool-use-id>toolu_01XzftGfvt3SikGHYJwjqK9b</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/a107ef2418951286d.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplification review of batching diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Findings (2):
+
+**1. `internal/sem/provider_parallel_stream.go:68` — the per-record `workerCtx.Err()` check in the emit callback is now redundant with the `select`/`&lt;-workerCtx.Done()` in `flush`.**
+
+Cost: `workerCtx` is a `*cancelCtx`, whose `Err()` does `c.mu.Lock(); err := c.err; c.mu.Unlock()`. That is a lock/unlock pair on one mutex *shared by all workers*, once per record — ~250k contended lock acquisitions across eight goroutines, in the exact hot path this diff exists to de-cost. It is the last remaining per-record synchronization after the channel send was batched away, so it partially cancels the win the comment above it advertises.
+
+Simpler form: delete the three-line guard and let the callback be `batch = append(batch, value); if len(batch) == providerStreamBatchRecords { flush() }`. Cancellation is still observed once per 256 records by the `select` in `flush`, which drops the batch; the only difference is that a cancelled worker accumulates at most one more partial batch (≤256 records, already inside the documented bound) before `process` returns. Per-record cancellation responsiveness was never real anyway — `process` is what has to notice the context, and it gets `workerCtx` directly.
+
+**2. `internal/sem/provider_parallel_stream.go:60-61` — the `full` temp plus eager re-`make` is a more convoluted spelling of "send, then reset".**
+
+Cost: a reader has to reason about why the reassignment happens *before* the send (it does not need to — nothing touches `batch` during the send, since the callback is only invoked from this same goroutine). It also allocates the replacement buffer even on the cancellation path and on the final flush, where it is immediately garbage.
+
+Simpler form:
+```go
+flush := func() {
+	if len(batch) == 0 {
+		return
+	}
+	select {
+	case out.batches &lt;- batch:
+	case &lt;-workerCtx.Done():
+	}
+	batch = make([]T, 0, providerStreamBatchRecords)
+}
+```
+Same semantics, one fewer local, and the "hand off the slice, then start a fresh one" ordering reads in the order it happens.
+
+No dead code left behind: `providerStreamBufferRecords` has no remaining references, and the two new constants are both used (file + test). The long rationale comment at lines 8-20 is benchmark/decision context, not a restatement of the code — leave it. The test's new 6-line comment at `provider_parallel_stream_test.go:31` likewise explains why the threshold moved to `providerStreamBatchRecords`, which the code cannot say by itself.</result>
+<usage><subagent_tokens>50163</subagent_tokens><tool_uses>4</tool_uses><duration_ms>51716</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a48222914d0037d10</task-id>
+<tool-use-id>toolu_01CNJ78FcSRn2uceNKNph6GE</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/a48222914d0037d10.output</output-file>
+<status>completed</status>
+<summary>Agent "Altitude review of batching diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Verdict: the altitude is right.
+
+The measured 31% was `pthread_cond_signal` on the handoff, and the handoff is exactly what this layer owns — so the fix lands on the layer that caused the cost, as a general mechanism (batching applies to every `T`, every worker, every caller) rather than a special case.
+
+Specifically on the "deeper fix is encode-in-workers" hypothesis — I checked it and it does not hold as a root cause:
+
+- `/Users/evisdrenova/conductor/workspaces/entire-brain/denpasar/.context/entire-graph/internal/sem/provider.go:1476-1531` — the serial stage is not "a JSON encoder." Before `emit(r)` it does global dedup over `seenRelation`/`dataFlowEvidence`, profile filtering (`spec.emits`, `shallowRelationRetained`), evidence stripping that *mutates* `r`, external-record merging against `symbolsByID`/`filesByID`, and progress counting. Those are inherently single-threaded and need the struct, not bytes. Encoding in workers would mean encoding records that the serial stage then discards, and encoding a record whose `Evidence` the serial stage is about to nil out. Moving encoding upstream therefore requires first moving dedup/filter upstream — a much larger change, and not the thing the profile pointed at.
+- The shipped change *eases* that follow-up rather than foreclosing it: the pipeline stays generic over `T`, so a future `T = []byte` (or a pre-encoded struct) drops in with `chan []T` unchanged. Batching composes with byte handoff instead of competing with it.
+
+One minor note, follow-up at most, not a blocker:
+
+**File:** `/Users/evisdrenova/conductor/workspaces/entire-brain/denpasar/.context/entire-graph/internal/sem/provider_parallel_stream.go:21-24`
+**Summary:** The generic pipeline now carries a tuning constant (`256`) whose sizing justification in the comment ("a few MB across eight workers") is derived from `RelationRecord` at the single caller, so a record-count batch in a `T`-generic helper is implicitly caller-specific.
+**General alternative:** make the batch size a pipeline parameter (or a size-aware/opportunistic flush: flush early when the channel send would not block) so the bound is expressed by the caller that knows `sizeof(T)`. **Follow-up, and only if a second caller appears** — with exactly one production caller (`provider.go:6501`) plus tests, plumbing a knob now would be the over-abstraction, and the comment already discloses the assumption. Keep as-is in this PR.</result>
+<usage><subagent_tokens>60483</subagent_tokens><tool_uses>11</tool_uses><duration_ms>69435</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a0903c549f4478956</task-id>
+<tool-use-id>toolu_01Us6RtftHxxPUvs5TDjYGca</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/a0903c549f4478956.output</output-file>
+<status>completed</status>
+<summary>Agent "Efficiency review of batching diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Read the diff, the final file, the call site (`internal/sem/provider.go:6501`), and `RelationRecord` (`internal/sem/provider.go:410`).
+
+Sizing note first, since it changes the math: `RelationRecord` is **192 bytes** by value (8 string headers = 128B, float64 8B, two slice headers 48B, int 8B) — the ~500B figure counts string payloads, which live off-struct and are never copied. So a 256-cap batch is **48 KB**, still above the 32 KB large-object threshold, so every batch takes the mheap/pageAlloc path and is zeroed (the type has pointers).
+
+**Finding 1 — `/Users/evisdrenova/conductor/workspaces/entire-brain/denpasar/.context/entire-graph/internal/sem/provider_parallel_stream.go:68`**
+The per-record `workerCtx.Err()` survived the batching rewrite and is now the only per-record synchronization left in the hot path.
+Cost: `cancelCtx.Err()` takes `c.mu.Lock()`, and `workerCtx` is a *single* context shared by all 8 workers (created once at line 41), so this is ~250k contended acquisitions of one mutex from 8 cores — ~10-25 ms of lock time plus cacheline ping-pong on exactly the kind of cross-core traffic this diff set out to kill (the comment cites 31% in `pthread_cond_signal`).
+Cheaper: check cancellation once per batch instead of once per record — move the check into the `len(batch) == providerStreamBatchRecords` branch (flush already selects on `workerCtx.Done()`, so a cancelled worker still drops out there). 250k checks → ~1k. Same drop-on-cancel semantics, one fewer shared-mutex op per record.
+
+**Finding 2 — `.../provider_parallel_stream.go:61`**
+`flush` unconditionally allocates a replacement batch, including on the final flush at line 76, where the goroutine returns immediately after and the buffer is never written.
+Cost: one dead 48 KB zeroed large allocation per file = ~2000 × 48 KB ≈ **96 MB of allocate-and-discard per run**, ~40% of this function's total churn. The eager `make` at line 55 adds the same waste for every file that emits zero relations (inventory-only/unparseable files, of which there are many in a 2k-file tree).
+Cheaper: `batch = nil` in `flush`, and allocate in the emit closure on first append (`if batch == nil { batch = make([]T, 0, providerStreamBatchRecords) }`). Deletes both the final-flush buffer and the zero-record-file buffer; no API or ordering change.
+
+**Finding 3 — `.../provider_parallel_stream.go:55` and `:61` (lower confidence, biggest ceiling)**
+Every batch is freshly allocated even though the consumer is its exclusive owner the moment the loop at line 102-106 finishes.
+Cost: ~5000 allocations/run (2000 eager + ~1000 full-batch refills + ~2000 final flushes) × 48 KB ≈ **240 MB zeroed per snapshot**, all on the large-object path. That's roughly 25-40 ms of memset, ~5-10 ms of mheap allocation, and 1-2 extra GC cycles — call it 50-150 ms, low single-digit percent of a multi-second 2k-file snapshot. Also note the fixed 256 cap is oversized for the median file (250k/2k ≈ 125 records), so ~half of each eager buffer is zeroed and never touched.
+Cheaper: recycle. After the emit loop at line 106, hand the batch back through a small per-pipeline free list (buffered `chan []T` of capacity `workers*(providerStreamBufferBatches+2)`, or a `sync.Pool`), and have `flush` take `b := &lt;-free` / `b[:0]` instead of `make`. Steady state is ~32 live buffers (~1.5 MB) and ~zero allocations after warmup. Worth it only if a profile shows GC/`memclrNoHeapPointers` on this path — Findings 1 and 2 are strictly cheaper to implement and I'd do those first.
+
+Explicitly **not** flagged: the closure captures. `batch` escapes to the heap because both `flush` and the emit closure capture it, costing a pointer indirection and a write barrier per append — ~2-5 ms over 250k records, and unavoidable anyway since the emit closure escapes into `process`. Also not flagged: `for _, value := range batch` at line 102 costs one extra 192 B copy per record versus `for i := range batch { emit(index, batch[i]) }` — that's ~48 MB of memmove, ~5 ms, below your materiality bar (though it is a free one-line change if you are touching the loop anyway). Copy count is otherwise unchanged from the pre-diff per-send path (3 copies then, 3 now).</result>
+<usage><subagent_tokens>58458</subagent_tokens><tool_uses>8</tool_uses><duration_ms>152599</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bdpabe5h6</task-id>
+<tool-use-id>toolu_01Cr4pwF2ZNoUZHCmwgeRoAf</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/bdpabe5h6.output</output-file>
+<status>completed</status>
+<summary>Background command "Verify review fixes: tests, race, build, byte-compare" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+push the fixes and make sure all findings are resolved
+
+---
+
+<task-notification>
+<task-id>b09jvs5dt</task-id>
+<tool-use-id>toolu_018htme6DbozDYEjXzqF4WH3</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/b09jvs5dt.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR 354 checks and Bugbot findings" stream ended</summary>
+<event>checks:    1 (actions)    1 (c-cpp)    1 (go)    4 (macos-latest)    1 (python)    4 (ubuntu-latest)   12 (windows-latest)    1 Gates    8 pass  bugbot-comments: 0
+ALL CHECKS SETTLED: checks:    1 (actions)    1 (c-cpp)    1 (go)    4 (macos-latest)    1 (python)    4 (ubuntu-latest)   12 (windows-latest)    1 Gates    8 pass  bugbot-comments: 0</event>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bjw5aalr2</task-id>
+<tool-use-id>toolu_01259UtudUN2cZaszSm7niJH</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/bjw5aalr2.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR 354 checks completion (fixed parsing)" stream ended</summary>
+<event>FAILING checks: 1, bugbot: 0</event>
+</task-notification>
+
+---
+
+okay this is meged: https://github.com/entireio/entire-graph/pull/354
+
+validate it on main
+
+---
+
+<task-notification>
+<task-id>b71ygflx2</task-id>
+<tool-use-id>toolu_01JD2B678kmnDjJXRSBvtk6P</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/b71ygflx2.output</output-file>
+<status>completed</status>
+<summary>Background command "Validate merged 354: cold x2, warm, byte-compares, scheduler profile, fixture" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+and this is part of the brief pipeline right?
+
+---
+
+right that's fair. 
+
+Okay so then back to the original question, do we still need teh cache? what does the performance profile now look like on cold and warm processes
+
+---
+
+<task-notification>
+<task-id>b0zr0c34n</task-id>
+<tool-use-id>toolu_01Vcx8y7Ri1Pz4yPCx4ghrkr</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/b0zr0c34n.output</output-file>
+<status>completed</status>
+<summary>Background command "Measure graph query --head cold and warm latency" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+if that's the case then we should just do have graph own the queryable store and just fix all of these issue soutright?
+
+---
+
+<task-notification>
+<task-id>bale7dd3e</task-id>
+<tool-use-id>toolu_01LnTeEsoMiDeK1xuJybpSZU</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/bale7dd3e.output</output-file>
+<status>completed</status>
+<summary>Background command "Profile a warm graph query to locate the 8s" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a161e1f33f9f54f6d</task-id>
+<tool-use-id>toolu_01836CazNVprPdSzJyK9HGjz</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/a161e1f33f9f54f6d.output</output-file>
+<status>completed</status>
+<summary>Agent "Map Brain semantic sqlite schema" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Map of Brain's `semantic.sqlite` (all paths absolute; Brain repo root `/Users/evisdrenova/conductor/workspaces/entire-brain/denpasar`).
+
+**1. Schema** — `internal/cli/semantic.go:1998-2027` (`initializeSemanticSQLite`), one flat DDL list, no migrations.
+- `meta(key PK, value)` :2002 — schema_version, provider, provider_version, generation_id
+- `files(path PK, blob, content_hash, language)` :2003
+- `symbols(id PK TEXT, kind, name, qualified_name, file_path, start_line, end_line, signature, language, stable_id_version)` :2004
+- `relations(id INTEGER PK AUTOINC, from_id, to_id, type, confidence, reason, warning_codes)` :2005
+- `reverse_relations(to_id, from_id, type)` :2006 — denormalized mirror, written on every relation insert
+- `runtime_traces(...)` :2007 (also re-created lazily at `semantic_graph.go:1382`)
+- `symbol_fts(id PK, text)` :2016 — **not** an FTS5 virtual table; a plain table holding `name+qualified_name+signature+file_path+kind+language` joined by spaces (:2205), queried with `instr(lower(text), ?)`
+- `parse_cache(path PK, blob, content_hash, artifact_path)` :2017, `warnings` :2018, `metrics(key PK, value)` :2019
+- Indexes :2008-2015 — `symbols(name)`, `symbols(qualified_name)`, `symbols(file_path)`, `relations(from_id)`, `relations(to_id)`, `reverse_relations(to_id)`, `runtime_traces(from_id/to_id)`. No index on `relations(type)`, none on `symbol_fts.text` (unindexable for `instr`).
+
+**2. Ingest** — `populateSemanticSQLite` `internal/cli/semantic.go:2043-2182`.
+- Single `db.Begin()` wrapping the entire build; one commit at :2177. No batching, no prepared-statement reuse: one `tx.Exec` per record (`insertSemanticSymbol` :2195 does 2 execs — symbols + symbol_fts; `insertSemanticRelation` :2211 does 2 — relations + reverse_relations). So 52k symbols ≈ 104k execs, 178k relations ≈ 356k execs.
+- NDJSON streamed via `newSemanticScanner` (`semantic_stream.go`), `json.Unmarshal` per line; header consumed first (:2080).
+- Only commented hot-spot measurement: `internal/cli/semantic.go:2029-2041` — "a snapshot record is a JSON unmarshal plus an INSERT (~0.1ms, 205k of them)" vs "a parse-cache file is a sha256 + artifact write (~11ms, ~900 of them)". Cancel checks every 1024 records / 16 files.
+- Second pass :2140-2165 writes `files` + `parse_cache` and a sha256-addressed JSON artifact per file (`writeSemanticParseCacheArtifact` :2249).
+- No `ANALYZE`, no `VACUUM`, no bulk-load pragmas (`synchronous=OFF`, `cache_size`) anywhere.
+
+**3. Read path (brief)**
+- `semanticContextFacts` :4226 → `findSemanticSymbolsInSQLite` :4959: one SQL over `symbols JOIN symbol_fts ON f.id=s.id WHERE instr(lower(f.text), ?) &gt; 0 OR lower(s.id)=? OR lower(s.qualified_name)=?`, `ORDER BY CASE…` rank, `LIMIT/OFFSET`. The `instr` branch is a **full scan of symbol_fts + join**; ranking is a SQL CASE, not Go.
+- Multi-word fallback `findSemanticSymbolsTokenizedSQLite` :4836 — per token a `SELECT count(*) FROM symbol_fts WHERE instr(...)` (one full scan **per token**) for IDF, then one scan-join whose score is a sum of inlined-weight `CASE WHEN instr(...)` terms. IDF weight `tokenIDFWeight` :4813.
+- Relations: `findSemanticRelationsForSymbolsInSQLite` :5064 — indexed `from_id IN (…) OR to_id IN (…)`, chunked at 900 to stay under SQLITE_MAX_VARIABLE_NUMBER, merged by rowid with `trimMerged` keeping O(limit) memory.
+- Neighbors: `loadSemanticSymbolsByIDsSQLite` :5268 — indexed `id IN (…)`, chunked 900, explicitly "O(fan-out), not O(total symbols)".
+- `semantic.tests` → `semanticTestFacts` :4620 → `semanticGraphFacts` :4642 → `traverseSemanticImpactSQLite` :5192 (BFS, depth 1 for tests) **+ `loadSemanticSymbolsByIDSQLite` :5242 which does `SELECT … FROM symbols` with no WHERE — the whole symbol table into a Go map**, called twice per tests call (once inside traverse, once in graphFacts). Ranking is then pure Go: `rankSemanticTestSuggestions` / `semanticTestRankCandidate` in `internal/cli/semantic_test_suggestions.go:84,160`.
+- Note on the profile number: `in=230k` is **not** measured rows scanned — it's `semanticSource.Symbols + semanticSource.Relations` read from the manifest (`internal/cli/agent_surface.go:1401`), passed as `InputCount` to all three semantic stages (:1429, :1443, :1457).
+
+**4. Driver** — pure-Go `modernc.org/sqlite`, driver name `"sqlite"`, `internal/cli/sqlite_driver_purego.go:12-16` (cgo/mattn variant retired). Reads open with `sqliteReadOnlyDSN` → `file:&lt;path&gt;?immutable=1&amp;mode=ro` (`internal/cli/sqlite_read.go:11-38`), which avoids WAL/shm sidecars and lets SQLite skip locking entirely; `sqliteLiveReadOnlyDSN` :18 drops `immutable` for live-WAL readers. Each read helper does its own `sql.Open`/`defer Close` (no shared pool, several opens per brief). Only build-time pragma is `journal_mode=WAL` (:2001) plus a `wal_checkpoint(TRUNCATE)` at `semantic_graph.go:1050`. No `mmap_size`, `cache_size`, `busy_timeout`, or `temp_store` on the semantic store (other Brain indexes do set `busy_timeout` — `history_fts.go:166`, `doc_fts.go:69`).
+
+**5. Verdict** — hybrid: edge and id lookups are genuinely indexed (`relations.from_id/to_id`, `symbols.id`, chunked IN), but symbol *search* is a full `instr()` scan of `symbol_fts` (once per query, once more per token for IDF) and the tests/graph path loads the entire `symbols` table into Go for map-side ranking — so the 1.4s is "one cheap full scan over 52k rows + indexed fan-out", not an index-only read path.</result>
+<usage><subagent_tokens>74200</subagent_tokens><tool_uses>25</tool_uses><duration_ms>94516</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a14d3b69967133440</task-id>
+<tool-use-id>toolu_01GHD71CkFxMVfquqe8yJtVR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/a14d3b69967133440.output</output-file>
+<status>completed</status>
+<summary>Agent "Map graph query scoring pipeline" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Map of the warm `query --head` pipeline (all paths under `/Users/evisdrenova/conductor/workspaces/entire-brain/denpasar/.context/entire-graph`):
+
+**1. Stage order from `searchRepository` (internal/sem/search.go:1123)**
+- query build: `buildSearchQuery` :6300, `buildSparseSearchQueryExpanded` :6570
+- index load: `loadCachedCompleteSearchSnapshotBinding` search_cache.go:182 → `loadCachedSearchSnapshot` :1308 → `readSearchSnapshot` :1436 (gzip+`encoding/json` decode of whole `cachedSearchSnapshot` :56) → `restoreCachedSearchInternals` :831 (rebuilds per-symbol side maps). **This is the 3.1s.**
+- preselect: `preselectSearchFiles` search.go:2480 (called :1222)
+- selective graph: `loadOrDeriveSelectiveSearchSnapshot` :1375 / `loadOrBuildSearchGraphSnapshot` :1384
+- source reader: `openSearchContentReader` :2132 (git `cat-file --batch` over commit, `cachedContentReader` :1004)
+- corpus DF pass: inline loop :1437–1479 (`newSearchQueryTermMatcher` over full content of every selected file) → `q.withCorpusPresence` :1480
+- candidate gen: `candidatesForFile` :1500/:3581 → `makeSearchCandidate` :3979; sparse (deep only) `sparseCandidatesForFile` :1530/:3680
+- scoring: `searchChooseIDFStatistics` :1571 → `scoreSearchCandidates` :1585/:4099 → `searchGraphCallerBoosts` :1586/:4723 + `applySearchCallerBoosts` :4778
+- expansion: `expandGraphCandidates` :1590, `expandIdentifierUsageCandidates` :1599/:5038, `expandSameContainerNeighborCandidates` :1614, `expandSameFileBridgeCandidates` :1619
+- priors/dedup: `dedupeSemanticMirrorCandidates` :1630, `applySearchFileClassPrior` :1632, `applySearchBoilerplatePrior` :1634, `collapseNearDuplicateCandidates` :1638
+- rank: `selectSearchCandidates` :1643 (search_prose_parent.go:181), hybrid `selectHybridCandidates` :1672/:5516, `promoteFixSiteOverLeadingTest` :1686
+- render: `reanchorSearchDocComments` :1708, `fitSearchResultsToBudget` :1721/:2229, `planSearchEnclosures` :1756 (search_enclosure.go:544), `allocateSearchSnippets` :1778 (:1001), then blocks: `buildSearchClosedSet`/`buildSearchLiteralCluster`/`buildSearchFileOutlines`/`buildSearchVerifyCommand` (~:1930–1990)
+
+**2. Candidate generation** — unit is a *region of a file*, not a symbol. Initial set = `selection.files` (per-file), narrowed in `preselectSearchFiles`: (a) fast path `git grep` over the commit tree, `gitutil.GrepTreePathsIncludingBinary` :2595 ("git-tree-grep" backend, keeps every term-matching file, no cap); (b) `GrepIndexPatternSample` :2650ff; (c) fallback `scoreFile` content scan :2859–2930 (reads every corpus file). Per file, candidates are: one per snapshot symbol region (:3584), plus uncovered match regions (:3613), plus a path-only fallback (:3627). **This whole-file-content loop is the 3.9–4.6s.**
+
+**3. Scoring signals / data read**
+- body text — `searchTermCounts` :6777 on the joined region text (`makeSearchCandidate` :3984); source comes from git blobs read at query time via `openSearchContentReader`, never from the snapshot
+- corpus DF/IDF — full content of every selected file :1437–1479 (+ `selection.termPostings` from preselect :2919)
+- identifier/name tokens — `symbolSearchScore` :7087, `searchNameTermCoverage` :4204, aliases :7124, `compactSearchIdentifier` :7253 (snapshot `SymbolRecord.Name/QualifiedName/Aliases`, provider.go:345)
+- signature — `searchQueryTermMatches(q, symbol.Signature…)` :7116 (snapshot field)
+- path — `pathSearchScore` :6876 + `searchPathPrior` :6894 (path string only)
+- graph neighbors — `snapshot.Relations`: caller degree over `CALLS/ASYNC_CALLS/CONSTRUCTS` ≥ confidence (`searchCallerRelation` :4762); expansion over `searchExpansionRelation` :4976 (+IMPORTS/EXTENDS/IMPLEMENTS/OVERRIDES/USES_TYPE/TESTS/CONFIGURES/SIMILAR_TO)
+- co-change — `FILE_CHANGES_WITH` is rebuilt at cache *load* for full profile (`gitutil.FileCochanges`, search_cache.go:1338–1370); ranking itself does not consume it
+- needs FULL corpus: IDF/DF pass, `searchNeedleIndex` postings :1411, preselect scan. Needs only candidates: BM25 region counts, name/signature/path, caller boosts, all expansions, enclosures.
+
+**4. Final rendering** — source is read from git at result time through the same memoized `read`: `reanchorSearchDocComments` :1708, `planSearchEnclosures` :1756, `allocateSearchSnippets` :1778, `mergeSameFileSearchSpans`, `searchCalleeHop*`, `buildSearchLiteralCluster`/`FileOutlines`. Snapshot supplies only line ranges/kinds/IDs (`FileRecord.Lines` is a *count*, cached as `FileLines map[string]int`, search_cache.go:72) — no body text anywhere in the snapshot.
+
+**5. Precomputable vs raw-text-at-query-time**
+- Precomputable into tables: per-file term postings + DF totals (currently preselect scan / `searchTermPostings`), per-symbol region term counts + docLength (`searchTermCounts`), identifier token splits (`identifier_tokens.go`, `searchNameWordVariants` :4291), symbol name/qualified/signature/aliases/kind/lines, caller-degree boosts (`searchGraphCallerBoosts` is a pure fold over Relations), file-class and boilerplate priors, near-dupe/MinHash `SIMILAR_TO`, path priors, symbol→file/ID indexes built at :1393–1409.
+- Genuinely raw at query time: snippet/enclosure/literal/outline text rendering, `hydrateSparseCandidates`, doc-comment re-anchor, identifier-usage line scanning (`containsIdentifierUsage` :5226), alias-boundary validation in preselect :2578. (Query terms are dynamic, so term-count tables must be posting-list shaped, not per-query.)
+
+**6. `neighbors` / `impact`** — neither uses `cachedSearchSnapshot` via the search entry; both call `sem.LoadOrBuildProviderSnapshot` (internal/cli/neighbors.go:155, internal/cli/impact.go:140), which is the *same* function `loadOrBuildSearchSnapshot` (search_cache.go:1119 → :249), i.e. the identical gzip/JSON snapshot cache — but with `Worktree: true` by default, which `worktreeSnapshotCacheable` (:121) rejects, so they normally rebuild cold rather than hit the cache. They do not touch the records cache (that is `BeginProviderRecordsCache`, internal/cli/root.go:437, used by the record-emitting commands). Source quoting goes through `openSnapshotLineReaderOrDegrade` (neighbors.go:170, impact.go:155) + `annotateNeighborCallSites`/`annotateImpactCallSites` (callsite.go), reading git/worktree at result time.</result>
+<usage><subagent_tokens>102377</subagent_tokens><tool_uses>23</tool_uses><duration_ms>106179</duration_ms></usage>
+</task-notification>
+
+---
+
+yeah definitely A
+
+---
+
+<task-notification>
+<task-id>bqcue0kuh</task-id>
+<tool-use-id>toolu_01BYJXuJ5fnUMPziHDCEJZEy</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/bqcue0kuh.output</output-file>
+<status>completed</status>
+<summary>Background command "Vet, fmt, round-trip test, and search cache test sweep" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+/review-pr
+
+---
+
+<task-notification>
+<task-id>b7pyecso4</task-id>
+<tool-use-id>toolu_01E2JsfMFvqVdr1uVuGeDLz4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/b7pyecso4.output</output-file>
+<status>completed</status>
+<summary>Background command "Smoke: sidecar written, gated query results identical" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a28721fe98cc55fc2</task-id>
+<tool-use-id>toolu_01We5BskxkxGnCtHTEGCuiiT</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/a28721fe98cc55fc2.output</output-file>
+<status>completed</status>
+<summary>Agent "Reuse+simplification review of store diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Six findings, ordered by payoff.
+
+---
+
+**1. `internal/sem/search_store.go:553` + `:579` — the sidecar's name is computed twice instead of being a derived `cacheEntry`.**
+`searchStorePathForEntry` builds `TrimSuffix(entry.relative, ".json.gz") + ".sqlite"`; `writeSearchStoreSidecar` independently builds `TrimSuffix(filepath.Base(entry.relative), ".json.gz") + ".sqlite"`. Cost: two expressions that must stay byte-identical or the writer installs a file the reader never looks for — a silent permanent miss, not an error. The repo already has the pattern for "sibling artifact of an entry": `newCacheStreamEntry` (`cache_entry.go:42`) and `newCacheGenerationEntry` (`:94`) both take the entry's family/version/key and rewrite `relative` with a different suffix. Add `newCacheStoreEntry(...)` the same way; then the path is `filepath.Join(e.root, e.relative)` and the name is `filepath.Base(e.relative)`, both from one source.
+
+**2. `internal/sem/search_store.go:565-604` — `writeSearchStoreSidecar` is the third copy of the confined-write preamble, and its cleanup ladder is unrolled 4×.**
+`os.MkdirAll(entry.root) → os.OpenRoot → openCacheDirectory(root, filepath.Dir(entry.relative)) → createRootTemp` is now verbatim in `cache_entry.go:289-304` (`writeValue`), `records_spool.go:41-54` (`newProviderRecordsSpool`), and here. Cost: ~12 lines ×3, and the symlink/identity threat model is documented only on the `writeValue` copy, so the two newer copies inherit a contract nothing ties them to. Extract `openCacheEntryDirectory(entry cacheEntry) (*os.Root, error)` into `cache_entry.go` next to `openCacheDirectory` and have all three call it. Separately, the four `_ = directory.Remove(temporaryName); discardPrevious(); return err` blocks collapse to the `removeTemporary := true` + single `defer` flag pattern `writeValue` already uses (`cache_entry.go:308-312`).
+
+**3. `internal/sem/search_store.go:420-423` → `search_store_test.go:70-99` — the loader's eager map allocation is what forces `normalizeSearchStoreCache` to exist.**
+The loader lazily allocates `FileLines` (`:576-581`, matching the producer at `search_cache.go:783-826`) but eagerly allocates `SymbolByteRanges`/`SymbolNameLines`/`SymbolParameterNames`/`SymbolSignatureTypes`. That empty-vs-nil skew is 5 of the normalizer's branches. Cost: a 33-line test-only normalizer plus a weakened pin — the stated contract is "`DeepEqual` with the JSON round-trip", but production does not actually satisfy it, so a real fidelity regression in those maps is invisible. Make the four maps lazy exactly like `FileLines`, then delete `normalizeSearchStoreCache` and compare directly. The three `slices.Sorted` calls (`:86-88`) are also unnecessary: both containers carry the ID slices in `Snapshot.Symbols` order (producer `search_cache.go:788-812`; loader appends in `ORDER BY rowid`), so the comment "slice order is unspecified" is wrong and the sort hides an ordering regression.
+
+**4. `internal/sem/search_store.go:274-303` — four symbol columns, three relation columns and six indexes that no query reads.**
+`loadSearchStore` selects `record` plus the side-map columns only; `symbols.name`, `qualified_name`, `file_path`, `kind`, `files.path` and `relations.from_id/to_id/type` are never read back, and all eight are derivable from the `record` JSON sitting in the same row. The six `CREATE INDEX`es have no reader at all. Cost: on the 52k-symbol repo the header cites, three extra copies of every symbol string plus six btrees built inside the write transaction, on every snapshot write, for the speculative "later consumers can read subsets by index" in the file header. Keep `files.path` / `externals.id` / `symbols.id` as PRIMARY KEYs (they carry uniqueness), drop the rest until the consumer that indexes them lands with them.
+
+**5. `internal/sem/search_cache.go:1474` and `internal/sem/search_store.go:623` — `fmt.Sprintf("%x", digest[:])` is now a 4-site idiom on a named type with no formatter.**
+Existing sites: `records_cache.go:406`, `records_spool.go:185`. Cost: the hex encoding of `cacheDigest` is defined by repetition, so a reader has to confirm at each site that the comparison on both ends uses the same spelling (lowercase, no truncation). `cacheDigest` is a declared type at `cache_entry.go:278`; give it `func (d cacheDigest) String() string { return hex.EncodeToString(d[:]) }` and the four call sites become `digest.String()` (or bare `%s`).
+
+**6. `internal/sem/search_store.go:41-52` — `searchStoreEnabled`'s `lookupEnv` parameter is dead, and the env name is a literal where siblings are consts.**
+The only call is `searchStoreEnabled(nil)` at `:612`; no test injects a lookup, so the nil-check branch and the parameter are untested scaffolding. Cost: a seam that reads as "this is tested with a fake environment" when nothing is. Sibling flags declare the name (`maxSourceFilesEnv`, `provider.go:74`; `sweepDirBudgetEnv`, `provider.go:14828`) and read it directly: `func searchStoreEnabled() bool` over `os.LookupEnv(searchStoreEnv)`, matching `resolveSweepDirectoryBudget` (`provider.go:14845`).
+
+---
+
+Checked and deliberately not flagged:
+
+- **map-ordered meta INSERT (`:155`)** — nothing compares sidecar bytes: the sidecar is never digested and readers authenticate it via the `entry_digest` value, not the file. `meta` is `WITHOUT ROWID`, so the four rows land in key order in a single page regardless. Harmless; a `[]struct{key string; value any}` literal is the same length if you want determinism anyway.
+- **`loadSearchStore` is 180 lines (`:315-493`)** — splitting it per table is tempting, but each section writes into a different set of `cache` fields, so the split mostly moves the parameter list around. Doing finding 4 and finding 3 removes the two densest sections and is the better order.
+- **`decodeSearchStoreParallel` (`:524`)** — no existing repo helper duplicates it; `boundedProviderWorkerCount` caps at 8 for I/O-bound file work, which is the wrong bound for a CPU-bound decode.
+- Minor: `createRootTemp` hardcodes a `.json.gz` temp suffix (`cache_entry.go:489`), so the sqlite temp is named `.store-&lt;suffix&gt;.json.gz` until the rename.</result>
+<usage><subagent_tokens>99506</subagent_tokens><tool_uses>18</tool_uses><duration_ms>155052</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ad96627b4b53b5b4d</task-id>
+<tool-use-id>toolu_019BD824nQRRkW5n6wvqk62c</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/ad96627b4b53b5b4d.output</output-file>
+<status>completed</status>
+<summary>Agent "Efficiency+altitude review of store diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Shape verdict first
+
+The sidecar-with-gz-authoritative-and-silent-fallback shape is right for a gated rollout — a new on-disk format that must prove a 3.1s win deserves a fallback, and the fidelity contract (`DeepEqual` round-trip) is the correct way to earn the right to swap later. What entrenches the two artifacts is not the sidecar itself but **the digest coupling**: because validity is defined as "SHA-256 of the gz bytes equals the one embedded here", the gz file is permanently load-bearing on the store's read path, and the store can never become the primary with the gz as a fallback *format version* — it structurally cannot outlive the thing it hashes. Finding 1 is how to keep the rollout safety without buying that.
+
+---
+
+**1. `internal/sem/search_store.go:611-628` (+ `search_cache.go:1465`) — digest coupling should be the existing generation marker**
+
+`loadSearchStoreForEntry` calls `entry.digest()`, which `io.Copy`s the whole 6.5MB gz through SHA-256 on every gated load. Cost: ~5ms warm, ~20-60ms cold — **~0.3% of the 3.1s saved, so this is not a perf finding; do not optimize it for speed.** The problem is coherence. `cache_entry.go:85-101` already has the mechanism built for exactly this case, and its comment states the requirement verbatim: a token naming the *instance* of an entry, "small enough to read on the fast path where decoding the entry itself is exactly what the derived artifact exists to avoid." It also already fails closed on an unreadable marker (`readCacheGeneration`, lines 107-119) — a property the digest path currently converts into a silent miss. And the generation is **already in hand** at the call sites (`search_cache.go:223`, `:337` read it before loading the snapshot), so storing it in `meta` and comparing costs zero extra I/O against the current 6.5MB hash. Alternative: `meta.generation` + `meta.key`, drop `writeDigest` from `writeSearchSnapshot`. Caveat worth checking before acting: `bumpCacheGeneration` fires on the forced-rebuild path (`search_cache.go:674`), so confirm it covers every in-place rewrite of the complete entry — if it does not, that gap is itself the bug the marker should close, not a reason to hash 6.5MB. **This PR** — it is a ~20-line change that decides whether the store can ever replace the gz.
+
+**2. `internal/sem/search_cache.go:381, :509` — the sidecar is built for per-query selective views, not just the complete entry**
+
+All three `writeSearchSnapshot` call sites now build a sqlite file, but two of them persist *derived selective* entries (`newDerivedCacheEntry` with a groupKey, `search_cache.go:348`) — per-query views, written on the cold path of each distinct query. Those entries are small; their JSON decode was never the 3.1s. So the build cost (finding 3) and the disk cost (finding 4) get paid per distinct query for a saving that does not exist there. Alternative: build the sidecar only when the entry is the complete/group-root one (or gate on `len(cache.Snapshot.Symbols)+len(Relations)` above a threshold, e.g. 20k records) — a one-line condition in `writeSearchSnapshot` or a parameter from the call site. Also note the complete entry's `.sqlite` is reachable by no invalidation sweep (`removeDerivedCacheEntries` only `RemoveAll`s the group dir), so it is only ever replaced, never reclaimed. **This PR** — without it, the measured 3.1s win is funded by a cost on queries that never had the problem.
+
+**3. `internal/sem/search_store.go:56-95, 119-294` — build cost: the call shape is right, the index ordering is not**
+
+~232k rows (52k symbols × 16 cols, 178k relations, 1.8k files, externals) plus 232k `json.Marshal` calls, into a schema that creates **all six indexes before the inserts**, so every row pays 1-3 incremental B-tree insertions on text keys: 534k index entries for relations alone. Estimate 2-5s added per complete persist on the reference repo, i.e. 10-25% on top of the ~20s ingest — defensible once per tree, not per query (finding 2). To answer the call-shape question directly: **per-record `ExecContext` on a prepared statement inside one tx is the right shape** — `database/sql`'s per-call overhead is ~1µs against 2-4µs of pure-Go sqlite bind+step plus the index work, so multi-row `VALUES` batching buys maybe 20-30% and costs you a second statement for the ragged tail. The real lever is moving the six `CREATE INDEX` statements out of `searchStoreSchema` and running them after the inserts, in the same tx: sqlite then builds each index by sort rather than by 178k random B-tree descents, typically 2-3× faster for the index phase, and it is a pure code-motion change. **This PR** (the schema const is already one string; splitting it is cheap and it is the single biggest build-time item).
+
+**4. `internal/sem/search_store.go:85-93, 261-275` — the `record` JSON column for relations is the dominant disk cost and is not needed**
+
+At 178k relations × ~300B of record JSON ≈ 53MB, plus ~21MB of duplicated typed columns and ~37MB of index entries, relations alone land around 110MB; with symbols the store is roughly **120-180MB against a 6.5MB gz entry (~20-25×) and ~2× the uncompressed JSON it mirrors**, because every compound-v1 id is stored three to four times (record text, typed column, index key). `RelationRecord` (`internal/sem/provider.go:410-427`) is 12 fields of which ten are scalars (`RecordType` is a constant, `Confidence` float, the rest short strings/int) and only `Evidence []Evidence` and `WarningCodes []string` are composite — so a typed-only round-trip is entirely feasible: six more scalar columns plus one nullable `extra` JSON column holding just evidence + warning codes, `NULL` for the majority of rows. That drops ~50MB and removes ~178k `json.Unmarshal` calls from the load path for rows with no evidence, which is also most of the parallel-decode work in finding 5. Symbols can keep their blob — 52k rows is a fifth of the volume and `SymbolRecord` is a much wider struct. Since `searchStoreVersion` exists precisely to allow a reshape, this is legitimately a **follow-up** — but if the store ships enabled anywhere with a cache dir inside a checkout, shipping v1 at 150MB/entry is a cost worth pre-empting, so I'd lean to doing the relations table now and leaving symbols alone.
+
+**5. `internal/sem/search_store.go:405-418, 462-478, 524-549` — double-hold of raw row JSON, and static chunking**
+
+Both large tables are fully buffered as raw text (`symbolRows` ≈ 32MB, `relationRows` ≈ 53MB) and then decoded into slices that are live at the same time: roughly **85MB of JSON text held alongside ~90MB of decoded records**, all of the former dead immediately after. It also serializes the two phases — the 230k `rows.Scan` calls finish entirely before any decode starts. Alternative: a bounded pipeline — scan a chunk of ~4k rows, hand it to the workers, reuse the buffers — which caps the raw hold at a couple of MB *and* overlaps sqlite row scanning with decode, which is likely the larger win. Secondary, inside the same change: `decodeSearchStoreParallel` cuts one contiguous chunk per worker, so a tail-heavy distribution (relations carrying evidence, long symbol signatures) leaves cores idle at the end; an atomic index counter or 8× more chunks than workers fixes the imbalance for a few lines. **Follow-up**, unless finding 4 lands here too — the relations typed-column change makes most of this buffer disappear on its own, so sequence 4 before 5 rather than doing both.
+
+**6. `internal/sem/records_cache.go:444-464` — the other big cache artifact still hand-rolls the v1 decode**
+
+`readProviderRecords` still carries the exact `json.NewDecoder` + trailing-`any`-Decode pattern that `decodeCacheValue` was just extracted to replace, on the *other* monolithic gz artifact at comparable scale. Leaving it means the build-tag pair exists with one caller, and the provider records cache keeps paying the v1 decoder's full-document internal scan — the same cost measured at 3.1s on the snapshot. One-line swap plus two import removals; the trailing-data error string changes wording, which is the only thing to check in tests. **This PR** — it is the completion of the refactor the diff already performed, and it is the only site I found still buffering unnecessarily (`compact_snapshot.go` unmarshals per-field from already-read lines by design; `cache_entry.go:139`'s generation marker is a two-field document).</result>
+<usage><subagent_tokens>81978</subagent_tokens><tool_uses>17</tool_uses><duration_ms>186881</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bcal3ijms</task-id>
+<tool-use-id>toolu_01ScuBaSBMDKvLJbuD7KPU4V</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/bcal3ijms.output</output-file>
+<status>completed</status>
+<summary>Background command "Smoke with review-fixed binary: sidecar count, size, equality" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>brsnm7zz8</task-id>
+<tool-use-id>toolu_01JPuWPUye7WBjAjSdf1yA8Q</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-brain-denpasar/13a0a641-2bfd-4dba-b7c7-bfcc16c0f5f9/tasks/brsnm7zz8.output</output-file>
+<status>completed</status>
+<summary>Background command "Full sem suite after review fixes" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+and verifying that graph doesn't already have a sqlite store?

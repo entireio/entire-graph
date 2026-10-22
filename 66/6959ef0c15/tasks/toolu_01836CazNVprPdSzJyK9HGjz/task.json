@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01836CazNVprPdSzJyK9HGjz",
+  "agent_id": "a161e1f33f9f54f6d",
+  "subagent_type": "Explore",
+  "task_description": "Map Brain semantic sqlite schema",
+  "token_usage": {
+    "input_tokens": 36,
+    "cache_creation_tokens": 66666,
+    "cache_read_tokens": 950666,
+    "output_tokens": 7665,
+    "api_call_count": 18
+  },
+  "started_at": "2026-10-21T17:14:15.651804-07:00",
+  "completed_at": "2026-10-21T18:36:11.103133-07:00"
+}
