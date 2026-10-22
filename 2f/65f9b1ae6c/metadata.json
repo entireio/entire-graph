@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "2f65f9b1ae6c",
+  "strategy": "manual-commit",
+  "branch": "evis/cor-2216-slice-2-indexed-store-reads",
+  "checkpoints_count": 3,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/2f/65f9b1ae6c/0/metadata.json",
+      "transcript": "/2f/65f9b1ae6c/0/full.jsonl",
+      "compact_transcript": "/2f/65f9b1ae6c/0/transcript.jsonl",
+      "content_hash": "/2f/65f9b1ae6c/0/content_hash.txt",
+      "prompt": "/2f/65f9b1ae6c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 196,
+    "cache_creation_tokens": 321326,
+    "cache_read_tokens": 15180142,
+    "output_tokens": 66400,
+    "api_call_count": 98
+  }
+}
