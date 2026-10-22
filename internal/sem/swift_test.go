@@ -704,3 +704,22 @@ struct ParserTests {
 		t.Fatalf("parsesValue missing from %#v", entities)
 	}
 }
+
+// A comparison continued onto a line that starts with `==` used to be blanked
+// for the 0.5.0 grammar. The blanking also removed the closing parens on that
+// line, which the 0.7.4 grammar then reports as a missing `)`.
+func TestSwiftLeadingOperatorContinuationParses(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("ExclusionTests.swift", `struct ExclusionTests {
+    @Test func rejectsAmbiguousName() {
+        #expect(resolve(["a"], in: paths)
+            == .ambiguous(["a": ["x/a", "y/a"]]))
+    }
+}
+`)
+	if language != "Swift" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}

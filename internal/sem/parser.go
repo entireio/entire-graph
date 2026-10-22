@@ -1472,26 +1472,6 @@ func maskSwiftUnsupportedSyntax(content string) string {
 			}
 			break
 		}
-		if swiftLeadingOperatorContinuationLinePattern.MatchString(text) {
-			if strings.Contains(text, "{") {
-				balance := strings.Count(text, "(") - strings.Count(text, ")")
-				balance += strings.Count(text, "{") - strings.Count(text, "}")
-				lines[i] = maskLineText(text) + newline
-				for balance > 0 && i+1 < len(lines) {
-					i++
-					text, newline = splitLineEnding(lines[i])
-					balance += strings.Count(text, "(") - strings.Count(text, ")")
-					balance += strings.Count(text, "{") - strings.Count(text, "}")
-					lines[i] = maskLineText(text) + newline
-				}
-				continue
-			}
-			if strings.HasSuffix(strings.TrimSpace(text), ")") && !strings.Contains(text, "(") {
-				text = paddedReplacement(leadingWhitespace(text), ")", len(text))
-			} else {
-				text = maskLineText(text)
-			}
-		}
 		lines[i] = text + newline
 	}
 	return strings.Join(lines, "")
@@ -1660,19 +1640,18 @@ func maskSwiftOptionalBindingShorthand(text string) (string, bool) {
 }
 
 var (
-	cSharpPointerDerefCastPattern               = regexp.MustCompile(`\*+\(\s*[A-Za-z_@][\w<>,.\s]*?\*+\s*\)`)
-	cSharpBareAsyncArgumentPattern              = regexp.MustCompile(`([(,]\s*)async(\s*[,)])`)
-	cSharpDictionaryIndexInitializerPattern     = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
-	swiftTypedThrowsPattern                     = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
-	swiftOptionalBindingShorthandPattern        = regexp.MustCompile(`\bif\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{`)
-	swiftEmptyAttributeCallPattern              = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*\(\)`)
-	swiftPropertyWrapperPrefixPattern           = regexp.MustCompile(`^(\s*)@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+(?:var|let)\s+`)
-	swiftLeadingOperatorContinuationLinePattern = regexp.MustCompile(`^\s*(?:<|>|<=|>=|==|!=|&&|\|\|)\s+`)
-	swiftComputedStringPropertyStartPattern     = regexp.MustCompile(`^((?:(?:private|fileprivate|internal|public)\s+)?)var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|\[String\])\s*\{$`)
-	cControlIteratorMacroPattern                = regexp.MustCompile(`^(?:(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)|(?:foreach|foreach_ptr|foreach_node|foreach_oid|foreach_int|foreach_xid|foreach_delete_current|forboth|for_both_cell|forthree|for_fourth_cell|for_each_from|dlist_foreach(?:_modify)?|dclist_foreach(?:_modify)?|slist_foreach(?:_modify)?|hash_seq_search|SGITITERATE))\s*\(`)
-	cGenerateMacroPattern                       = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
-	cEnumMacroPattern                           = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
-	cFileScopeStatementMacroPattern             = regexp.MustCompile(`^(?:PG_MODULE_MAGIC(?:_EXT)?|PG_FUNCTION_INFO_V1|PGDLLEXPORT|PG_KEYWORD|PG_FUNCTION_ARGS|PG_USED_FOR_ASSERTS_ONLY|DECLARE_[A-Z][A-Z0-9_]*|MAKE_SYSCACHE)\s*\(`)
+	cSharpPointerDerefCastPattern           = regexp.MustCompile(`\*+\(\s*[A-Za-z_@][\w<>,.\s]*?\*+\s*\)`)
+	cSharpBareAsyncArgumentPattern          = regexp.MustCompile(`([(,]\s*)async(\s*[,)])`)
+	cSharpDictionaryIndexInitializerPattern = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
+	swiftTypedThrowsPattern                 = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
+	swiftOptionalBindingShorthandPattern    = regexp.MustCompile(`\bif\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{`)
+	swiftEmptyAttributeCallPattern          = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*\(\)`)
+	swiftPropertyWrapperPrefixPattern       = regexp.MustCompile(`^(\s*)@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+(?:var|let)\s+`)
+	swiftComputedStringPropertyStartPattern = regexp.MustCompile(`^((?:(?:private|fileprivate|internal|public)\s+)?)var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|\[String\])\s*\{$`)
+	cControlIteratorMacroPattern            = regexp.MustCompile(`^(?:(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)|(?:foreach|foreach_ptr|foreach_node|foreach_oid|foreach_int|foreach_xid|foreach_delete_current|forboth|for_both_cell|forthree|for_fourth_cell|for_each_from|dlist_foreach(?:_modify)?|dclist_foreach(?:_modify)?|slist_foreach(?:_modify)?|hash_seq_search|SGITITERATE))\s*\(`)
+	cGenerateMacroPattern                   = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
+	cEnumMacroPattern                       = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
+	cFileScopeStatementMacroPattern         = regexp.MustCompile(`^(?:PG_MODULE_MAGIC(?:_EXT)?|PG_FUNCTION_INFO_V1|PGDLLEXPORT|PG_KEYWORD|PG_FUNCTION_ARGS|PG_USED_FOR_ASSERTS_ONLY|DECLARE_[A-Z][A-Z0-9_]*|MAKE_SYSCACHE)\s*\(`)
 	// PostgreSQL system-catalog header macros: the `CATALOG(name,oid,...) BKI_...`
 	// struct opener (the `{` follows on the next line) and BKI_* field/struct
 	// annotations. BEGIN/END_CATALOG_STRUCT markers are handled as bare lines.
