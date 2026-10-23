@@ -1,0 +1,84 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "34708c287baf",
+  "session_id": "a521ede5-24e8-4299-a8ed-aa1b93f45b1e",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-23T02:23:51.98528Z",
+  "branch": "sync-agent-guides",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "README.md",
+    "docs/agent-coordination.md",
+    "internal/agentsetup/agents_test.go",
+    "internal/agentsetup/atomic_write_test.go",
+    "internal/agentsetup/brain-reference.md",
+    "internal/agentsetup/brain_state.go",
+    "internal/agentsetup/coordination_test.go",
+    "internal/agentsetup/guide.go",
+    "internal/agentsetup/guide_conditional_read_test.go",
+    "internal/agentsetup/guide_directive_test.go",
+    "internal/agentsetup/migration.go",
+    "internal/agentsetup/path_regression_test.go",
+    "internal/agentsetup/preview.go",
+    "internal/agentsetup/recall_guidance_test.go",
+    "internal/agentsetup/strict.go",
+    "internal/agentsetup/strict_test.go",
+    "internal/cli/agentguide_commands_integration_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "60ef929b9f7b",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 390,
+    "cache_creation_tokens": 1701409,
+    "cache_read_tokens": 43947614,
+    "output_tokens": 186913,
+    "api_call_count": 195,
+    "subagent_tokens": {
+      "input_tokens": 18,
+      "cache_creation_tokens": 21059,
+      "cache_read_tokens": 14122,
+      "output_tokens": 1192,
+      "api_call_count": 2
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_012KFHyb6wN8YGwGp8CSgZy3",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "entire:session-crosslink"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "60ef929b9f7b",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 608,
+        "end": 609,
+        "entry_ids": [
+          "af299667-1402-4c3e-a39c-4eaffb20c288"
+        ],
+        "tool_use_id": "toolu_012KFHyb6wN8YGwGp8CSgZy3"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_012KFHyb6wN8YGwGp8CSgZy3"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: entire:session-crosslink",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  }
+}

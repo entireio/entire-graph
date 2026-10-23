@@ -1,0 +1,49 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "34708c287baf",
+  "strategy": "manual-commit",
+  "branch": "sync-agent-guides",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "README.md",
+    "docs/agent-coordination.md",
+    "internal/agentsetup/agents_test.go",
+    "internal/agentsetup/atomic_write_test.go",
+    "internal/agentsetup/brain-reference.md",
+    "internal/agentsetup/brain_state.go",
+    "internal/agentsetup/coordination_test.go",
+    "internal/agentsetup/guide.go",
+    "internal/agentsetup/guide_conditional_read_test.go",
+    "internal/agentsetup/guide_directive_test.go",
+    "internal/agentsetup/migration.go",
+    "internal/agentsetup/path_regression_test.go",
+    "internal/agentsetup/preview.go",
+    "internal/agentsetup/recall_guidance_test.go",
+    "internal/agentsetup/strict.go",
+    "internal/agentsetup/strict_test.go",
+    "internal/cli/agentguide_commands_integration_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/34/708c287baf/0/metadata.json",
+      "transcript": "/34/708c287baf/0/full.jsonl",
+      "compact_transcript": "/34/708c287baf/0/transcript.jsonl",
+      "content_hash": "/34/708c287baf/0/content_hash.txt",
+      "prompt": "/34/708c287baf/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 390,
+    "cache_creation_tokens": 1701409,
+    "cache_read_tokens": 43947614,
+    "output_tokens": 186913,
+    "api_call_count": 195,
+    "subagent_tokens": {
+      "input_tokens": 18,
+      "cache_creation_tokens": 21059,
+      "cache_read_tokens": 14122,
+      "output_tokens": 1192,
+      "api_call_count": 2
+    }
+  }
+}
