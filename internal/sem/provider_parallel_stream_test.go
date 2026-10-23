@@ -12,6 +12,12 @@ func TestIndexedStreamingPipelineBoundsAndOrdersLargeOutput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	const files, workers, records = 17, 8, 10000
+	// The liveness interlock below fires at record providerStreamBatchRecords;
+	// with fewer records per file it would silently never run and the pin
+	// would pass vacuously.
+	if records <= providerStreamBatchRecords {
+		t.Fatalf("records (%d) must exceed the batch size (%d) for the liveness pin to fire", records, providerStreamBatchRecords)
+	}
 	var outstanding, peak atomic.Int64
 	firstConsumed := make(chan struct{})
 	nextFile, nextRecord := 0, 0
@@ -28,8 +34,13 @@ func TestIndexedStreamingPipelineBoundsAndOrdersLargeOutput(t *testing.T) {
 					}
 				}
 				emit(record)
-				if index == 0 && record == 0 {
-					// The consumer must see output before the first file finishes.
+				if index == 0 && record == providerStreamBatchRecords {
+					// The consumer must see output before the first file
+					// finishes. Handoffs are batched, so the earliest a record
+					// can be visible is when its batch fills (or the file
+					// ends); by one record past the batch size the first batch
+					// has flushed, and the consumer must have received it
+					// while this producer is still mid-file.
 					select {
 					case <-firstConsumed:
 					case <-ctx.Done():
@@ -61,9 +72,11 @@ func TestIndexedStreamingPipelineBoundsAndOrdersLargeOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// One value can be held by the consumer and one by each blocked producer,
-	// in addition to the fixed channel buffers, independent of file size.
-	if max := int64(workers*(providerStreamBufferRecords+1) + 1); peak.Load() > max {
+	// Per worker: the batch being filled, one full batch blocked in flush, and
+	// the channel's buffered batches; the consumer holds at most one more batch
+	// mid-iteration. All in batch units, independent of file size.
+	perWorker := int64((providerStreamBufferBatches + 2) * providerStreamBatchRecords)
+	if max := int64(workers)*perWorker + providerStreamBatchRecords; peak.Load() > max {
 		t.Fatalf("buffered %d records, limit %d", peak.Load(), max)
 	}
 	if nextFile != files || outstanding.Load() != 0 {

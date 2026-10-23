@@ -96,11 +96,11 @@ var graphLocateVerbs = map[string]bool{
 // The drift is the defect, so TestGraphVerbsCoverEveryCommand fails the build on the next one
 // rather than trusting this list to be maintained by hand.
 var graphVerbs = map[string]bool{
-	"query": true, "search": true, "neighbors": true, "impact": true, "diff": true, "commit": true,
+	"query": true, "search": true, "context": true, "store": true, "neighbors": true, "impact": true, "diff": true, "commit": true,
 	"checkpoint": true, "analyze": true, "doctor": true, "capabilities": true,
 	"snapshot": true, "snapshot-query": true, "symbols": true, "edges": true, "index": true,
 	"stats": true, "def": true, "explain": true, "verify": true, "health": true,
-	"agent-guide": true, "init-agents": true, "hook": true, "version": true, "help": true,
+	"agent-guide": true, "setup": true, "hook": true, "version": true, "help": true,
 }
 
 // semGraphVerbs are the `entire sem` subcommands that answer the same structural question the

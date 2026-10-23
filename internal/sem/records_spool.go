@@ -39,15 +39,7 @@ type ProviderRecordsSpool struct {
 }
 
 func newProviderRecordsSpool(entry cacheEntry) (*ProviderRecordsSpool, error) {
-	if err := os.MkdirAll(entry.root, 0o700); err != nil {
-		return nil, err
-	}
-	root, err := os.OpenRoot(entry.root)
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-	directory, err := openCacheDirectory(root, filepath.Dir(entry.relative))
+	directory, err := openCacheEntryDirectory(entry)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +174,7 @@ func readProviderRecordsStream(entry cacheEntry, wantDigest string) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	if fmt.Sprintf("%x", digest[:]) != wantDigest {
+	if digest.String() != wantDigest {
 		return nil, fmt.Errorf("provider records stream digest mismatch")
 	}
 	file, err := entry.open()

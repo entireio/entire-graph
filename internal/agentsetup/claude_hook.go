@@ -50,7 +50,7 @@ func subagentShellCommand(goos string) string {
 // builds an index, so anything near this bound is already a failure.
 const subagentHookTimeoutSeconds = 10
 
-// ClaudeLocalSettings is where init-agents registers the hook. settings.local.json, not
+// ClaudeLocalSettings is where setup registers the hook. settings.local.json, not
 // settings.json: it is intended to stay per-user and untracked. The installer
 // does not change gitignore policy; docs/agents.md explains how to ignore it.
 const ClaudeLocalSettings = ".claude/settings.local.json"
@@ -72,7 +72,7 @@ var SubagentDirective = "entire-graph is installed. Use it for EACH code-locatin
 
 const subagentDirectiveMaxBytes = 820
 
-// subagentHookGroup is the SubagentStart matcher group init-agents adds. "*" matches every agent
+// subagentHookGroup is the SubagentStart matcher group setup adds. "*" matches every agent
 // type, which is the point: the agents that need it are the ones CLAUDE.md does not reach.
 func subagentHookGroup() map[string]any {
 	hook := map[string]any{
@@ -88,7 +88,7 @@ func subagentHookGroup() map[string]any {
 
 // mergeSubagentHook adds the SubagentStart hook to a settings document and reports whether it
 // changed anything. Every existing key and hook is preserved; an entry that already runs
-// SubagentHookCommand makes this a no-op, which is what makes init-agents idempotent here.
+// SubagentHookCommand makes this a no-op, which is what makes setup idempotent here.
 //
 // It refuses rather than repairs: settings that are not a JSON object, or whose hooks /
 // SubagentStart are not the documented shapes, belong to the user, and rewriting them would lose
@@ -236,7 +236,7 @@ func planClaudeSubagentHook(repo *os.Root) (claudeSettingsState, []byte, bool, e
 	return state, rendered, changed, err
 }
 
-// CheckClaudeSubagentHook is the preflight for InstallClaudeSubagentHook. init-agents runs it
+// CheckClaudeSubagentHook is the preflight for InstallClaudeSubagentHook. setup runs it
 // before writing the guide, so malformed or unsafe input is rejected without writes.
 // It does not reserve future write access or promise a multi-file transaction.
 func CheckClaudeSubagentHook(root string) error {
@@ -247,7 +247,7 @@ func CheckClaudeSubagentHook(root string) error {
 	defer repo.Close()
 	_, _, _, err = planClaudeSubagentHook(repo)
 	if err != nil {
-		return fmt.Errorf("init-agents: %w (fix it, or pass --no-claude-hook)", err)
+		return fmt.Errorf("setup: %w (fix it, or pass --no-claude-hook)", err)
 	}
 	return nil
 }
@@ -258,12 +258,12 @@ func CheckClaudeSubagentHook(root string) error {
 func InstallClaudeSubagentHook(root string, out io.Writer) error {
 	repo, err := os.OpenRoot(root)
 	if err != nil {
-		return fmt.Errorf("init-agents: %w", err)
+		return fmt.Errorf("setup: %w", err)
 	}
 	defer repo.Close()
 	state, rendered, changed, err := planClaudeSubagentHook(repo)
 	if err != nil {
-		return fmt.Errorf("init-agents: %w (fix it, or pass --no-claude-hook)", err)
+		return fmt.Errorf("setup: %w (fix it, or pass --no-claude-hook)", err)
 	}
 	path := filepath.Join(root, filepath.FromSlash(ClaudeLocalSettings))
 	if !changed {
@@ -271,7 +271,7 @@ func InstallClaudeSubagentHook(root string, out io.Writer) error {
 		return nil
 	}
 	if err := writeClaudeSettings(repo, state, rendered); err != nil {
-		return fmt.Errorf("init-agents: %s: %w", ClaudeLocalSettings, err)
+		return fmt.Errorf("setup: %s: %w", ClaudeLocalSettings, err)
 	}
 	verb := "updated"
 	if state.file == nil {
@@ -294,7 +294,7 @@ func writeClaudeSettings(repo *os.Root, state claudeSettingsState, content []byt
 		return err
 	}
 	if !current.IsDir() || (state.dir != nil && !os.SameFile(state.dir, current)) {
-		return fmt.Errorf(".claude changed while init-agents was running")
+		return fmt.Errorf(".claude changed while setup was running")
 	}
 	dir, err := repo.OpenRoot(".claude")
 	if err != nil {
@@ -302,17 +302,17 @@ func writeClaudeSettings(repo *os.Root, state claudeSettingsState, content []byt
 	}
 	defer dir.Close()
 	if opened, err := dir.Stat("."); err != nil || !os.SameFile(opened, current) {
-		return fmt.Errorf(".claude changed while init-agents was running")
+		return fmt.Errorf(".claude changed while setup was running")
 	}
 	name := filepath.Base(ClaudeLocalSettings)
 	perm := os.FileMode(0o644)
 	if state.file != nil {
 		perm = state.file.Mode().Perm()
 		if now, err := dir.Lstat(name); err != nil || !os.SameFile(now, state.file) {
-			return fmt.Errorf("%s changed while init-agents was running", ClaudeLocalSettings)
+			return fmt.Errorf("%s changed while setup was running", ClaudeLocalSettings)
 		}
 	} else if _, err := dir.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("%s appeared while init-agents was running", ClaudeLocalSettings)
+		return fmt.Errorf("%s appeared while setup was running", ClaudeLocalSettings)
 	}
 	temp := ".settings.local.json.entire-" + rand.Text()
 	staged, err := dir.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)

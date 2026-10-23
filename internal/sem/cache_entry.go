@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -277,6 +278,10 @@ func (entry cacheEntry) write(temporaryPrefix string, value any) error {
 // cacheDigest is the SHA-256 of an artifact's bytes as stored: the gzip stream, not the JSON.
 type cacheDigest [sha256.Size]byte
 
+// String is the one spelling of a digest everywhere it is embedded or
+// compared: lowercase hex, untruncated.
+func (d cacheDigest) String() string { return hex.EncodeToString(d[:]) }
+
 // writeDigest is write, also returning the digest of the bytes it installed. A caller that must
 // know its artifact landed intact compares that with entry.digest instead of decoding the file
 // back, which would hold a second copy of the value in memory beside the one it just wrote.
@@ -286,16 +291,7 @@ func (entry cacheEntry) writeDigest(temporaryPrefix string, value any) (cacheDig
 
 // writeValue hashes only explicit verified persists; interactive cache writes need no digest.
 func (entry cacheEntry) writeValue(temporaryPrefix string, value any, withDigest bool) (cacheDigest, error) {
-	if err := os.MkdirAll(entry.root, 0o700); err != nil {
-		return cacheDigest{}, err
-	}
-	root, err := os.OpenRoot(entry.root)
-	if err != nil {
-		return cacheDigest{}, err
-	}
-	defer root.Close()
-
-	directory, err := openCacheDirectory(root, filepath.Dir(entry.relative))
+	directory, err := openCacheEntryDirectory(entry)
 	if err != nil {
 		return cacheDigest{}, err
 	}
@@ -372,6 +368,24 @@ func (entry cacheEntry) digest() (cacheDigest, error) {
 	var digest cacheDigest
 	copy(digest[:], hash.Sum(nil))
 	return digest, nil
+}
+
+// openCacheEntryDirectory opens the confined directory an entry's artifacts
+// live in: it creates the cache root, walks each component through the
+// redirect checks below, and hands back the held directory. Every writer of an
+// entry-adjacent artifact (the entry itself, the records spool, the search
+// store sidecar) goes through this one walk so the symlink threat model
+// documented on writeValue covers them all.
+func openCacheEntryDirectory(entry cacheEntry) (*os.Root, error) {
+	if err := os.MkdirAll(entry.root, 0o700); err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(entry.root)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return openCacheDirectory(root, filepath.Dir(entry.relative))
 }
 
 // openCacheDirectory creates and opens each component of the entry's directory beneath root,

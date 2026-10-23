@@ -75,7 +75,7 @@ func timingImpactResponse(l relationLatencies) impactResponse {
 	}
 	response := buildImpactResponseOnDisk(
 		sem.ProviderSnapshot{Symbols: symbols, Relations: relations},
-		impactFlags{Symbol: "Focus", Depth: 1, Limit: defaultImpactSectionLimit},
+		impactFlags{Format: "text", Symbol: "Focus", Depth: 1, Limit: defaultImpactSectionLimit},
 	)
 	response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS = l.index, l.query, l.total
 	return response
@@ -149,7 +149,7 @@ func TestImpactBoundedIsIndependentOfLatencies(t *testing.T) {
 		return out.String()
 	}
 	fast, slow := render(relationTimings[0], 0), render(relationTimings[3], 0)
-	if fastHeader, _, _ := strings.Cut(fast, "\n"); len(fastHeader)+10 > len(strings.SplitN(slow, "\n", 2)[0]) {
+	if len(fast)+10 > len(slow) {
 		t.Fatalf("fixture timings do not change the header width:\n%s\n%s", fast, slow)
 	}
 	// All three decisions the writer makes (full, a reduced section cap, the hard cut) are crossed.
@@ -169,7 +169,7 @@ func TestImpactBoundedIsIndependentOfLatencies(t *testing.T) {
 func TestRelationHeadersPrintExactLatenciesAndSaturate(t *testing.T) {
 	var out bytes.Buffer
 	writeImpactText(&out, timingImpactResponse(relationLatencies{1387, 391, 1905}))
-	if want := "Index: cache-miss (1387ms) | Query: 391ms | Total: 1905ms\n"; !strings.HasPrefix(out.String(), want) {
+	if want := "Index: cache-miss (1387ms) | Query: 391ms | Total: 1905ms\n"; !strings.Contains(out.String(), want) {
 		t.Fatalf("impact header changed for ordinary latencies:\n%s", out.String())
 	}
 	out.Reset()

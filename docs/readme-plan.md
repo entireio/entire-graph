@@ -30,12 +30,12 @@ semantics, benchmarks, releases, the plugin catalog, or integrations.
 - Keep the root filename exactly `README.md`.
 - At publication time, the official plugin index contains `graph` and a clean
   `entire plugin install graph` succeeds on every platform the README claims.
-- At publication time, a released `init-agents` includes the topology-aware
+- At publication time, a released `setup` includes the topology-aware
   behavior merged in [#102](https://github.com/entireio/entire-graph/pull/102):
   when it confidently recognizes a standalone direct import from root `CLAUDE.md`
   to a distinct root `AGENTS.md`, `AGENTS.md` retains the guide pointer and
   `CLAUDE.md`'s managed block contains only the inheritance notice.
-- At publication time, a released `init-agents` also includes the preflight behavior
+- At publication time, a released `setup` also includes the preflight behavior
   merged in [#105](https://github.com/entireio/entire-graph/pull/105): malformed,
   reversed, or duplicate managed markers are rejected before any activation file
   is created or changed.
@@ -69,7 +69,7 @@ All four are now resolved:
 
 - Make the recommended usage journey agent-first: setup installs and activates
   Entire Graph, then the coding agent performs graph queries during repository work.
-- Disclose repository writes before asking the user to run `init-agents`, then
+- Disclose repository writes before asking the user to run `setup`, then
   demonstrate the workflow with a repository-source-read-only task.
 - Prefer real commands, output, limits, and failure modes over adjectives.
 - Keep one canonical home for each substantial topic.
@@ -159,7 +159,7 @@ produces four requirements:
   Then show the exact command from the repository root:
 
   ```sh
-  entire graph init-agents --repo .
+  entire graph setup --repo .
   ```
 
 - Tell the reader to review the three generated or updated files. Recommend
@@ -176,7 +176,7 @@ produces four requirements:
   whether the referenced guide is imported or read on demand, and how a user can
   see that it loaded.
 - Test the Claude Code layout where root `CLAUDE.md` has a standalone direct import
-  of root `AGENTS.md`. The released topology-aware `init-agents` must keep the
+  of root `AGENTS.md`. The released topology-aware `setup` must keep the
   direct `.entire/graph-agent.md` pointer in `AGENTS.md`, put only its managed
   inheritance notice in `CLAUDE.md`, restore the direct Claude pointer if the
   standalone `CLAUDE.md` import of `AGENTS.md` is removed, and remain
@@ -190,7 +190,7 @@ produces four requirements:
 - In `docs/agents.md`, document recovery from a marker-validation error: back up
   `AGENTS.md` and `CLAUDE.md`, preserve user-owned text, and reduce each file to
   zero raw Entire Graph marker tokens or exactly one complete begin-before-end
-  pair before rerunning `init-agents`. Exact marker strings in examples or
+  pair before rerunning `setup`. Exact marker strings in examples or
   comments count. Also cover recovery from a non-regular instruction-file target.
   Document ordinary removal or reversal only if a supported procedure exists.
 
@@ -277,7 +277,7 @@ user prompt → coding agent → repository instructions → entire graph CLI
 Add a concise boundary summary:
 
 - Built-in analysis is local and no-egress; installation obtains software.
-- Queries may write derivative caches, and `init-agents` writes the three disclosed
+- Queries may write derivative caches, and `setup` writes the three disclosed
   repository instruction files.
 - Static relations and dependent counts are not compiler-accurate. Calls, routes,
   tools, renames, dynamic dispatch, reflection, generated code, and runtime wiring
@@ -484,13 +484,13 @@ Rules:
   all three file effects—including full replacement of `.entire/graph-agent.md`
   on successful reruns—before execution, and tells the user how to review and
   optionally commit the result.
-- [ ] The installed, indexed pinned release's `init-agents` fails without
+- [ ] The installed, indexed pinned release's `setup` fails without
   activation-file writes on malformed, reversed, or duplicate managed markers or
   non-regular instruction-file targets, and `docs/agents.md` gives the supported
   recovery procedure for both.
 - [ ] Using that same release, each named client has a tested fresh-task/session
   path and an observable check that the generated guide loaded once without
-  shadowing or a dangling reference, and an `init-agents` rerun preserves its
+  shadowing or a dangling reference, and a `setup` rerun preserves its
   intended configured route.
 - [x] The pinned fixture transcript shows visible instruction discovery, graph
   use before broad source scanning, focused source inspection, a purposeful
@@ -540,7 +540,7 @@ Rules:
 - A comprehensive flag reference in the root README.
 - An arbitrary README line-count target.
 - Adding an MCP server, daemon, watcher, hosted memory product, or visualization UI.
-- Rewriting embedded agent doctrine or making further `init-agents` behavior
+- Rewriting embedded agent doctrine or making further `setup` behavior
   changes. Regenerating the released guide and managed blocks is in scope; if the
   documentation audit exposes another format or import mismatch, track that
   product change as a prerequisite rather than documenting behavior that does not exist.

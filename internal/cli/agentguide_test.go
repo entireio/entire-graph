@@ -44,7 +44,7 @@ func TestAgentGuideMatchesFlagRegistry(t *testing.T) {
 }
 
 // TestAgentGuideConstMatchesFlagRegistry holds the shipped artifact to the same contract as
-// AGENTS.md: `agent-guide` and `init-agents` hand consuming projects the embedded agentGuide
+// AGENTS.md: `agent-guide` and `setup` hand consuming projects the embedded agentGuide
 // const, not the repo-root file, so a parser change that only AGENTS.md tracked would still
 // reach every install.
 func TestAgentGuideConstMatchesFlagRegistry(t *testing.T) {

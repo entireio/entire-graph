@@ -140,7 +140,7 @@ const graphCommands = `    entire graph query --repo . --profile full --head --f
 // graphObligation is SHIPPED text, shared by graphWorkflow and combinedWorkflow.
 //
 // It replaced "Your FIRST action ... MUST be ONE Graph query". That sentence was obeyed to the
-// letter and no further: in a fresh-environment baseline (Claude Code, init-agents installed)
+// letter and no further: in a fresh-environment baseline (Claude Code, agent guide installed)
 // agents ran exactly one query, said so ("I ran the graph query once as the repo guidance
 // asked"), and answered every later locate and relationship question with grep and sed, with
 // zero def/neighbors/impact calls even on a blast-radius task. "ONE" read as a quota, so the
@@ -171,6 +171,14 @@ A Coverage or Completeness line lists files Graph could not parse, often minifie
 generated ones. It does not mean the results are partial; only a failure in the
 language you asked about can hide a fact, and then you check that one relation in
 source. Static relations can be incomplete: an empty result is not proof of no callers.
+
+For local integrations, entire graph store resolves the committed-tree SQLite
+store as JSON without building it. Consumers open read-only and verify the entry
+digest. entire graph context --task "<task text>" returns bounded task context
+from that store. Both accept --repo, --profile, --cache-dir, and repeatable
+--ignore-file / --include-file paths matching the indexed policy. Missing stores
+report store_unavailable=true; build the matching index with
+ENTIRE_GRAPH_SEARCH_STORE=1 entire graph index --head.
 `
 
 // graphWorkflow is SHIPPED text. Its obligation is graphObligation; see there before softening.

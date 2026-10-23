@@ -197,7 +197,7 @@ these rules existed misses instead of re-emitting the paths it named.
   directory. `os.Root` intentionally keeps using that directory object after a
   move; portable Go cannot pin its lexical ancestry, and a process with that
   namespace authority can already move existing cache artifacts.
-- `init-agents` writes through three primary repository paths, disclosed in
+- `setup` writes through three primary repository paths, disclosed in
   [agent activation](agents.md): `.entire/agent-guide.md` and managed blocks
   in `AGENTS.md` and `CLAUDE.md`. It also merges one Claude Code hook entry into
   the per-user `.claude/settings.local.json` (skipped with `--no-claude-hook`);

@@ -1,13 +1,14 @@
 # Coordinated agent instructions
 
-Both products provide `init-agents` and `agent-guide`, invoked through
-`entire graph` and `entire brain`. Brain also retains `guide` as an alias.
+Both products install the instructions from `setup` and preview them with
+`agent-guide`, invoked through `entire graph` and `entire brain`. Brain also
+retains `guide` as an alias.
 
 ## Repository activation
 
-Each `init-agents` enables only the invoking product and preserves products already
-enabled in this repository. Running Graph and Brain initializers in either order
-produces the same combined guide. Installing a plugin globally, creating Brain
+Each product's setup enables only the invoking product and preserves products
+already enabled in this repository. Running Graph and Brain setups in either
+order produces the same combined guide. Installing a plugin globally, creating Brain
 runtime setup, or building an index does not activate its agent guidance.
 Generation does not query the host inventory or invoke another plugin.
 
@@ -47,10 +48,10 @@ the metadata or infer activation using their old rules.
 
 ## Guidance mode
 
-Both commands accept mutually exclusive `--strict` and `--normal` flags.
-`init-agents --strict` persists strict guidance for every enabled product in this
-repository. Subsequent initialization and previews inherit that mode, including
-when the other product is added. `init-agents --normal` persistently resets it.
+Both setup and agent-guide accept mutually exclusive `--strict` and `--normal`
+flags. `setup --strict` persists strict guidance for every enabled product in
+this repository. Subsequent setups and previews inherit that mode, including
+when the other product is added. `setup --normal` persistently resets it.
 New repositories and legacy guides default to normal.
 
 `agent-guide` is always read-only. Its `--strict` and `--normal` flags override

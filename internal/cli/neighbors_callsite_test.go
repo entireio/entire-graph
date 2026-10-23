@@ -254,7 +254,7 @@ func TestImpactReportsCallSiteLineWithoutQuotingSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := out.String()
-	if !strings.Contains(text, fmt.Sprintf("dispatch.go:%d, def :3", 3+400+1)) {
+	if !strings.Contains(text, fmt.Sprintf("Dispatch (dispatch.go:%d)", 3+400+1)) {
 		t.Fatalf("impact caller not reported at its call site:\n%s", text)
 	}
 	if strings.Contains(text, "conditions in force at this call") {

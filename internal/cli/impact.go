@@ -79,6 +79,8 @@ type impactSection struct {
 }
 
 type impactResponse struct {
+	// Text groups and counts must be computed before the display limit is applied.
+	textLimit          int
 	FormatVersion      int    `json:"format_version"`
 	RepoRoot           string `json:"repo_root"`
 	Commit             string `json:"commit,omitempty"`
@@ -126,49 +128,18 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
+	var diagnostics bytes.Buffer
+	analysisOpts := opts
+	analysisOpts.Stderr = &diagnostics
+	response, err := runImpactProgress(ctx, opts.Stderr, flags.Symbol, func(ctx context.Context, report impactProgressReporter) (impactResponse, error) {
+		return analyzeImpact(ctx, analysisOpts, flags, report)
+	})
+	if _, writeErr := io.Copy(opts.Stderr, &diagnostics); err == nil {
+		err = writeErr
+	}
 	if err != nil {
 		return err
 	}
-	profile, err := parseProfile(flags.Profile)
-	if err != nil {
-		return err
-	}
-	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
-	totalStarted := time.Now()
-	indexStarted := totalStarted
-	snapshot, cacheHit, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
-		NoNetwork:    true,
-		Worktree:     flags.Worktree,
-		IgnoreFiles:  flags.IgnoreFile,
-		IncludeFiles: flags.IncludeFile,
-		Profile:      profile,
-	}, cacheDir, flags.DisableCache)
-	if err != nil {
-		return err
-	}
-	// The snapshot is loaded, so the index phase is over: read the clock before
-	// opening the source reader, whose `git cat-file` spawn belongs to answering
-	// the query rather than to the index-cache telemetry. See runDef.
-	indexLatency := time.Since(indexStarted)
-	queryStarted := time.Now()
-	readSource, closeSource := openSnapshotLineReaderOrDegrade(ctx, snapshot, flags.Worktree, opts.Stderr)
-	if closeSource != nil {
-		defer closeSource()
-	}
-	response := buildImpactResponseFromReader(snapshot, flags, readSource)
-	annotateImpactCallSites(&response, readSource)
-	// The verdict is computed once, on the finished response, so the text marker and the JSON fields
-	// can never disagree about whether this answer was worth reading.
-	if reason := impactDegenerateReason(response); reason != "" {
-		response.Degenerate, response.DegenerateReason = true, reason
-	}
-	queryLatency := time.Since(queryStarted)
-	response.IndexCacheHit = cacheHit
-	response.IndexCacheDisabled = cacheDir == "" || flags.DisableCache
-	response.IndexLatencyMS = indexLatency.Milliseconds()
-	response.QueryLatencyMS = queryLatency.Milliseconds()
-	response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
 	switch flags.Format {
 	case "json":
 		encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
@@ -179,6 +150,69 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	default:
 		return fmt.Errorf("impact --format must be text or json, got %q", flags.Format)
 	}
+}
+
+func analyzeImpact(ctx context.Context, opts Options, flags impactFlags, report impactProgressReporter) (impactResponse, error) {
+	report.update("Opening repository", "")
+	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
+	if err != nil {
+		return impactResponse{}, err
+	}
+	profile, err := parseProfile(flags.Profile)
+	if err != nil {
+		return impactResponse{}, err
+	}
+	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
+	totalStarted := time.Now()
+	indexStarted := totalStarted
+	snapshotOptions := sem.ProviderSnapshotOptions{
+		NoNetwork:    true,
+		Worktree:     flags.Worktree,
+		IgnoreFiles:  flags.IgnoreFile,
+		IncludeFiles: flags.IncludeFile,
+		Profile:      profile,
+	}
+	if flags.Worktree {
+		report.update("Discovering source files", "Working tree, including uncommitted changes")
+	} else {
+		report.update("Checking committed graph cache", "")
+	}
+	if report != nil {
+		snapshotOptions.Progress = report.snapshot
+	}
+	snapshot, cacheHit, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, snapshotOptions, cacheDir, flags.DisableCache)
+	if err != nil {
+		return impactResponse{}, err
+	}
+	// The snapshot is loaded, so the index phase is over: read the clock before
+	// opening the source reader, whose `git cat-file` spawn belongs to answering
+	// the query rather than to the index-cache telemetry. See runDef.
+	indexLatency := time.Since(indexStarted)
+	queryStarted := time.Now()
+	if cacheHit {
+		report.update("Checking committed graph cache", "Cache hit; parsing and linking skipped")
+	}
+	report.update("Collecting impact", "Callers, dependencies, types and coupling")
+	readSource, closeSource := openSnapshotLineReaderOrDegrade(ctx, snapshot, flags.Worktree, opts.Stderr)
+	if closeSource != nil {
+		defer closeSource()
+	}
+	response := buildImpactResponseFromReader(snapshot, flags, readSource)
+	report.update("Locating caller source lines", "")
+	annotateImpactCallSites(&response, readSource)
+	// The verdict is computed once, on the finished response, so the text marker and the JSON fields
+	// can never disagree about whether this answer was worth reading.
+	if reason := impactDegenerateReason(response); reason != "" {
+		response.Degenerate, response.DegenerateReason = true, reason
+	}
+	report.update("Preparing results", "Grouping callers and tests; formatting the summary")
+	queryLatency := time.Since(queryStarted)
+	response.IndexCacheHit = cacheHit
+	response.IndexCacheDisabled = cacheDir == "" || flags.DisableCache
+	response.IndexLatencyMS = indexLatency.Milliseconds()
+	response.QueryLatencyMS = queryLatency.Milliseconds()
+	response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
+	return response, nil
 }
 
 func parseImpactFlags(args []string) (impactFlags, error) {
@@ -582,12 +616,16 @@ func buildImpactResponseFromReader(
 		}
 	}
 
-	response.Callers = impactSectionOf(callers, flags.Limit)
-	response.Callees = impactSectionOf(callees, flags.Limit)
-	response.TypeConsumers = impactSectionOf(typeEntries, flags.Limit)
-	response.DataFlows = impactSectionOf(flowEntries, flags.Limit)
-	response.CoChanges = impactSectionOf(cochangeEntries, flags.Limit)
-	response.Siblings = impactSectionOf(siblings, flags.Limit)
+	limit := flags.Limit
+	if flags.Format == "text" {
+		response.textLimit, limit = limit, 0
+	}
+	response.Callers = impactSectionOf(callers, limit)
+	response.Callees = impactSectionOf(callees, limit)
+	response.TypeConsumers = impactSectionOf(typeEntries, limit)
+	response.DataFlows = impactSectionOf(flowEntries, limit)
+	response.CoChanges = impactSectionOf(cochangeEntries, limit)
+	response.Siblings = impactSectionOf(siblings, limit)
 	return response
 }
 
@@ -616,11 +654,22 @@ func annotateImpactCallSites(response *impactResponse, read lineReader) {
 	}
 }
 
-// formatImpactEntryLocation reports a caller at its call site, with the
-// definition line kept alongside; every other section keeps its endpoint
-// location, which is already the right one.
+// formatImpactEntryLocation reports a caller at its call site. Definition
+// metadata remains in JSON; text needs only the location to inspect.
 func formatImpactEntryLocation(entry impactEntry) string {
-	return formatCallSiteLocation(entry.Endpoint, entry.CallSite)
+	path, line := entry.Endpoint.FilePath, entry.Endpoint.StartLine
+	if entry.CallSite != nil {
+		path, line = entry.CallSite.FilePath, entry.CallSite.Line
+	}
+	name := termsafe.Line(endpointDisplayName(entry.Endpoint))
+	path = termsafe.Line(path)
+	if path == "" {
+		return name
+	}
+	if line <= 0 {
+		return fmt.Sprintf("%s (%s)", name, path)
+	}
+	return fmt.Sprintf("%s (%s:%d)", name, path, line)
 }
 
 // impactSectionOf sorts entries deterministically (depth, then file/line/name),
@@ -701,15 +750,18 @@ func writeImpactBounded(out io.Writer, response impactResponse, budget int) erro
 		}
 		rendered = reduced.Bytes()
 	}
-	const marker = "!output-truncated; use --format json\n"
+	const marker = "!output-truncated; use --format json\n\n"
 	if len(marker) >= budget {
 		_, err := out.Write([]byte(marker[:budget]))
 		return err
 	}
-	// The cut is searched over the window the reserved-width rendering would offer; every newline
-	// after the header sits exactly slack bytes earlier in the printed one.
+	// Telemetry is last. Drop it before a hard cut so line selection cannot
+	// depend on the measured latency's width.
+	if footer := bytes.LastIndex(rendered, []byte("\nIndex: cache-")); footer >= 0 {
+		rendered = rendered[:footer+1]
+	}
 	cut := -1
-	if window := budget - len(marker) - slack; window > 0 {
+	if window := min(budget-len(marker), len(rendered)); window > 0 {
 		cut = bytes.LastIndexByte(rendered[:window], '\n')
 	}
 	if cut < 0 {
@@ -725,18 +777,9 @@ func writeImpactBounded(out io.Writer, response impactResponse, budget int) erro
 }
 
 func capImpactSections(response impactResponse, limit int) impactResponse {
-	trim := func(section impactSection) impactSection {
-		if limit > 0 && len(section.Entries) > limit {
-			section.Entries = section.Entries[:limit]
-		}
-		return section
+	if response.textLimit <= 0 || limit < response.textLimit {
+		response.textLimit = limit
 	}
-	response.Callers = trim(response.Callers)
-	response.Callees = trim(response.Callees)
-	response.TypeConsumers = trim(response.TypeConsumers)
-	response.DataFlows = trim(response.DataFlows)
-	response.CoChanges = trim(response.CoChanges)
-	response.Siblings = trim(response.Siblings)
 	if limit > 0 && len(response.Definitions) > limit {
 		response.Definitions = response.Definitions[:limit]
 	}
@@ -746,12 +789,16 @@ func capImpactSections(response impactResponse, limit int) impactResponse {
 func writeImpactText(out io.Writer, response impactResponse) {
 	// Every section here names repository paths and symbols. See writeTextSearch.
 	out = termsafe.NewWriter(out)
-	out.Write(relationLatencyHeader(response.IndexCacheHit, response.IndexLatencyMS, response.QueryLatencyMS,
-		response.TotalLatencyMS).printed)
-	writeIndexCostNotice(out, response.IndexCacheHit, response.IndexCacheDisabled)
-	writeScopedCompletenessBlock(out,
-		completenessScopeOrAll(response.CompletenessScope, response.Warnings, response.PartialFailures, response.Stats),
-		response.Warnings, response.PartialFailures, response.Stats)
+	fmt.Fprintln(out)
+	scope := completenessScopeOrAll(response.CompletenessScope, response.Warnings, response.PartialFailures, response.Stats)
+	defer func() {
+		writeImpactFooter(out, response, scope)
+		fmt.Fprintln(out)
+	}()
+	if scope.LanguageFailed > 0 || len(scope.InScopeFailures) > 0 {
+		writeScopedCompletenessBlock(out, scope, response.Warnings, response.PartialFailures, response.Stats)
+		fmt.Fprintln(out)
+	}
 	if response.FocusMatchesTotal == 0 {
 		writeNoFocusMatch(out, response.Query, response.File, response.Line)
 		return
@@ -776,45 +823,7 @@ func writeImpactText(out io.Writer, response impactResponse) {
 		return
 	}
 
-	focusLine := formatNeighborFocus(*response.Focus)
-	if response.Focus.Kind != "" {
-		annotation := response.Focus.Kind
-		if response.Container != nil {
-			annotation += " in " + endpointDisplayName(*response.Container)
-		}
-		focusLine += " [" + annotation + "]"
-	}
-	fmt.Fprintf(out, "Impact: %s\n", focusLine)
-	fmt.Fprintf(out, "Blast radius: %d caller%s (%d direct, %d transitive), %d callee%s, %d type consumer%s, %d data flow%s, %d co-change file%s, %d sibling%s.\n",
-		response.Callers.Total, pluralSuffix(response.Callers.Total),
-		response.Callers.Direct, response.Callers.Transitive,
-		response.Callees.Total, pluralSuffix(response.Callees.Total),
-		response.TypeConsumers.Total, pluralSuffix(response.TypeConsumers.Total),
-		response.DataFlows.Total, pluralSuffix(response.DataFlows.Total),
-		response.CoChanges.Total, pluralSuffix(response.CoChanges.Total),
-		response.Siblings.Total, pluralSuffix(response.Siblings.Total),
-	)
-	writeImpactSection(out,
-		fmt.Sprintf("Callers (%d direct, %d transitive; who breaks if behavior changes)",
-			response.Callers.Direct, response.Callers.Transitive),
-		response.Callers, false)
-	writeImpactSection(out,
-		fmt.Sprintf("Callees (%d; what it depends on)", response.Callees.Total),
-		response.Callees, false)
-	writeImpactSection(out,
-		fmt.Sprintf("Type consumers (%d in, %d out; USES_TYPE/PARAM_TYPE/RETURNS_TYPE)",
-			response.TypeConsumers.In, response.TypeConsumers.Out),
-		response.TypeConsumers, true)
-	writeImpactSection(out,
-		fmt.Sprintf("Data flows (%d in, %d out)", response.DataFlows.In, response.DataFlows.Out),
-		response.DataFlows, true)
-	writeImpactSection(out,
-		fmt.Sprintf("Co-change coupling (%d; files that historically change with %s)",
-			response.CoChanges.Total, termsafe.Line(response.Focus.FilePath)),
-		response.CoChanges, false)
-	writeImpactSection(out,
-		fmt.Sprintf("Same-container siblings (%d)", response.Siblings.Total),
-		response.Siblings, false)
+	writeImpactOverview(out, response)
 }
 
 // writeImpactSection prints one bounded section. arrows toggles the <- / ->

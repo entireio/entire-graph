@@ -30,7 +30,7 @@ func pathLandsInGitDir(path string) bool {
 	return false
 }
 
-// agentPointerBegin/End delimit the block init-agents manages inside AGENTS.md / CLAUDE.md,
+// agentPointerBegin/End delimit the block setup manages inside AGENTS.md / CLAUDE.md,
 // so re-runs update in place instead of appending duplicates.
 const (
 	agentPointerBegin = "<!-- entire-agent:begin -->"
@@ -38,14 +38,14 @@ const (
 )
 
 // maxInstructionFileBytes bounds AGENTS.md / CLAUDE.md, the only repository-authored files
-// init-agents reads. Their path is fixed but their SIZE is chosen by the repository, and the
+// setup reads. Their path is fixed but their SIZE is chosen by the repository, and the
 // command runs against clones the operator has not read, so the size is untrusted input like
 // any other. Every sibling repository read is already bounded — source files and diffs at
 // defaultMaxParseBytes, ignore files at maxIgnoreFileBytes, call-site snippets at
 // callSiteMaxFileBytes — and this one was not: it read to EOF and then kept the whole file
 // alive through validation, marker splitting, and the rendered replacement, so peak memory ran
 // to a multiple of the file. Measured on an otherwise empty repository, a 2 GiB AGENTS.md
-// drove init-agents to 6.5 GiB peak RSS.
+// drove setup to 6.5 GiB peak RSS.
 //
 // 4 MiB matches defaultMaxParseBytes, the ceiling the rest of the tool already applies to a
 // repository-authored text file, and is orders of magnitude above any real agent instruction
@@ -61,10 +61,10 @@ var errContainedFileTooLarge = errors.New("file is larger than the read limit")
 // bytes as Preview. No sibling initializer is invoked.
 func Install(root string, render func() (string, error), out io.Writer) error {
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
-		return fmt.Errorf("init-agents: %s is not a directory", root)
+		return fmt.Errorf("agent instructions: %s is not a directory", root)
 	}
 
-	// init-agents is the only command that writes into the repository tree, and
+	// setup is the only command that writes into the repository tree, and
 	// docs/trust-and-security.md scopes that to exactly three files inside it. A
 	// repository-committed symlink must not redirect any of those writes elsewhere, so every
 	// write below goes through this os.Root instead of an absolute path. os.Root resolves each
@@ -73,7 +73,7 @@ func Install(root string, render func() (string, error), out io.Writer) error {
 	// needs — while one that escapes, is absolute, or crosses an escaping directory is refused.
 	repoRoot, err := os.OpenRoot(root)
 	if err != nil {
-		return fmt.Errorf("init-agents: %w", err)
+		return fmt.Errorf("agent instructions: %w", err)
 	}
 	defer repoRoot.Close()
 
@@ -99,11 +99,11 @@ func Install(root string, render func() (string, error), out io.Writer) error {
 		{claudeName, claudePath, false},
 	} {
 		if err := ensureContainedInRepo(repoRoot, target.name, target.path, target.createsParents, guideDirName); err != nil {
-			return fmt.Errorf("init-agents: %w", err)
+			return fmt.Errorf("agent instructions: %w", err)
 		}
 	}
 	if err := validateManagedTargetTopology(repoRoot, guideDirName, guideName, agentsName, claudeName); err != nil {
-		return fmt.Errorf("init-agents: %w", err)
+		return fmt.Errorf("agent instructions: %w", err)
 	}
 
 	// The hard-link refusal is enforced on the WRITE, because an open handle is the only thing
@@ -115,30 +115,30 @@ func Install(root string, render func() (string, error), out io.Writer) error {
 	// a link swapped in afterwards is still refused by the write that finds it.
 	for _, name := range []string{guideName, agentsName, claudeName} {
 		if err := ensureNoSharedInode(repoRoot, name, guideName, agentsName, claudeName); err != nil {
-			return fmt.Errorf("init-agents: %w", err)
+			return fmt.Errorf("agent instructions: %w", err)
 		}
 	}
 
 	agentsInfo, err := inspectInstructionFile(repoRoot, agentsName, agentsPath)
 	if err != nil {
-		return fmt.Errorf("init-agents: %w", err)
+		return fmt.Errorf("agent instructions: %w", err)
 	}
 	claudeInfo, err := inspectInstructionFile(repoRoot, claudeName, claudePath)
 	if err != nil {
-		return fmt.Errorf("init-agents: %w", err)
+		return fmt.Errorf("agent instructions: %w", err)
 	}
 
 	sharedInstructions := agentsInfo != nil && claudeInfo != nil && os.SameFile(agentsInfo, claudeInfo)
 	agentsSource, agentsBegin, agentsEnd, err := readAndValidateInstructionFile(repoRoot, agentsName, agentsPath)
 	if err != nil {
-		return fmt.Errorf("init-agents: %w", err)
+		return fmt.Errorf("agent instructions: %w", err)
 	}
 	var claudeSource []byte
 	claudeBegin, claudeEnd := -1, -1
 	if !sharedInstructions {
 		claudeSource, claudeBegin, claudeEnd, err = readAndValidateInstructionFile(repoRoot, claudeName, claudePath)
 		if err != nil {
-			return fmt.Errorf("init-agents: %w", err)
+			return fmt.Errorf("agent instructions: %w", err)
 		}
 	}
 
@@ -159,16 +159,16 @@ func Install(root string, render func() (string, error), out io.Writer) error {
 	// block is APPENDED to it, so the rendered result can land past the bound the
 	// read enforces. Writing that would leave the repository holding an instruction
 	// file this command itself produced and will refuse on the next run, telling
-	// the user to shrink a file whose excess bytes are the block init-agents added.
+	// the user to shrink a file whose excess bytes are the block setup added.
 	// The bound therefore has to hold for what is WRITTEN, not only for what was
 	// read, and the refusal has to land here — every byte is computed and nothing
 	// has been created or modified yet.
 	if err := ensureRenderedInstructionFits(agentsPath, agentsSource, agentsContent); err != nil {
-		return fmt.Errorf("init-agents: %w", err)
+		return fmt.Errorf("agent instructions: %w", err)
 	}
 	if !sharedInstructions {
 		if err := ensureRenderedInstructionFits(claudePath, claudeSource, claudeContent); err != nil {
-			return fmt.Errorf("init-agents: %w", err)
+			return fmt.Errorf("agent instructions: %w", err)
 		}
 	}
 
@@ -182,7 +182,7 @@ func Install(root string, render func() (string, error), out io.Writer) error {
 	}
 	guideResolvedName, guideInfo, err := resolvedManagedTarget(repoRoot, guideName, false)
 	if err != nil {
-		return fmt.Errorf("init-agents: %w", err)
+		return fmt.Errorf("agent instructions: %w", err)
 	}
 	guideWasMissing := guideInfo == nil
 	var createdGuideDirs []createdManagedTarget
@@ -191,7 +191,7 @@ func Install(root string, render func() (string, error), out io.Writer) error {
 		if cleanupErr == nil {
 			return cause
 		}
-		return errors.Join(cause, fmt.Errorf("could not remove partial init-agents output: %w", cleanupErr))
+		return errors.Join(cause, fmt.Errorf("could not remove partial setup output: %w", cleanupErr))
 	}
 
 	createdGuideDirs, err = mkdirAllContained(repoRoot, guideDirName, 0o755)
@@ -203,7 +203,7 @@ func Install(root string, render func() (string, error), out io.Writer) error {
 	// dots and spaces. Materializing the planned directory lets the filesystem expose a
 	// directory/file collision before the first file write.
 	if err := validateManagedTargetTopology(repoRoot, guideDirName, guideName, agentsName, claudeName); err != nil {
-		return fmt.Errorf("init-agents: %w", rollback(err, nil))
+		return fmt.Errorf("agent instructions: %w", rollback(err, nil))
 	}
 	var guideCreated os.FileInfo
 	if guideWasMissing {
@@ -218,18 +218,18 @@ func Install(root string, render func() (string, error), out io.Writer) error {
 	// same inode only once one is created. Ask the filesystem again now, before reporting
 	// or writing either instruction file, and roll the new guide back on collision.
 	if err := validateManagedTargetTopology(repoRoot, guideDirName, guideName, agentsName, claudeName); err != nil {
-		return fmt.Errorf("init-agents: %w", rollback(err, guideCreated))
+		return fmt.Errorf("agent instructions: %w", rollback(err, guideCreated))
 	}
 	fmt.Fprintf(out, "wrote %s\n", guidePath)
 	// From here on, a write may publish a redirect or instruction pointer.
 	// Keep its guide on failure: rollback only removes newly created targets,
 	// so it cannot undo migration and would leave published pointers dangling.
 	if err := writeLegacy(repoRoot, legacy); err != nil {
-		return fmt.Errorf("init-agents: migrate legacy guides: %w", err)
+		return fmt.Errorf("agent instructions: migrate legacy guides: %w", err)
 	}
 
 	if err := writeContainedFile(repoRoot, agentsName, agentsContent, 0o644, guideName, agentsName, claudeName); err != nil {
-		return fmt.Errorf("init-agents: AGENTS.md: %w", err)
+		return fmt.Errorf("agent instructions: AGENTS.md: %w", err)
 	}
 	fmt.Fprintf(out, "updated %s\n", agentsPath)
 
@@ -243,17 +243,17 @@ func Install(root string, render func() (string, error), out io.Writer) error {
 	// writing AGENTS.md may have created the shared target that did not exist at preflight.
 	agentsInfo, err = statContainedFile(repoRoot, agentsName)
 	if err != nil {
-		return fmt.Errorf("init-agents: AGENTS.md: %w", err)
+		return fmt.Errorf("agent instructions: AGENTS.md: %w", err)
 	}
 	claudeInfo, err = statContainedFile(repoRoot, claudeName)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
+		return fmt.Errorf("agent instructions: CLAUDE.md: %w", err)
 	}
 	if err == nil && os.SameFile(agentsInfo, claudeInfo) {
 		return nil
 	}
 	if err := writeContainedFile(repoRoot, claudeName, claudeContent, 0o644, guideName, agentsName, claudeName); err != nil {
-		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
+		return fmt.Errorf("agent instructions: CLAUDE.md: %w", err)
 	}
 	fmt.Fprintf(out, "updated %s\n", claudePath)
 	return nil
@@ -264,7 +264,7 @@ func Install(root string, render func() (string, error), out io.Writer) error {
 // writeContainedFile below remains the boundary that actually holds. Its job is to turn an
 // escaping alias into one clear error before any file is created.
 //
-// A missing target is not an escape. init-agents legitimately creates all four paths, and the
+// A missing target is not an escape. setup legitimately creates all four paths, and the
 // documented dangling alias (CLAUDE.md -> AGENTS.md before AGENTS.md exists) resolves to
 // fs.ErrNotExist inside the root.
 //
@@ -274,7 +274,7 @@ func Install(root string, render func() (string, error), out io.Writer) error {
 //
 // A path the walk below cannot resolve as spelled (errUnresolvableAlias) is neither. It has to be
 // checked before the missing-target case because it arrives as the kernel's own ENOENT/ENOTDIR
-// and would otherwise read as a file init-agents may create — and it is not creatable: an
+// and would otherwise read as a file setup may create — and it is not creatable: an
 // O_CREAT open of that same spelling fails exactly as the stat did.
 func ensureContainedInRepo(root *os.Root, name, path string, createsParents bool, plannedDirs ...string) error {
 	var err error
@@ -293,7 +293,7 @@ func ensureContainedInRepo(root *os.Root, name, path string, createsParents bool
 		// after a ".." the kernel could not have taken, so there is nothing to write.
 		return fmt.Errorf(
 			"%s: refusing to write through a link the filesystem cannot resolve (%w); "+
-				"the target is not traversable as written, so repoint or remove the link, then rerun init-agents",
+				"the target is not traversable as written, so repoint or remove the link, then rerun setup",
 			path, err,
 		)
 	case err == nil:
@@ -305,15 +305,15 @@ func ensureContainedInRepo(root *os.Root, name, path string, createsParents bool
 		if parentErr := ensureMissingTargetParent(root, name, plannedDirs); parentErr != nil {
 			return fmt.Errorf(
 				"%s: refusing to write through a link the filesystem cannot resolve (%w); "+
-					"the target's parent directory will not exist when it is written, so create it or repoint the link, then rerun init-agents",
+					"the target's parent directory will not exist when it is written, so create it or repoint the link, then rerun setup",
 				path, parentErr,
 			)
 		}
 		return nil
 	case errors.Is(err, errGitDirManagedTarget):
 		return fmt.Errorf(
-			"%s: %w; init-agents installs instruction files, and none of them belongs in the "+
-				"git directory, so repoint or remove the link, then rerun init-agents",
+			"%s: %w; setup installs instruction files, and none of them belongs in the "+
+				"git directory, so repoint or remove the link, then rerun setup",
 			path, err,
 		)
 	case errors.Is(err, errNonInstructionManagedTarget):
@@ -322,13 +322,13 @@ func ensureContainedInRepo(root *os.Root, name, path string, createsParents bool
 		// would otherwise be reported as a repository escape — sending the reader to hunt a
 		// link that leaves the root when the link never left it.
 		return fmt.Errorf(
-			"%s: %w, then rerun init-agents",
+			"%s: %w, then rerun setup",
 			path, err,
 		)
 	case isRootEscape(err):
 		return fmt.Errorf(
 			"%s: refusing to write through a link that leaves the repository (%w); "+
-				"init-agents only writes inside the project root, so repoint or remove the link, then rerun init-agents",
+				"setup only writes inside the project root, so repoint or remove the link, then rerun setup",
 			path, err,
 		)
 	default:
@@ -340,7 +340,7 @@ func ensureContainedInRepo(root *os.Root, name, path string, createsParents bool
 }
 
 // ensureMissingTargetParent distinguishes a creatable missing leaf from a path whose parent is
-// also absent. OpenFile creates only the leaf, so accepting the latter would let init-agents write
+// also absent. OpenFile creates only the leaf, so accepting the latter would let setup write
 // the guide and an earlier instruction file before the eventual ENOENT. plannedDirs are the
 // directories runInitAgents creates before any file write; an alias whose resolved parent is one
 // of those remains safely creatable.
@@ -672,7 +672,7 @@ func resolveContainedDirectoryName(root *os.Root, name string) (string, error) {
 //
 // os.Root keeps the write in the project root, and until now that was the whole argument — see
 // the os.OpenRoot comment in runInitAgents, which reasons that a link staying inside the
-// repository is safe to follow because the repository is where init-agents writes anyway. That
+// repository is safe to follow because the repository is where setup writes anyway. That
 // is true of repository CONTENT and false of `.git`, which is inside the root and is not content.
 // A hostile checkout that commits `CLAUDE.md -> .git/config` gets the managed block appended to
 // git's own config, and git then refuses to operate on the repository at all ("fatal: bad config
@@ -697,7 +697,7 @@ func resolveContainedNameWithOptions(root *os.Root, name string, allowMissingDir
 	}
 	if pathLandsInGitDir(resolved) && gitDirSpellingReachesTheGitDir(root, resolved) {
 		return "", fmt.Errorf(
-			"%w: %s resolves to %s, inside the repository's git directory, where init-agents must never write",
+			"%w: %s resolves to %s, inside the repository's git directory, where setup must never write",
 			errGitDirManagedTarget, name, filepath.ToSlash(resolved),
 		)
 	}
@@ -862,7 +862,7 @@ var agentGuideHeading = "# Entire repository agent guide"
 
 // isInstructionFileName reports whether a landing's base name is an agent-instruction file.
 //
-// Markdown is the test because markdown is what init-agents writes. The comparison folds case for
+// Markdown is the test because markdown is what setup writes. The comparison folds case for
 // the same reason PathLandsInGitDir folds: macOS and Windows resolve these names
 // case-insensitively, so `README.MD` and `readme.md` are one file there.
 func isInstructionFileName(base string) bool {
@@ -882,19 +882,19 @@ func isInstructionFileName(base string) bool {
 // `-> .envrc` were all measured on this branch appending the managed block to the victim's real
 // build, CI and environment files, exit 0 — and every build system, task runner and shell
 // initialisation file yet to be invented is another entry someone has to remember to add. The list
-// that CAN be finished is the list of things init-agents is for: docs/agents.md offers the alias so
+// that CAN be finished is the list of things setup is for: docs/agents.md offers the alias so
 // that AGENTS.md and CLAUDE.md may share ONE INSTRUCTION FILE, so an alias that lands anywhere else
 // is not a use of the feature, and refusing it costs the documented case nothing.
 //
 // Three landings are deliberately not refused, and each is a case where there is nothing to
 // protect:
 //
-//   - A landing that DOES NOT EXIST. init-agents creates all of its targets, and the documented
+//   - A landing that DOES NOT EXIST. setup creates all of its targets, and the documented
 //     dangling alias (CLAUDE.md -> AGENTS.md before AGENTS.md exists) depends on it. Nothing is
 //     destroyed: the file this command creates holds this command's own markdown, mode 0644, and
 //     shows up untracked in `git status` — the harm this refusal exists for is the SILENT rewrite
 //     of a file that was already doing a job.
-//   - A landing that already carries this command's own output. A file init-agents wrote once must
+//   - A landing that already carries this command's own output. A file setup wrote once must
 //     stay writable on the next run whatever it is named, or a first run would succeed and every
 //     later one fail.
 //   - A landing that is not a regular file, or cannot be stat'ed. Those are not this refusal's
@@ -911,7 +911,7 @@ func refuseNonInstructionLanding(root *os.Root, name, resolved string) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"%w: %s resolves to %s, which is not an agent-instruction file; init-agents installs its managed block only into instruction files, so alias it to one",
+		"%w: %s resolves to %s, which is not an agent-instruction file; setup installs its managed block only into instruction files, so alias it to one",
 		errNonInstructionManagedTarget, name, filepath.ToSlash(resolved),
 	)
 }
@@ -1193,7 +1193,7 @@ var errUnresolvableAlias = errors.New("link target is not traversable as written
 // component is opened — so text alone cannot tell a legal traversal from one that never happens.
 // A prefix that does not exist, is not a directory, or cannot be searched stops the kernel with
 // ENOENT/ENOTDIR/EACCES; erasing it as text instead leaves the remaining elements naming a file
-// the kernel would never have reached, and init-agents would write there.
+// the kernel would never have reached, and setup would write there.
 //
 // os.Root is the oracle rather than a rule reconstructed here: it resolves each component with
 // openat, ".." included, so handing it the prefix with the ".." still attached returns exactly
@@ -1717,7 +1717,7 @@ func replaceContainedFile(root *os.Root, name string, perm os.FileMode, write fu
 // Lstat reports an ordinary regular file, so PathLandsInGitDir cannot see it.
 // Writing the managed block through that name appends to git's own config —
 // exactly the corruption the git-directory refusal exists to prevent, reached by
-// a route it does not cover. Measured before this guard: `init-agents` exited 0
+// a route it does not cover. Measured before this guard: `setup` exited 0
 // and `.git/config` was rewritten.
 //
 // The rule is link count rather than "is it inside .git", because the handle
@@ -1760,7 +1760,7 @@ func refuseSharedInode(root *os.Root, file *os.File, name, resolved string, mana
 		// `links` and hands back exactly the permission this guard exists to
 		// withhold. Measured before this check: CLAUDE.md hard-linked to
 		// .git/config (2 names) plus AGENTS.md symlinked to CLAUDE.md counted 2
-		// managed names against 2 links, so init-agents exited 0 and rewrote
+		// managed names against 2 links, so setup exited 0 and rewrote
 		// git's config. Sharing one instruction file through a SYMLINK is the
 		// documented alias and stays supported; it simply is not evidence about
 		// who else holds a hard link.
@@ -1851,7 +1851,7 @@ func writeNewContainedFile(root *os.Root, name string, content []byte, perm os.F
 
 // inspectInstructionFile identifies existing aliases and rejects targets that cannot be safely
 // read as instruction files. A missing target—including a dangling alias—is preserved as the
-// empty-file case supported by init-agents.
+// empty-file case supported by setup.
 //
 // A stat that follows the link, not an Lstat, is deliberate and load-bearing: AGENTS.md and
 // CLAUDE.md are documented as permitted to be the same file, and os.SameFile in runInitAgents can
@@ -1905,9 +1905,9 @@ func readAndValidateInstructionFile(root *os.Root, name, path string) ([]byte, i
 		}
 		if errors.Is(err, errContainedFileTooLarge) {
 			return nil, -1, -1, fmt.Errorf(
-				"%s: file is larger than the %d-byte limit init-agents will read; "+
+				"%s: file is larger than the %d-byte limit setup will read; "+
 					"an instruction file this size is not one this command can safely rewrite, "+
-					"so reduce it (or move its bulk into a file it imports) and rerun init-agents",
+					"so reduce it (or move its bulk into a file it imports) and rerun setup",
 				path, maxInstructionFileBytes,
 			)
 		}
@@ -1924,7 +1924,7 @@ func readAndValidateInstructionFile(root *os.Root, name, path string) ([]byte, i
 	return content, begin, end, nil
 }
 
-// ensureRenderedInstructionFits keeps init-agents from writing an instruction file
+// ensureRenderedInstructionFits keeps setup from writing an instruction file
 // it would refuse to read. It reports the source and rendered sizes because the
 // difference between them is the block this command adds, which is the part the
 // user cannot shrink.
@@ -1934,8 +1934,8 @@ func ensureRenderedInstructionFits(path string, source, rendered []byte) error {
 	}
 	return fmt.Errorf(
 		"%s: the file is %d bytes and the Entire agent managed block would take it to %d, "+
-			"past the %d-byte limit init-agents will read back on its next run; "+
-			"reduce it (or move its bulk into a file it imports) and rerun init-agents",
+			"past the %d-byte limit setup will read back on its next run; "+
+			"reduce it (or move its bulk into a file it imports) and rerun setup",
 		path, len(source), len(rendered), maxInstructionFileBytes,
 	)
 }
@@ -1963,7 +1963,7 @@ func validatePointerMarkers(path string, content []byte) (int, int, error) {
 		reason = "the end marker appears before the begin marker"
 	}
 	return -1, -1, fmt.Errorf(
-		"%s: malformed Entire agent managed markers (%s); back up the file, preserve user-owned text, reduce it to zero markers or exactly one complete %q / %q pair with begin before end, then rerun init-agents",
+		"%s: malformed Entire agent managed markers (%s); back up the file, preserve user-owned text, reduce it to zero markers or exactly one complete %q / %q pair with begin before end, then rerun setup",
 		path, reason, agentPointerBegin, agentPointerEnd,
 	)
 }
@@ -2092,4 +2092,59 @@ func renderPointerBlock(existing []byte, begin, end int, block string) []byte {
 		content += "\n" + block
 	}
 	return []byte(content)
+}
+
+// AgentsWired reports whether the agent instructions have been installed in
+// this repository, and names what is missing when they have not.
+//
+// A brain nothing reads is the product's worst failure mode, and it is SILENT:
+// setup succeeds, status reports every source healthy, and no agent ever
+// consults the brain because nothing told it the brain exists.
+//
+// The check is deliberately cheap and read-only: the guide file must exist, and
+// at least one of AGENTS.md / CLAUDE.md must carry the managed pointer at it.
+// One pointer is enough -- the two are documented aliases and a repository may
+// legitimately keep only the one its agent reads.
+//
+// Absence is reported, never repaired. Writing into someone's repository
+// because they ran a read-only status command would be a worse surprise than
+// the one this diagnoses.
+func AgentsWired(root string) (bool, []string) {
+	if strings.TrimSpace(root) == "" {
+		return false, nil
+	}
+	repoRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return false, nil
+	}
+	defer repoRoot.Close()
+
+	var missing []string
+	guide := filepath.Join(".entire", "agent-guide.md")
+	if !regularFileExists(repoRoot, guide) {
+		missing = append(missing, guide)
+	}
+	pointed := false
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		if fileContains(repoRoot, name, agentPointerBegin) {
+			pointed = true
+			break
+		}
+	}
+	if !pointed {
+		missing = append(missing, "AGENTS.md or CLAUDE.md (neither carries the managed block)")
+	}
+	return len(missing) == 0, missing
+}
+
+func regularFileExists(root *os.Root, name string) bool {
+	info, err := root.Stat(name)
+	return err == nil && info.Mode().IsRegular()
+}
+
+// fileContains uses the same contained read bound as setup. Existing
+// instructions can place the managed pointer anywhere within that bound.
+func fileContains(root *os.Root, name, needle string) bool {
+	content, err := readContainedFile(root, name, maxInstructionFileBytes)
+	return err == nil && bytes.Contains(content, []byte(needle))
 }

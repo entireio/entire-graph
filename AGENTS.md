@@ -7,7 +7,7 @@ model, so treat any single figure as scenario-dependent; the measured range and
 the conditions behind it are in the [README](README.md).
 
 Two guidance surfaces coexist here on purpose. `.entire/agent-guide.md` is the
-generated activation artifact — regenerated in full by `init-agents`, so never
+generated activation artifact — regenerated in full by `setup`, so never
 edit it by hand — and is what agents load through the managed block at the end
 of this file. This document is the maintained long-form reference; its examples
 pass flags explicitly (such as `--format text`) for readability rather than
@@ -84,6 +84,22 @@ entire graph edges --repo . --format ndjson [--worktree] [--to ID|NAME] [--from 
 ```
 
 **When:** you want every relation (bulk export / ingestion) or a filtered relation stream. For a targeted one-symbol question, use `neighbors`.
+
+### store — read-only code store for local integrations
+
+`entire graph store --repo . --profile full` resolves the committed-tree SQLite
+store as a JSON descriptor without building it. Consumers open read-only and
+verify the entry digest; see [the store contract](docs/store-contract.md).
+`--ignore-file` and `--include-file` are repeatable and must match the indexed
+policy. `--cache-dir` selects its cache root. Missing stores report
+`store_unavailable=true`; build with `ENTIRE_GRAPH_SEARCH_STORE=1 entire graph index --head`.
+
+### context — bounded task context from the code store
+
+`entire graph context --repo . --task "<task text>"` returns ranked symbols,
+relations and test suggestions as JSON without parsing or building. It also
+accepts repeatable `--ignore-file` and `--include-file` policy files, plus
+`--profile` and `--cache-dir`, matching the index that built the store.
 
 ### 🗺️ snapshot — *the whole graph*
 One header record, then file, external-endpoint, symbol, and relation records, streamed so memory stays bounded. Superset of `symbols` + `edges` + files.

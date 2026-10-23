@@ -1,20 +1,20 @@
 # Agent activation
 
-This page is the reference for `entire graph init-agents`: what it writes, how
+This page is the reference for `entire graph setup`: what it writes, how
 reruns behave, how Claude inheritance is handled, how to verify that a coding
 agent loaded the guide, and how to recover from invalid instruction files. The
 behavior described here matches the 0.4.0 release target. Run
-`entire graph init-agents --help` for the flags in your installed version.
+`entire graph setup --help` for the flags in your installed version.
 
 See [the coordination contract](agent-coordination.md) for generation-time mode
 selection, read-only previews, legacy-guide migration, and configuration removal.
 
-## What `init-agents` writes
+## What `setup` writes
 
 Activation is per repository. From the repository root:
 
 ```sh
-entire graph init-agents --repo .
+entire graph setup --repo .
 ```
 
 The command manages three repository paths, plus one per-user Claude Code
@@ -35,7 +35,7 @@ settings file:
   prints nothing outside a git work tree. The file is intended to stay per-user
   and untracked:
   existing keys and hooks are preserved, the hook is added once, and a rerun
-  leaves the file unchanged. `init-agents` refuses, before writing anything,
+  leaves the file unchanged. `setup` refuses, before writing anything,
   settings that are not a JSON object, and a `.claude` or settings file that is
   a symlink, hard link or other non-regular file. `--no-claude-hook` skips this
   file. To remove the hook, delete its `SubagentStart` entry.
@@ -84,7 +84,7 @@ depends on how that file already reaches `AGENTS.md`:
   directly a second time.
 - If that import is absent or cannot be identified safely, `CLAUDE.md` receives
   the direct guide pointer. Removing or adding a live `AGENTS.md` import and
-  rerunning `init-agents` switches the managed block accordingly.
+  rerunning `setup` switches the managed block accordingly.
 - If `AGENTS.md` and `CLAUDE.md` resolve to the same regular file through a
   symlink or hard link, the shared file receives the direct block once. The
   link topology is preserved.
@@ -92,12 +92,12 @@ depends on how that file already reaches `AGENTS.md`:
 Import detection recognizes standalone relative or absolute paths that resolve
 to the root `AGENTS.md`. Mentions inside inline code, fenced or indented code,
 HTML comments, or the managed block do not count. Ambiguous Markdown keeps the
-direct pointer rather than assuming inheritance. `init-agents` does not create
+direct pointer rather than assuming inheritance. `setup` does not create
 or remove the user-owned `AGENTS.md` import itself.
 
 ## Preflight and rerun behavior
 
-Before its first write, `init-agents` inspects both instruction paths, reads
+Before its first write, `setup` inspects both instruction paths, reads
 each distinct file, validates the marker layout, and renders all managed
 content from that validated snapshot.
 
@@ -180,7 +180,7 @@ The error names the file and the condition that blocked the run. To recover:
    one complete begin/end pair in that order. Reword marker strings shown in
    examples or comments.
 4. Preserve user-owned text outside the intended managed block.
-5. Rerun `entire graph init-agents --repo .` and confirm that each independent
+5. Rerun `entire graph setup --repo .` and confirm that each independent
    instruction file contains one managed block.
 
 ## Removal
@@ -207,7 +207,7 @@ When `CLAUDE.md` already imports `AGENTS.md`, the inheritance layout avoids a
 second direct guide pointer.
 
 A session opened before activation does not see the new files. Start a fresh
-session or task in the repository after running `init-agents`.
+session or task in the repository after running `setup`.
 
 ### Other clients
 

@@ -1,7 +1,7 @@
 # Command reference
 
 Day to day, Entire Graph is driven by a coding agent following the guide that
-`init-agents` installs. The commands below are the same surface used directly
+`setup` installs. The commands below are the same surface used directly
 for manual inspection, debugging a result the agent acted on, or scripting.
 `entire graph help` lists every public command for your installed version, and
 `entire graph <command> --help` is authoritative for flags; this page groups
@@ -13,8 +13,8 @@ Pass `--repo .` (or a path) when running outside an Entire session.
 
 | Command | What it does |
 | --- | --- |
-| `init-agents` | Writes `.entire/agent-guide.md`, managed blocks in `AGENTS.md`/`CLAUDE.md`, and a Claude Code `SubagentStart` hook in `.claude/settings.local.json`. See [agent activation](agents.md). |
-| `agent-guide` | Prints the operating guide `init-agents` installs, for inspection or piping elsewhere. |
+| `setup` | Writes `.entire/agent-guide.md`, managed blocks in `AGENTS.md`/`CLAUDE.md`, and a Claude Code `SubagentStart` hook in `.claude/settings.local.json`. See [agent activation](agents.md). |
+| `agent-guide` | Prints the operating guide `setup` installs, for inspection or piping elsewhere. |
 | `index` | Prewarms one committed-tree cache variant before a batch of `--head` queries. Defaults to `--profile full`; see the [operations cache guide](operations.md#cache). |
 | `capabilities` | Reports semantic vs inventory-only languages, relation types, profiles, and features as JSON. Feature-detect with this before relying on a relation family. |
 

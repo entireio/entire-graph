@@ -7,9 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"path/filepath"
 	"sort"
 
@@ -403,7 +401,7 @@ func (transaction *ProviderRecordsCacheTransaction) Store(spool *ProviderRecords
 		MaxParseBytes:   transaction.options.MaxParseBytes,
 		RepoRoot:        transaction.absRepo,
 		RepoScope:       cacheCheckoutScope(transaction.absRepo, transaction.ctx),
-		RecordsDigest:   fmt.Sprintf("%x", digest[:]),
+		RecordsDigest:   digest.String(),
 		Summary:         summary,
 	}
 	return writeProviderRecords(transaction.entry, cache)
@@ -453,13 +451,8 @@ func readProviderRecords(entry cacheEntry) (cachedProviderRecords, error) {
 	}
 	defer reader.Close()
 	var cache cachedProviderRecords
-	decoder := json.NewDecoder(reader)
-	if err := decoder.Decode(&cache); err != nil {
+	if err := decodeCacheValue(reader, &cache); err != nil {
 		return cachedProviderRecords{}, err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return cachedProviderRecords{}, errors.New("provider records cache has trailing data")
 	}
 	return cache, nil
 }

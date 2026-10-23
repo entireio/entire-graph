@@ -70,12 +70,12 @@ is active.
 Activation is per repository:
 
 ```sh
-entire graph init-agents --repo .
+entire graph setup --repo .
 ```
 
 Add `--strict` to save mandatory Graph/Brain tool-use rules for this repository.
 The saved mode is shared by enabled products and inherited on later runs.
-Use `init-agents --normal` to reset it. `agent-guide` inherits the saved mode;
+Use `setup --normal` to reset it. `agent-guide` inherits the saved mode;
 `agent-guide --strict` or `--normal` previews an override without saving it.
 The two flags are mutually exclusive. New repositories default to normal.
 

@@ -109,6 +109,10 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runProviderRecords(ctx, opts, args[1:], "edges")
 	case "query", "search":
 		return runSearch(ctx, opts, args[1:])
+	case "store":
+		return runStore(ctx, opts, args[1:])
+	case "context":
+		return runContext(ctx, opts, args[1:])
 	case "index":
 		return runIndex(ctx, opts, args[1:])
 	case "health":
@@ -127,8 +131,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runStats(ctx, opts, args[1:])
 	case "agent-guide":
 		return runAgentGuide(opts, args[1:])
-	case "init-agents":
-		return runInitAgents(opts, args[1:])
+	case "setup":
+		return runSetup(opts, args[1:])
 	case "hook":
 		return runHook(opts, args[1:])
 	case "version", "--version", "-v":
@@ -144,6 +148,11 @@ func Run(ctx context.Context, opts Options, args []string) error {
 	case "help", "--help", "-h":
 		printHelp(opts.Stdout)
 		return nil
+	case "init-agents":
+		// Removed, not aliased: the rename should propagate to scripts and docs,
+		// but the failure has to say where the command went or every caller built
+		// against an older release is left diagnosing a typo that is not one.
+		return fmt.Errorf("init-agents was folded into \"setup\"; run \"entire graph setup\" (same flags)")
 	default:
 		return fmt.Errorf("unknown command %q; run \"entire graph help\" to list commands", args[0])
 	}

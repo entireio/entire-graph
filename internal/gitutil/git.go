@@ -1836,6 +1836,12 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 	if _, _, _, found, probeErr := reader.objectInfoLocked(probeOID); probeErr != nil || found {
 		_ = stdin.Close()
 		waitErr := cmd.Wait()
+		// A context expiring mid-probe kills the child, and its EOF would read
+		// as version skew below. The cancellation is the cause; report it so a
+		// cancelled caller sees its own deadline, not a Git-version diagnosis.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("git cat-file --batch-command: %w", ctxErr)
+		}
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			if probeErr != nil {
@@ -2379,7 +2385,15 @@ func treePathsOverlap(left, right string) bool {
 		strings.HasPrefix(right, left+"/")
 }
 
-func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []string) (map[string]primedLimitedFile, error) {
+func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []string) (result map[string]primedLimitedFile, err error) {
+	// Killing Git can surface as an exit status or a truncated pipe read,
+	// especially on Windows. Preserve the cancellation identity at this
+	// subprocess boundary, as runWithStderr does for ordinary Git commands.
+	defer func() {
+		if err != nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
+	}()
 	if rev == "" || strings.HasPrefix(rev, "-") || strings.ContainsRune(rev, 0) {
 		return nil, fmt.Errorf("invalid treeish %q", rev)
 	}

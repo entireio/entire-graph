@@ -284,6 +284,9 @@ var (
 	// graphLocatedPathPattern: a path token followed by ":<digit>", not glued to a preceding
 	// path character (RE2 has no lookbehind, so the boundary is consumed as group 0's prefix).
 	graphLocatedPathPattern = regexp.MustCompile(`(?:^|[^A-Za-z0-9_@+~./-])(` + graphPathToken + `):[0-9]`)
+	// Impact's compact heading names the definition before its summary; its
+	// telemetry now follows the answer instead of opening it.
+	graphImpactHeadingPattern = regexp.MustCompile(`^\S.* — [^,\r\n]+, ` + graphPathToken + `:[0-9]+(?:-[0-9]+)?$`)
 	// Located tokens count only in renderer record rows, never ordinary source text.
 	graphLocatedRowPattern = regexp.MustCompile(`^(?:[ \t]*(?:[0-9]+\. )?` + graphPathToken + `:[0-9]|(?:Focus|Impact): .* \(` + graphPathToken + `:[0-9]|[-<>] .* \(` + graphPathToken + `:[0-9]|[ \t]+(?:owner|also declared|supertypes|implemented by|fields|nested|impl [^:]+): .*` + graphPathToken + `:[0-9])`)
 	// graphLinelessRowPattern: the two result-row forms that name a file without a line.
@@ -469,7 +472,7 @@ func graphTextOutputPaths(text string) []string {
 		if graphRankedRowPattern.MatchString(line) {
 			seenSearchRow = true
 			emptySearchResponse = false
-		} else if strings.HasPrefix(line, "Index:") || strings.HasPrefix(line, "Index not cached") {
+		} else if graphImpactHeadingPattern.MatchString(line) || strings.HasPrefix(line, "Index:") || strings.HasPrefix(line, "Index not cached") {
 			// A chained invocation starts a new response; source-body text remains
 			// subject to the renderer's record quarantine.
 			seenSearchRow = false
@@ -507,7 +510,7 @@ func graphTextOutputPaths(text string) []string {
 		if match := graphLinelessRowPattern.FindStringSubmatch(line); match != nil {
 			paths = append(paths, match[1])
 		}
-		if !graphLocatedRowPattern.MatchString(line) {
+		if !graphLocatedRowPattern.MatchString(line) && !graphImpactHeadingPattern.MatchString(line) {
 			continue
 		}
 		for _, match := range graphLocatedPathPattern.FindAllStringSubmatch(line, -1) {

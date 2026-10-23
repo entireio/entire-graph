@@ -13,9 +13,9 @@ import (
 // here and give it a commandDoc.
 var dispatchCommands = []string{
 	"diff", "commit", "checkpoint", "analyze", "doctor", "capabilities",
-	"snapshot", "snapshot-query", "symbols", "edges", "query", "search", "index", "health", "def",
+	"snapshot", "snapshot-query", "symbols", "edges", "query", "search", "context", "store", "index", "health", "def",
 	"explain", "neighbors", "impact", "verify", "stats", "agent-guide",
-	"init-agents", "hook", "version", "help",
+	"setup", "hook", "version", "help",
 }
 
 // TestUnknownFlagNamesTheVersion pins that a flag-shaped argument this binary does not know reads
@@ -171,6 +171,8 @@ func TestRunRendersPerCommandHelp(t *testing.T) {
 		contains []string
 	}{
 		{[]string{"search", "--help"}, []string{"Usage:", "Flags:", "--query"}},
+		{[]string{"store", "--help"}, []string{"Usage:", "entire graph store", "--repo", "--profile", "--cache-dir", "--ignore-file", "--include-file"}},
+		{[]string{"context", "--help"}, []string{"--ignore-file", "--include-file"}},
 		{[]string{"neighbors", "-h"}, []string{"Flags:", "16384"}},
 		{[]string{"analyze", "--help"}, []string{"entire graph diff"}}, // alias resolves
 	}

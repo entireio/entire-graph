@@ -85,10 +85,10 @@ var commandDocs = []commandDoc{
 	},
 	// ── Set up your agent ────────────────────────────────────────────────
 	{
-		name:    "init-agents",
+		name:    "setup",
 		group:   groupSetup,
 		summary: "Install the coding-agent guide into AGENTS.md/CLAUDE.md",
-		usage:   []string{"entire graph init-agents [--repo path] [--strict | --normal] [--no-claude-hook]"},
+		usage:   []string{"entire graph setup [--repo path] [--strict | --normal] [--no-claude-hook]"},
 		long:    "Writes one shared operating guide and managed AGENTS.md/CLAUDE.md references. Preserves repository Graph/Brain activation and the saved guidance mode. --strict saves mandatory tool-use rules for all enabled products; --normal resets to normal guidance. New repositories default to normal.\n\nAlso registers a Claude Code SubagentStart hook (entire graph hook claude-subagent-start) in the per-user, untracked .claude/settings.local.json, merged into existing settings and added once. Claude Code's Explore and Plan subagents do not load CLAUDE.md; the hook gives them the graph directive. --no-claude-hook skips it.",
 		flags: []flagDoc{
 			{name: "--repo", arg: "path", desc: "Repository to install into (default: current repo)"},
@@ -96,7 +96,7 @@ var commandDocs = []commandDoc{
 			{name: "--normal", desc: "Save normal guidance for all enabled products (exclusive with --strict)"},
 			{name: "--no-claude-hook", desc: "Do not register the Claude Code SubagentStart hook in .claude/settings.local.json"},
 		},
-		examples: []string{"entire graph init-agents --repo ."},
+		examples: []string{"entire graph setup --repo ."},
 	},
 	{
 		name:     "hook",
@@ -104,7 +104,7 @@ var commandDocs = []commandDoc{
 		hidden:   true,
 		summary:  "Serve a coding-agent hook (run by the agent, not by hand)",
 		usage:    []string{"entire graph hook claude-subagent-start < event.json"},
-		long:     "claude-subagent-start reads a Claude Code SubagentStart event on stdin and prints {\"hookSpecificOutput\":{\"hookEventName\":\"SubagentStart\",\"additionalContext\":...}} carrying the compact graph directive, so subagents that do not load CLAUDE.md (Explore, Plan) still learn to use the graph. It prints nothing unless the event's cwd (else the current directory) is inside a git work tree, never builds an index, and fails open: malformed input prints nothing and exits 0. init-agents registers it.",
+		long:     "claude-subagent-start reads a Claude Code SubagentStart event on stdin and prints {\"hookSpecificOutput\":{\"hookEventName\":\"SubagentStart\",\"additionalContext\":...}} carrying the compact graph directive, so subagents that do not load CLAUDE.md (Explore, Plan) still learn to use the graph. It prints nothing unless the event's cwd (else the current directory) is inside a git work tree, never builds an index, and fails open: malformed input prints nothing and exits 0. setup registers it.",
 		examples: []string{`echo '{"hook_event_name":"SubagentStart","cwd":"'"$PWD"'","agent_type":"Explore"}' | entire graph hook claude-subagent-start`},
 	},
 	{
@@ -112,7 +112,7 @@ var commandDocs = []commandDoc{
 		group:   groupSetup,
 		summary: "Print the coding-agent operating guide",
 		usage:   []string{"entire graph agent-guide [--repo path] [--strict | --normal]"},
-		long:    "Previews the same repository-specific workflow init-agents would install, without writing files. Inherits the saved guidance mode; --strict and --normal override this preview only. Use init-agents with the same flag to save a mode. Outside a repository, prints standalone Graph guidance (normal unless --strict is supplied).",
+		long:    "Previews the same repository-specific workflow setup would install, without writing files. Inherits the saved guidance mode; --strict and --normal override this preview only. Save a mode with `setup --strict` or `setup --normal`. Outside a repository, prints standalone Graph guidance (normal unless --strict is supplied).",
 		flags: []flagDoc{
 			{name: "--repo", arg: "path", desc: "Project root (default: host repository or nearest repository)"},
 			{name: "--strict", desc: "Preview strict guidance without saving (exclusive with --normal)"},
@@ -157,6 +157,41 @@ var commandDocs = []commandDoc{
 	},
 
 	// ── Inspect the graph ────────────────────────────────────────────────
+	{
+		name:    "store",
+		group:   groupInspect,
+		summary: "Resolve the read-only committed-tree code store for local consumers",
+		usage:   []string{`entire graph store [--repo path] [--profile full] [--cache-dir path] [--ignore-file path] [--include-file path]`},
+		long:    "Returns a JSON descriptor containing the current committed-tree SQLite path, entry digest, provider metadata and counts. It never builds an index. A missing or incompatible store returns store_unavailable=true. Build the matching cache variant with ENTIRE_GRAPH_SEARCH_STORE=1 entire graph index --head. Consumers must open read-only and verify the entry digest; see docs/store-contract.md.",
+		flags: []flagDoc{
+			{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
+			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Indexing profile of the store to read (match the index that built it)"},
+			{name: "--cache-dir", arg: "path", desc: "Cache directory holding the store (default: plugin data dir, else user cache dir)"},
+			{name: "--ignore-file", arg: "path", desc: "Additional ignore file; repeatable, must match the indexed policy"},
+			{name: "--include-file", arg: "path", desc: "Additional include file; repeatable, must match the indexed policy"},
+		},
+		examples: []string{`entire graph store --repo . --profile full`},
+	},
+	{
+		name:    "context",
+		group:   groupSetup,
+		summary: "Task-relevant symbols, relations, and test suggestions from the committed-tree store (JSON)",
+		usage:   []string{`entire graph context --repo . --task "<task text>" [--limit N] [--tests-limit N] [--relations-limit N] [--profile full] [--cache-dir path] [--ignore-file path] [--include-file path]`},
+		long: "The delegation surface for downstream consumers such as Entire Brain's brief: task text in, the store's ranked task-relevant symbols plus their relation fan-out and test suggestions out, as one JSON document. It reads ONLY the committed tree's sqlite store sidecar — it never parses and never builds — so latency is bounded by indexed reads (measured ~0.5s on a 52k-symbol repository).\n\n" +
+			"The store sidecar exists when the cache variant was built with ENTIRE_GRAPH_SEARCH_STORE=1 (`entire graph index --head`). Without one (or with a stale one), the response carries store_unavailable=true with empty lists, so a consumer degrades exactly as it would with the plugin absent instead of paying a parse.",
+		flags: []flagDoc{
+			{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
+			{name: "--ignore-file", arg: "path", desc: "Additional ignore file; repeatable, must match the indexed policy"},
+			{name: "--include-file", arg: "path", desc: "Additional include file; repeatable, must match the indexed policy"},
+			{name: "--task", arg: "text", desc: "Task text to find context for (required)"},
+			{name: "--limit", arg: "N", def: "12", desc: "Maximum symbols returned"},
+			{name: "--tests-limit", arg: "N", def: "6", desc: "Maximum test suggestions returned"},
+			{name: "--relations-limit", arg: "N", def: "200", desc: "Maximum relations returned; highest confidence kept, relations_truncated signals a cut"},
+			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Indexing profile of the store to read (match the index that built it)"},
+			{name: "--cache-dir", arg: "path", desc: "Cache directory holding the store (default: plugin data dir, else user cache dir)"},
+		},
+		examples: []string{`entire graph context --repo . --task "add a kind filter flag to the recall command"`},
+	},
 	{name: "search", aliasOf: "query", hidden: true},
 	{
 		name:    "query",
@@ -628,7 +663,7 @@ func renderRootHelp(w io.Writer) {
 	}
 
 	fmt.Fprintln(w, "\nUse \"entire graph <command> --help\" for details on a command.")
-	fmt.Fprintln(w, "For coding agents: run \"entire graph agent-guide\" or \"entire graph init-agents\".")
+	fmt.Fprintln(w, "For coding agents: run \"entire graph agent-guide\" or \"entire graph setup\".")
 }
 
 // renderCommandHelp prints the detail view for one command.
