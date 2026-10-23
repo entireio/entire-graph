@@ -1,0 +1,59 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "f89339c6732e",
+  "session_id": "1799282d-339f-46ce-a762-61438de0b8d5",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-23T06:58:22.854464Z",
+  "branch": "adopt-cli-palette-tui-theme",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "scripts/tui-census-run.sh",
+    "scripts/tui-census.sh"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "d06629250e07",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 2,
+    "cache_creation_tokens": 628,
+    "cache_read_tokens": 152265,
+    "output_tokens": 513,
+    "api_call_count": 1
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01AfxnNKETmwtmbWWFdPJ1e3",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "superpowers:executing-plans"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "b451dc59eda2",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 26,
+        "end": 27,
+        "entry_ids": [
+          "cf08f28c-3f36-46b4-af86-ccb3ab4cd02b"
+        ],
+        "tool_use_id": "toolu_01AfxnNKETmwtmbWWFdPJ1e3"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01AfxnNKETmwtmbWWFdPJ1e3"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: superpowers:executing-plans",
+        "default_collapsed": true
+      }
+    }
+  ]
+}

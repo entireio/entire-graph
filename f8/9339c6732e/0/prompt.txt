@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bah2r7tk3</task-id>
+<tool-use-id>toolu_01FopaujvMmwaZVbPbAstpFh</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evisdrenova-conductor-workspaces-entire-graph-columbus/1799282d-339f-46ce-a762-61438de0b8d5/tasks/bah2r7tk3.output</output-file>
+<status>completed</status>
+<summary>Background command "Build before-binary from origin/main in temp worktree" completed (exit code 0)</summary>
+</task-notification>
