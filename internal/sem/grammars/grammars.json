@@ -1,0 +1,182 @@
+[
+  {
+    "language": "clojure",
+    "url": "https://github.com/sogaiu/tree-sitter-clojure",
+    "reference": "v0.0.13",
+    "revision": "3a1ace906c151dd631cf6f149b5083f2b60e6a9e",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "tree_sitter/parser.h"
+    ],
+    "abi": 14,
+    "note": "LICENSE is upstream's COPYING.txt"
+  },
+  {
+    "language": "csharp",
+    "url": "https://github.com/tree-sitter/tree-sitter-c-sharp",
+    "reference": "v0.23.5",
+    "revision": "cac6d5fb595f5811a076336682d5d595ac1c9e85",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "scanner.c",
+      "tree_sitter/alloc.h",
+      "tree_sitter/array.h",
+      "tree_sitter/parser.h"
+    ],
+    "abi": 14,
+    "note": "upstream v0.23.5 is ABI 15; parser.c was regenerated with tree-sitter-cli 0.24.7 --abi 14, so grammar-refresh refuses this ref"
+  },
+  {
+    "language": "dart",
+    "url": "https://www.npmjs.com/package/tree-sitter-dart",
+    "reference": "npm:tree-sitter-dart@1.0.0",
+    "revision": "",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "scanner.c",
+      "tree_sitter/parser.h"
+    ],
+    "abi": 14,
+    "note": "parser.c and scanner.c match the npm tarball (gitHead 53485a8f301254e19c518aa20c80f1bcf7cf5c62); that parser.c is not in github.com/UserNobody14/tree-sitter-dart history, so grammar-refresh cannot reproduce it from git"
+  },
+  {
+    "language": "erlang",
+    "url": "https://github.com/WhatsApp/tree-sitter-erlang",
+    "reference": "0.19",
+    "revision": "836aa2b6c3af2c7cef3f84049b0ed6d44485a870",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "scanner.c",
+      "tree_sitter/alloc.h",
+      "tree_sitter/array.h",
+      "tree_sitter/parser.h"
+    ],
+    "abi": 14
+  },
+  {
+    "language": "fsharp",
+    "url": "https://github.com/ionide/tree-sitter-fsharp",
+    "reference": "02929f084726db969e5b916d144436f248146824",
+    "revision": "02929f084726db969e5b916d144436f248146824",
+    "path": "fsharp",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "scanner.c",
+      "scanner.h",
+      "tree_sitter/alloc.h",
+      "tree_sitter/array.h",
+      "tree_sitter/parser.h"
+    ],
+    "abi": 14,
+    "note": "the last ABI-14 generation; scanner.h is upstream's common/scanner.h, and scanner.c's include was rewritten from \"../../common/scanner.h\" to \"scanner.h\", which a refresh must redo by hand"
+  },
+  {
+    "language": "haskell",
+    "url": "https://github.com/tree-sitter/tree-sitter-haskell",
+    "reference": "v0.23.1",
+    "revision": "c30d812bc90827f1a54106a25bc9a6307f5cdcec",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "scanner.c",
+      "tree_sitter/alloc.h",
+      "tree_sitter/array.h",
+      "tree_sitter/parser.h",
+      "unicode.h"
+    ],
+    "abi": 14
+  },
+  {
+    "language": "julia",
+    "url": "https://github.com/tree-sitter/tree-sitter-julia",
+    "reference": "v0.23.1",
+    "revision": "a8e1262997d5a45520a06cbe1b86c0737d507054",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "scanner.c",
+      "tree_sitter/parser.h"
+    ],
+    "abi": 14,
+    "note": "upstream's tree_sitter/alloc.h and array.h were not vendored; a refresh adds them"
+  },
+  {
+    "language": "objc",
+    "url": "https://github.com/amaanq/tree-sitter-objc",
+    "reference": "v3.0.2",
+    "revision": "18802acf31d0b5c1c1d50bdbc9eb0e1636cab9ed",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "tree_sitter/parser.h"
+    ],
+    "abi": 14,
+    "note": "upstream's tree_sitter/alloc.h and array.h were not vendored; a refresh adds them"
+  },
+  {
+    "language": "perl",
+    "url": "https://github.com/tree-sitter-perl/tree-sitter-perl",
+    "reference": "release",
+    "revision": "d7edf928eb09f6c997e0599e20337fcfe16f97a1",
+    "files": [
+      "LICENSE",
+      "bsearch.h",
+      "parser.c",
+      "scanner.c",
+      "tree_sitter/alloc.h",
+      "tree_sitter/array.h",
+      "tree_sitter/parser.h",
+      "tsp_unicode.h"
+    ],
+    "abi": 14,
+    "note": "the newest ABI-14 deploy on the release branch, generated from source commit 951e6079d41c2f58104421acaa965eb0b179f5b4"
+  },
+  {
+    "language": "r",
+    "url": "https://github.com/r-lib/tree-sitter-r",
+    "reference": "v1.3.0",
+    "revision": "346d3707b8c9301f1051e8f6e32666e67529f7d2",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "scanner.c",
+      "tree_sitter/alloc.h",
+      "tree_sitter/parser.h"
+    ],
+    "abi": 14,
+    "note": "upstream's tree_sitter/array.h was not vendored; a refresh adds it"
+  },
+  {
+    "language": "swift",
+    "url": "https://github.com/alex-pinkus/tree-sitter-swift",
+    "reference": "0.7.4-with-generated-files",
+    "revision": "82bb3a533e0801fd2bbaa11dc49676e10bf41948",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "scanner.c",
+      "tree_sitter/alloc.h",
+      "tree_sitter/array.h",
+      "tree_sitter/parser.h"
+    ],
+    "abi": 14
+  },
+  {
+    "language": "zig",
+    "url": "https://github.com/tree-sitter-grammars/tree-sitter-zig",
+    "reference": "v1.1.2",
+    "revision": "b670c8df85a1568f498aa5c8cae42f51a90473c0",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "tree_sitter/parser.h"
+    ],
+    "abi": 14,
+    "note": "upstream's tree_sitter/alloc.h and array.h were not vendored; a refresh adds them"
+  }
+]

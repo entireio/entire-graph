@@ -47,6 +47,12 @@ const (
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
 	//
+	// Revision 5: Swift is parsed by the vendored tree-sitter-swift v0.7.4
+	// grammar instead of go-tree-sitter's 0.5.0 one. Files that failed to parse
+	// before (freestanding macros such as `#expect`, newer syntax) now yield
+	// different declarations, and the caches are keyed on the source tree, so
+	// revision-4 records must not be served for them.
+	//
 	// Revision 4: the same correction for Swift, Kotlin, Rust and PHP, whose
 	// nested callables are local functions / block-scoped items / namespace
 	// functions rather than members of the enclosing type. Revision 3 shipped
@@ -60,7 +66,7 @@ const (
 	// `C.helper` (kind "method"). This re-keys every Python nested-callable
 	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
 	// real same-named members.
-	IdentityRevision     = "4"
+	IdentityRevision     = "5"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)

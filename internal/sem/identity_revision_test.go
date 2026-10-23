@@ -7,7 +7,7 @@ import (
 
 func TestParserIdentityRevisionsSnapshotAndCaches(t *testing.T) {
 	header := leanHeader(sourceContext{}, "same-release", profileSpec{})
-	if header.IdentityRevision != "4" {
+	if header.IdentityRevision != "5" {
 		t.Fatalf("identity=%q", header.IdentityRevision)
 	}
 	if !strings.HasSuffix(searchSnapshotCacheVersion, "-"+header.IdentityRevision) || !strings.HasSuffix(providerRecordsCacheVersion, "-"+header.IdentityRevision) {
@@ -116,5 +116,15 @@ func TestRemainingNestedCallableCorrectionsAreRevisioned(t *testing.T) {
 	}
 	if IdentityRevision == "3" {
 		t.Fatal("the Swift/Kotlin/Rust/PHP nested-callable corrections must invalidate revision 3")
+	}
+}
+
+// The vendored tree-sitter-swift v0.7.4 grammar replaces go-tree-sitter's
+// 0.5.0 one, so declarations in previously failing Swift files are now
+// extracted differently. The caches are keyed on the source tree, so only the
+// revision bump stops revision-4 records being served for those files.
+func TestSwiftGrammarRefreshIsRevisioned(t *testing.T) {
+	if IdentityRevision == "4" {
+		t.Fatal("the Swift grammar refresh must invalidate revision 4")
 	}
 }
