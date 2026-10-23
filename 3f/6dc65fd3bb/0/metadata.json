@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "3f6dc65fd3bb",
+  "session_id": "0f1f86cd-32e1-43e7-a97d-48e04381152b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-23T01:16:01.911899Z",
+  "branch": "setup-styled-rows",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/cli/agents.go",
+    "internal/cli/setup_ui.go",
+    "internal/cli/setup_ui_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "3b6a0bb4c632",
+  "checkpoint_transcript_start": 983,
+  "transcript_lines_at_start": 983,
+  "compact_transcript_start": 206,
+  "token_usage": {
+    "input_tokens": 28,
+    "cache_creation_tokens": 336396,
+    "cache_read_tokens": 4409091,
+    "output_tokens": 8934,
+    "api_call_count": 14
+  },
+  "session_metrics": {
+    "turn_count": 11
+  }
+}

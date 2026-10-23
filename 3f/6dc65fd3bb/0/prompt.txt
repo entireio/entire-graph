@@ -1,0 +1,5 @@
+how can i test this locally?
+
+---
+
+to mimic brain then we need a beginning sentence as well. "Entire graph creates a map...". so a new line, the sentence, newline, then the status lines then a new line
