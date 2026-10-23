@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "9419e004b845",
+  "strategy": "manual-commit",
+  "branch": "adopt-cli-palette-tui-theme",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/text.go",
+    "internal/sem/text_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/94/19e004b845/0/metadata.json",
+      "transcript": "/94/19e004b845/0/full.jsonl",
+      "compact_transcript": "/94/19e004b845/0/transcript.jsonl",
+      "content_hash": "/94/19e004b845/0/content_hash.txt",
+      "prompt": "/94/19e004b845/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 46,
+    "cache_creation_tokens": 101153,
+    "cache_read_tokens": 2077717,
+    "output_tokens": 17337,
+    "api_call_count": 23
+  }
+}

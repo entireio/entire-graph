@@ -1,0 +1,54 @@
+<system_instruction>
+You are working inside Conductor, a Mac app that lets the user run many coding agents in parallel.
+Your work should take place in the /Users/evisdrenova/conductor/workspaces/entire-graph/columbus directory (unless otherwise directed), which has been set up for you to work in.
+Each workspace has a .context directory (gitignored) where you can save files to collaborate with other agents.
+The target branch for this workspace is origin/main. Use this for actions like diffing (`git diff origin/main...`) or creating PRs (`gh pr create --base main`).
+You're on a new branch with a placeholder name. Conductor will automatically rename it in the background to match your task.
+
+Do not rename the current branch unless the user explicitly tells you to do so.
+
+By default, the user will only see the last message that you send before stopping. Include all essential information in the last message. The intermediate messages will be collapsed and accessible by the user but not displayed by default.
+
+Save screenshots under `.context/` and embed them inline in the final response using Markdown image syntax, for example `![Screenshot](</Users/evisdrenova/conductor/workspaces/entire-graph/columbus/.context/screenshot.png>)`.
+
+If the user asks you to work on several unrelated tasks, you can suggest they start new workspaces.
+Sometimes the user might send you a message they meant to send in a different workspace or a different chat. If something doesn't make sense in the context of your work, just ask.
+If the user asks for help with Conductor, you can ask them to go to "Help -> Send Feedback" to get in touch with our team.
+</system_instruction>
+
+Here's a self-contained handoff — paste it as the task prompt in a new workspace on entire-graph:
+
+---
+
+**Task: make entire-graph's human (TUI) output match the entire CLI's look — adopt the CLI palette as the default theme and audit every command's output for idiom parity.**
+
+This mirrors entire-brain PR #460 (merged, trail https://entire.com/gh/entireio/entire-brain/trails/363-ish — trail #371), which is the reference implementation. Lift its approach; don't assume graph's code mirrors brain's `internal/tui` — find graph's actual styling layer first.
+
+**The palette (decision already made, do not re-litigate):**
+Canonical source: `entireio/cli` repo, `cmd/entire/cli/palette/palette.go` @ commit `bc9a821d` (local checkout: `~/code/entire/cli`). It is base16 ANSI slots, not hexes:
+- Accent = magenta `"5"`, secondary accent = bright magenta `"13"`
+- Muted (all dim text + borders) = bright black `"8"`
+- Success = green `"2"`, Error = red `"1"`, Warning = yellow `"3"` (bright yellow `"11"` where a louder warning tier is needed), Info/links = cyan `"6"`
+- Body text deliberately **unstyled** (no foreground) so it inverts with the terminal background. In lipgloss, `Color("")` resolves to nil = no SGR — safe to use as "terminal default".
+- Base16 slots follow the user's terminal theme: no light/dark variants, nothing to downsample on 256-color terminals.
+
+**Work:**
+1. Find graph's theme/style definitions and swap the default to the palette above. Add a comment citing `entireio/cli cmd/entire/cli/palette/palette.go @ bc9a821d` so drift is traceable.
+2. Compat: if graph has named themes selectable by flag/env, keep the old default under a new name (brain used `neutral`) — no silently broken theme values.
+3. Sweep for render-layer bypasses: grep non-test CLI code for `fmt.Print*` and `fmt.Fprint*(os.Stdout|os.Stderr)`; route survivors through the styling layer. Brain's pattern: a `Warnf(w, format, ...)` helper that paints the `warning:` prefix on a TTY and is byte-identical on pipes (see `internal/tui/warn.go` in entire-brain). Interactive prompts stay plain.
+4. Command census for the eyeball pass: adapt `scripts/tui-census.sh` from entire-brain (same repo, merged on main). It enumerates the command tree via cobra `__complete`, runs safe commands in an isolated scratch repo under a fake TTY, one capture file per command; mutating/interactive/network/token-spending commands are skipped with a recorded reason; unknown commands flagged UNMAPPED. Run twice: `-b <main-built-binary> before`, then `after`.
+5. Fix obvious idiom drift seen in captures, matched against the CLI's conventions (plain `warning:` lines and bare top-level errors ARE the CLI convention — don't over-style).
+
+**Gotchas the brain pass already paid for (baked into its census script — don't rediscover them):**
+- `script(1)` forwards stdin to the pty: starve it (`< /dev/null`) or it eats your command list.
+- The pty echoes EOT as literal `^D` + backspaces, and termenv emits OSC-11/CSI-6n probes — strip both in capture normalization.
+- BSD `tr` does not interpret `\xNN` — use bash `$'...'` quoting.
+- Isolate via `ENTIRE_PLUGIN_{CONFIG,DATA,STATE,CACHE}_DIR` and set `ENTIRE_BRAIN_NO_EGRESS`-equivalent (graph's own no-egress toggle, if any) so the census never touches the real store or network.
+
+**Out of scope:** JSON/agent-format output is byte-stable compat surface — untouched.
+
+**Verify:** the repo's test suite for the styling + CLI packages, plus one clean census run per side. Normal PR flow: latest main, explicit `git add` of named files.
+
+---
+
+Two numbers to correct in your copy if you care: the brain trail is **#371** (https://entire.com/gh/entireio/entire-brain/trails/371), PR https://github.com/entireio/entire-brain/pull/460.
