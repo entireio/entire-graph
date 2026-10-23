@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "8199ce35894b",
+  "strategy": "manual-commit",
+  "branch": "adopt-cli-palette-tui-theme",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "internal/cli/warn.go",
+    "scripts/tui-census.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/81/99ce35894b/0/metadata.json",
+      "transcript": "/81/99ce35894b/0/full.jsonl",
+      "compact_transcript": "/81/99ce35894b/0/transcript.jsonl",
+      "content_hash": "/81/99ce35894b/0/content_hash.txt",
+      "prompt": "/81/99ce35894b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 58,
+    "cache_creation_tokens": 180384,
+    "cache_read_tokens": 4625676,
+    "output_tokens": 13127,
+    "api_call_count": 29,
+    "subagent_tokens": {
+      "input_tokens": 34,
+      "cache_creation_tokens": 89434,
+      "cache_read_tokens": 1190644,
+      "output_tokens": 19326,
+      "api_call_count": 17
+    }
+  }
+}
