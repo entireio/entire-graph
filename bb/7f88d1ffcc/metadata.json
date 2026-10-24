@@ -1,0 +1,26 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "bb7f88d1ffcc",
+  "strategy": "manual-commit",
+  "branch": "rev142",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/groovy_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bb/7f88d1ffcc/0/metadata.json",
+      "transcript": "/bb/7f88d1ffcc/0/full.jsonl",
+      "compact_transcript": "/bb/7f88d1ffcc/0/transcript.jsonl",
+      "content_hash": "/bb/7f88d1ffcc/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 90,
+    "cache_creation_tokens": 46731,
+    "cache_read_tokens": 37752994,
+    "output_tokens": 27325,
+    "api_call_count": 45
+  }
+}
