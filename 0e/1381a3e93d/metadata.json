@@ -1,0 +1,27 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "0e1381a3e93d",
+  "strategy": "manual-commit",
+  "branch": "fix/index-partial-clones",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/search_cache_history_review_test.go",
+    "internal/sem/search_cache_scope_context_review_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0e/1381a3e93d/0/metadata.json",
+      "transcript": "/0e/1381a3e93d/0/full.jsonl",
+      "compact_transcript": "/0e/1381a3e93d/0/transcript.jsonl",
+      "content_hash": "/0e/1381a3e93d/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  }
+}
