@@ -1,0 +1,36 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "315f897dae15",
+  "strategy": "manual-commit",
+  "branch": "fix/index-partial-clones",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/semantic-provider-requirements.md",
+    "docs/trust-and-security.md",
+    "internal/cli/partial_clone_test.go",
+    "internal/gitutil/git.go",
+    "internal/gitutil/lazy_fetch_guard.go",
+    "internal/gitutil/lazy_fetch_guard_test.go",
+    "internal/sem/git_metadata_refusal_test.go",
+    "internal/sem/partial_clone_guard_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_git_config_preflight_test.go",
+    "internal/sem/provider_git_config_preflight_windows_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/31/5f897dae15/0/metadata.json",
+      "transcript": "/31/5f897dae15/0/full.jsonl",
+      "compact_transcript": "/31/5f897dae15/0/transcript.jsonl",
+      "content_hash": "/31/5f897dae15/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 14,
+    "cache_creation_tokens": 6404,
+    "cache_read_tokens": 5171114,
+    "output_tokens": 5282,
+    "api_call_count": 7
+  }
+}
