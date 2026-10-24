@@ -3,7 +3,7 @@
   "checkpoint_id": "315f897dae15",
   "strategy": "manual-commit",
   "branch": "fix/index-partial-clones",
-  "checkpoints_count": 1,
+  "checkpoints_count": 6,
   "files_touched": [
     "docs/semantic-provider-requirements.md",
     "docs/trust-and-security.md",
@@ -23,6 +23,13 @@
       "transcript": "/31/5f897dae15/0/full.jsonl",
       "compact_transcript": "/31/5f897dae15/0/transcript.jsonl",
       "content_hash": "/31/5f897dae15/0/content_hash.txt",
+      "prompt": ""
+    },
+    {
+      "metadata": "/31/5f897dae15/1/metadata.json",
+      "transcript": "/31/5f897dae15/1/full.jsonl",
+      "compact_transcript": "/31/5f897dae15/1/transcript.jsonl",
+      "content_hash": "/31/5f897dae15/1/content_hash.txt",
       "prompt": ""
     }
   ],
