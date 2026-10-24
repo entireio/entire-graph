@@ -3,7 +3,7 @@
   "checkpoint_id": "9f67ef877e20",
   "session_id": "b0108f24-43a4-413e-94c9-bd361b6fafc5",
   "strategy": "manual-commit",
-  "created_at": "2026-10-24T18:25:47.372706Z",
+  "created_at": "2026-10-24T18:26:58.621996Z",
   "branch": "chore/gitignore-claude-worktrees",
   "checkpoints_count": 5,
   "save_step_count": 1,
@@ -13,18 +13,11 @@
   "turn_id": "73bc190b0aa7",
   "compact_transcript_start": 0,
   "token_usage": {
-    "input_tokens": 20758,
-    "cache_creation_tokens": 150911038,
-    "cache_read_tokens": 4837489180,
-    "output_tokens": 8872162,
-    "api_call_count": 9204,
-    "subagent_tokens": {
-      "input_tokens": 31246,
-      "cache_creation_tokens": 124163589,
-      "cache_read_tokens": 2549491503,
-      "output_tokens": 6605520,
-      "api_call_count": 13587
-    }
+    "input_tokens": 20760,
+    "cache_creation_tokens": 150911918,
+    "cache_read_tokens": 4837734606,
+    "output_tokens": 8872598,
+    "api_call_count": 9205
   },
   "skill_events_version": 1,
   "skill_events": [
@@ -124,21 +117,5 @@
   ],
   "session_metrics": {
     "turn_count": 5
-  },
-  "prompt_attributions": [
-    {
-      "checkpoint_number": 1,
-      "user_lines_added": 0,
-      "user_lines_removed": 0,
-      "agent_lines_added": 0,
-      "agent_lines_removed": 0
-    },
-    {
-      "checkpoint_number": 2,
-      "user_lines_added": 0,
-      "user_lines_removed": 0,
-      "agent_lines_added": 4,
-      "agent_lines_removed": 0
-    }
-  ]
+  }
 }
