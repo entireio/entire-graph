@@ -3,7 +3,7 @@
   "checkpoint_id": "8814af22e901",
   "strategy": "manual-commit",
   "branch": "perf/alias-grep-corpus-paths",
-  "checkpoints_count": 1,
+  "checkpoints_count": 6,
   "files_touched": [
     "internal/gitutil/git.go",
     "internal/gitutil/git_test.go",
@@ -21,13 +21,20 @@
       "compact_transcript": "/88/14af22e901/0/transcript.jsonl",
       "content_hash": "/88/14af22e901/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/88/14af22e901/1/metadata.json",
+      "transcript": "/88/14af22e901/1/full.jsonl",
+      "compact_transcript": "/88/14af22e901/1/transcript.jsonl",
+      "content_hash": "/88/14af22e901/1/content_hash.txt",
+      "prompt": ""
     }
   ],
   "token_usage": {
-    "input_tokens": 142,
-    "cache_creation_tokens": 87425,
-    "cache_read_tokens": 48620379,
-    "output_tokens": 65876,
-    "api_call_count": 71
+    "input_tokens": 180,
+    "cache_creation_tokens": 121905,
+    "cache_read_tokens": 52836442,
+    "output_tokens": 88433,
+    "api_call_count": 87
   }
 }
