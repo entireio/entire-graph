@@ -3,7 +3,7 @@
   "checkpoint_id": "8814af22e901",
   "session_id": "93ae8948-c612-4072-8e70-2750e80df9ce",
   "strategy": "manual-commit",
-  "created_at": "2026-10-24T19:11:36.019062Z",
+  "created_at": "2026-10-24T19:16:05.553699Z",
   "branch": "perf/alias-grep-corpus-paths",
   "checkpoints_count": 1,
   "files_touched": [
@@ -19,15 +19,15 @@
   "agent": "Claude Code",
   "model": "claude-opus-5",
   "turn_id": "5eca7780f4fe",
-  "checkpoint_transcript_start": 54269,
-  "transcript_lines_at_start": 54269,
-  "compact_transcript_start": 5095,
+  "checkpoint_transcript_start": 55025,
+  "transcript_lines_at_start": 55025,
+  "compact_transcript_start": 5177,
   "token_usage": {
-    "input_tokens": 142,
-    "cache_creation_tokens": 87425,
-    "cache_read_tokens": 48620379,
-    "output_tokens": 65876,
-    "api_call_count": 71
+    "input_tokens": 16,
+    "cache_creation_tokens": 5663,
+    "cache_read_tokens": 5844253,
+    "output_tokens": 3466,
+    "api_call_count": 8
   },
   "skill_events_version": 1,
   "skill_events": [
@@ -95,14 +95,14 @@
     }
   ],
   "initial_attribution": {
-    "calculated_at": "2026-10-24T19:11:31.361925Z",
-    "agent_lines": 663,
-    "agent_removed": 43,
+    "calculated_at": "2026-10-24T19:15:58.019474Z",
+    "agent_lines": 6,
+    "agent_removed": 2,
     "human_added": 0,
     "human_modified": 0,
     "human_removed": 0,
-    "total_committed": 663,
-    "total_lines_changed": 706,
+    "total_committed": 6,
+    "total_lines_changed": 8,
     "agent_percentage": 100,
     "metric_version": 2
   }
