@@ -3,7 +3,7 @@
   "checkpoint_id": "9f67ef877e20",
   "strategy": "manual-commit",
   "branch": "chore/gitignore-claude-worktrees",
-  "checkpoints_count": 1,
+  "checkpoints_count": 6,
   "files_touched": [
     ".gitignore"
   ],
@@ -14,13 +14,27 @@
       "compact_transcript": "/9f/67ef877e20/0/transcript.jsonl",
       "content_hash": "/9f/67ef877e20/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/9f/67ef877e20/1/metadata.json",
+      "transcript": "/9f/67ef877e20/1/full.jsonl",
+      "compact_transcript": "/9f/67ef877e20/1/transcript.jsonl",
+      "content_hash": "/9f/67ef877e20/1/content_hash.txt",
+      "prompt": "/9f/67ef877e20/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 9164,
-    "cache_creation_tokens": 57373797,
-    "cache_read_tokens": 2318855352,
-    "output_tokens": 3176197,
-    "api_call_count": 4587
+    "input_tokens": 29922,
+    "cache_creation_tokens": 208284835,
+    "cache_read_tokens": 7156344532,
+    "output_tokens": 12048359,
+    "api_call_count": 13791,
+    "subagent_tokens": {
+      "input_tokens": 31246,
+      "cache_creation_tokens": 124163589,
+      "cache_read_tokens": 2549491503,
+      "output_tokens": 6605520,
+      "api_call_count": 13587
+    }
   }
 }
