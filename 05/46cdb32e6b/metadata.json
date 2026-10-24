@@ -1,0 +1,32 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "0546cdb32e6b",
+  "strategy": "manual-commit",
+  "branch": "fix/tool-handler-heuristic",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CHANGELOG.md",
+    "docs/semantic-provider-requirements.md",
+    "internal/sem/provider.go",
+    "internal/sem/records_cache.go",
+    "internal/sem/search_cache.go",
+    "internal/sem/tool_handler.go",
+    "internal/sem/tool_handler_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/05/46cdb32e6b/0/metadata.json",
+      "transcript": "/05/46cdb32e6b/0/full.jsonl",
+      "compact_transcript": "/05/46cdb32e6b/0/transcript.jsonl",
+      "content_hash": "/05/46cdb32e6b/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  }
+}
