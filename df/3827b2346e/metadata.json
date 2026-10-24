@@ -1,0 +1,27 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "df3827b2346e",
+  "strategy": "manual-commit",
+  "branch": "fix/tool-handler-heuristic",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/tool_handler.go",
+    "internal/sem/tool_handler_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/df/3827b2346e/0/metadata.json",
+      "transcript": "/df/3827b2346e/0/full.jsonl",
+      "compact_transcript": "/df/3827b2346e/0/transcript.jsonl",
+      "content_hash": "/df/3827b2346e/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4,
+    "cache_creation_tokens": 2535,
+    "cache_read_tokens": 240389,
+    "output_tokens": 2332,
+    "api_call_count": 2
+  }
+}
