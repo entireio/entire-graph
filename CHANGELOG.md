@@ -12,6 +12,19 @@ auto-generated notes on
 
 ## [Unreleased]
 
+### Fixed
+
+- `index --head`, and the committed-tree cache behind `query --head` and the
+  other `--head` commands, now work in partial clones (`--filter=blob:none`, or
+  any repository with a promisor remote) when the Git on `PATH` is 2.45 or
+  newer. Such repositories used to be refused outright: `index --head` failed,
+  and every query rebuilt an uncached working-tree snapshot. Every Git
+  subprocess already sets `GIT_NO_LAZY_FETCH=1`, which Git honours from 2.45,
+  so a blob the clone lacks is reported as an unreadable file and the promisor
+  remote is never contacted. With an older Git the refusal stays, and its
+  message now names the Git version instead of promising a fallback that
+  `index --head` does not have.
+
 ## [0.5.0] - 2026-10-23
 
 ### Removed

@@ -25,6 +25,9 @@ func TestGitMetadataConfigGuardRejectsCoreWorktreeUNCBeforeLookup(t *testing.T) 
 }
 
 func TestGitMetadataConfigGuardRejectsPromisorUNCBeforeLookup(t *testing.T) {
+	// Git before 2.45 ignores GIT_NO_LAZY_FETCH and can stat this UNC URL while
+	// starting a lazy fetch, so the preflight must refuse it without looking.
+	useGitLazyFetchGuard(t, gitBeforeLazyFetchGuard)
 	cases := []struct {
 		name   string
 		marker string
@@ -62,5 +65,27 @@ func TestGitMetadataConfigGuardRejectsPromisorUNCBeforeLookup(t *testing.T) {
 				t.Fatal("promisor config preflight did not return promptly; the UNC URL must remain inert config text")
 			}
 		})
+	}
+}
+
+// With Git 2.45 or newer the same configuration is admitted, and the preflight
+// itself must still treat the UNC URL as inert config text: admission is a
+// version decision, never a lookup of the promisor URL.
+func TestGitMetadataConfigGuardAdmitsPromisorUNCWithoutLookupWhenLazyFetchIsDisabled(t *testing.T) {
+	useGitLazyFetchGuard(t, gitWithLazyFetchGuard)
+	repo, gitDir := gitConfigPreflightFixture(t)
+	content := "[remote \"origin\"]\npromisor = true\npartialCloneFilter = blob:none\nurl = \\\\192.0.2.1\\entire-graph\\promisor.bundle\n"
+	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan bool, 1)
+	go func() { done <- gitMetadataSafeForSubprocess(repo) }()
+	select {
+	case safe := <-done:
+		if !safe {
+			t.Fatalf("promisor configuration was refused although the runtime Git honours GIT_NO_LAZY_FETCH:\n%s", content)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("promisor config preflight did not return promptly; the UNC URL must remain inert config text")
 	}
 }

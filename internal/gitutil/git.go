@@ -120,16 +120,23 @@ func RevParse(ctx context.Context, repo, rev string) (string, error) {
 
 // HeadCommitAndTree resolves HEAD and its root tree from one selected commit.
 // Besides avoiding a second Git process on every committed cache probe, using
-// one show operation prevents a concurrent HEAD update from mixing provenance
+// one log operation prevents a concurrent HEAD update from mixing provenance
 // from two different commits.
+//
+// It is `git log --no-walk`, not `git show -s`: show still computes HEAD's
+// diff against its parent when -s suppresses printing it, and rename detection
+// in that diff reads the parent's blobs. A partial clone usually lacks them, so
+// with lazy fetching disabled `show -s` fails ("unable to read <oid>") on any
+// HEAD that renames and edits a file. log with no diff option reads only the
+// commit object.
 func HeadCommitAndTree(ctx context.Context, repo string) (string, string, error) {
-	out, err := run(ctx, repo, "git", "show", "-s", "--no-show-signature", "--no-notes", "--format=%H%x00%T", "--end-of-options", "HEAD^{commit}")
+	out, err := run(ctx, repo, "git", "log", "-1", "--no-walk", "--no-show-signature", "--no-notes", "--format=%H%x00%T", "--end-of-options", "HEAD^{commit}")
 	if err != nil {
 		return "", "", err
 	}
 	commit, tree, ok := strings.Cut(strings.TrimSuffix(out, "\n"), "\x00")
 	if !ok || commit == "" || tree == "" || strings.ContainsAny(commit, "\x00\r\n") || strings.ContainsAny(tree, "\x00\r\n") {
-		return "", "", errors.New("git show returned malformed HEAD commit/tree metadata")
+		return "", "", errors.New("git log returned malformed HEAD commit/tree metadata")
 	}
 	return commit, tree, nil
 }
@@ -2653,16 +2660,20 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 
 const (
 	rawGitObjectsEnv = "GIT_NO_REPLACE_OBJECTS=1"
-	noLazyFetchEnv   = "GIT_NO_LAZY_FETCH=1"
-	// noTransportProtocolEnv is a second, independent no-egress guard.
-	// GIT_NO_LAZY_FETCH only became effective in Git 2.45 (git/git@2c206fc);
-	// this package's floor is Git 2.36 (cat-file --batch-command). Production
-	// entrypoints therefore reject active partial-clone/promisor configuration
-	// in the repository metadata preflight: older Git can stat a local/UNC
-	// promisor URL before it applies the protocol allowlist. GIT_ALLOW_PROTOCOL
-	// remains a second guard for every transport and remote helper after that
-	// preflight. This tool never intentionally fetches, clones, or pushes, so
-	// blocking every protocol costs it nothing.
+	// noLazyFetchEnv is the guard that keeps a partial clone offline: from Git
+	// 2.45 (git/git@2c206fc) the promisor fetch path checks it before spawning
+	// `git fetch`, so a missing promised object is a local read failure and the
+	// promisor URL is never opened. This package's floor is Git 2.36
+	// (cat-file --batch-command), and older Git ignores the variable, so the
+	// repository metadata preflight admits partial-clone/promisor configuration
+	// only when LazyFetchGuard reports Git 2.45 or newer.
+	noLazyFetchEnv = "GIT_NO_LAZY_FETCH=1"
+	// noTransportProtocolEnv is a second, independent no-egress guard for every
+	// transport and remote helper. It is not sufficient on its own for partial
+	// clones: Git before 2.45 starts the lazy fetch and can stat a local/UNC
+	// promisor URL before it applies the protocol allowlist. This tool never
+	// intentionally fetches, clones, or pushes, so blocking every protocol costs
+	// it nothing.
 	noTransportProtocolEnv = "GIT_ALLOW_PROTOCOL="
 	// Listing and object inspection are read-only. Disable optional lock and
 	// index-refresh writes even when repository configuration would request one.
@@ -2694,9 +2705,9 @@ const (
 // case-folding must retain the caller's locale. Like every other production Git
 // subprocess in this package, it disables replace refs: exact tree/object IDs
 // are the immutable snapshot boundary, regardless of later refs/replace edits.
-// It also disables lazy fetching as defense in depth. Production entrypoints
-// reject active partial-clone/promisor configuration before reaching this
-// constructor because the Git 2.36 compatibility floor predates that guard.
+// It also disables lazy fetching. Production entrypoints admit a partial
+// clone only when the runtime Git honours that guard (2.45 or newer); the Git
+// 2.36 compatibility floor predates it.
 func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
@@ -2879,9 +2890,10 @@ func gitSafeDirectoryValues(dir string) []string {
 // promised object as a per-entry failure instead of fetching it — ls-tree -l
 // prints its "BAD" sentinel for a blob it cannot size, which callers already
 // classify as LimitedFileUnreadable rather than treating as an error.
-// Production metadata preflight rejects active promisor configuration because
-// old Git can inspect a local/UNC URL before applying GIT_ALLOW_PROTOCOL; both
-// environment guards remain defense in depth (see noTransportProtocolEnv).
+// Production metadata preflight admits active promisor configuration only when
+// the runtime Git honours GIT_NO_LAZY_FETCH (2.45 or newer), because older Git
+// can inspect a local/UNC URL before applying GIT_ALLOW_PROTOCOL; see
+// noLazyFetchEnv and noTransportProtocolEnv.
 func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir

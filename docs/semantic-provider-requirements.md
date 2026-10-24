@@ -426,12 +426,16 @@ required to read the selected repository, but the bounded metadata preflight
 rejects active `[include]` and `[includeIf]` sections before Git starts,
 including sections in `config.worktree` when `extensions.worktreeConfig`
 enables it. The same preflight parses and checks an active `core.worktree` path.
-It also rejects active partial-clone/promisor
+It also detects active partial-clone/promisor
 configuration: `extensions.partialClone`, a true `remote.*.promisor`, or any
-`remote.*.partialCloneFilter`. Git before 2.45 can inspect a local or UNC
-promisor URL before applying the transport deny-list, so partial clones are
-refused across the supported Git range rather than weakening no-egress on older
-clients.
+`remote.*.partialCloneFilter`. Such a repository is admitted only when the Git
+on `PATH` is 2.45 or newer, because only from 2.45 does Git honour the
+`GIT_NO_LAZY_FETCH=1` every provider subprocess sets: a missing promised object
+then fails locally and no fetch process is started. Git before 2.45 ignores that
+variable and can inspect a local or UNC promisor URL before applying the
+transport deny-list, so partial clones are refused on those versions rather than
+weakening no-egress on older clients. An unknown or unparseable Git version is
+treated as older.
 
 Command-scope configuration must set selected-path `safe.directory` entries,
 `core.fsmonitor=false`,

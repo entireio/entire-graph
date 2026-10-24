@@ -106,7 +106,9 @@ func TestRecordsCacheLoadRevalidatesChangedGitMetadata(t *testing.T) {
 	if _, _, hit := replay.Load(); !hit {
 		t.Fatal("control: cross-checkout cache must be available")
 	}
-	git(t, second, "config", "remote.origin.promisor", "true")
+	// An include is refused on every Git version. (A promisor remote no longer
+	// works as the trigger: Git 2.45+ honours GIT_NO_LAZY_FETCH, so it is admitted.)
+	git(t, second, "config", "include.path", "../outside")
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
