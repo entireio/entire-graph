@@ -490,6 +490,58 @@ following bounds are enforced:
   overrides; negative removes it). Truncation is deterministic in sorted path
   order and always reported as `W_FILE_LIMIT`, naming the real count, the limit
   and the override.
+- **Parse/relation wall-clock ceiling** — `MaxDuration` (`--max-seconds` on
+  `snapshot`, `symbols` and `edges`). It is **opt-in: zero, the default, means
+  no ceiling**, because a full index of a large repository legitimately runs for
+  minutes. When it is set, cooperative checks stop parse and relation work after
+  the deadline is observed, and the stream is still finished normally — the records produced so far, an
+  `E_ANALYSIS_BUDGET_EXCEEDED` partial failure, and a summary — so a truncated
+  graph is always self-describing.
+
+  The following limits are part of the contract:
+
+  - It is **not a whole-run ceiling.** Source preparation (the git listing and
+    plumbing) runs before the clock starts and cannot be interrupted by it, so a
+    run may exceed `--max-seconds` by however long listing takes. The bound is on
+    parsing and relation building, which is where the superlinear cost lives.
+  - **This is cooperative mitigation, not a hard execution deadline.** An
+    in-flight parser, bounded source read, all-or-nothing producer, or final
+    metadata pass can finish after expiry. Go route/signature work also retains
+    its independent step budgets. Cancellation does not forcibly preempt these
+    operations. The flag does not replace process isolation or a supervisor's
+    timeout when a strict security resource limit is required.
+  - **Truncation is opt-in.** A deadline that merely happens to be on the
+    caller's context is *not* treated as a budget: it is returned as
+    `context.DeadlineExceeded`, as it always was. A caller that did not ask for a
+    partial graph is never handed one with a nil error, because it would then
+    persist that graph under a budget-independent tree key and serve the gap to
+    every later unbudgeted query. A context *cancellation* (Ctrl-C) likewise
+    still aborts with an error. When SIGINT/SIGTERM causes that cancellation,
+    the CLI exits with status 130/143. If a signal races with a command that
+    nevertheless completes successfully, the CLI preserves that success; an
+    independent command error also retains its original status.
+  - **Runs do not resume.** Repeating a budget below the time needed to finish
+    starts from the beginning again and cannot guarantee a complete replacement.
+    Consumers such as Brain that require a complete index must leave the budget
+    disabled or arrange a separate complete run; partial output is not a
+    resumable indexing protocol.
+  - **A truncated snapshot is never cached.** Both writers refuse it: the record
+    cache (`StoreProviderRecords`) and the search/preindex snapshot cache
+    (`writeSearchSnapshot`, which returns `ErrTruncatedSnapshotNotCacheable`).
+    The check lives in the writers so a new call site cannot reintroduce the hole.
+  - `--max-seconds` is **rejected with `--format compact-ndjson` and with
+    `--format scip`.** Both artifacts are defined to be a complete snapshot and
+    neither has anywhere to carry `E_ANALYSIS_BUDGET_EXCEEDED` forward -- a SCIP
+    `Index` is one binary protobuf message whose only truncation signal is a
+    stderr note that does not travel with the file -- so a truncated one would
+    make every unreached symbol read as a confident negative.
+
+  This bound is what makes the relation phase's cost survivable rather than
+  cheap. The phase is still quadratic in the nesting depth of a file's
+  declarations: each enclosing symbol re-scans every inner symbol's body, so 500
+  nested JavaScript function declarations (~52 KB) produce ~386,000 relations in
+  ~37 s, and 1,000 (~105 KB) take ~162 s. Cooperative cancellation interrupts that work; it does not
+  remove the underlying complexity.
 - **Git worktree discovery cap** — each index, eligible-worktree, or explicitly
   requested ignored-worktree listing accepts at most 1,000,000 raw
   NUL-delimited records and 256 MiB including delimiters. These listings must

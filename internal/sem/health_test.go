@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func healthSourceFixture(total int) ([]FileRecord, ProviderStats) {
@@ -231,7 +232,7 @@ func TestGraphHealthReadFailurePreservesShebangRouting(t *testing.T) {
 		readPrefix: func(string, int) (string, bool) { return "#!/bin/bash\n", true },
 		read:       func(string) (string, bool) { return "", false },
 	}
-	result := processProviderFile(t.Context(), sc, resolveProfile(ProfileFull), 1024, 0, "bin/run")
+	result := processProviderFile(t.Context(), newBudgetGate(t.Context(), time.Time{}, time.Now), sc, resolveProfile(ProfileFull), 1024, 0, "bin/run")
 	if result.file != nil || len(result.failures) != 1 || result.failures[0].Language != "Bash" {
 		t.Fatalf("read failure lost resolved source language: %+v", result)
 	}

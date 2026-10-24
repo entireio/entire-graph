@@ -3,6 +3,7 @@ package sem
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRegistrationCensusSkipsGoCommentAndStringOnlyMentions(t *testing.T) {
@@ -116,7 +117,7 @@ func BenchmarkRegistrationCommentOnlyCandidate(b *testing.B) {
 					hit = mentionsRegistrationHandlerInFile("noise.go", content, aliases)
 				}
 				if hit {
-					processProviderFile(b.Context(), sc, resolveProfile(ProfileFull), defaultMaxParseBytes, 0, "noise.go")
+					processProviderFile(b.Context(), newBudgetGate(b.Context(), time.Time{}, time.Now), sc, resolveProfile(ProfileFull), defaultMaxParseBytes, 0, "noise.go")
 				}
 			}
 		})

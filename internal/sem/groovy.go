@@ -29,15 +29,29 @@ import (
 	"strings"
 )
 
-func groovyEntities(content string) ([]Entity, ParseStatus) {
+// groovyEntities extracts entities with the dedicated structural scanner.
+//
+// stop is the caller's budget predicate, nil whenever no deadline was set. Both
+// halves of this parser are superlinear on nested declarations -- the scan keeps
+// a frame per open brace, and the body-hash pass below joins every line an
+// entity spans, which for nested classes is the rest of the file -- so a single
+// pathological file could run for tens of seconds past an expired budget with
+// nothing able to stop it. With stop nil neither loop carries a check, so an
+// unbudgeted parse does exactly the work, and emits exactly the bytes, it did
+// before.
+func groovyEntities(content string, stop func() bool) ([]Entity, ParseStatus) {
 	scanner := &groovyScanner{
 		src:    content,
 		masked: maskGroovyLiteralsAndComments(content),
 		lines:  strings.Split(content, "\n"),
+		stop:   stop,
 	}
 	scanner.scan()
 	entities := scanner.entities
 	for idx := range entities {
+		if stopped(stop) {
+			break
+		}
 		entity := &entities[idx]
 		if entity.EndLine < entity.StartLine {
 			entity.EndLine = entity.StartLine
@@ -387,6 +401,8 @@ type groovyScanner struct {
 	braceErrors int
 	i           int
 	line        int
+	// stop is the caller's budget predicate; nil when there is no deadline.
+	stop func() bool
 }
 
 func (s *groovyScanner) scan() {
@@ -394,6 +410,9 @@ func (s *groovyScanner) scan() {
 	s.line = 1
 	n := len(s.masked)
 	for s.i < n {
+		if stopped(s.stop) {
+			return
+		}
 		switch s.masked[s.i] {
 		case '\n':
 			s.line++

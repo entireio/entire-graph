@@ -117,6 +117,10 @@ func calculateGraphHealth(files []FileRecord, failures []PartialFailure, stats P
 	if guard == "unsafe" || (guard == "degraded" && health.Status == "ok") {
 		health.Status = guard
 	}
+	// A budget expiry leaves an unknown repository suffix, regardless of the retained file ratio.
+	if partialFailuresTruncated(failures) {
+		health.Status = "unsafe"
+	}
 	return health
 }
 

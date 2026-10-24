@@ -149,11 +149,17 @@ func (p SearchReplayPolicy) AllowsReplayPaths(paths []string) bool {
 			return false
 		}
 	}
-	ctx := p.ctx
-	if ctx == nil {
-		ctx = context.Background()
+	if p.ctx == nil {
+		// Fail closed rather than root a fresh context here. The Git probes
+		// below run under the caller's wall-clock budget; a context.Background
+		// fallback would start subprocesses no deadline can reach, which is the
+		// exact shape TestTF142R6NoUnbudgetedParseContext exists to keep out of
+		// this package. ResolveSearchReplayPolicy always captures a context, so
+		// the only policies that reach this line were assembled outside it and
+		// have no caller to be bounded by.
+		return false
 	}
-	return p.allowsHeadReplayPaths(ctx, cleaned)
+	return p.allowsHeadReplayPaths(p.ctx, cleaned)
 }
 
 func (p SearchReplayPolicy) allowsHeadReplayPaths(ctx context.Context, paths []string) bool {
