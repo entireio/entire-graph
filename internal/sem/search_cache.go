@@ -44,7 +44,8 @@ import (
 // v25 retires entries before unresolved route placement and Go 1.22 method patterns.
 // v26 retires entries carrying DATA_FLOWS edges matched by another language's
 // expression patterns; language-routed flow extraction no longer produces them.
-const searchSnapshotCacheVersion = "search-snapshot-v26-" + IdentityRevision
+// v27 retires body-laden Julia signatures and module DATA_FLOWS edges.
+const searchSnapshotCacheVersion = "search-snapshot-v27-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`

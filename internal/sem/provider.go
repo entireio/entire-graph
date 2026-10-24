@@ -47,6 +47,11 @@ const (
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
 	//
+	// Revision 5: Julia declaration headers replace body-laden signatures.
+	// Same-name overload IDs hash the signature, so their #sig: suffixes change
+	// even for unchanged source. Consumers must refresh snapshots and recompute
+	// persisted entity deltas under the corrected parser rules.
+	//
 	// Revision 4: the same correction for Swift, Kotlin, Rust and PHP, whose
 	// nested callables are local functions / block-scoped items / namespace
 	// functions rather than members of the enclosing type. Revision 3 shipped
@@ -60,7 +65,7 @@ const (
 	// `C.helper` (kind "method"). This re-keys every Python nested-callable
 	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
 	// real same-named members.
-	IdentityRevision     = "4"
+	IdentityRevision     = "5"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
@@ -3772,8 +3777,8 @@ func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, 
 	}
 	parameters := symbolFlowParameterNames(from)
 	if !from.parameterNamesKnown {
-		// A short-form signature includes its RHS; stop at the first balanced
-		// argument list so calls on the RHS are not mistaken for parameters.
+		// Stop at the first balanced argument list so parentheses in a
+		// `::T` return annotation or `where` clause are not read as parameters.
 		if open := strings.Index(from.Signature, "("); open >= 0 {
 			if close := matchingParen(from.Signature, open); close > open {
 				parameters = parameterNames(from.Signature[:close+1])
@@ -6021,7 +6026,11 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 					}
 				}
 			}
-			if needsDataFlow && callableSymbol {
+			// A module body cannot hand a value back to a caller and a module has
+			// no parameters to forward, so every flow found in a module's block
+			// (which spans its members) belongs to a member function, and that
+			// member already emits it.
+			if needsDataFlow && callableSymbol && from.Kind != "module" {
 				// Several flows can describe one edge: `f(a, b, c)` forwards three
 				// caller parameters into the same callee, and relation identity is
 				// from+to+type, so all three land on one record. Collect every flow

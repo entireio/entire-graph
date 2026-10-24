@@ -42,7 +42,8 @@ import (
 // v21 retires streams carrying DATA_FLOWS edges matched by another language's
 // expression patterns (a Python conditional pattern on a Go body and the
 // like); language-routed flow extraction no longer produces them.
-const providerRecordsCacheVersion = "provider-records-v21-" + IdentityRevision
+// v22 retires body-laden Julia signatures and module DATA_FLOWS edges.
+const providerRecordsCacheVersion = "provider-records-v22-" + IdentityRevision
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+commit+tree+mode+profile+
