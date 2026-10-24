@@ -2638,7 +2638,9 @@ func TestCommittedPreselectionFiltersInferredAliasSubstrings(t *testing.T) {
 	if response.Stats.PreselectionBackend != "git-tree-grep" {
 		t.Fatalf("expected committed Git path: %#v", response.Stats)
 	}
-	if response.Stats.FilesContentRead != 0 {
+	// Git lists alias hits by path, so each one is validated on its content:
+	// value.go is read once, and the substring-only files never are.
+	if response.Stats.FilesContentRead != 1 {
 		t.Fatalf("hydrated substring noise in cached selection: %#v", response.Stats)
 	}
 	if response.Stats.FilesIndexed != 1 {

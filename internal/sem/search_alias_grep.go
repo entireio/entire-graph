@@ -1,10 +1,13 @@
 package sem
 
 import (
+	"context"
 	"regexp"
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 // Bound the generated expression payload and Git regex compilation work.
@@ -17,6 +20,37 @@ const maxSearchGitAliasScans = 4
 
 func searchGitAliasScansFit(q searchQuery) bool {
 	return len(q.inferredAbbreviations) <= maxSearchGitAliasScans
+}
+
+// searchGitGrepExcludedPaths lists commit's blobs outside the corpus, largest
+// first, for the whole-tree alias grep to skip. The grep's hits outside the
+// corpus are discarded anyway, so skipping any of them is exact by construction;
+// what it saves is scanning blobs the corpus listing already refused, such as
+// vendored or generated files a .graphignore names. Largest first because the
+// exclusion list is bounded and the scan cost follows blob size. A listing
+// failure only forfeits the saving.
+func searchGitGrepExcludedPaths(ctx context.Context, repo, commit string, corpus map[string]bool) []string {
+	blobs, err := gitutil.ListTreeBlobs(ctx, repo, commit)
+	if err != nil {
+		return nil
+	}
+	outside := blobs[:0]
+	for _, blob := range blobs {
+		if !corpus[blob.Path] {
+			outside = append(outside, blob)
+		}
+	}
+	sort.Slice(outside, func(i, j int) bool {
+		if outside[i].Size != outside[j].Size {
+			return outside[i].Size > outside[j].Size
+		}
+		return outside[i].Path < outside[j].Path
+	})
+	paths := make([]string, len(outside))
+	for index, blob := range outside {
+		paths[index] = blob.Path
+	}
+	return paths
 }
 
 // Expressions reject substring-only hits before the provider reads content.
