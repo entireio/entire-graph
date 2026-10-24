@@ -1,0 +1,27 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "35fb3b162fdd",
+  "strategy": "manual-commit",
+  "branch": "perf/history-refresh-splice",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/search_cache.go",
+    "internal/sem/search_cache_history_splice_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/35/fb3b162fdd/0/metadata.json",
+      "transcript": "/35/fb3b162fdd/0/full.jsonl",
+      "compact_transcript": "/35/fb3b162fdd/0/transcript.jsonl",
+      "content_hash": "/35/fb3b162fdd/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2,
+    "cache_creation_tokens": 728,
+    "cache_read_tokens": 944219,
+    "output_tokens": 700,
+    "api_call_count": 1
+  }
+}
