@@ -1,0 +1,27 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "64f182128d89",
+  "strategy": "manual-commit",
+  "branch": "perf/pipeline-ordered-window",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/provider_parallel_stream.go",
+    "internal/sem/provider_parallel_stream_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/64/f182128d89/0/metadata.json",
+      "transcript": "/64/f182128d89/0/full.jsonl",
+      "compact_transcript": "/64/f182128d89/0/transcript.jsonl",
+      "content_hash": "/64/f182128d89/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 92,
+    "cache_creation_tokens": 44994,
+    "cache_read_tokens": 40611931,
+    "output_tokens": 32420,
+    "api_call_count": 46
+  }
+}
