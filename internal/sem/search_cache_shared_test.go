@@ -157,17 +157,18 @@ func firstRelationDifference(left, right []RelationRecord) string {
 // rebindCachedSearchSnapshot's claim that Header.RepoRoot is the only absolute
 // path a search entry carries. Every complete and derived entry written for the
 // fixture names the checkout exactly once, so restamping that one field is all
-// a path-free key needs.
+// a path-free key needs. The selective entry is written by a cold search, before
+// the preindex: a view derived from a complete entry is not persisted.
 func TestSearchCacheEntryCarriesNoCheckoutPathButTheHeader(t *testing.T) {
 	repo := t.TempDir()
 	sharedCacheFixture(t, repo)
 	cacheDir := t.TempDir()
-	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFull}, cacheDir); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := SearchRepository(t.Context(), repo, "test-version", "Audit ledger entry", SearchOptions{
 		Profile: ProfileFull, TopK: 5, MaxIndexedFiles: 2, CacheDir: cacheDir,
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFull}, cacheDir); err != nil {
 		t.Fatal(err)
 	}
 	entries := 0

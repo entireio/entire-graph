@@ -157,8 +157,10 @@ func TestSelectiveDerivationReportsCompleteHeaderOnce(t *testing.T) {
 		if len(snapshot.Files) != 1 {
 			t.Fatalf("selected files = %d", len(snapshot.Files))
 		}
-		if calls != 1 {
-			t.Fatalf("callback count after request %d = %d, want 1 (direct hits must not derive again)", i+1, calls)
+		// The derived view is not persisted, so every request derives it from the
+		// complete entry and reports that entry's header exactly once.
+		if calls != i+1 {
+			t.Fatalf("callback count after request %d = %d, want %d (once per derivation)", i+1, calls, i+1)
 		}
 	}
 }

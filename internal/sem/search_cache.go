@@ -381,11 +381,9 @@ func loadOrBuildSearchSnapshotPersisting(
 				// discard the result and take the ordinary build path below.
 				return ProviderSnapshot{}, false
 			}
-			// Persisting the exact selective view makes repeated identical queries
-			// a direct cache hit. As with ordinary search caching, this is best effort.
-			if generationKnown {
-				_ = writeSearchSnapshot(entry, newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, selective, ctx))
-			}
+			// The view is not persisted. Writing it cost a warm query 0.5-0.7s,
+			// more than deriving it again (0.2-0.3s), and only a query with this
+			// exact selection could ever read it back.
 			if options.onCompleteDerivation != nil {
 				options.onCompleteDerivation(full.Header)
 			}

@@ -92,14 +92,12 @@ func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := ProviderSnapshotOptions{Profile: ProfileSyntaxOnly}
+	selectiveOptions := options
+	selectiveOptions.OnlyFiles = []string{"target.go"}
+	persistSelectiveSnapshot(t, repo, "test-version", outsideCacheDir, selectiveOptions)
 	full, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", options, outsideCacheDir)
 	if err != nil {
 		t.Fatalf("seed complete cache: %v", err)
-	}
-	selectiveOptions := options
-	selectiveOptions.OnlyFiles = []string{"target.go"}
-	if _, _, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", selectiveOptions, outsideCacheDir, false); err != nil {
-		t.Fatalf("seed selective cache: %v", err)
 	}
 	if err := os.Symlink(filepath.Join("..", "outside", "search"), filepath.Join(cacheDir, "search")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
@@ -119,8 +117,8 @@ func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
 		t.Fatal("selective cache loader followed a symlink outside the opened root")
 	}
 
-	// Remove the selective artifact written by that best-effort miss. The full
-	// entry remains outside, so this isolates the full-cache fallback read.
+	// Remove the seeded selective artifact. The full entry remains outside, so
+	// this isolates the full-cache fallback read.
 	outsideSelective := selectiveSearchEntryPath(
 		t, outsideCacheDir, repo, full.Header.RepoKey, "test-version", full.Header.Tree, selectiveOptions,
 	)
@@ -606,8 +604,8 @@ func NeedleTarget() bool { return true }
 	if cached.Stats.QueryFilesRead == 0 || cached.Stats.QueryBytesRead == 0 || cached.Stats.QueryFilesRead >= len(preindexed.Files) {
 		t.Fatalf("query content reads were not bounded to candidate scope: %#v", cached.Stats)
 	}
-	if _, statErr := os.Stat(selectivePath); statErr != nil {
-		t.Fatalf("warm search did not persist the per-query selective graph cache at %s: %v", selectivePath, statErr)
+	if _, statErr := os.Stat(selectivePath); !os.IsNotExist(statErr) {
+		t.Fatalf("warm search persisted its derived selective view at %s: %v", selectivePath, statErr)
 	}
 	if len(cached.Results) == 0 || cached.Results[0].SymbolName != "NeedleTarget" {
 		t.Fatalf("preindexed search lost target: %#v", cached.Results)
@@ -698,7 +696,12 @@ func helper() {}
 	}
 }
 
-func TestWarmSelectiveSearchPersistsAndReusesPerQueryCache(t *testing.T) {
+// A warm selective search derives its graph from the complete preindex and does
+// not write that view back: deriving it again is cheaper than the write, so an
+// identical repeat derives again, still a cache hit with the same results. A
+// selection the search had to BUILD, with no complete snapshot to derive from,
+// is still persisted, and it serves the next identical search.
+func TestWarmSelectiveSearchRederivesInsteadOfPersisting(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -748,31 +751,26 @@ func NeedleTarget() bool { return true }
 	if len(first.Results) == 0 || first.Results[0].SymbolName != "NeedleTarget" {
 		t.Fatalf("first warm search lost target: %#v", first.Results)
 	}
-	persisted, statErr := os.Stat(selectivePath)
-	if statErr != nil {
-		t.Fatalf("first warm search did not persist the per-query selective entry at %s: %v", selectivePath, statErr)
+	if _, statErr := os.Stat(selectivePath); !os.IsNotExist(statErr) {
+		t.Fatalf("first warm search persisted its derived selective view at %s: %v", selectivePath, statErr)
 	}
 
 	second, err := SearchRepository(t.Context(), repo, "test-version", query, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !second.Stats.IndexCacheHit {
-		t.Fatalf("second warm search missed the selective cache: %#v", second.Stats)
+	if !second.Stats.IndexCacheHit || second.Stats.FilesIndexed != 1 {
+		t.Fatalf("second warm search did not derive from the complete preindex: %#v", second.Stats)
 	}
 	if !reflect.DeepEqual(second.Results, first.Results) {
-		t.Fatalf("selective cache entry changed retrieval:\nfirst=%#v\nsecond=%#v", first.Results, second.Results)
+		t.Fatalf("re-deriving the selective view changed retrieval:\nfirst=%#v\nsecond=%#v", first.Results, second.Results)
 	}
-	reused, statErr := os.Stat(selectivePath)
-	if statErr != nil {
-		t.Fatalf("second warm search lost the selective entry: %v", statErr)
-	}
-	if !reused.ModTime().Equal(persisted.ModTime()) {
-		t.Fatalf("second warm search re-derived and rewrote the selective entry: first=%v second=%v", persisted.ModTime(), reused.ModTime())
+	if _, statErr := os.Stat(selectivePath); !os.IsNotExist(statErr) {
+		t.Fatalf("second warm search persisted its derived selective view: %v", statErr)
 	}
 
-	// With the complete preindex entry gone, re-derivation is impossible: only
-	// the persisted per-query entry can keep the third identical search a hit.
+	// With the complete preindex entry gone, nothing can be derived: the third
+	// search builds its selection, and that BUILT selection is persisted.
 	fullKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, ProviderSnapshotOptions{
 		Profile: ProfileSyntaxOnly,
 	})
@@ -786,11 +784,24 @@ func NeedleTarget() bool { return true }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !third.Stats.IndexCacheHit {
-		t.Fatalf("persisted selective entry was not reused after preindex removal: %#v", third.Stats)
+	if third.Stats.IndexCacheHit {
+		t.Fatalf("search with no complete entry and no persisted selection reported a cache hit: %#v", third.Stats)
 	}
 	if !reflect.DeepEqual(third.Results, first.Results) {
-		t.Fatalf("persisted selective entry changed retrieval:\nfirst=%#v\nthird=%#v", first.Results, third.Results)
+		t.Fatalf("building the selection changed retrieval:\nfirst=%#v\nthird=%#v", first.Results, third.Results)
+	}
+	if _, statErr := os.Stat(selectivePath); statErr != nil {
+		t.Fatalf("the built selection was not persisted at %s: %v", selectivePath, statErr)
+	}
+	fourth, err := SearchRepository(t.Context(), repo, "test-version", query, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fourth.Stats.IndexCacheHit {
+		t.Fatalf("persisted built selection was not reused: %#v", fourth.Stats)
+	}
+	if !reflect.DeepEqual(fourth.Results, first.Results) {
+		t.Fatalf("persisted built selection changed retrieval:\nfirst=%#v\nfourth=%#v", first.Results, fourth.Results)
 	}
 }
 

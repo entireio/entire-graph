@@ -20,7 +20,7 @@ func cacheGenerationMarkerPath(t *testing.T, cacheDir, completeKey string) strin
 }
 
 // generationMarkerFixture is a repository whose complete entry is preindexed and
-// whose selective entry was derived BEFORE any generation existed, so the
+// whose selective entry was persisted BEFORE any generation existed, so the
 // derived artifact carries the legacy empty generation.
 type generationMarkerFixture struct {
 	repo        string
@@ -51,10 +51,8 @@ func newGenerationMarkerFixture(t *testing.T) generationMarkerFixture {
 		return options
 	}
 
+	persistSelectiveSnapshot(t, repo, "v", cacheDir, selective())
 	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "v", complete(), cacheDir); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := loadOrBuildSearchSnapshot(t.Context(), repo, "v", selective(), cacheDir, false, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -371,7 +369,9 @@ func TestPreloadedCompleteSnapshotIsBoundToItsGeneration(t *testing.T) {
 	if snapshotHasSymbolNamed(later, "DerivedFromTheOutgoingSnapshot") {
 		t.Fatal("a view of the retired snapshot was persisted under the incoming generation and is now permanently valid")
 	}
-	if persisted := readCachedSnapshotFile(t, fixture.derivedPath); persisted.DerivedFrom != current {
-		t.Fatalf("the persisted selective entry should carry the current generation %q, got %q", current, persisted.DerivedFrom)
+	// Nor is a view of the rebuilt snapshot written in its place: warm
+	// derivations are not persisted, so --force's removal stands.
+	if _, err := os.Stat(fixture.derivedPath); !os.IsNotExist(err) {
+		t.Fatalf("a warm derivation persisted its selective view after --force: %v", err)
 	}
 }
