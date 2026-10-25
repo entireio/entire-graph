@@ -47,6 +47,15 @@ auto-generated notes on
   fallback that `index --head` does not have.
 - Committed-tree commands no longer fail with "malformed HEAD commit/tree
   metadata" in a repository that sets `i18n.logOutputEncoding` to UTF-16.
+- Synthetic `kind=tool` symbols are no longer fabricated from a function's body
+  text. A function whose comments or string literals said "tool" next to
+  "schema", "handler" or "execute" got a second definition of its own name, so
+  `def`, `neighbors` and `impact` on that name came back ambiguous (84 such
+  symbols across four of our own repositories, one of them a real tool
+  handler). Tool boundaries are now decided from the symbol's name and
+  signature: a function, method or type whose name pairs "tool" with handle,
+  handler, execute, executor, invoke or dispatch, or whose signature takes an
+  MCP `CallToolRequest`. Cached snapshots from earlier builds are retired.
 
 ## [0.5.0] - 2026-10-23
 

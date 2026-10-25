@@ -583,9 +583,10 @@ reproduce every Git-only policy and excluded files can therefore be present.
 - relation support per profile (`relation_support_by_profile`): the relation
   types each indexing profile emits (`full`, `fast`, `syntax-only`).
 - heuristic relation types (`heuristic_relation_types`): relations such as
-  `HANDLES_ROUTE` and `HANDLES_TOOL` that are detected by file-path and body
-  patterns rather than per-language grammar, so they are not attributed to a
-  single language.
+  `HANDLES_ROUTE` and `HANDLES_TOOL` that are detected by file-path, body or
+  name patterns rather than per-language grammar, so they are not attributed
+  to a single language. (`HANDLES_TOOL` reads only the handler's name and
+  signature, never its body text.)
 - unsupported-but-detected language hints when available
 - whether optional local-only features are available
 - whether any feature would require network access

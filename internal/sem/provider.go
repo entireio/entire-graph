@@ -2171,7 +2171,6 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 
 func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbols []SymbolRecord) []SymbolRecord {
 	var symbols []SymbolRecord
-	lines := strings.Split(content, "\n")
 	if route := webRouteBoundary(path); route != "" {
 		source := routeBoundarySource(path, language, fileSymbols)
 		symbols = append(symbols, SymbolRecord{
@@ -2193,11 +2192,7 @@ func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbo
 		})
 	}
 	for _, source := range fileSymbols {
-		block := symbolBlockFromLines(lines, source)
-		if exact, ok := exactSymbolSource(content, source); ok {
-			block = exact
-		}
-		if !looksLikeToolHandler(source, block) {
+		if !looksLikeToolHandler(source) {
 			continue
 		}
 		symbols = append(symbols, SymbolRecord{
@@ -28908,12 +28903,6 @@ func applicationWorkflowBoundary(path string) string {
 	default:
 		return ""
 	}
-}
-
-func looksLikeToolHandler(symbol SymbolRecord, block string) bool {
-	value := strings.ToLower(symbol.QualifiedName + "\n" + block)
-	tokens := tokenSet(value)
-	return tokens["tool"] && (tokens["handler"] || tokens["execute"] || tokens["schema"])
 }
 
 func symbolBlock(content string, symbol SymbolRecord) string {
