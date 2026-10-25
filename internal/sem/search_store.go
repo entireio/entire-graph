@@ -636,7 +636,9 @@ func searchStoreEntryFor(entry cacheEntry) cacheEntry {
 // ANY failure it removes both the temporary and any previous sidecar: the
 // invariant readers rely on is that a sidecar present on disk was written by
 // the same call that wrote the current entry (the digest check backstops the
-// crash window between the two renames).
+// crash window between the two renames). A successful publish then trims the
+// sidecars of the same repository and scope to the newest few
+// (search_store_retention.go); the gz entries are never trimmed.
 func writeSearchStoreSidecar(ctx context.Context, entry cacheEntry, entryDigest string, cache *cachedSearchSnapshot) error {
 	if !searchStoreEnabled() {
 		// The write is gated by the same flag as the read: with no reader, an
@@ -672,15 +674,37 @@ func writeSearchStoreSidecar(ctx context.Context, entry cacheEntry, entryDigest 
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	temporaryPath := filepath.Join(entry.root, filepath.Dir(entry.relative), temporaryName)
+	directoryPath := filepath.Join(entry.root, filepath.Dir(entry.relative))
+	temporaryPath := filepath.Join(directoryPath, temporaryName)
 	if err := buildSearchStore(ctx, temporaryPath, entryDigest, cache); err != nil {
 		return err
 	}
+	if beforeSearchStorePublish != nil {
+		beforeSearchStorePublish()
+	}
+	// Publish and trim under one hold of the retention lock, so no eviction
+	// pass in another process can list, then remove, a name this rename has
+	// just replaced. Without the lock the store is still published; only the
+	// eviction is skipped (see search_store_retention.go).
+	retention, retain := newSearchStoreRetention(ctx, store, cache)
+	var lock *completeBuildLock
+	if retain {
+		lock = acquireSearchStoreRetentionLock(ctx, directory)
+	}
+	defer lock.release()
 	if err := directory.Rename(temporaryName, filepath.Base(store.relative)); err != nil {
 		return err
 	}
 	removeTemporary = false
 	succeeded = true
+	if afterSearchStorePublish != nil {
+		afterSearchStorePublish()
+	}
+	if lock != nil {
+		// Best effort, like the sidecar itself: the publish has succeeded, and a
+		// store that could not be trimmed now is trimmed by a later publish.
+		_, _ = evictSearchStoreSidecars(ctx, directory, directoryPath, retention)
+	}
 	return nil
 }
 

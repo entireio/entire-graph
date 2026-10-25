@@ -14,6 +14,15 @@ compare the JSON-encoded `meta.entry_digest` on that connection to the descripto
 before reading. Publication replaces the file atomically; a digest mismatch is a
 retryable resolution race. Never persist the path as a portable artifact.
 
+Graph keeps the newest three stores per repository and checkout scope, plus
+any store built for the publishing checkout's current HEAD tree, and removes
+older ones when it publishes a new one. `ENTIRE_GRAPH_SEARCH_STORE_KEEP` changes
+the count; 0 or a negative value keeps every store. The gz snapshot entries are
+never removed, and `graph index --head` rebuilds an evicted store from its entry
+without reparsing. A store removed after it was resolved reads as
+`store_unavailable` on the next resolution. On POSIX a connection that already
+has the store open keeps reading it; on Windows an open store is not removed.
+
 The stable SQL surface consists of `brain_symbols_v1`, `brain_relations_v1`,
 `brain_files_v1`, `brain_reverse_relations_v1` and `brain_symbol_fts_v1`. These are
 views over Graph's tables, including typed JSON projections of provider records.
