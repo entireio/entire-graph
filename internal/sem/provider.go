@@ -591,6 +591,9 @@ type capturedFileCochanges struct {
 	// Unknown history stays private to one checkout and contributes no edges,
 	// matching an uncached history-read failure without sharing that failure.
 	unavailable bool
+	// reason is why history was unavailable, reported in the snapshot's
+	// W_COCHANGE_HISTORY_UNAVAILABLE warning. It is not part of any cache key.
+	reason string
 }
 
 // coldCompletePolicy is the search's input to the cold-complete decision.
@@ -1548,6 +1551,9 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// relation, so this adds no new memory class.
 	dataFlowEvidence := map[uint64]uint64{}
 	unmergedEvidenceEdges := 0
+	// A failed co-change history read is disclosed on the summary, never dropped.
+	var historyWarning ProviderWarning
+	hasHistoryWarning := false
 	externalsByID := map[string]ExternalRecord{}
 	relationsByType := map[string]int{}
 	var emitErr error
@@ -1651,7 +1657,12 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		// returns a fully materialised slice, so entering it after a cancellation
 		// pays for the whole subprocess first.
 		if spec.emits("FILE_CHANGES_WITH") && !relationsShouldStop() {
-			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, files, options.historyCochanges) {
+			history, historyErr := fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, files, options.historyCochanges)
+			if historyErr != nil && ctx.Err() == nil {
+				historyWarning = cochangeHistoryUnavailableWarning(historyErr)
+				hasHistoryWarning = true
+			}
+			for _, r := range history {
 				if relationsShouldStop() {
 					break
 				}
@@ -1689,6 +1700,9 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	}
 	if unmergedEvidenceEdges > 0 {
 		warnings = append(warnings, unmergedDataFlowEvidenceWarning(unmergedEvidenceEdges))
+	}
+	if hasHistoryWarning {
+		warnings = append(warnings, historyWarning)
 	}
 	if failures == nil {
 		failures = []PartialFailure{}
@@ -13167,22 +13181,34 @@ func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent co
 	return relations
 }
 
-func fileChangesWithRelations(ctx context.Context, repo, revision, repoKey string, files []FileRecord, captured ...*capturedFileCochanges) []RelationRecord {
+// fileChangesWithRelations returns the co-change edges for files. A non-nil
+// error means the history could not be read, so the edges are missing rather
+// than absent: the caller discloses it as W_COCHANGE_HISTORY_UNAVAILABLE instead
+// of dropping them silently. No revision means there is no history to read,
+// which is not a failure (prepareSource already reports E_NO_GIT_HEAD).
+func fileChangesWithRelations(ctx context.Context, repo, revision, repoKey string, files []FileRecord, captured ...*capturedFileCochanges) ([]RelationRecord, error) {
 	if revision == "" {
-		return nil
+		return nil, nil
 	}
 	var cochanges []gitutil.FileCochange
 	if len(captured) > 0 && captured[0] != nil {
+		if captured[0].unavailable {
+			reason := captured[0].reason
+			if reason == "" {
+				reason = "git history was unavailable when the records cache transaction began"
+			}
+			return nil, errors.New(reason)
+		}
 		cochanges = captured[0].pairs
 	} else {
 		var err error
 		cochanges, err = gitutil.FileCochanges(ctx, repo, revision, 256)
 		if err != nil {
-			return nil
+			return nil, err
 		}
 	}
 	if len(cochanges) == 0 {
-		return nil
+		return nil, nil
 	}
 	known := map[string]bool{}
 	for _, file := range files {
@@ -13214,7 +13240,24 @@ func fileChangesWithRelations(ctx context.Context, repo, revision, repoKey strin
 			WarningCodes: []string{},
 		})
 	}
-	return relations
+	return relations, nil
+}
+
+// CochangeHistoryUnavailableCode names the warning a snapshot carries when its
+// FILE_CHANGES_WITH edges are missing because the history read failed.
+const CochangeHistoryUnavailableCode = "W_COCHANGE_HISTORY_UNAVAILABLE"
+
+// cochangeHistoryUnavailableWarning discloses that co-change edges were not
+// collected. Without it, a snapshot whose history read failed (for example a
+// partial clone whose history needs a missing blob for rename detection) is
+// indistinguishable from one whose files never changed together.
+func cochangeHistoryUnavailableWarning(err error) ProviderWarning {
+	return ProviderWarning{
+		Code:                 CochangeHistoryUnavailableCode,
+		Severity:             "warning",
+		EffectOnCompleteness: "git history could not be read, so this snapshot has no FILE_CHANGES_WITH (co-change) relations; an empty co-change answer means unknown, not uncoupled",
+		Detail:               err.Error(),
+	}
 }
 
 // fieldAccessRelations resolves `receiver.field` accesses in a function/method

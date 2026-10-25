@@ -48,7 +48,14 @@ import (
 // v27 retires entries carrying kind=tool symbols fabricated from body text (a
 // duplicate definition of the handler's name); tool boundaries now come from
 // identifiers only.
-const searchSnapshotCacheVersion = "search-snapshot-v27-" + IdentityRevision
+// v28 follows v27 and retires entries written before a failed
+// co-change history read was disclosed. The query path never serves such an entry
+// (its history refresh fails, which is a miss), but `graph store` and `graph
+// context` read the persisted entry and its sqlite sidecar without building, so a
+// pre-disclosure entry would hand them a header without
+// W_COCHANGE_HISTORY_UNAVAILABLE. The sidecar sits beside the entry under this
+// version's directory, so the bump orphans stale stores as well.
+const searchSnapshotCacheVersion = "search-snapshot-v28-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -1123,6 +1130,17 @@ func selectiveSearchSnapshotFromFull(
 	if len(selective.unmergedDataFlowEdges) > 0 {
 		warnings = append(warnings, unmergedDataFlowEvidenceWarning(len(selective.unmergedDataFlowEdges)))
 	}
+	// The co-change edges filtered above came from the complete graph, so the view
+	// is missing them for the same reason it was, and a build of the view would say
+	// so in the same place.
+	if spec.name != ProfileSyntaxOnly && spec.emits("FILE_CHANGES_WITH") {
+		for _, warning := range full.Header.Warnings {
+			if warning.Code == CochangeHistoryUnavailableCode {
+				warnings = append(warnings, warning)
+				break
+			}
+		}
+	}
 	// The complete build already folded its relation-phase failures into these
 	// records (mergePartialFailures), so filtering them by file is the selective
 	// view's whole failure set: the filter itself resolves nothing and cannot fail.
@@ -1235,6 +1253,12 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 // validity check catches the wrong answer; it cannot stop the mutual eviction
 // that produced it, because by then the entry has already been replaced.
 func searchSnapshotKeyForSchema(schemaVersion, absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions, contexts ...context.Context) (string, error) {
+	return searchSnapshotKeyForVersions(searchSnapshotCacheVersion, schemaVersion, absRepo, repositoryKey, providerVersion, tree, options, contexts...)
+}
+
+// searchSnapshotKeyForVersions also takes the cache version explicitly, so a test
+// can address the entry an earlier build wrote for the same tree.
+func searchSnapshotKeyForVersions(cacheVersion, schemaVersion, absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions, contexts ...context.Context) (string, error) {
 	if options.Worktree {
 		return "", errors.New("working-tree snapshots cannot have persistent cache keys")
 	}
@@ -1243,7 +1267,7 @@ func searchSnapshotKeyForSchema(schemaVersion, absRepo, repositoryKey, providerV
 		return "", err
 	}
 	hash := sha256.New()
-	writeCacheKeyString(hash, "cache-version", searchSnapshotCacheVersion)
+	writeCacheKeyString(hash, "cache-version", cacheVersion)
 	writeCacheKeyString(hash, "schema-version", schemaVersion)
 	// No checkout path: the entry is content-addressed by the tree, so every
 	// worktree and clone of one repository at one tree shares it, and the loader
@@ -1431,8 +1455,14 @@ func loadCachedSearchSnapshot(
 			// history edges disappeared. Fall back through the ordinary build.
 			return cachedSearchSnapshot{}, false
 		}
-		history := fileChangesWithRelations(ctx, absRepo, commit, repositoryKey, cached.Snapshot.Files, &capturedFileCochanges{pairs: cochanges})
+		// The pairs were read just above, so this cannot report unavailable history.
+		history, _ := fileChangesWithRelations(ctx, absRepo, commit, repositoryKey, cached.Snapshot.Files, &capturedFileCochanges{pairs: cochanges})
 		refreshed := spliceFileChangesWithRelations(cached.Snapshot.Relations, history)
+		// An entry built where history could not be read carries that warning; it no
+		// longer holds now that the history edges have been refreshed here. Stripped
+		// whether or not the splice changed anything: readable history with no pairs
+		// leaves the relations untouched but still retires the warning.
+		cached.Snapshot.Header.Warnings = withoutWarningCode(cached.Snapshot.Header.Warnings, CochangeHistoryUnavailableCode)
 		cached.Snapshot.Relations = refreshed
 		cached.Snapshot.Header.Stats.Relations = len(refreshed)
 		counts := make(map[string]int, len(cached.Snapshot.Header.Completeness.Relations))
@@ -1527,6 +1557,24 @@ func spliceFileChangesWithRelations(relations, history []RelationRecord) []Relat
 	refreshed = append(refreshed, relations[:start]...)
 	refreshed = append(refreshed, sorted...)
 	return append(refreshed, relations[end:]...)
+}
+
+// withoutWarningCode returns warnings minus every warning with code, without
+// mutating the input. A nil or empty input is returned unchanged.
+func withoutWarningCode(warnings []ProviderWarning, code string) []ProviderWarning {
+	for index, warning := range warnings {
+		if warning.Code != code {
+			continue
+		}
+		kept := append([]ProviderWarning{}, warnings[:index]...)
+		for _, rest := range warnings[index+1:] {
+			if rest.Code != code {
+				kept = append(kept, rest)
+			}
+		}
+		return kept
+	}
+	return warnings
 }
 
 // rebindCachedSearchSnapshot adopts an entry, which may have been written from

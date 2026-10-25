@@ -44,7 +44,13 @@ import (
 // like); language-routed flow extraction no longer produces them.
 // v22 retires streams carrying kind=tool symbols (and their HANDLES_TOOL edges)
 // fabricated from body text; tool boundaries now come from identifiers only.
-const providerRecordsCacheVersion = "provider-records-v22-" + IdentityRevision
+// v23 follows v22 and retires entries written before a failed
+// co-change history read was disclosed. Such an entry is keyed exactly as this
+// build keys the same failure (the history-unavailable scope and no pairs; the
+// reason is not, and need not be, in the key), so without the bump this build
+// replays its summary, which lacks W_COCHANGE_HISTORY_UNAVAILABLE: the silent
+// drop the warning exists to end.
+const providerRecordsCacheVersion = "provider-records-v23-" + IdentityRevision
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+commit+tree+mode+profile+
@@ -104,12 +110,18 @@ func providerRecordsKey(absRepo, repositoryKey, providerVersion, commit, tree, m
 // address the entry a build at another schema would have written. Production
 // reaches it only through providerRecordsKey, which supplies SchemaVersion.
 func providerRecordsKeyForSchema(schemaVersion, absRepo, repositoryKey, providerVersion, commit, tree, mode string, options ProviderSnapshotOptions, contexts ...context.Context) (string, error) {
+	return providerRecordsKeyForVersions(providerRecordsCacheVersion, schemaVersion, absRepo, repositoryKey, providerVersion, commit, tree, mode, options, contexts...)
+}
+
+// providerRecordsKeyForVersions also takes the cache version explicitly, so a test
+// can address the entry an earlier build wrote for the same inputs.
+func providerRecordsKeyForVersions(cacheVersion, schemaVersion, absRepo, repositoryKey, providerVersion, commit, tree, mode string, options ProviderSnapshotOptions, contexts ...context.Context) (string, error) {
 	policy, err := cachePolicyForOptions(absRepo, options)
 	if err != nil {
 		return "", err
 	}
 	hash := sha256.New()
-	writeCacheKeyString(hash, "cache-version", providerRecordsCacheVersion)
+	writeCacheKeyString(hash, "cache-version", cacheVersion)
 	// The record bytes are replayed VERBATIM, so the schema that shaped them is
 	// part of the entry's ADDRESS, not just of its contents.
 	writeCacheKeyString(hash, "schema-version", schemaVersion)
@@ -222,7 +234,10 @@ func BeginProviderRecordsCache(ctx context.Context, repo, providerVersion, commi
 	}
 	transaction.repositoryKey = repoKey(ctx, absRepo)
 	if resolveProfile(options.Profile).emits("FILE_CHANGES_WITH") {
-		captured := &capturedFileCochanges{unavailable: true}
+		captured := &capturedFileCochanges{
+			unavailable: true,
+			reason:      "git metadata is not safe for Git subprocesses, so history was not read",
+		}
 		if safe {
 			pairs, historyErr := gitutil.FileCochanges(ctx, absRepo, commit, 256)
 			if ctx.Err() != nil {
@@ -230,6 +245,8 @@ func BeginProviderRecordsCache(ctx context.Context, repo, providerVersion, commi
 			}
 			if historyErr == nil {
 				captured = &capturedFileCochanges{pairs: pairs}
+			} else {
+				captured.reason = historyErr.Error()
 			}
 		}
 		transaction.options.historyCochanges = captured

@@ -75,3 +75,29 @@ func TestImpactTextDiagnosticPlacementAndEmptySections(t *testing.T) {
 		t.Fatalf("relevant parse failure must precede the answer:\n%s", text)
 	}
 }
+
+// An empty co-change section built from history that could not be read is unknown, not empty.
+func TestImpactReportsUnknownCochangeWhenHistoryUnavailable(t *testing.T) {
+	snapshot := impactFixtureSnapshot()
+	var relations []sem.RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "FILE_CHANGES_WITH" {
+			relations = append(relations, relation)
+		}
+	}
+	snapshot.Relations = relations
+	render := func(warnings []sem.ProviderWarning) string {
+		snapshot.Header.Warnings = warnings
+		var out bytes.Buffer
+		writeImpactText(&out, buildImpactResponseOnDisk(snapshot, impactFlags{Format: "text", Symbol: "Orders", Depth: 2}))
+		return out.String()
+	}
+	if control := render(nil); !strings.Contains(control, "- No co-change coupling found\n") {
+		t.Fatalf("control: readable history with no pairs is reported as none:\n%s", control)
+	}
+	text := render([]sem.ProviderWarning{{Code: sem.CochangeHistoryUnavailableCode, Severity: "warning"}})
+	if !strings.Contains(text, "- Co-change coupling unknown: git history unavailable ("+sem.CochangeHistoryUnavailableCode+")\n") ||
+		strings.Contains(text, "No co-change coupling found") {
+		t.Fatalf("unreadable history must read as unknown co-change, not none:\n%s", text)
+	}
+}

@@ -451,6 +451,9 @@ func buildImpactResponseFromReader(
 	focus := focuses[0]
 	focusEndpoint := endpointForSymbol(focus)
 	response.Focus = &focusEndpoint
+	// Callers come from CALLS edges only; disclose the value references they cannot
+	// include. See value_refs.go.
+	response.Warnings = withValueReferenceDisclosure(response.Warnings, focusEndpoint)
 	if focus.ContainerID != "" {
 		if container, ok := endpoints[focus.ContainerID]; ok {
 			response.Container = &container
@@ -790,13 +793,14 @@ func writeImpactText(out io.Writer, response impactResponse) {
 	// Every section here names repository paths and symbols. See writeTextSearch.
 	out = termsafe.NewWriter(out)
 	fmt.Fprintln(out)
-	scope := completenessScopeOrAll(response.CompletenessScope, response.Warnings, response.PartialFailures, response.Stats)
+	warnings := snapshotWarnings(response.Warnings)
+	scope := completenessScopeOrAll(response.CompletenessScope, warnings, response.PartialFailures, response.Stats)
 	defer func() {
 		writeImpactFooter(out, response, scope)
 		fmt.Fprintln(out)
 	}()
 	if scope.LanguageFailed > 0 || len(scope.InScopeFailures) > 0 {
-		writeScopedCompletenessBlock(out, scope, response.Warnings, response.PartialFailures, response.Stats)
+		writeScopedCompletenessBlock(out, scope, warnings, response.PartialFailures, response.Stats)
 		fmt.Fprintln(out)
 	}
 	if response.FocusMatchesTotal == 0 {
@@ -991,4 +995,12 @@ func writeImpactDegenerate(out io.Writer, response impactResponse, reason string
 		}
 	}
 	fmt.Fprintf(out, "%s: %s has %s\n", impactDegenerateMarker, name, reason)
+	// "No callers" is exactly the answer a function used only as a value gets, so
+	// the one-line verdict is the place a missing caller most needs disclosing. The
+	// marker line itself is unchanged: consumers match on its prefix.
+	if response.Focus != nil {
+		if note := valueReferenceNote(response.Warnings, response.Focus.Name); note != "" {
+			fmt.Fprintln(out, note)
+		}
+	}
 }

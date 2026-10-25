@@ -31,6 +31,13 @@ default**; `--head` switches to the committed tree.
 | `neighbors` | Direct relations of one symbol (`--relation`, `--direction`, `--depth 1\|2`). Ambiguous names return a definition list; disambiguate with `--file`. |
 | `impact` | One-shot blast radius for a symbol: direct and transitive callers (depth ≤ 2), callees, type consumers, data flows, co-change files, siblings. |
 
+Callers come from `CALLS` edges only. For a Go function or method, `neighbors`
+(direction `in` or `both`) and `impact` add a `W_VALUE_REFERENCES_UNMODELLED`
+warning to JSON and one line to agent and text output: references to the
+function as a value (assigned to a variable, passed as an argument, stored in a
+struct field or map) are not modelled, and the line gives a `grep` that finds
+them. Any non-comment hit that is not a call is a dependent the graph cannot see.
+
 Cache visibility differs by command and format. JSON from `query`, `impact`,
 and `neighbors` includes cache fields. Text output from `impact` and
 `neighbors` starts with an `Index: cache-hit` or `cache-miss` header. Agent

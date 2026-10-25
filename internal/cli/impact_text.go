@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/entireio/entire-graph/internal/sem"
 	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
@@ -79,6 +80,11 @@ func writeImpactOverview(out io.Writer, response impactResponse) {
 	if len(flows) > 0 {
 		fmt.Fprintf(out, "- %d additional data flow%s\n", len(flows), pluralSuffix(len(flows)))
 	}
+	// Beside the caller counts it qualifies, and above every section, so the bounded
+	// renderer's section caps and hard cut reach it last. See value_refs.go.
+	if note := valueReferenceNote(response.Warnings, focus.Name); note != "" {
+		fmt.Fprintf(out, "- %s\n", note)
+	}
 	for _, coupling := range []struct {
 		count int
 		name  string
@@ -87,7 +93,10 @@ func writeImpactOverview(out io.Writer, response impactResponse) {
 		{response.CoChanges.Total, "co-change", "file"},
 		{response.Siblings.Total, "sibling", "symbol"},
 	} {
-		if coupling.count == 0 {
+		if coupling.count == 0 && coupling.name == "co-change" && hasWarningCode(response.Warnings, sem.CochangeHistoryUnavailableCode) {
+			// Not "none found": the history was never read, so the answer is unknown.
+			fmt.Fprintf(out, "- Co-change coupling unknown: git history unavailable (%s)\n", sem.CochangeHistoryUnavailableCode)
+		} else if coupling.count == 0 {
 			fmt.Fprintf(out, "- No %s coupling found\n", coupling.name)
 		} else {
 			fmt.Fprintf(out, "- %d %s %s%s\n", coupling.count, coupling.name, coupling.unit, pluralSuffix(coupling.count))

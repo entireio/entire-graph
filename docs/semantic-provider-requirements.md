@@ -357,7 +357,11 @@ Relation vocabulary:
   as Go `go` statements, JavaScript/TypeScript/Python `await`, and common
   spawn/promise patterns when the target resolves to a known symbol.
 - `FILE_CHANGES_WITH` — bounded local git co-change edge between files that
-  repeatedly changed together in recent history.
+  repeatedly changed together in recent history. When that history cannot be
+  read (for example a partial clone whose history needs a missing blob for
+  rename detection), the snapshot has none of these edges and says so with a
+  `W_COCHANGE_HISTORY_UNAVAILABLE` warning carrying Git's reason, so an empty
+  co-change answer reads as unknown rather than uncoupled.
 - `TESTS` — a test function maps to the unit it covers by naming convention
   (`TestFoo`/`testFoo` → `Foo`, `test_foo` → `foo`, `FooTest`/`FooSpec` → `Foo`)
   when the subject resolves to a non-test function/method/type.

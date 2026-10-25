@@ -490,6 +490,11 @@ func buildNeighborResponseFromReader(
 		}
 		response.Matches = append(response.Matches, entry)
 	}
+	// Callers are answered from CALLS edges only. Say so, with a self-check, where a
+	// value reference could be the missing caller. See value_refs.go.
+	if len(focuses) == 1 && flags.Relation == "CALLS" && neighborDirectionQueried(flags.Direction, "in") {
+		response.Warnings = withValueReferenceDisclosure(response.Warnings, endpointForSymbol(focuses[0]))
+	}
 	return response
 }
 
@@ -802,6 +807,9 @@ func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {
 		// statement about the graph, and the reader has no way to tell.
 		if neighborDirectionQueried(response.Direction, "in") {
 			writeNeighborEdgeList(out, "Callers", match.Incoming, budget)
+			if note := valueReferenceNote(response.Warnings, match.Symbol.Name); note != "" {
+				fmt.Fprintln(out, note)
+			}
 		} else {
 			writeNeighborSectionNotQueried(out, "Callers", "out")
 		}
@@ -827,7 +835,7 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 	// The coverage marker is scoped: a parse failure in a language this answer
 	// cannot contain a relation from is not a reason to distrust the answer.
 	scope := completenessScopeOrAll(response.CompletenessScope,
-		response.Warnings, response.PartialFailures, response.Stats)
+		snapshotWarnings(response.Warnings), response.PartialFailures, response.Stats)
 	coverageIssue := len(scope.InScopeWarnings) > 0 || scope.LanguageFailed > 0
 	marker := "!output-truncated"
 	if coverageIssue {
@@ -920,6 +928,15 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 
 	if len(response.Matches) > 0 && !response.DisambiguationRequired {
 		match := response.Matches[0]
+		// Ahead of the edges: under a byte cap the disclosure must not be the first
+		// line dropped, because a dropped disclosure is the silence it exists to end.
+		if note := valueReferenceNote(response.Warnings, match.Symbol.Name); note != "" && neighborDirectionQueried(response.Direction, "in") {
+			appendVariant(
+				note+"\n",
+				"!value-refs-unmodelled: "+valueReferenceGrep(match.Symbol.Name)+"\n",
+				"!value-refs-unmodelled\n",
+			)
+		}
 		for _, edge := range match.Incoming {
 			appendVariant(compactNeighborEdge("<", edge))
 		}
@@ -954,9 +971,10 @@ func compactNeighborEdge(direction string, edge neighborEdge) string {
 }
 
 func writeAgentNeighborCompleteness(out io.Writer, response neighborResponse) {
+	warnings := snapshotWarnings(response.Warnings)
 	writeScopedCompletenessBlock(out,
-		completenessScopeOrAll(response.CompletenessScope, response.Warnings, response.PartialFailures, response.Stats),
-		response.Warnings, response.PartialFailures, response.Stats)
+		completenessScopeOrAll(response.CompletenessScope, warnings, response.PartialFailures, response.Stats),
+		warnings, response.PartialFailures, response.Stats)
 }
 
 // neighborDirectionQueried reports whether a --direction value asked for the
