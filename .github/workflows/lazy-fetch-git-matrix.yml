@@ -1,0 +1,70 @@
+name: lazy-fetch git matrix
+
+# The partial-clone guard (internal/gitutil/lazy_fetch_guard.go) admits a
+# promisor repository only on Git releases proven to honour GIT_NO_LAZY_FETCH
+# for every lazy fetch. CI's own Git is always newer than that boundary, so this
+# builds boundary releases from source and checks the version table against what
+# they really do: 2.45.0 must be refused (its rename prefetch ignores the
+# variable) and 2.44.1, a backport, must be admitted and start no fetch.
+on:
+  pull_request:
+    paths:
+      - "internal/gitutil/**"
+      - "internal/sem/provider.go"
+      - "internal/cli/partial_clone_test.go"
+      - ".github/workflows/lazy-fetch-git-matrix.yml"
+  push:
+    branches: [main]
+    paths:
+      - "internal/gitutil/**"
+      - "internal/sem/provider.go"
+      - "internal/cli/partial_clone_test.go"
+      - ".github/workflows/lazy-fetch-git-matrix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  boundary-gits:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 30
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      BOUNDARY_GITS: "2.45.0 2.44.1"
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with: { go-version: "1.27.x" }
+      - name: Build boundary Git releases from source
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -eu
+          sudo apt-get update && sudo apt-get install -y zlib1g-dev
+          base=https://mirrors.edge.kernel.org/pub/software/scm/git
+          curl -fsSL "$base/sha256sums.asc" -o sha256sums.asc
+          for v in $BOUNDARY_GITS; do
+            curl -fsSL "$base/git-$v.tar.gz" -o "git-$v.tar.gz"
+            grep " git-$v.tar.gz\$" sha256sums.asc | sha256sum -c -
+            tar xzf "git-$v.tar.gz"
+            make -C "git-$v" -j"$(nproc)" prefix="$RUNNER_TEMP/git-install-$v" \
+              NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 NO_CURL=1 NO_EXPAT=1 \
+              install > "build-$v.log" 2>&1 || { tail -50 "build-$v.log"; exit 1; }
+            "$RUNNER_TEMP/git-install-$v/bin/git" version
+          done
+      - name: Check the version table against the builds
+        run: |
+          set -euo pipefail
+          gits=""
+          for v in $BOUNDARY_GITS; do gits="$gits${gits:+:}$RUNNER_TEMP/git-install-$v/bin/git"; done
+          export ENTIRE_GRAPH_TEST_GITS="$gits"
+          go test -count=1 -v -run 'TestLazyFetchGuardMatchesObservedGitBehaviour' ./internal/gitutil | tee gitutil.log
+          go test -count=1 -v -run 'TestNoProviderCommandStartsALazyFetchWhicheverGitIsOnPath' ./internal/cli | tee cli.log
+          # Fail if the builds were not actually exercised.
+          grep -q 'Git 2.45.0 (guard effective false)' gitutil.log
+          grep -q 'Git 2.44.1 (guard effective true)' gitutil.log
+          grep -q -- '--- PASS: TestNoProviderCommandStartsALazyFetchWhicheverGitIsOnPath/git-install-2.45.0-git' cli.log
+          grep -q -- '--- PASS: TestNoProviderCommandStartsALazyFetchWhicheverGitIsOnPath/git-install-2.44.1-git' cli.log

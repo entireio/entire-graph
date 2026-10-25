@@ -35,7 +35,10 @@ func TestSearchCacheRefusesHistoryRefreshAfterMetadataChanges(t *testing.T) {
 	if _, hit := loadCachedSearchSnapshot(entry, repo, commit, snapshot.Header.RepoKey, "history-test", tree, options, t.Context()); !hit {
 		t.Fatal("control: cached snapshot must be available")
 	}
-	git(t, repo, "config", "remote.origin.promisor", "true")
+	// An include is refused on every Git version. (A promisor remote no longer
+	// works as the trigger: it is admitted wherever the runtime Git is proven to
+	// honour GIT_NO_LAZY_FETCH -- 2.45.1+, or a 2.39.4+ ... 2.44.1+ backport.)
+	git(t, repo, "config", "include.path", "../outside")
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)

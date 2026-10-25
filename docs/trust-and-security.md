@@ -37,8 +37,20 @@ other is installation.
   `config.worktree`. Repository-local configuration remains available for
   structural settings Git needs; active `core.worktree` paths are checked by
   the same rooted preflight. Active partial-clone/promisor configuration is
-  refused because supported Git versions before 2.45 can inspect a local or UNC
-  promisor URL before enforcing the transport deny-list. At command scope the
+  admitted only when the Git that runs in the repository is proven to honour
+  `GIT_NO_LAZY_FETCH`: Git 2.45.1 or newer, or, on an older release line,
+  2.39.4+, 2.40.2+, 2.41.1+, 2.42.2+, 2.43.4+ or 2.44.1+ (git/git@7b70e9efb18c). Every
+  provider Git subprocess sets `GIT_NO_LAZY_FETCH=1`, and those releases check
+  it before starting any lazy fetch, so a missing promised object is a local
+  read failure (reported as an unreadable file, or as a command error) and the
+  promisor remote is never contacted; `GIT_ALLOW_PROTOCOL=` stays as a second,
+  independent transport deny-list. Any other Git -- including 2.45.0, whose
+  rename-detection prefetch ignores `GIT_NO_LAZY_FETCH` -- can inspect a local
+  or UNC promisor URL before enforcing the transport deny-list, so partial
+  clones are refused before Git starts. An unknown version is refused too. The
+  version is probed by running `git version` in the repository directory, so a
+  version manager that picks Git per directory is asked about the Git the
+  provider will run there. At command scope the
   provider sets
   `core.fsmonitor=false`, `log.showSignature=false`, `log.mailmap=false`,
   `submodule.recurse=false`, and empty values for `core.excludesFile` and

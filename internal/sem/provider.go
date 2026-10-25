@@ -15724,6 +15724,12 @@ type sameVolumePathResolver struct {
 	anchor       pathTraversalAnchor
 	root         *os.Root
 	mounts       pathMountGuard
+	// commandDir is the directory string the provider's Git commands run in:
+	// the absolute, unresolved --repo path. It equals baseAbs except when
+	// repository discovery swaps in a resolver rooted at the physical path; the
+	// lazy-fetch version probe must still run at the logical path (and PWD) the
+	// commands use, because a version-manager shim selects Git by that path.
+	commandDir string
 }
 
 func newSameVolumePathResolver(base string) (*sameVolumePathResolver, error) {
@@ -15744,7 +15750,7 @@ func newSameVolumePathResolver(base string) (*sameVolumePathResolver, error) {
 		_ = root.Close()
 		return nil, err
 	}
-	return &sameVolumePathResolver{baseAbs: baseAbs, baseResolved: resolvedBase, anchor: anchor, root: root, mounts: mounts}, nil
+	return &sameVolumePathResolver{baseAbs: baseAbs, baseResolved: resolvedBase, anchor: anchor, root: root, mounts: mounts, commandDir: baseAbs}, nil
 }
 
 func (r *sameVolumePathResolver) Close() error {
@@ -17378,6 +17384,7 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 		return false
 	}
 	defer resolver.Close()
+	commandDir := resolver.commandDir
 	resolvedDiscoveryRoot := false
 	resolveDiscoveryRoot := func() (*sameVolumePathResolver, string, error) {
 		repoHandle, resolvedRepo, resolveErr := resolver.open(repoAbs)
@@ -17392,6 +17399,8 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 		if physicalErr != nil {
 			return nil, "", physicalErr
 		}
+		// Metadata checks move to the physical path; Git commands do not.
+		physicalResolver.commandDir = commandDir
 		return physicalResolver, resolvedRepo, nil
 	}
 	for dir := repoAbs; ; {
@@ -17570,8 +17579,9 @@ func gitMetadataDirectoryPathsSafe(repoRoot, gitDir string) bool {
 // have the same ordering problem: Git registers a true remote.*.promisor or any
 // remote.*.partialCloneFilter monotonically, while extensions.partialClone is
 // read directly from the repository-format file. A later -c value cannot undo
-// either one. The metadata guard therefore has to reject those namespaces before
-// Git starts.
+// either one. The metadata guard therefore has to decide on those namespaces
+// before Git starts: includes are always refused, and a partial clone is
+// admitted only when the runtime Git honours GIT_NO_LAZY_FETCH.
 type gitLocalConfigPreflight struct {
 	hasInclude               bool
 	hasPartialCloneExtension bool
@@ -17579,6 +17589,13 @@ type gitLocalConfigPreflight struct {
 	worktreeConfig           bool
 	coreWorktree             string
 	hasCoreWorktree          bool
+}
+
+// declaresPartialClone reports whether this config makes Git treat the
+// repository as a partial clone, i.e. whether a missing object would be
+// lazily fetched from a promisor remote unless GIT_NO_LAZY_FETCH stops it.
+func (config gitLocalConfigPreflight) declaresPartialClone() bool {
+	return config.hasPartialCloneExtension || config.hasPromisorRemote
 }
 
 // gitLocalConfigPreflightFromOpened reads repository config from the handle the
@@ -18084,19 +18101,19 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 			return false
 		}
 	}
-	if !commonConfigValid || commonConfig.hasInclude ||
-		commonConfig.hasPartialCloneExtension || commonConfig.hasPromisorRemote {
+	if !commonConfigValid || commonConfig.hasInclude {
 		return false
 	}
+	partialClone := commonConfig.declaresPartialClone()
 	if commonConfig.hasCoreWorktree &&
 		!gitCoreWorktreePathSafeWithResolver(resolver, gitDir, commonConfig.coreWorktree) {
 		return false
 	}
 	if commonConfig.worktreeConfig {
-		if !worktreeConfigValid || worktreeConfig.hasInclude ||
-			worktreeConfig.hasPartialCloneExtension || worktreeConfig.hasPromisorRemote {
+		if !worktreeConfigValid || worktreeConfig.hasInclude {
 			return false
 		}
+		partialClone = partialClone || worktreeConfig.declaresPartialClone()
 		if worktreeConfig.hasCoreWorktree &&
 			!gitCoreWorktreePathSafeWithResolver(resolver, gitDir, worktreeConfig.coreWorktree) {
 			return false
@@ -18119,8 +18136,26 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 	// mount, volume, redirect, and special-file policy as the fixed entries.
 	trees := []string{gitDir, common}
 	trees = append(trees, objectStores...)
-	return gitMetadataTreesSafeWithResolver(resolver, trees)
+	if !gitMetadataTreesSafeWithResolver(resolver, trees) {
+		return false
+	}
+	// A partial clone is admitted only when the Git that will run here honours
+	// GIT_NO_LAZY_FETCH for every lazy fetch (see gitutil.LazyFetchGuard: Git
+	// 2.45.1+, or the 2.39.4-2.44.1 backports). With it, a missing promised
+	// object is a local read failure and no fetch process is ever started. Any
+	// other Git -- 2.45.0 included -- can still spawn the fetch, which may stat a
+	// local or UNC promisor URL before GIT_ALLOW_PROTOCOL denies the transport,
+	// so it keeps the refusal. The probe runs in the repository directory, where
+	// the provider's own Git commands run, and is asked last so only a
+	// repository that passed every filesystem check pays for it.
+	return !partialClone || gitLazyFetchGuard(resolver.commandDir).Effective
 }
+
+// gitLazyFetchGuard reports whether the Git that runs in dir honours
+// GIT_NO_LAZY_FETCH. It is a variable only so tests can stand in another Git;
+// production always uses gitutil.LazyFetchGuard, whose per-process cache gives
+// the safety decision and its diagnosis the same answer.
+var gitLazyFetchGuard = gitutil.LazyFetchGuard
 
 const (
 	// A repository with more structural metadata than this is refused before
@@ -18924,13 +18959,22 @@ func describeGitMetadataRefusal(repo string) string {
 	if !configOK {
 		return "its Git config could not be parsed under Git's own config grammar, so it is refused rather than guessed at"
 	}
+	// A partial clone is a cause only when the predicate would refuse it, i.e.
+	// when the Git that runs here is not proven to honour GIT_NO_LAZY_FETCH.
+	// Otherwise the predicate admits it, and blaming it would hide the real
+	// cause. Ask once and use that answer for both the decision and the text;
+	// gitutil.LazyFetchGuard caches every outcome, so it is also the answer the
+	// predicate used.
+	guard := gitutil.LazyFetchGuardStatus{}
+	if config.declaresPartialClone() {
+		guard = gitLazyFetchGuard(repoAbs)
+	}
+	partialCloneRefused := config.declaresPartialClone() && !guard.Effective
 	switch {
-	case config.hasPromisorRemote:
-		return "its Git config declares a promisor remote (a partial clone), so Git commands here can fetch objects over the network; " +
-			"indexing falls back to a filesystem walk to stay offline"
-	case config.hasPartialCloneExtension:
-		return "its Git config enables the partial-clone extension, so Git commands here can fetch objects over the network; " +
-			"indexing falls back to a filesystem walk to stay offline"
+	case partialCloneRefused && config.hasPromisorRemote:
+		return partialCloneRefusalReason("declares a promisor remote (a partial clone)", guard)
+	case partialCloneRefused && config.hasPartialCloneExtension:
+		return partialCloneRefusalReason("enables the partial-clone extension", guard)
 	case config.hasInclude:
 		return "its Git config uses include or includeIf, so the effective configuration is not knowable from this file alone"
 	case config.hasCoreWorktree && !gitCoreWorktreePathSafeWithResolver(resolver, gitDir, config.coreWorktree):
@@ -18940,6 +18984,25 @@ func describeGitMetadataRefusal(repo string) string {
 		return "its Git config sets core.worktree to a path that leaves this repository's filesystem"
 	}
 	return ""
+}
+
+// partialCloneRefusalReason explains a partial-clone refusal. It states only
+// what holds for every caller -- Git subprocesses are refused -- and leaves any
+// fallback to the caller, because `index --head` has none while query paths
+// fall back to a filesystem walk and report that in their own warning.
+//
+// It claims only what is known: that lazy fetching cannot be proven disabled
+// for this Git. It does not say the Git is old (2.45.0 is newer than the 2.44.1
+// backport) or, for an unknown version, anything about the version at all.
+func partialCloneRefusalReason(declaration string, guard gitutil.LazyFetchGuardStatus) string {
+	gitVersion := "the Git on PATH, whose version could not be determined"
+	if guard.Version != "" {
+		gitVersion = "the Git on PATH (" + guard.Version + ")"
+	}
+	return "its Git config " + declaration + ", and lazy fetching cannot be proven disabled for " + gitVersion +
+		", so a Git command here could contact the promisor remote to fetch a missing object; " +
+		"Git subprocesses are refused for this repository. GIT_NO_LAZY_FETCH stops every lazy fetch in " +
+		gitutil.LazyFetchGuardRequirement
 }
 
 // diagnosableGitDirectory returns `<repo>/.git` when it is a directory this

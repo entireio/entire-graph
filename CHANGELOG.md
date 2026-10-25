@@ -12,6 +12,29 @@ auto-generated notes on
 
 ## [Unreleased]
 
+### Fixed
+
+- Partial clones (`--filter=blob:none`, or any repository with a promisor
+  remote) are no longer refused outright when the Git that runs in them is
+  2.45.1 or newer (or, on an older release line, 2.39.4+, 2.40.2+, 2.41.1+,
+  2.42.2+, 2.43.4+ or 2.44.1+).
+  `index --head` used to fail on them and every query rebuilt an uncached
+  working-tree snapshot; now `index --head`, `query --head`, `impact`,
+  `neighbors`, `def`, `context`, `store`, `health` and `snapshot` read the
+  committed tree and reuse its cache. Every Git subprocess sets
+  `GIT_NO_LAZY_FETCH=1`, which those releases honour for every lazy fetch, so
+  the promisor remote is never contacted. What still needs a blob the clone
+  lacks fails or degrades instead of fetching it: a missing HEAD file is
+  reported as an unreadable file (`E_FILE_READ`); `diff` and `commit` fail
+  when rename detection needs a missing blob (for example
+  `commit HEAD` on a commit that renames and edits a file); and co-change
+  (`FILE_CHANGES_WITH`) relations are omitted when history needs one. On any
+  other Git, including 2.45.0, the refusal stays, and its message now says
+  lazy fetching cannot be proven disabled for that Git instead of promising a
+  fallback that `index --head` does not have.
+- Committed-tree commands no longer fail with "malformed HEAD commit/tree
+  metadata" in a repository that sets `i18n.logOutputEncoding` to UTF-16.
+
 ## [0.5.0] - 2026-10-23
 
 ### Removed

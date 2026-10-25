@@ -2391,8 +2391,8 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		t.Fatalf("effective GIT_NO_LAZY_FETCH=%q, want 1: a partial clone's promisor remote must never be contacted by this no-egress provider", noLazyFetch)
 	}
 	if allowProtocol != "" {
-		t.Fatalf("effective GIT_ALLOW_PROTOCOL=%q, want empty: GIT_NO_LAZY_FETCH is unrecognized before Git 2.45,"+
-			" so every transport must independently be denied regardless of the inherited environment", allowProtocol)
+		t.Fatalf("effective GIT_ALLOW_PROTOCOL=%q, want empty: some Git releases (2.45.0 and those without the 2.39.4+ ... 2.45.1"+
+			" backports) do not honour GIT_NO_LAZY_FETCH on every lazy fetch, so every transport must independently be denied regardless of the inherited environment", allowProtocol)
 	}
 	if optionalLocks != "0" {
 		t.Fatalf("effective GIT_OPTIONAL_LOCKS=%q, want 0 for read-only provider subprocesses", optionalLocks)
