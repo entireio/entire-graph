@@ -1,0 +1,56 @@
+{
+  "cli_version": "0.11.5-nightly.202610100625.1f44a6f96.0.20261024214757-e7c0393725dd",
+  "checkpoint_id": "78102537f529",
+  "strategy": "manual-commit",
+  "branch": "fix/index-partial-clones",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "CHANGELOG.md",
+    "docs/semantic-provider-requirements.md",
+    "docs/trust-and-security.md",
+    "internal/cli/partial_clone_test.go",
+    "internal/gitutil/git_test.go",
+    "internal/gitutil/lazy_fetch_guard.go",
+    "internal/sem/partial_clone_guard_test.go",
+    "internal/sem/provider_git_config_preflight_windows_test.go",
+    "internal/sem/search_cache_history_review_test.go",
+    "internal/sem/search_cache_scope_context_review_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/78/102537f529/0/metadata.json",
+      "transcript": "/78/102537f529/0/full.jsonl",
+      "compact_transcript": "/78/102537f529/0/transcript.jsonl",
+      "content_hash": "/78/102537f529/0/content_hash.txt",
+      "prompt": "/78/102537f529/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 14,
+    "cache_creation_tokens": 2215,
+    "cache_read_tokens": 2073098,
+    "output_tokens": 568,
+    "api_call_count": 4,
+    "subagent_tokens": {
+      "input_tokens": 38,
+      "cache_creation_tokens": 18426,
+      "cache_read_tokens": 7433477,
+      "output_tokens": 12349,
+      "api_call_count": 16
+    }
+  },
+  "redaction": {
+    "replacements": 312,
+    "layers": {
+      "betterleaks": 5,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 67,
+      "credentialed_uri": 3,
+      "entropy": 242,
+      "key_context": 0,
+      "provider_token": 9,
+      "shell_stdin": 0
+    }
+  }
+}
