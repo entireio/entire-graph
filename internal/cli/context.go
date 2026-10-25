@@ -28,6 +28,7 @@ type contextFlags struct {
 	RelationsLimit int
 	Profile        string
 	CacheDir       string
+	AllowAncestor  int
 }
 
 func parseContextFlags(args []string) (contextFlags, error) {
@@ -43,8 +44,12 @@ func parseContextFlags(args []string) (contextFlags, error) {
 	set.IntVar(&flags.RelationsLimit, "relations-limit", 200, "maximum relations returned (highest confidence kept; relations_truncated signals a cut)")
 	set.StringVar(&flags.Profile, "profile", "full", "indexing profile of the store to read")
 	set.StringVar(&flags.CacheDir, "cache-dir", "", "cache directory holding the store (default: plugin data dir, else user cache dir)")
+	set.IntVar(&flags.AllowAncestor, "allow-ancestor", 0, "on an exact miss, serve the nearest first-parent ancestor's store up to N commits back, marked stale")
 	if err := set.Parse(args); err != nil {
 		return contextFlags{}, err
+	}
+	if flags.AllowAncestor < 0 || flags.AllowAncestor > sem.MaxStoreContextAncestorDistance {
+		return contextFlags{}, fmt.Errorf("--allow-ancestor must be between 0 and %d, got %d", sem.MaxStoreContextAncestorDistance, flags.AllowAncestor)
 	}
 	if flags.Task == "" {
 		return contextFlags{}, errors.New("context requires --task")
@@ -72,6 +77,9 @@ type contextResponse struct {
 	// empty. Consumers degrade exactly as they would with the plugin absent.
 	StoreUnavailable bool   `json:"store_unavailable,omitempty"`
 	Detail           string `json:"detail,omitempty"`
+	// Stale is present only when --allow-ancestor served an ancestor commit's
+	// store; its absence means the answer is exact for the committed tree.
+	Stale *sem.StoreContextStale `json:"stale,omitempty"`
 }
 
 func runContext(ctx context.Context, opts Options, args []string) error {
@@ -89,12 +97,20 @@ func runContext(ctx context.Context, opts Options, args []string) error {
 	}
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	started := time.Now()
-	result, err := sem.LoadSearchStoreContext(ctx, repo, opts.Version, cacheDir, flags.Task, sem.ProviderSnapshotOptions{
+	storeOptions := sem.ProviderSnapshotOptions{
 		NoNetwork:    true,
 		IgnoreFiles:  flags.IgnoreFiles,
 		IncludeFiles: flags.IncludeFiles,
 		Profile:      profile,
-	}, flags.Limit, flags.TestsLimit, flags.RelationsLimit)
+	}
+	var result sem.SearchStoreContext
+	if flags.AllowAncestor > 0 {
+		result, err = sem.LoadSearchStoreContextAllowingAncestor(ctx, repo, opts.Version, cacheDir, flags.Task, storeOptions,
+			flags.Limit, flags.TestsLimit, flags.RelationsLimit, flags.AllowAncestor)
+	} else {
+		result, err = sem.LoadSearchStoreContext(ctx, repo, opts.Version, cacheDir, flags.Task, storeOptions,
+			flags.Limit, flags.TestsLimit, flags.RelationsLimit)
+	}
 	response := contextResponse{
 		SchemaVersion:      sem.SchemaVersion,
 		Commit:             result.Commit,
@@ -104,6 +120,7 @@ func runContext(ctx context.Context, opts Options, args []string) error {
 		RelationsTruncated: result.RelationsTruncated,
 		Tests:              result.Tests,
 		LatencyMS:          time.Since(started).Milliseconds(),
+		Stale:              result.Stale,
 	}
 	if err != nil {
 		if !errors.Is(err, sem.ErrSearchStoreMissing) {

@@ -766,6 +766,9 @@ func Capabilities() CapabilityReport {
 			"git_cochange_edges":         true,
 			"durable_preindex":           true,
 			"focused_neighbors":          true,
+			// `graph context --allow-ancestor`: a consumer passes the flag only
+			// when this is true, so an older provider (key absent) is a plain no.
+			"context_allow_ancestor": true,
 		},
 		FeaturesRequiringNetworkAccess: map[string]bool{
 			"grammar_download":  false,

@@ -176,9 +176,10 @@ var commandDocs = []commandDoc{
 		name:    "context",
 		group:   groupSetup,
 		summary: "Task-relevant symbols, relations, and test suggestions from the committed-tree store (JSON)",
-		usage:   []string{`entire graph context --repo . --task "<task text>" [--limit N] [--tests-limit N] [--relations-limit N] [--profile full] [--cache-dir path] [--ignore-file path] [--include-file path]`},
+		usage:   []string{`entire graph context --repo . --task "<task text>" [--limit N] [--tests-limit N] [--relations-limit N] [--allow-ancestor N] [--profile full] [--cache-dir path] [--ignore-file path] [--include-file path]`},
 		long: "The delegation surface for downstream consumers such as Entire Brain's brief: task text in, the store's ranked task-relevant symbols plus their relation fan-out and test suggestions out, as one JSON document. It reads ONLY the committed tree's sqlite store sidecar — it never parses and never builds — so latency is bounded by indexed reads (measured ~0.5s on a 52k-symbol repository).\n\n" +
-			"The store sidecar exists when the cache variant was built with ENTIRE_GRAPH_SEARCH_STORE=1 (`entire graph index --head`). Without one (or with a stale one), the response carries store_unavailable=true with empty lists, so a consumer degrades exactly as it would with the plugin absent instead of paying a parse.",
+			"The store sidecar exists when the cache variant was built with ENTIRE_GRAPH_SEARCH_STORE=1 (`entire graph index --head`). Without one (or with a stale one), the response carries store_unavailable=true with empty lists, so a consumer degrades exactly as it would with the plugin absent instead of paying a parse.\n\n" +
+			"--allow-ancestor N (opt-in, at most 5) answers an exact miss from the newest of the N nearest first-parent ancestors that has a store under the same provider version and ignore policy, provided the paths changed since then are known completely and number at most 5% of its indexed files. Every symbol, test and relation in a changed file is withheld, and the response carries a typed stale block (ancestor_commit, ancestor_tree, commits_behind, changed_files, excluded_records). Without the block the answer is exact. A refused ancestor returns the exact miss unchanged. `graph store` never serves an ancestor.",
 		flags: []flagDoc{
 			{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
 			{name: "--ignore-file", arg: "path", desc: "Additional ignore file; repeatable, must match the indexed policy"},
@@ -187,6 +188,7 @@ var commandDocs = []commandDoc{
 			{name: "--limit", arg: "N", def: "12", desc: "Maximum symbols returned"},
 			{name: "--tests-limit", arg: "N", def: "6", desc: "Maximum test suggestions returned"},
 			{name: "--relations-limit", arg: "N", def: "200", desc: "Maximum relations returned; highest confidence kept, relations_truncated signals a cut"},
+			{name: "--allow-ancestor", arg: "N", def: "0", desc: "On an exact miss, serve a first-parent ancestor's store up to N (max 5) commits back, changed files withheld, marked by a stale block"},
 			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Indexing profile of the store to read (match the index that built it)"},
 			{name: "--cache-dir", arg: "path", desc: "Cache directory holding the store (default: plugin data dir, else user cache dir)"},
 		},

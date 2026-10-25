@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // The store context query is the surface a downstream consumer (Entire Brain's
@@ -53,6 +55,10 @@ type SearchStoreContext struct {
 	// absent relation is not evidence of no relation.
 	RelationsTruncated bool                 `json:"relations_truncated,omitempty"`
 	Tests              []StoreContextSymbol `json:"tests"`
+	// Stale is set only when the answer came from an ancestor commit's store
+	// (LoadSearchStoreContextAllowingAncestor). Nil means the store was keyed
+	// by the requested tree exactly; see StoreContextStale.
+	Stale *StoreContextStale `json:"stale,omitempty"`
 }
 
 // defaultStoreContextRelationsLimit bounds the relation fan-out of one context
@@ -109,6 +115,17 @@ func storeContextTokens(task string) []string {
 // fan-out is indexed. wantEntryDigest carries the same coherence contract as
 // loadSearchStore.
 func QuerySearchStoreContext(ctx context.Context, path, wantEntryDigest, task string, limit, testsLimit, relationsLimit int) (SearchStoreContext, error) {
+	result, _, err := querySearchStoreContext(ctx, path, wantEntryDigest, "", task, limit, testsLimit, relationsLimit, nil)
+	return result, err
+}
+
+// querySearchStoreContext is QuerySearchStoreContext plus the two inputs only
+// the ancestor path supplies. wantTree, when set, must equal the tree the
+// store records. excludeFiles, when non-nil, withholds every symbol, test and
+// relation that belongs to a file in the set, and the int counts what was
+// withheld (see StoreContextStale.ExcludedRecords). A nil excludeFiles runs
+// the exact query unchanged: the same scan and the same SQL.
+func querySearchStoreContext(ctx context.Context, path, wantEntryDigest, wantTree, task string, limit, testsLimit, relationsLimit int, excludeFiles map[string]struct{}) (SearchStoreContext, int, error) {
 	if limit <= 0 {
 		limit = 12
 	}
@@ -120,36 +137,39 @@ func QuerySearchStoreContext(ctx context.Context, path, wantEntryDigest, task st
 	}
 	tokens := storeContextTokens(task)
 	if len(tokens) == 0 {
-		return SearchStoreContext{}, fmt.Errorf("task %q yields no searchable tokens", task)
+		return SearchStoreContext{}, 0, fmt.Errorf("task %q yields no searchable tokens", task)
 	}
 	db, err := sql.Open("sqlite", "file:"+sqliteURLPath(path)+"?immutable=1&mode=ro")
 	if err != nil {
-		return SearchStoreContext{}, err
+		return SearchStoreContext{}, 0, err
 	}
 	defer db.Close()
 
 	var result SearchStoreContext
 	var storeVersion string
 	if err := readSearchStoreMetaKey(ctx, db, "store_version", &storeVersion); err != nil {
-		return SearchStoreContext{}, err
+		return SearchStoreContext{}, 0, err
 	}
 	if storeVersion != searchStoreVersion {
 		// A store at another version is a stale artifact, not a caller error:
 		// consumers degrade exactly as they would with no store at all.
-		return SearchStoreContext{}, fmt.Errorf("%w (store version %q, want %q)", ErrSearchStoreMissing, storeVersion, searchStoreVersion)
+		return SearchStoreContext{}, 0, fmt.Errorf("%w (store version %q, want %q)", ErrSearchStoreMissing, storeVersion, searchStoreVersion)
 	}
 	if wantEntryDigest != "" {
 		var entryDigest string
 		if err := readSearchStoreMetaKey(ctx, db, "entry_digest", &entryDigest); err != nil {
-			return SearchStoreContext{}, err
+			return SearchStoreContext{}, 0, err
 		}
 		if entryDigest != wantEntryDigest {
-			return SearchStoreContext{}, fmt.Errorf("%w (store does not match the current snapshot entry)", ErrSearchStoreMissing)
+			return SearchStoreContext{}, 0, fmt.Errorf("%w (store does not match the current snapshot entry)", ErrSearchStoreMissing)
 		}
 	}
 	var meta searchStoreMeta
 	if err := readSearchStoreMetaKey(ctx, db, "envelope", &meta); err != nil {
-		return SearchStoreContext{}, err
+		return SearchStoreContext{}, 0, err
+	}
+	if wantTree != "" && meta.Tree != wantTree {
+		return SearchStoreContext{}, 0, searchStoreTreeMismatch(wantTree, meta.Tree)
 	}
 	result.Commit, result.Tree = meta.Commit, meta.Tree
 
@@ -158,10 +178,19 @@ func QuerySearchStoreContext(ctx context.Context, path, wantEntryDigest, task st
 		isTest bool
 	}
 	var matched []scored
+	// excludedIDs collects every relation endpoint that belongs to an excluded
+	// file, matched or not: a returned symbol's edge into a changed file is as
+	// stale as the changed file's own symbols.
+	var excludedIDs []string
+	excludedRecords := 0
 	if err := scanSearchStoreRows(ctx, db, `SELECT id, name, qualified_name, kind, file_path, record FROM symbols ORDER BY rowid`, func(scan rowScanner) error {
 		var id, name, qualified, kind, filePath, record string
 		if err := scan(&id, &name, &qualified, &kind, &filePath, &record); err != nil {
 			return err
+		}
+		_, excluded := excludeFiles[filePath]
+		if excluded {
+			excludedIDs = append(excludedIDs, id)
 		}
 		lowerName := strings.ToLower(name)
 		lowerQualified := strings.ToLower(qualified)
@@ -188,6 +217,10 @@ func QuerySearchStoreContext(ctx context.Context, path, wantEntryDigest, task st
 		if score == 0 {
 			return nil
 		}
+		if excluded {
+			excludedRecords++
+			return nil
+		}
 		var full SymbolRecord
 		if err := json.Unmarshal([]byte(record), &full); err != nil {
 			return err
@@ -209,7 +242,19 @@ func QuerySearchStoreContext(ctx context.Context, path, wantEntryDigest, task st
 		})
 		return nil
 	}); err != nil {
-		return SearchStoreContext{}, err
+		return SearchStoreContext{}, 0, err
+	}
+	if excludeFiles != nil {
+		fileIDs, err := searchStoreFileIDsForPaths(ctx, db, excludeFiles)
+		if err != nil {
+			return SearchStoreContext{}, 0, err
+		}
+		excludedIDs = append(excludedIDs, fileIDs...)
+		// A non-nil, empty list still selects the filtering SQL, so an
+		// ancestor answer never silently takes the exact query's path.
+		if excludedIDs == nil {
+			excludedIDs = []string{}
+		}
 	}
 	sort.SliceStable(matched, func(i, j int) bool {
 		if matched[i].symbol.Score != matched[j].symbol.Score {
@@ -236,10 +281,11 @@ func QuerySearchStoreContext(ctx context.Context, path, wantEntryDigest, task st
 	for _, symbol := range result.Symbols {
 		ids = append(ids, symbol.ID)
 	}
-	relations, relationsTruncated, err := searchStoreRelationsForIDs(ctx, db, ids, relationsLimit)
+	relations, relationsTruncated, excludedRelations, err := searchStoreRelationsForIDs(ctx, db, ids, relationsLimit, excludedIDs)
 	if err != nil {
-		return SearchStoreContext{}, err
+		return SearchStoreContext{}, 0, err
 	}
+	excludedRecords += excludedRelations
 	result.Relations = relations
 	result.RelationsTruncated = relationsTruncated
 
@@ -260,12 +306,12 @@ func QuerySearchStoreContext(ctx context.Context, path, wantEntryDigest, task st
 			}
 			extra, err := searchStoreSymbolsByIDs(ctx, db, testIDs, already, testsLimit-len(result.Tests))
 			if err != nil {
-				return SearchStoreContext{}, err
+				return SearchStoreContext{}, 0, err
 			}
 			result.Tests = append(result.Tests, extra...)
 		}
 	}
-	return result, nil
+	return result, excludedRecords, nil
 }
 
 // ErrSearchStoreMissing reports that the committed tree has no store sidecar.
@@ -314,9 +360,30 @@ func storeContextTestPath(lowerPath string) bool {
 // and a limit+1 bound, which keeps memory bounded per chunk and is lossless:
 // a relation in the global top-limit ranks within the top limit+1 of every
 // chunk that matches it.
-func searchStoreRelationsForIDs(ctx context.Context, db *sql.DB, ids []string, limit int) ([]StoreContextRelation, bool, error) {
+//
+// excluded, when non-nil, withholds every relation with an endpoint in it,
+// inside the SQL so the cap and the truncation flag describe what remains,
+// and the int counts the withheld relations (each once). A nil excluded runs
+// the original query text unchanged.
+func searchStoreRelationsForIDs(ctx context.Context, db *sql.DB, ids []string, limit int, excluded []string) ([]StoreContextRelation, bool, int, error) {
 	if len(ids) == 0 || limit <= 0 {
-		return nil, false, nil
+		return nil, false, 0, nil
+	}
+	var excludedJSON string
+	if excluded != nil {
+		for _, id := range excluded {
+			// json_each must hand back the exact bytes the relation rows hold;
+			// json.Marshal would replace invalid UTF-8 and the filter would
+			// silently stop matching that endpoint.
+			if !utf8.ValidString(id) {
+				return nil, false, 0, fmt.Errorf("%w: excluded endpoint %q is not valid UTF-8", errStoreContextExclusionUnrepresentable, id)
+			}
+		}
+		encoded, err := json.Marshal(excluded)
+		if err != nil {
+			return nil, false, 0, err
+		}
+		excludedJSON = string(encoded)
 	}
 	type rankedRelation struct {
 		relation StoreContextRelation
@@ -324,30 +391,43 @@ func searchStoreRelationsForIDs(ctx context.Context, db *sql.DB, ids []string, l
 	}
 	const chunkSize = 400
 	seen := map[int64]struct{}{}
+	withheld := map[int64]struct{}{}
 	var out []rankedRelation
 	for start := 0; start < len(ids); start += chunkSize {
 		chunk := ids[start:min(start+chunkSize, len(ids))]
 		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
-		binds := make([]any, 0, len(chunk)*2+1)
+		binds := make([]any, 0, len(chunk)*2+3)
 		for _, id := range chunk {
 			binds = append(binds, id)
 		}
 		for _, id := range chunk {
 			binds = append(binds, id)
+		}
+		touching := `from_id IN (` + placeholders + `) OR to_id IN (` + placeholders + `)`
+		query := `SELECT from_id, to_id, type, confidence, rowid FROM relations WHERE ` + touching +
+			` ORDER BY confidence DESC, rowid LIMIT ?`
+		if excluded != nil {
+			query = `SELECT from_id, to_id, type, confidence, rowid FROM relations WHERE (` + touching +
+				`) AND from_id NOT IN (SELECT value FROM json_each(?)) AND to_id NOT IN (SELECT value FROM json_each(?))` +
+				` ORDER BY confidence DESC, rowid LIMIT ?`
+			if err := collectSearchStoreRowids(ctx, db, `SELECT rowid FROM relations WHERE (`+touching+
+				`) AND (from_id IN (SELECT value FROM json_each(?)) OR to_id IN (SELECT value FROM json_each(?)))`,
+				append(append([]any(nil), binds...), excludedJSON, excludedJSON), withheld); err != nil {
+				return nil, false, 0, err
+			}
+			binds = append(binds, excludedJSON, excludedJSON)
 		}
 		binds = append(binds, limit+1)
-		query := `SELECT from_id, to_id, type, confidence, rowid FROM relations WHERE from_id IN (` +
-			placeholders + `) OR to_id IN (` + placeholders + `) ORDER BY confidence DESC, rowid LIMIT ?`
 		rows, err := db.QueryContext(ctx, query, binds...)
 		if err != nil {
-			return nil, false, err
+			return nil, false, 0, err
 		}
 		for rows.Next() {
 			var ranked rankedRelation
 			if err := rows.Scan(&ranked.relation.FromID, &ranked.relation.ToID,
 				&ranked.relation.Type, &ranked.relation.Confidence, &ranked.rowid); err != nil {
 				rows.Close()
-				return nil, false, err
+				return nil, false, 0, err
 			}
 			if _, ok := seen[ranked.rowid]; ok {
 				continue
@@ -357,7 +437,7 @@ func searchStoreRelationsForIDs(ctx context.Context, db *sql.DB, ids []string, l
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
-			return nil, false, err
+			return nil, false, 0, err
 		}
 		rows.Close()
 	}
@@ -375,7 +455,48 @@ func searchStoreRelationsForIDs(ctx context.Context, db *sql.DB, ids []string, l
 	for _, ranked := range out {
 		relations = append(relations, ranked.relation)
 	}
-	return relations, truncated, nil
+	return relations, truncated, len(withheld), nil
+}
+
+func collectSearchStoreRowids(ctx context.Context, db *sql.DB, query string, binds []any, into map[int64]struct{}) error {
+	rows, err := db.QueryContext(ctx, query, binds...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rowid int64
+		if err := rows.Scan(&rowid); err != nil {
+			return err
+		}
+		into[rowid] = struct{}{}
+	}
+	return rows.Err()
+}
+
+// searchStoreFileIDsForPaths returns the file-node IDs (the endpoints of
+// file-level relations such as FILE_CHANGES_WITH) of the stored files whose
+// path is in paths. A path the store never indexed has no node and no edges.
+func searchStoreFileIDsForPaths(ctx context.Context, db *sql.DB, paths map[string]struct{}) ([]string, error) {
+	var ids []string
+	err := scanSearchStoreRows(ctx, db, `SELECT path, record FROM files ORDER BY path`, func(scan rowScanner) error {
+		var path, record string
+		if err := scan(&path, &record); err != nil {
+			return err
+		}
+		if _, ok := paths[path]; !ok {
+			return nil
+		}
+		var file FileRecord
+		if err := json.Unmarshal([]byte(record), &file); err != nil {
+			return err
+		}
+		if file.ID != "" {
+			ids = append(ids, file.ID)
+		}
+		return nil
+	})
+	return ids, err
 }
 
 func searchStoreSymbolsByIDs(ctx context.Context, db *sql.DB, ids map[string]struct{}, exclude map[string]struct{}, limit int) ([]StoreContextSymbol, error) {
@@ -457,40 +578,12 @@ func DescribeSearchStore(ctx context.Context, repo, providerVersion, cacheDir st
 	if err != nil {
 		return SearchStoreDescriptor{}, err
 	}
-	entry, err := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, key)
-	if err != nil {
-		return SearchStoreDescriptor{}, err
-	}
-	store := searchStoreEntryFor(entry)
-	path := filepath.Join(store.root, store.relative)
-	if _, err := os.Stat(path); err != nil {
-		return SearchStoreDescriptor{}, ErrSearchStoreMissing
-	}
-	digest, err := entry.digest()
-	if err != nil {
-		return SearchStoreDescriptor{}, ErrSearchStoreMissing
-	}
-
-	db, err := sql.Open("sqlite", "file:"+sqliteURLPath(path)+"?immutable=1&mode=ro")
+	store, db, err := openExactSearchStore(ctx, cacheDir, key, tree)
 	if err != nil {
 		return SearchStoreDescriptor{}, err
 	}
 	defer db.Close()
-	var version, storedDigest string
-	if err := readSearchStoreMetaKey(ctx, db, "store_version", &version); err != nil {
-		return SearchStoreDescriptor{}, err
-	}
-	if err := readSearchStoreMetaKey(ctx, db, "entry_digest", &storedDigest); err != nil {
-		return SearchStoreDescriptor{}, err
-	}
-	if version != searchStoreVersion || storedDigest != digest.String() {
-		return SearchStoreDescriptor{}, ErrSearchStoreMissing
-	}
-	var meta searchStoreMeta
-	if err := readSearchStoreMetaKey(ctx, db, "envelope", &meta); err != nil {
-		return SearchStoreDescriptor{}, err
-	}
-	result := SearchStoreDescriptor{ContractVersion: 1, Path: path, EntryDigest: storedDigest, Commit: meta.Commit, Tree: meta.Tree}
+	result := SearchStoreDescriptor{ContractVersion: 1, Path: store.path, EntryDigest: store.entryDigest, Commit: store.meta.Commit, Tree: store.meta.Tree}
 	if err := readSearchStoreMetaKey(ctx, db, "header", &result.Header); err != nil {
 		return SearchStoreDescriptor{}, err
 	}
@@ -498,4 +591,74 @@ func DescribeSearchStore(ctx context.Context, repo, providerVersion, cacheDir st
 		return SearchStoreDescriptor{}, err
 	}
 	return result, nil
+}
+
+// exactSearchStore is a store sidecar verified against the key it was looked
+// up by: present, at this build's store version, mirroring its gz entry's
+// digest, and recording the very tree the key was derived from.
+type exactSearchStore struct {
+	path        string
+	entryDigest string
+	meta        searchStoreMeta
+}
+
+// openExactSearchStore resolves the sidecar addressed by key and verifies it
+// on the returned connection, which the caller closes. A missing or
+// mismatched sidecar is ErrSearchStoreMissing (a quiet, retryable miss).
+//
+// A sidecar that verifies but records a tree other than the one its key was
+// derived from is NOT a miss: no build writes one, so it can only come from
+// code that keyed another tree's store under this tree (an ancestor's store
+// passed off as the current one). That is refused loudly, with an error that
+// is deliberately not ErrSearchStoreMissing, so `graph store` and the exact
+// `graph context` path fail instead of serving or describing it.
+func openExactSearchStore(ctx context.Context, cacheDir, key, tree string) (exactSearchStore, *sql.DB, error) {
+	entry, err := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, key)
+	if err != nil {
+		return exactSearchStore{}, nil, err
+	}
+	store := searchStoreEntryFor(entry)
+	path := filepath.Join(store.root, store.relative)
+	if _, err := os.Stat(path); err != nil {
+		return exactSearchStore{}, nil, ErrSearchStoreMissing
+	}
+	digest, err := entry.digest()
+	if err != nil {
+		return exactSearchStore{}, nil, ErrSearchStoreMissing
+	}
+
+	db, err := sql.Open("sqlite", "file:"+sqliteURLPath(path)+"?immutable=1&mode=ro")
+	if err != nil {
+		return exactSearchStore{}, nil, err
+	}
+	fail := func(err error) (exactSearchStore, *sql.DB, error) {
+		_ = db.Close()
+		return exactSearchStore{}, nil, err
+	}
+	var version, storedDigest string
+	if err := readSearchStoreMetaKey(ctx, db, "store_version", &version); err != nil {
+		return fail(err)
+	}
+	if err := readSearchStoreMetaKey(ctx, db, "entry_digest", &storedDigest); err != nil {
+		return fail(err)
+	}
+	if version != searchStoreVersion || storedDigest != digest.String() {
+		return fail(ErrSearchStoreMissing)
+	}
+	var meta searchStoreMeta
+	if err := readSearchStoreMetaKey(ctx, db, "envelope", &meta); err != nil {
+		return fail(err)
+	}
+	if meta.Tree != tree {
+		return fail(searchStoreTreeMismatch(tree, meta.Tree))
+	}
+	return exactSearchStore{path: path, entryDigest: storedDigest, meta: meta}, db, nil
+}
+
+// errSearchStoreNotExact marks a store whose recorded tree differs from the
+// tree it was resolved for. It is never wrapped around ErrSearchStoreMissing.
+var errSearchStoreNotExact = errors.New("search store is not exact for the requested tree")
+
+func searchStoreTreeMismatch(want, got string) error {
+	return fmt.Errorf("%w: keyed by tree %s but records tree %s; a store is only served for the tree it was built from", errSearchStoreNotExact, want, got)
 }

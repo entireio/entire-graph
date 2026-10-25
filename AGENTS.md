@@ -100,6 +100,10 @@ policy. `--cache-dir` selects its cache root. Missing stores report
 relations and test suggestions as JSON without parsing or building. It also
 accepts repeatable `--ignore-file` and `--include-file` policy files, plus
 `--profile` and `--cache-dir`, matching the index that built the store.
+`--allow-ancestor N` (at most 5, opt-in) answers an exact miss from a recent
+first-parent ancestor's store, withholds everything in files changed since, and
+marks the response with a typed `stale` block; see
+[the store contract](docs/store-contract.md#ancestor-fallback-for-graph-context).
 
 ### 🗺️ snapshot — *the whole graph*
 One header record, then file, external-endpoint, symbol, and relation records, streamed so memory stays bounded. Superset of `symbols` + `edges` + files.
