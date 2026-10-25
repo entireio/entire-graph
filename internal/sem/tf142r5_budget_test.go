@@ -20,7 +20,9 @@ func tf142r5SelectiveRepo(t *testing.T) string {
 
 // TestTF142R5SelectiveDerivationUnbudgetedStillComplete is the widening
 // direction: an unbudgeted selective query must still derive the full view from
-// the cached complete snapshot, report no truncation, and be cached.
+// the cached complete snapshot and report no truncation. A view derived on a
+// warm query is re-derived each time rather than persisted, so the cache must
+// not grow either.
 func TestTF142R5SelectiveDerivationUnbudgetedStillComplete(t *testing.T) {
 	repo := tf142r5SelectiveRepo(t)
 	cacheDir := t.TempDir()
@@ -47,7 +49,7 @@ func TestTF142R5SelectiveDerivationUnbudgetedStillComplete(t *testing.T) {
 		t.Fatalf("the unbudgeted derivation lost the graph: %d symbol(s), %d relation(s)",
 			len(snapshot.Symbols), len(snapshot.Relations))
 	}
-	if got := f06fixCacheFileCount(t, cacheDir); got <= warmed {
-		t.Fatalf("the untruncated selective view should be persisted: cache stayed at %d file(s)", got)
+	if got := f06fixCacheFileCount(t, cacheDir); got != warmed {
+		t.Fatalf("a warm selective derivation must not persist its view: cache went from %d to %d file(s)", warmed, got)
 	}
 }
