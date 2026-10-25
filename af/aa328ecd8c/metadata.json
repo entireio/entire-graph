@@ -1,0 +1,47 @@
+{
+  "cli_version": "0.11.5-nightly.202610100625.1f44a6f96.0.20261024214757-e7c0393725dd",
+  "checkpoint_id": "afaa328ecd8c",
+  "strategy": "manual-commit",
+  "branch": "fix/index-partial-clones",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "internal/gitutil/lazy_fetch_guard_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/af/aa328ecd8c/0/metadata.json",
+      "transcript": "/af/aa328ecd8c/0/full.jsonl",
+      "compact_transcript": "/af/aa328ecd8c/0/transcript.jsonl",
+      "content_hash": "/af/aa328ecd8c/0/content_hash.txt",
+      "prompt": "/af/aa328ecd8c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 30,
+    "cache_creation_tokens": 17978,
+    "cache_read_tokens": 5301602,
+    "output_tokens": 7519,
+    "api_call_count": 10,
+    "subagent_tokens": {
+      "input_tokens": 58,
+      "cache_creation_tokens": 856421,
+      "cache_read_tokens": 11721249,
+      "output_tokens": 21680,
+      "api_call_count": 26
+    }
+  },
+  "redaction": {
+    "replacements": 312,
+    "layers": {
+      "betterleaks": 5,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 67,
+      "credentialed_uri": 3,
+      "entropy": 242,
+      "key_context": 0,
+      "provider_token": 9,
+      "shell_stdin": 0
+    }
+  }
+}
