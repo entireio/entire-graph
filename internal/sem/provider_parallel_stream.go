@@ -16,10 +16,19 @@ import (
 // Each admitted item holds at most providerStreamBufferBatches batches in its
 // channel; each active worker holds at most one more, and the consumer holds
 // one. The lookahead window is bounded independently of repository size.
+//
+// providerStreamLookahead is how many items per worker may be admitted ahead of
+// the consumer. Per-file cost is heavily skewed: while one slow file at the head
+// of the order is still running, the window has to hold everything the other
+// workers can finish, so it scales with the worker count. The backlog is
+// window*providerStreamBufferBatches + workers + 1 batches, so a wider window
+// with shallower buffers spends the same memory on more items: 16 items of 2
+// batches per worker bound the same backlog as 4 items of 8 batches, for any
+// worker count (67,840 records with 8 workers).
 const (
 	providerStreamBatchRecords  = 256
-	providerStreamBufferBatches = 8
-	providerStreamLookahead     = 4
+	providerStreamBufferBatches = 2
+	providerStreamLookahead     = 16
 )
 
 // runIndexedStreamingPipeline preserves index order without retaining an entire
@@ -27,6 +36,9 @@ const (
 // batch buffer, and at most workers process callbacks run at once. Workers can
 // move on as soon as an item finishes, without waiting for its output to be
 // consumed in index order. A slow consumer still backpressures the producers.
+// Workers take jobs from a FIFO queue filled in index order, so the item the
+// consumer is waiting on is always running or finished: producers blocked on
+// full buffers behind it can never hold the worker it needs.
 // Results contain only metadata needed after that item's stream is consumed.
 func runIndexedStreamingPipeline[T, R any](
 	ctx context.Context,
