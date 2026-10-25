@@ -239,7 +239,7 @@ func TestProviderFilePipelineReducerFailureJoinsWorkers(t *testing.T) {
 	var active atomic.Int32
 	var processed atomic.Int32
 	wantErr := errors.New("stop reducer")
-	err := runProviderFilePipeline(t.Context(), paths, 8,
+	err := runProviderFilePipeline(t.Context(), nil, paths, 8,
 		func(_ context.Context, index int, path string) providerFileResult {
 			active.Add(1)
 			defer active.Add(-1)
@@ -267,7 +267,7 @@ func TestProviderFilePipelineReducerFailureJoinsWorkers(t *testing.T) {
 func TestProviderFilePipelineReducesInOriginalOrder(t *testing.T) {
 	paths := []string{"a.go", "b.go", "c.go", "d.go"}
 	var reduced []int
-	err := runProviderFilePipeline(t.Context(), paths, 4,
+	err := runProviderFilePipeline(t.Context(), nil, paths, 4,
 		func(_ context.Context, index int, path string) providerFileResult {
 			time.Sleep(time.Duration(len(paths)-index) * time.Millisecond)
 			return providerFileResult{index: index, path: path}
@@ -300,7 +300,7 @@ func TestProviderFilePipelineCancellationJoinsWorkers(t *testing.T) {
 	var startedOnce sync.Once
 	done := make(chan error, 1)
 	go func() {
-		done <- runProviderFilePipeline(ctx, paths, 4,
+		done <- runProviderFilePipeline(ctx, nil, paths, 4,
 			func(_ context.Context, index int, path string) providerFileResult {
 				active.Add(1)
 				startedOnce.Do(func() { close(started) })
@@ -340,7 +340,7 @@ func TestProviderFilePipelineBoundsOutstandingResults(t *testing.T) {
 	releaseFirst := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- runProviderFilePipeline(t.Context(), paths, workers,
+		done <- runProviderFilePipeline(t.Context(), nil, paths, workers,
 			func(ctx context.Context, index int, path string) providerFileResult {
 				started.Add(1)
 				if index == 0 {

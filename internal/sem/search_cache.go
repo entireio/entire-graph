@@ -743,6 +743,9 @@ func persistVerifiedSearchSnapshot(
 	cache cachedSearchSnapshot,
 	readPersistedDigest func(cacheEntry) (cacheDigest, error),
 ) error {
+	if err := refuseTruncatedSnapshot(cache); err != nil {
+		return err
+	}
 	var verifyErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		written, err := entry.writeDigest("snapshot", cache)
@@ -913,6 +916,14 @@ func restoreCachedSearchInternals(cache *cachedSearchSnapshot) {
 	}
 }
 
+// stopPollStride is how often the cheap per-record loops in the selective
+// derivation (and the relation producers that reuse it) poll for
+// cancellation. The loops are linear in the size of the COMPLETE cached
+// snapshot, so they must be interruptible, but their bodies are far cheaper
+// than a context read; polling every stride keeps the uncancelled path's cost
+// unchanged while bounding what a cancelled run still does to one stride.
+const stopPollStride = 1024
+
 // selectiveSearchSnapshotFromFull derives the selective view of a complete
 // snapshot: the selected files, their symbols, and the complete graph's
 // relations FILTERED to those that start at a selected file or symbol and end at
@@ -956,18 +967,32 @@ func selectiveSearchSnapshotFromFull(
 		)
 	}
 
+	// One stop predicate for the whole derivation, not only the relation
+	// filter: everything below -- filtering the complete cached inventory
+	// (linear in the FULL snapshot, not the selection), grouping and indexing
+	// the retained records -- is work a cancelled caller must not keep paying
+	// for. Each stop returns the context's error; a cancelled derivation never
+	// returns a partial view.
+	shouldStop := func() bool { return ctx.Err() != nil }
+
 	spec := resolveProfile(options.Profile)
 	selective := ProviderSnapshot{Header: leanHeader(sc, providerVersion, spec)}
 	allowedFiles := make(map[string]bool, len(sc.paths))
 	for _, filePath := range sc.paths {
 		allowedFiles[filepath.ToSlash(filepath.Clean(filePath))] = true
 	}
-	for _, file := range full.Files {
+	for i, file := range full.Files {
+		if i%stopPollStride == 0 && shouldStop() {
+			return ProviderSnapshot{}, ctx.Err()
+		}
 		if allowedFiles[filepath.ToSlash(filepath.Clean(file.Path))] {
 			selective.Files = append(selective.Files, file)
 		}
 	}
-	for _, symbol := range full.Symbols {
+	for i, symbol := range full.Symbols {
+		if i%stopPollStride == 0 && shouldStop() {
+			return ProviderSnapshot{}, ctx.Err()
+		}
 		if allowedFiles[filepath.ToSlash(filepath.Clean(symbol.FilePath))] {
 			selective.Symbols = append(selective.Symbols, symbol)
 		}
@@ -975,15 +1000,24 @@ func selectiveSearchSnapshotFromFull(
 
 	recordsByFile := make(map[string][]SymbolRecord)
 	structuralByFile := make(map[string][]structuralSymbol)
-	for _, symbol := range selective.Symbols {
+	for i, symbol := range selective.Symbols {
+		if i%stopPollStride == 0 && shouldStop() {
+			return ProviderSnapshot{}, ctx.Err()
+		}
 		recordsByFile[symbol.FilePath] = append(recordsByFile[symbol.FilePath], symbol)
 	}
 	if spec.name == ProfileSyntaxOnly {
 		for filePath, symbols := range recordsByFile {
+			if shouldStop() {
+				return ProviderSnapshot{}, ctx.Err()
+			}
 			structuralByFile[filePath] = compactStructuralSymbols(symbols)
 		}
 	} else {
 		for filePath, symbols := range recordsByFile {
+			if shouldStop() {
+				return ProviderSnapshot{}, ctx.Err()
+			}
 			recordsByFile[filePath] = retainedSymbolsForProfile(symbols, spec)
 		}
 	}
@@ -994,7 +1028,7 @@ func selectiveSearchSnapshotFromFull(
 	var symbolsByID map[string]SymbolRecord
 	var filesByID map[string]FileRecord
 	if spec.includeEvidence {
-		symbolsByID, filesByID = recordIndexes(selective.Files, recordsByFile)
+		symbolsByID, filesByID = recordIndexes(selective.Files, recordsByFile, shouldStop)
 	}
 	emitRelation := func(relation RelationRecord) {
 		if !spec.emits(relation.Type) {
@@ -1023,7 +1057,7 @@ func selectiveSearchSnapshotFromFull(
 		selective.Relations = append(selective.Relations, relation)
 	}
 	if spec.name == ProfileSyntaxOnly {
-		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, emitRelation)
+		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, shouldStop, emitRelation)
 	} else {
 		// Filter, do not re-extract; see the function comment for what this keeps
 		// and why. FILE_CHANGES_WITH needs no special case: it is a pairwise fact
@@ -1031,14 +1065,20 @@ func selectiveSearchSnapshotFromFull(
 		// keeping the pairs whose files are both selected is exactly what a fresh
 		// selective build emits.
 		selectedIDs := make(map[string]bool, len(selective.Files)+len(selective.Symbols))
-		for _, file := range selective.Files {
+		for i, file := range selective.Files {
+			if i%stopPollStride == 0 && shouldStop() {
+				break
+			}
 			selectedIDs[file.ID] = true
 		}
-		for _, symbol := range selective.Symbols {
+		for i, symbol := range selective.Symbols {
+			if i%stopPollStride == 0 && shouldStop() {
+				break
+			}
 			selectedIDs[symbol.ID] = true
 		}
 		for _, relation := range full.Relations {
-			if ctx.Err() != nil {
+			if shouldStop() {
 				break
 			}
 			if !selectiveRelationRetained(relation, selectedIDs) {
@@ -1056,6 +1096,8 @@ func selectiveSearchSnapshotFromFull(
 			emitRelation(relation)
 		}
 	}
+	// The structural path and the loops above stop without a reason; the
+	// context supplies it.
 	if err := ctx.Err(); err != nil {
 		return ProviderSnapshot{}, err
 	}
@@ -1566,6 +1608,15 @@ func readSearchSnapshot(entry cacheEntry) (cachedSearchSnapshot, error) {
 	return cache, nil
 }
 
+// ErrTruncatedSnapshotNotCacheable is returned when a caller tries to persist a
+// snapshot marked as stopped before it completed (AnalysisBudgetExceededCode).
+// The search cache is keyed by tree and by the options that SHAPE the graph, so
+// a stored truncation would be served to every later query on this tree as
+// though it were the complete index, and its missing symbols would read as
+// confident negatives. The check lives in the writers rather than at the call
+// sites so that a new call site cannot reintroduce the hole.
+var ErrTruncatedSnapshotNotCacheable = errors.New("refusing to cache a truncated snapshot (E_ANALYSIS_BUDGET_EXCEEDED)")
+
 // readSearchSnapshotPreferringStore answers from the sqlite sidecar when the
 // operator opted in (ENTIRE_GRAPH_SEARCH_STORE) and the sidecar matches the
 // entry, and otherwise from the gz JSON entry. The sidecar exists because the
@@ -1583,7 +1634,24 @@ func readSearchSnapshotPreferringStore(entry cacheEntry, contexts ...context.Con
 }
 
 func writeSearchSnapshot(entry cacheEntry, cache cachedSearchSnapshot) error {
+	if err := refuseTruncatedSnapshot(cache); err != nil {
+		return err
+	}
 	return entry.write("snapshot", cache)
+}
+
+// refuseTruncatedSnapshot is the single place the truncation refusal lives, and
+// EVERY snapshot writer calls it. It is a shared helper rather than one check
+// inside writeSearchSnapshot because that is exactly how the hole came back:
+// writeSearchSnapshotAndStore and persistVerifiedSearchSnapshot were both
+// added later and both go straight to entry.writeDigest, so a check that lived
+// only in writeSearchSnapshot protected one of three paths.
+// TestEverySearchSnapshotWriterRefusesATruncatedSnapshot enumerates them.
+func refuseTruncatedSnapshot(cache cachedSearchSnapshot) error {
+	if partialFailuresTruncated(cache.Snapshot.Header.PartialFailures) {
+		return ErrTruncatedSnapshotNotCacheable
+	}
+	return nil
 }
 
 // writeSearchSnapshotAndStore persists a COMPLETE entry plus its sqlite
@@ -1595,6 +1663,9 @@ func writeSearchSnapshot(entry cacheEntry, cache cachedSearchSnapshot) error {
 // failure so a stale one cannot outlive the entry it mirrored (readers also
 // verify the embedded digest).
 func writeSearchSnapshotAndStore(ctx context.Context, entry cacheEntry, cache cachedSearchSnapshot) error {
+	if err := refuseTruncatedSnapshot(cache); err != nil {
+		return err
+	}
 	digest, err := entry.writeDigest("snapshot", cache)
 	if err != nil {
 		return err

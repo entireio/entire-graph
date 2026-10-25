@@ -362,7 +362,7 @@ func TestJSScopeWalkerIsBoundedNotFatal(t *testing.T) {
 		t.Fatal("fixture must not look minified, or the scope scan is never reached")
 	}
 	// Must return instead of aborting the process.
-	state, err := newJSScanState("deep.js", src)
+	state, err := newJSScanState(t.Context(), "deep.js", src)
 	if err != nil {
 		t.Fatalf("scope scan must degrade, not fail: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestJSMemberChainIsBoundedNotFatal(t *testing.T) {
 	if looksMinified(src) {
 		t.Fatal("fixture must not look minified, or the scope scan is never reached")
 	}
-	state, err := newJSScanState("chain.js", src)
+	state, err := newJSScanState(t.Context(), "chain.js", src)
 	if err != nil {
 		t.Fatalf("scope scan must degrade, not fail: %v", err)
 	}
@@ -858,7 +858,7 @@ func TestSnapshotReportsBothPhasesOfDepthTruncation(t *testing.T) {
 	if _, _, status := (TreeSitterParser{}).ParseWithStatus("deep.ts", src); status.Code != "E_PARSE_DEPTH_EXCEEDED" {
 		t.Fatalf("entity phase status = %+v, want E_PARSE_DEPTH_EXCEEDED", status)
 	}
-	scan, err := newJSScanState("deep.ts", src)
+	scan, err := newJSScanState(t.Context(), "deep.ts", src)
 	if err != nil {
 		t.Fatalf("relation-phase scope scan must degrade, not fail: %v", err)
 	}

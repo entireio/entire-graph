@@ -317,6 +317,43 @@ type PartialFailure struct {
 	Detail               string `json:"detail,omitempty"`
 }
 
+// AnalysisBudgetExceededCode marks a snapshot that did not run to completion:
+// the records it carries are valid, everything after the point it stopped is
+// missing, and callers must treat the graph as incomplete. In particular such a
+// snapshot must never be persisted as the complete answer for its tree.
+//
+// No build in this package produces one: a run that is cancelled, or whose
+// caller's deadline passes, returns the context's error and never emits a
+// summary. Every snapshot writer still refuses a snapshot carrying this code
+// (SnapshotTruncated, refuseTruncatedSnapshot), so a truncating path added
+// later -- or a snapshot assembled outside this package -- cannot be stored
+// under a tree key and served to every later caller as the complete index.
+const AnalysisBudgetExceededCode = "E_ANALYSIS_BUDGET_EXCEEDED"
+
+// SnapshotTruncated reports whether a snapshot is marked as stopped before it
+// completed (see AnalysisBudgetExceededCode). Such a result must never be
+// persisted as the answer for a tree: every cache key here is derived from the
+// tree and the options that SHAPE the graph, so a stored truncation would be
+// handed to every later caller as the complete index. Every cache writer
+// (ProviderRecordsCacheTransaction.Store and the search snapshot writers)
+// enforces this, so a new call site cannot reintroduce the hole by forgetting
+// to check.
+func SnapshotTruncated(summary *SnapshotSummary) bool {
+	if summary == nil {
+		return false
+	}
+	return partialFailuresTruncated(summary.PartialFailures)
+}
+
+func partialFailuresTruncated(failures []PartialFailure) bool {
+	for _, failure := range failures {
+		if failure.Code == AnalysisBudgetExceededCode {
+			return true
+		}
+	}
+	return false
+}
+
 type FileRecord struct {
 	RecordType string `json:"record_type"`
 	ID         string `json:"id"`
@@ -1093,9 +1130,18 @@ var registrationFunctionPattern = regexp.MustCompile(`"function"\s*:\s*"([A-Za-z
 // The command verb (the file's basename without .json) never appears in the
 // handler body, so it is indexed as a searchable alias of the handler symbol.
 // Only paths matching commands/*.json are touched; no generic scan is performed.
-func collectRegistrationAliases(paths []string, read contentReader) map[string][]string {
+// collectRegistrationAliases scans a large inventory once, so its own loop
+// needs the stop predicate too: the cancellable reader passed to it only
+// refuses reads once the context is done, and a refused read merely
+// `continue`s, so without this check the loop still walked every remaining path
+// (and the final sort/dedupe pass still ran over whatever had accumulated)
+// after the run was cancelled. A nil stop never fires.
+func collectRegistrationAliases(stop func() bool, paths []string, read contentReader) map[string][]string {
 	aliasesByHandler := map[string][]string{}
 	for _, p := range paths {
+		if stop != nil && stop() {
+			break
+		}
 		slash := filepath.ToSlash(p)
 		if !strings.HasSuffix(slash, ".json") {
 			continue
@@ -1117,7 +1163,13 @@ func collectRegistrationAliases(paths []string, read contentReader) map[string][
 		aliasesByHandler[handler] = append(aliasesByHandler[handler], alias)
 	}
 	for handler, aliases := range aliasesByHandler {
+		if stop != nil && stop() {
+			break
+		}
 		sort.Strings(aliases)
+		if stop != nil && stop() {
+			break
+		}
 		aliasesByHandler[handler] = dedupeSortedStrings(aliases)
 	}
 	return aliasesByHandler
@@ -1171,7 +1223,7 @@ func registrationCandidateCounts(
 	if len(aliasesByHandler) == 0 {
 		return counts, nil
 	}
-	err := runProviderFilePipeline(ctx, sc.paths, workers,
+	err := runProviderFilePipeline(ctx, ctx.Err, sc.paths, workers,
 		func(workerCtx context.Context, index int, path string) providerFileResult {
 			content, readable := sc.read(path)
 			if !readable || !mentionsRegistrationHandlerInFile(path, content, aliasesByHandler) {
@@ -1388,7 +1440,16 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// Command verbs bound to handlers through registration tables
 	// (commands/<name>.json) never appear in the handler body; index them once as
 	// searchable aliases so they can be attached to the handler symbol below.
-	aliasesByHandler := collectRegistrationAliases(sc.paths, sc.read)
+	//
+	// The alias scan reads whole files, so it gets the cancellable reader (see
+	// cancellableReader) rather than sc.read: on a repository with many or
+	// large command manifests the pass used to run to completion before
+	// anything observed a cancellation. The reader bounds it to one in-flight
+	// read, and the census below returns the context's error.
+	cancellableRead := cancellableReader(ctx, sc.read)
+	aliasesByHandler := collectRegistrationAliases(ctxStop(ctx), sc.paths, cancellableRead)
+	censusSource := sc
+	censusSource.read = cancellableRead
 	// A command verb names ONE callable. The verb was attached to every symbol
 	// that happened to share the handler's unqualified name, so a repository
 	// with a same-named function in another package — or a method, or a
@@ -1398,15 +1459,17 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// by its own census pass BEFORE the file loop; the candidate symbols
 	// themselves are then emitted in their own file's place, as every other
 	// symbol is.
-	aliasCandidateCount, err := registrationCandidateCounts(ctx, sc, spec, maxParseBytes, workers, aliasesByHandler)
+	aliasCandidateCount, err := registrationCandidateCounts(ctx, censusSource, spec, maxParseBytes, workers, aliasesByHandler)
 	if err != nil {
 		return err
 	}
 
 	// Phase 1: workers independently read, classify, and parse files. Only this
 	// reducer mutates graph indexes or calls emit, and it consumes the original
-	// path order, so worker timing cannot change snapshot bytes.
-	err = runProviderFilePipeline(ctx, sc.paths, workers,
+	// path order, so worker timing cannot change snapshot bytes. ctx.Err is
+	// polled before every reduction: reducing one more result means emitting a
+	// whole file's symbol list into the caller's sink after it was cancelled.
+	err = runProviderFilePipeline(ctx, ctx.Err, sc.paths, workers,
 		func(workerCtx context.Context, index int, path string) providerFileResult {
 			return processProviderFile(workerCtx, sc, spec, maxParseBytes, index, path)
 		},
@@ -1544,28 +1607,34 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		}
 		emitErr = emit(r)
 	}
-	if options.ProjectVersion != nil {
+	// One stop predicate for every relation producer: a failed sink or a
+	// cancelled context ends the phase, and the checks after it return the
+	// reason. The producers poll it inside their own loops, so a cancellation
+	// that lands mid-producer is observed there rather than only once the
+	// producer has materialised its whole result.
+	relationsShouldStop := func() bool { return emitErr != nil || ctx.Err() != nil }
+	if options.ProjectVersion != nil && !relationsShouldStop() {
 		// Read through the snapshot's own content reader: metadata already
 		// validated, bounded by MaxParseBytes, non-regular files refused, and
 		// pinned to this snapshot's revision rather than to a HEAD that can move
 		// underneath it. Above the profile branch so a syntax-only export, which
-		// resolves no relations, still reports a version.
-		options.ProjectVersion(ScipProjectVersion(ManifestReader(sc.read)))
+		// resolves no relations, still reports a version. The cancellable reader
+		// stops mid-lookup, so a cancellation does not still read up to three
+		// maximum-sized manifests first.
+		options.ProjectVersion(ScipProjectVersion(ManifestReader(cancellableRead)))
 	}
 	if spec.name == ProfileSyntaxOnly {
-		emitStructuralRelationsCompact(sc.key, files, structuralByFile, func(r RelationRecord) {
+		emitStructuralRelationsCompact(sc.key, files, structuralByFile, relationsShouldStop, func(r RelationRecord) {
 			emitRelation(r, nil, nil)
 		})
 	} else {
 		var symbolsByID map[string]SymbolRecord
 		var filesByID map[string]FileRecord
 		if spec.includeEvidence {
-			symbolsByID, filesByID = recordIndexes(files, recordsByFile)
+			symbolsByID, filesByID = recordIndexes(files, recordsByFile, relationsShouldStop)
 		}
 		var relationFailures []PartialFailure
-		forEachRelation(ctx, sc.key, files, recordsByFile, sc.read, precomputedImports, spec, workers, func() bool {
-			return emitErr != nil || ctx.Err() != nil
-		}, func(r RelationRecord) {
+		forEachRelation(ctx, sc.key, files, recordsByFile, cancellableRead, precomputedImports, spec, workers, relationsShouldStop, func(r RelationRecord) {
 			emitRelation(r, symbolsByID, filesByID)
 		}, func(failure PartialFailure) {
 			relationFailures = append(relationFailures, failure)
@@ -1577,9 +1646,13 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		// failure set. The single record carries BOTH phases' effect and detail
 		// text (mergePartialFailures folds duplicates) so neither loss is hidden.
 		failures = mergePartialFailures(failures, relationFailures)
-		if spec.emits("FILE_CHANGES_WITH") {
+		// Checked BEFORE calling fileChangesWithRelations, not only inside the
+		// loop: the call runs a `git log` subprocess over the last 256 commits and
+		// returns a fully materialised slice, so entering it after a cancellation
+		// pays for the whole subprocess first.
+		if spec.emits("FILE_CHANGES_WITH") && !relationsShouldStop() {
 			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, files, options.historyCochanges) {
-				if emitErr != nil || ctx.Err() != nil {
+				if relationsShouldStop() {
 					break
 				}
 				emitRelation(r, symbolsByID, filesByID)
@@ -1649,11 +1722,14 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	return nil
 }
 
-func parseWithProfile(parser TreeSitterParser, spec profileSpec, langSpec languageSpec, path, content string) ([]Entity, string, ParseStatus) {
+func parseWithProfile(ctx context.Context, parser TreeSitterParser, spec profileSpec, langSpec languageSpec, path, content string) ([]Entity, string, ParseStatus) {
 	if useFastCFamilyParser(spec, langSpec) {
-		return fastCFamilyEntities(path, content, langSpec.language), langSpec.language, ParseStatus{}
+		// The fast C/C++ parser bypasses tree-sitter entirely, so it needs the
+		// caller's stop predicate handed to it directly -- ParseWithStatusCtx,
+		// which derives one from ctx, is never reached on this path.
+		return fastCFamilyEntities(path, content, langSpec.language, ctxStop(ctx)), langSpec.language, ParseStatus{}
 	}
-	return parser.ParseWithStatus(path, content)
+	return parser.ParseWithStatusCtx(ctx, path, content)
 }
 
 func sourceLineCount(content string) int {
@@ -2169,7 +2245,16 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 	return symbols
 }
 
-func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbols []SymbolRecord) []SymbolRecord {
+// syntheticBoundarySymbols returns the derived route/tool/workflow boundary
+// symbols for a file, plus whether stop fired before it finished. The
+// tool-handler loop below visits every already-parsed symbol (it reads only
+// identifiers, never the body), so it is polled every stopPollStride symbols
+// like the other whole-corpus loops in this package (see parser.go); a file
+// with an unusually large symbol count is the only way this pass takes long
+// enough for a cancellation to matter. On a stop the caller must drop the file
+// atomically — a partial synthetic list appended to a complete entity list
+// would read as a complete file that simply has no boundary symbols.
+func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbols []SymbolRecord, stop func() bool) ([]SymbolRecord, bool) {
 	var symbols []SymbolRecord
 	if route := webRouteBoundary(path); route != "" {
 		source := routeBoundarySource(path, language, fileSymbols)
@@ -2191,7 +2276,10 @@ func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbo
 			sourceEndByte:   source.sourceEndByte,
 		})
 	}
-	for _, source := range fileSymbols {
+	for i, source := range fileSymbols {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return nil, true
+		}
 		if !looksLikeToolHandler(source) {
 			continue
 		}
@@ -2237,7 +2325,7 @@ func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbo
 			sourceEndByte:   source.sourceEndByte,
 		})
 	}
-	return symbols
+	return symbols, false
 }
 
 type routeSource struct {
@@ -4378,7 +4466,7 @@ func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []Symb
 // cross-file candidate actually reopens the receiver's namespace before
 // emitting an edge. Files without namespaces — or whose scope parse fails —
 // yield "" for every symbol; each file is read and scanned at most once.
-func jsCrossFileNamespaceLookup(readContent contentReader, recordsByFile map[string][]SymbolRecord) func(SymbolRecord) string {
+func jsCrossFileNamespaceLookup(ctx context.Context, readContent contentReader, recordsByFile map[string][]SymbolRecord) func(SymbolRecord) string {
 	// The relation phase resolves files across workers, so the memo is shared.
 	// The lock is held across the scan rather than only across the map access:
 	// this fires for TypeScript namespaces alone, which is rare enough that
@@ -4394,7 +4482,7 @@ func jsCrossFileNamespaceLookup(readContent contentReader, recordsByFile map[str
 		byID, ok := cache[symbol.FilePath]
 		if !ok {
 			if content, okRead := readContent(symbol.FilePath); okRead {
-				if scan, err := newJSScanState(symbol.FilePath, content); err == nil && len(scan.namespaces) > 0 {
+				if scan, err := newJSScanState(ctx, symbol.FilePath, content); err == nil && len(scan.namespaces) > 0 {
 					byID = jsNamespaceBySymbolID(content, recordsByFile[symbol.FilePath], scan.namespaces)
 				}
 			}
@@ -4633,9 +4721,9 @@ func sameFileOverloadSet(candidates []SymbolRecord) ([]SymbolRecord, bool) {
 // buildRelations collects every relation, deduplicates (first occurrence wins,
 // in emission order), and sorts for stable output. Used by the in-memory
 // snapshot path; the streaming path uses forEachRelation directly.
-func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func buildRelations(ctx context.Context, repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	var relations []RelationRecord
-	forEachRelation(context.Background(), repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), defaultProviderWorkerCount(), nil, func(r RelationRecord) {
+	forEachRelation(ctx, repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), defaultProviderWorkerCount(), nil, func(r RelationRecord) {
 		relations = append(relations, r)
 	}, nil)
 	relations = dedupeRelations(relations)
@@ -4679,9 +4767,15 @@ func retainedSymbolsForProfile(records []SymbolRecord, spec profileSpec) []Symbo
 	return out
 }
 
-func emitStructuralRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, emit func(RelationRecord)) {
+func emitStructuralRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, shouldStop func() bool, emit func(RelationRecord)) {
 	for _, file := range files {
+		if shouldStop != nil && shouldStop() {
+			return
+		}
 		for _, symbol := range recordsByFile[file.Path] {
+			if shouldStop != nil && shouldStop() {
+				return
+			}
 			emit(RelationRecord{
 				RecordType:    "relation",
 				FromID:        fileID(repoKey, symbol.FilePath),
@@ -4712,9 +4806,19 @@ func emitStructuralRelations(repoKey string, files []FileRecord, recordsByFile m
 	}
 }
 
-func emitStructuralRelationsCompact(repoKey string, files []FileRecord, recordsByFile map[string][]structuralSymbol, emit func(RelationRecord)) {
+// emitStructuralRelationsCompact streams the syntax-only relation set. It takes
+// shouldStop because the emit sink returning early is not enough: without a stop
+// predicate the producer keeps walking every remaining file and symbol after the
+// run was cancelled, for the whole remainder of an O(symbol-count) pass.
+func emitStructuralRelationsCompact(repoKey string, files []FileRecord, recordsByFile map[string][]structuralSymbol, shouldStop func() bool, emit func(RelationRecord)) {
 	for _, file := range files {
+		if shouldStop != nil && shouldStop() {
+			return
+		}
 		for _, symbol := range recordsByFile[file.Path] {
+			if shouldStop != nil && shouldStop() {
+				return
+			}
 			emit(RelationRecord{
 				RecordType:    "relation",
 				FromID:        fileID(repoKey, symbol.FilePath),
@@ -4767,11 +4871,8 @@ func jsScanPartialFailure(path string, err error) PartialFailure {
 }
 
 // jsScanDepthPartialFailure reports a relation-phase scope walk truncated at
-// maxParseWalkDepth. It reuses the entity phase's code so both phases describe
-// the same condition identically, and it is a warning rather than an error for
-// the same reason: the relations above the limit are emitted. Its effect and
-// detail text stand on their own because mergePartialFailures folds them into the
-// entity-phase record for the same file rather than discarding them.
+// maxParseWalkDepth. It shares the entity phase's code so duplicate failures
+// merge into one complete diagnostic.
 func jsScanDepthPartialFailure(path string) PartialFailure {
 	return PartialFailure{
 		Code:                 "E_PARSE_DEPTH_EXCEEDED",
@@ -4780,6 +4881,31 @@ func jsScanDepthPartialFailure(path string) PartialFailure {
 		EffectOnCompleteness: "relation-phase scope walk truncated at the parser depth limit; calls nested deeper than that were not classified",
 		Detail:               fmt.Sprintf("AST nesting exceeded the %d-level walk limit during relation construction", maxParseWalkDepth),
 	}
+}
+
+func buildGraphQLOperationRootAliases(files []FileRecord, recordsByFile map[string][]SymbolRecord, shouldStop func() bool) map[string]string {
+	graphqlOperationRootAliases := map[string]string{}
+	for _, file := range files {
+		if shouldStop != nil && shouldStop() {
+			return graphqlOperationRootAliases
+		}
+		for _, symbol := range recordsByFile[file.Path] {
+			if shouldStop != nil && shouldStop() {
+				return graphqlOperationRootAliases
+			}
+			if symbol.Kind != "graphql_schema_field" {
+				continue
+			}
+			rootName := graphqlRootNameFromSignature(symbol)
+			if rootName == "" || !graphqlOperationRoot(rootName) {
+				continue
+			}
+			if typeName, _, ok := strings.Cut(symbol.QualifiedName, "."); ok {
+				graphqlOperationRootAliases[strings.ToLower(typeName)] = rootName
+			}
+		}
+	}
+	return graphqlOperationRootAliases
 }
 
 // fileRelationScan is one file's share of the relation phase: what its scan
@@ -4813,8 +4939,14 @@ type httpCallEntry struct {
 var errRelationScanStopped = errors.New("relation scan stopped")
 
 func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, workers int, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
+	// Nothing above the file loop used to consult shouldStop, so entering this
+	// function with an already-expired budget still bought three whole-repository
+	// index passes plus partialTypeCanonicalIDs before the first guard could run.
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if spec.name == ProfileSyntaxOnly {
-		emitStructuralRelations(repoKey, files, recordsByFile, emit)
+		emitStructuralRelations(repoKey, files, recordsByFile, shouldStop, emit)
 		return
 	}
 	needsTool := spec.emits("HANDLES_TOOL")
@@ -4855,45 +4987,36 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	httpCallsByRoute := map[string][]RelationRecord{}
 	graphqlSchemaFields := map[string][]SymbolRecord{}
 	graphqlResolvers := map[string][]SymbolRecord{}
-	graphqlOperationRootAliases := map[string]string{}
-	for _, file := range files {
-		for _, symbol := range recordsByFile[file.Path] {
-			if symbol.Kind != "graphql_schema_field" {
-				continue
-			}
-			rootName := graphqlRootNameFromSignature(symbol)
-			if rootName == "" || !graphqlOperationRoot(rootName) {
-				continue
-			}
-			if typeName, _, ok := strings.Cut(symbol.QualifiedName, "."); ok {
-				graphqlOperationRootAliases[strings.ToLower(typeName)] = rootName
-			}
-		}
+	graphqlOperationRootAliases := buildGraphQLOperationRootAliases(files, recordsByFile, shouldStop)
+	if shouldStop != nil && shouldStop() {
+		return
 	}
-	// Cross-file container index: entitySymbols links a member to its container
-	// only within one file, but some containers span files — a Go receiver type
-	// commonly lives in a different file of the same package than its methods
-	// (C# partial classes and reopened Ruby classes behave the same) — leaving
-	// such members with an empty ContainerID and therefore invisible to
-	// receiver-typed call resolution. Resolve those containers from the
-	// member's qualified-name prefix against the workspace's type-like symbols.
 	crossFileContainers := needsCallScan || needsReceiverCalls || needsFields || needsOverrides
 	// Cross-file namespace membership is only consulted by the JS/TS
 	// merged-declaration fallback (rare), and the lookup memoizes per file, so
 	// building the closure up front costs nothing for repositories without
 	// TypeScript namespaces.
-	foreignJSNamespaceOf := jsCrossFileNamespaceLookup(readContent, recordsByFile)
+	foreignJSNamespaceOf := jsCrossFileNamespaceLookup(ctx, readContent, recordsByFile)
 	typeLikeByShortName := map[string][]SymbolRecord{}
 	if crossFileContainers {
 		for _, file := range files {
-			for _, symbol := range recordsByFile[file.Path] {
+			if shouldStop != nil && shouldStop() {
+				return
+			}
+			for si, symbol := range recordsByFile[file.Path] {
+				if si%stopPollStride == 0 && shouldStop != nil && shouldStop() {
+					return
+				}
 				if typeLikeKind(symbol.Kind) {
 					typeLikeByShortName[symbol.Name] = append(typeLikeByShortName[symbol.Name], symbol)
 				}
 			}
 		}
 	}
-	partialContainerCanonical, partialContainerFile := partialTypeCanonicalIDs(files, recordsByFile)
+	if shouldStop != nil && shouldStop() {
+		return
+	}
+	partialContainerCanonical, partialContainerFile := partialTypeCanonicalIDs(shouldStop, files, recordsByFile)
 	// Iterate files in their (stable) slice order, not the recordsByFile map, so
 	// structural relations stream deterministically.
 	for _, file := range files {
@@ -5171,7 +5294,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			}
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 		}
-		for _, r := range djangoRouteRelations(files, recordsByFile, readContent) {
+		for _, r := range djangoRouteRelations(files, recordsByFile, readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -5228,7 +5351,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			handledRoutes[r.Route] = struct{}{}
 		}
 	}
-	manifestImports := buildManifestImportResolver(files, readContent)
+	manifestImports := buildManifestImportResolver(files, readContent, shouldStop)
 	// Import blocks of files OTHER than the one being scanned, which the Go
 	// interface-implementation hop needs to decide package qualifiers across the
 	// declaring files. Lazy and memoised: only files that actually reach a
@@ -5432,7 +5555,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		var pythonBareScopes *pythonBareImportScopes
 		var pythonIncompleteAliases map[string][]pythonImportContext
 		if fileNeedsCallScan && file.Language == "Python" {
-			pythonBareScopes = newPythonBareImportScopes(content, currentFileSymbols)
+			pythonBareScopes = newPythonBareImportScopes(ctx, content, currentFileSymbols)
 			if !pythonBareScopes.complete {
 				pythonIncompleteAliases = pythonIncompleteAliasContexts(importedPythonBindings(content))
 			}
@@ -5530,7 +5653,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			// call sites for the whole file; every JS/TS scope decision below
 			// shares this state instead of re-deriving it per symbol.
 			var jsScanErr error
-			jsScan, jsScanErr = newJSScanState(file.Path, content)
+			jsScan, jsScanErr = newJSScanState(ctx, file.Path, content)
 			if jsScanErr != nil && recordFailure != nil {
 				// Surface the degraded relation pass the same way entity-phase
 				// parse failures are surfaced, so a timed-out or failed scope
@@ -5646,7 +5769,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
 					if len(callNames) > 0 && from.Kind == "method" && !from.Local && from.ContainerID != "" {
-						juliaLocalBindings = juliaLocalBindingNames(callBlock)
+						juliaLocalBindings = juliaLocalBindingNames(ctx, callBlock)
 					}
 				}
 				if file.Language == "Rust" {
@@ -6556,6 +6679,9 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 	}
 
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if recordFailure != nil {
 		for _, failure := range goFileImportIndex.partialFailures() {
 			recordFailure(failure)
@@ -6563,85 +6689,115 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	}
 
 	if needsOverrides {
-		for _, r := range overrideRelations(inheritanceEdges, methodsByContainer) {
+		for _, r := range overrideRelations(inheritanceEdges, methodsByContainer, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("HANDLES_ROUTE") {
-		for _, r := range crossFileExpressRouterRelations(files, recordsByFile, readContent, knownFiles) {
+		for _, r := range crossFileExpressRouterRelations(files, recordsByFile, readContent, knownFiles, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r.Relation)
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 		}
-		for _, r := range pythonIncludeRouterRelations(files, recordsByFile, readContent, knownFiles) {
+		if shouldStop != nil && shouldStop() {
+			return
+		}
+		for _, r := range pythonIncludeRouterRelations(files, recordsByFile, readContent, knownFiles, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r.Relation)
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("CALLS") {
-		for _, r := range routeBridgeRelations(routeHandlers, httpCallsByRoute) {
+		for _, r := range routeBridgeRelations(shouldStop, routeHandlers, httpCallsByRoute) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
-		for _, r := range graphqlSchemaResolverRelations(graphqlSchemaFields, graphqlResolvers) {
+		if shouldStop != nil && shouldStop() {
+			return
+		}
+		for _, r := range graphqlSchemaResolverRelations(shouldStop, graphqlSchemaFields, graphqlResolvers) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("USES_TYPE") {
-		for _, r := range usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile) {
+		for _, r := range usesTypeRelations(shouldStop, recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("PARAM_TYPE") || spec.emits("RETURNS_TYPE") {
-		for _, r := range signatureTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile, spec) {
+		for _, r := range signatureTypeRelations(shouldStop, recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile, spec) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("TESTS") {
-		for _, r := range testRelations(recordsByFile, symbolsByShortName, resolvedImportsByFile) {
+		for _, r := range testRelations(shouldStop, recordsByFile, symbolsByShortName, resolvedImportsByFile) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("RESOURCE_DEPENDS_ON") {
-		for _, r := range resourceDependsOnRelations(recordsByRelationSupport(recordsByFile, "RESOURCE_DEPENDS_ON"), readContent) {
+		for _, r := range resourceDependsOnRelations(recordsByRelationSupport(recordsByFile, "RESOURCE_DEPENDS_ON"), readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("CONFIGURES") {
-		for _, r := range configuresRelations(recordsByRelationSupport(recordsByFile, "CONFIGURES"), readContent) {
+		for _, r := range configuresRelations(recordsByRelationSupport(recordsByFile, "CONFIGURES"), readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
 	}
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if spec.emits("SIMILAR_TO") {
-		for _, r := range similarityRelations(recordsByFile, readContent) {
+		for _, r := range similarityRelations(recordsByFile, readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -6650,7 +6806,16 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	}
 }
 
-func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRoute map[string][]RelationRecord) []RelationRecord {
+// routeBridgeRelations pairs every HTTP client call on a route with every
+// handler of that route, so one high-cardinality route costs calls x handlers
+// records. It takes the stop predicate rather than relying on the caller's
+// guard between stages, because that guard cannot run until the whole product
+// has already been materialized. stop is nil on the unbudgeted path, so the
+// loops carry no check at all there.
+func routeBridgeRelations(stop func() bool, routeHandlers map[string][]SymbolRecord, httpCallsByRoute map[string][]RelationRecord) []RelationRecord {
+	if stopped(stop) {
+		return nil
+	}
 	var routes []string
 	for route := range httpCallsByRoute {
 		if len(routeHandlers[route]) > 0 {
@@ -6660,6 +6825,9 @@ func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRo
 	sort.Strings(routes)
 	var relations []RelationRecord
 	for _, route := range routes {
+		if stopped(stop) {
+			return relations
+		}
 		handlers := append([]SymbolRecord(nil), routeHandlers[route]...)
 		sort.Slice(handlers, func(i, j int) bool {
 			return handlers[i].ID < handlers[j].ID
@@ -6672,7 +6840,13 @@ func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRo
 			return calls[i].FromID < calls[j].FromID
 		})
 		for _, call := range calls {
+			if stopped(stop) {
+				return relations
+			}
 			for _, handler := range handlers {
+				if stopped(stop) {
+					return relations
+				}
 				if call.FromID == handler.ID {
 					continue
 				}
@@ -6700,7 +6874,13 @@ func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRo
 	return relations
 }
 
-func graphqlSchemaResolverRelations(schemaFields, resolvers map[string][]SymbolRecord) []RelationRecord {
+// graphqlSchemaResolverRelations is the same fields-by-resolvers product shape
+// as routeBridgeRelations and takes the predicate for the same reason: the
+// caller's guard between stages cannot run until the whole product exists.
+func graphqlSchemaResolverRelations(stop func() bool, schemaFields, resolvers map[string][]SymbolRecord) []RelationRecord {
+	if stopped(stop) {
+		return nil
+	}
 	var endpoints []string
 	for endpoint := range schemaFields {
 		if len(resolvers[endpoint]) > 0 {
@@ -6710,12 +6890,21 @@ func graphqlSchemaResolverRelations(schemaFields, resolvers map[string][]SymbolR
 	sort.Strings(endpoints)
 	var relations []RelationRecord
 	for _, endpoint := range endpoints {
+		if stopped(stop) {
+			return relations
+		}
 		fields := append([]SymbolRecord(nil), schemaFields[endpoint]...)
 		sort.Slice(fields, func(i, j int) bool { return fields[i].ID < fields[j].ID })
 		targets := append([]SymbolRecord(nil), resolvers[endpoint]...)
 		sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
 		for _, field := range fields {
+			if stopped(stop) {
+				return relations
+			}
 			for _, resolver := range targets {
+				if stopped(stop) {
+					return relations
+				}
 				if field.ID == resolver.ID {
 					continue
 				}
@@ -6905,11 +7094,17 @@ func buildMixinRelation(repoKey string, anchor SymbolRecord, edge rawSupertype, 
 // two different types (different namespaces, different assemblies) and must
 // stay separate. The second return value gives each canonical part's file, so
 // callers can scope a cross-file CONTAINS edge correctly.
-func partialTypeCanonicalIDs(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]string, map[string]string) {
+func partialTypeCanonicalIDs(stop func() bool, files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]string, map[string]string) {
 	canonicalByKey := map[string]SymbolRecord{}
 	var parts []SymbolRecord
 	for _, file := range files {
-		for _, symbol := range recordsByFile[file.Path] {
+		if stop != nil && stop() {
+			return nil, nil
+		}
+		for si, symbol := range recordsByFile[file.Path] {
+			if si%stopPollStride == 0 && stop != nil && stop() {
+				return nil, nil
+			}
 			if !typeLikeKind(symbol.Kind) || !declaresPartialType(symbol) {
 				continue
 			}
@@ -6927,7 +7122,10 @@ func partialTypeCanonicalIDs(files []FileRecord, recordsByFile map[string][]Symb
 	}
 	canonical := make(map[string]string, len(parts))
 	canonicalFile := make(map[string]string, len(canonicalByKey))
-	for _, symbol := range parts {
+	for pi, symbol := range parts {
+		if pi%stopPollStride == 0 && stop != nil && stop() {
+			return nil, nil
+		}
 		key := symbol.Language + "\x00" + symbol.Kind + "\x00" + symbol.QualifiedName
 		anchor := canonicalByKey[key]
 		canonical[symbol.ID] = anchor.ID
@@ -10269,20 +10467,48 @@ func importedExternalSymbolName(module, member string) string {
 // resource or module block that references another block (e.g. aws_vpc.main.id,
 // module.network.id) emits RESOURCE_DEPENDS_ON to that block. Block symbols are
 // indexed by their referenceable name (the form used inside expressions).
-func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+// resourceDependsOnRelations and its per-format producers below all take stop,
+// checked at the top of each producer's outer per-path (or, for the O(resources²)
+// selector matchers, per-source) loop. Each producer materializes a complete
+// slice with no interruption otherwise, so on a large full-profile snapshot a
+// deadline expiring mid-producer used to go unnoticed until the NEXT producer's
+// entry, charging the whole remainder of whichever one was running to the
+// overshoot.
+func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
-	relations = append(relations, hclResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, dockerfileResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesNamedResourceReferenceRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesSelectorResourceRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesSelectorExpressionResourceRelations(recordsByFile, readContent)...)
-	relations = append(relations, kustomizeResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, composeResourceDependsOnRelations(recordsByFile, readContent)...)
+	relations = append(relations, hclResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, dockerfileResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesNamedResourceReferenceRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesSelectorResourceRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesSelectorExpressionResourceRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kustomizeResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, composeResourceDependsOnRelations(recordsByFile, readContent, stop)...)
 	return relations
 }
 
-func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	index := map[string]SymbolRecord{}
 	for _, symbols := range recordsByFile {
 		for _, symbol := range symbols {
@@ -10303,6 +10529,9 @@ func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, read
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -10345,9 +10574,12 @@ func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, read
 	return relations
 }
 
-func dockerfileResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func dockerfileResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -10418,9 +10650,12 @@ func dockerCopyFromStages(content string) []string {
 	return out
 }
 
-func kubernetesResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -11462,10 +11697,13 @@ func kubernetesServiceMeshName(value string) string {
 	return strings.TrimSpace(name)
 }
 
-func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	resources := map[string]SymbolRecord{}
 	var sources []SymbolRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return nil
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -11488,6 +11726,9 @@ func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]Symbol
 	var relations []RelationRecord
 	emitted := map[string]bool{}
 	for _, source := range sources {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(source.FilePath)
 		if !ok {
 			continue
@@ -11548,9 +11789,12 @@ type yamlPathFrame struct {
 	key    string
 }
 
-func kubernetesSelectorResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesSelectorResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var resources []kubernetesResourceInfo
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return nil
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -11580,6 +11824,9 @@ func kubernetesSelectorResourceRelations(recordsByFile map[string][]SymbolRecord
 	}
 	var relations []RelationRecord
 	for _, source := range resources {
+		if stopped(stop) {
+			return relations
+		}
 		if len(source.Selector) == 0 {
 			continue
 		}
@@ -11731,9 +11978,12 @@ type kubernetesSelectorExpression struct {
 	Values   []string
 }
 
-func kubernetesSelectorExpressionResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesSelectorExpressionResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var resources []kubernetesResourceInfo
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return nil
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -11764,6 +12014,9 @@ func kubernetesSelectorExpressionResourceRelations(recordsByFile map[string][]Sy
 	}
 	var relations []RelationRecord
 	for _, source := range resources {
+		if stopped(stop) {
+			return relations
+		}
 		if len(source.SelectorExpressions) == 0 {
 			continue
 		}
@@ -11944,9 +12197,12 @@ func stringInSlice(value string, values []string) bool {
 	return false
 }
 
-func kustomizeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kustomizeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -12013,9 +12269,12 @@ func kustomizeFileReferences(content string) []string {
 	return dedupeStrings(refs)
 }
 
-func composeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func composeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		if !yamlDockerComposePath(path) {
 			continue
 		}
@@ -12426,7 +12685,17 @@ func lookupHCLReference(index map[string]SymbolRecord, ref string) (SymbolRecord
 // naming convention (TestFoo -> Foo, test_foo -> foo, FooTest -> Foo). The
 // subject must resolve to a non-test function/method/type symbol. This is a
 // high-precision convention match, not call-graph analysis.
-func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
+// testRelations materializes its whole result slice before returning, so a
+// between-stage budget check in the caller cannot interrupt it — the same gap
+// usesTypeRelations' doc describes. resolveTestSubject can itself scan a large
+// same-name candidate set per call (a common test-subject name in a big
+// repository resolves against every symbol sharing it), making the pass
+// quadratic in the worst case rather than the single linear pass over symbols
+// this loop otherwise is. stop is threaded into both the outer loops and
+// resolveTestSubject's own candidate scan so a cancelled run is interrupted
+// where the cost actually accrues, not just at the already-too-late edges of
+// this function.
+func testRelations(stop func() bool, recordsByFile map[string][]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -12435,7 +12704,13 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stop != nil && stop() {
+			return relations
+		}
 		for _, symbol := range recordsByFile[path] {
+			if stop != nil && stop() {
+				return relations
+			}
 			if symbol.Kind != "function" && symbol.Kind != "method" {
 				continue
 			}
@@ -12443,18 +12718,7 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 			if subject == "" {
 				continue
 			}
-			// The workspace short-name lookup is deliberately NOT filtered
-			// through sharedTypeCandidates. That relation answers whether
-			// source in one language may name a type DECLARED in another, and
-			// a TESTS edge names no type: it records the convention that
-			// `test_frobnicate` covers `frobnicate`. Harnesses cross language
-			// boundaries as a matter of course — pytest over a C extension, a
-			// shell script over a compiled binary, JS specs over a WASM module
-			// — so gating them on type interop dropped those edges wholesale,
-			// and asymmetrically at that, since the C-family relation is
-			// directional and C names nothing at all. Precision comes from
-			// resolveTestSubject's evidence order instead.
-			target, resolution, ok := resolveTestSubject(subject, symbol, symbolsByShortName[subject], resolvedImportsByFile[path])
+			target, resolution, ok := resolveTestSubject(stop, subject, symbol, symbolsByShortName[subject], resolvedImportsByFile[path])
 			if !ok {
 				continue
 			}
@@ -12489,9 +12753,12 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 // import evidence resolves to nothing rather than to whichever same-name
 // symbol sorts first, which produced cross-crate TESTS edges to unrelated
 // units in Cargo workspaces.
-func resolveTestSubject(subject string, test SymbolRecord, candidates []SymbolRecord, importsByName map[string][]string) (SymbolRecord, string, bool) {
+func resolveTestSubject(stop func() bool, subject string, test SymbolRecord, candidates []SymbolRecord, importsByName map[string][]string) (SymbolRecord, string, bool) {
 	var eligible []SymbolRecord
 	for _, symbol := range candidates {
+		if stop != nil && stop() {
+			return SymbolRecord{}, "", false
+		}
 		if symbol.ID == test.ID || isTestName(symbol.Name) {
 			continue
 		}
@@ -12535,7 +12802,15 @@ func resolveTestSubject(subject string, test SymbolRecord, candidates []SymbolRe
 // symbols means primitives and library types (which have no local symbol) are
 // naturally excluded, keeping the edges high-precision without per-language
 // signature grammar.
-func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
+// usesTypeRelations resolves every identifier in every function signature
+// against the declarations visible to it. resolveTypeReference scans the whole
+// same-file symbol slice per reference (firstTypeLikeNamed), so the pass costs
+// symbols x references x symbols-in-file: it is QUADRATIC in symbols per file,
+// not the single linear pass the other producers are. Measured on one 16k-symbol
+// TypeScript file it charged 5.2 s to an already-expired budget, so it takes the
+// stop predicate rather than relying on the caller's guard between stages, which
+// cannot run until the whole slice has been materialized.
+func usesTypeRelations(stop func() bool, recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -12544,7 +12819,13 @@ func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, s
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stop != nil && stop() {
+			return relations
+		}
 		for _, symbol := range recordsByFile[path] {
+			if stop != nil && stop() {
+				return relations
+			}
 			if symbol.Kind != "function" && symbol.Kind != "method" || symbol.Signature == "" {
 				continue
 			}
@@ -12592,7 +12873,10 @@ func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, s
 	return relations
 }
 
-func signatureTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string, spec profileSpec) []RelationRecord {
+// signatureTypeRelations shares resolveTypeReference with usesTypeRelations and
+// is quadratic in symbols per file for the same reason, so it takes the stop
+// predicate too.
+func signatureTypeRelations(stop func() bool, recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string, spec profileSpec) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -12601,7 +12885,13 @@ func signatureTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFi
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stop != nil && stop() {
+			return relations
+		}
 		for _, symbol := range recordsByFile[path] {
+			if stop != nil && stop() {
+				return relations
+			}
 			if symbol.Kind != "function" && symbol.Kind != "method" || symbol.Signature == "" {
 				continue
 			}
@@ -12834,7 +13124,7 @@ func typeReferenceCandidates(name string, from SymbolRecord, shared []SymbolReco
 	return shared[:len(shared):len(shared)]
 }
 
-func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -12843,6 +13133,9 @@ func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent co
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -13022,9 +13315,18 @@ func fieldAccessRelations(from SymbolRecord, body symbolBody, fieldsByContainer 
 // resolved supertype overrides it. It only fires when both the supertype and
 // its methods are known local symbols, so external base classes never produce
 // guessed overrides.
-func overrideRelations(relations []RelationRecord, methodsByContainer map[string]map[string]SymbolRecord) []RelationRecord {
+// overrideRelations is polled every stopPollStride inheritance edges, like
+// the other bounded scans in this package: the caller's shouldStop check
+// above only ran BEFORE this call, so a large class hierarchy -- many
+// EXTENDS/IMPLEMENTS edges, each sorting its subtype's whole method set --
+// kept consuming CPU and memory after a cancellation until the entire slice
+// was materialized and returned.
+func overrideRelations(relations []RelationRecord, methodsByContainer map[string]map[string]SymbolRecord, stop func() bool) []RelationRecord {
 	var overrides []RelationRecord
-	for _, relation := range relations {
+	for i, relation := range relations {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return overrides
+		}
 		if relation.Type != "EXTENDS" && relation.Type != "IMPLEMENTS" {
 			continue
 		}
@@ -13219,15 +13521,32 @@ func minFloat(a, b float64) float64 {
 	return b
 }
 
-// recordIndexes builds id lookups for file and symbol records.
-func recordIndexes(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]SymbolRecord, map[string]FileRecord) {
+// recordIndexes builds id lookups for file and symbol records. stop is polled
+// every stopPollStride symbols (mirroring parser.go's cadence): this whole-
+// corpus pass runs BEFORE relation generation even starts, so on a large
+// full-profile snapshot a deadline expiring here previously went unnoticed
+// until relationsShouldStop was next consulted in forEachRelation, charging
+// the entire indexing pass to the overshoot. A stopped pass returns whatever
+// it has indexed so far — every downstream lookup (boundarySourceLocation,
+// externalRecordFor) already treats a missing id as "no evidence available"
+// rather than an error, so a partial index only degrades evidence richness,
+// never correctness.
+func recordIndexes(files []FileRecord, recordsByFile map[string][]SymbolRecord, stop func() bool) (map[string]SymbolRecord, map[string]FileRecord) {
 	filesByID := make(map[string]FileRecord, len(files))
-	for _, file := range files {
+	for i, file := range files {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return map[string]SymbolRecord{}, filesByID
+		}
 		filesByID[file.ID] = file
 	}
 	symbolsByID := map[string]SymbolRecord{}
+	count := 0
 	for _, records := range recordsByFile {
 		for _, symbol := range records {
+			if count%stopPollStride == 0 && stopped(stop) {
+				return symbolsByID, filesByID
+			}
+			count++
 			symbolsByID[symbol.ID] = symbol
 		}
 	}
@@ -20789,8 +21108,11 @@ func isManifestImportFile(path string) bool {
 	return false
 }
 
-func buildManifestImportResolver(files []FileRecord, readContent contentReader) manifestImportResolver {
+func buildManifestImportResolver(files []FileRecord, readContent contentReader, stop func() bool) manifestImportResolver {
 	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonSourceRoots: []string{"src"}, pythonModules: map[string]string{}, pythonNamespaces: map[string]bool{}, jvmTypes: map[string]string{}, jvmTypeEvidence: map[string]string{}, csharpNamespaces: map[string]string{}, csharpEvidence: map[string]string{}, csharpAmbiguous: map[string]bool{}, phpTypes: map[string]string{}, phpTypeEvidence: map[string]string{}, phpTypeAmbiguous: map[string]bool{}, rustModules: map[string]string{}, rustAliases: map[string]string{}, rustCrateNames: map[string]bool{}}
+	if stopped(stop) {
+		return resolver
+	}
 	if content, ok := readContent("go.mod"); ok {
 		resolver.goModule = parseGoModulePath(content)
 	}
@@ -20799,7 +21121,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		resolver.jsPackageExports = parsePackageJSONTargets(content, "exports")
 		resolver.jsPackageImports = parsePackageJSONTargets(content, "imports")
 	}
-	for _, file := range files {
+	for i, file := range files {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		path := filepath.ToSlash(file.Path)
 		if path == "package.json" || filepath.Base(path) != "package.json" {
 			continue
@@ -20873,7 +21198,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	resolver.jvmPackagePrefixes = normalizeJVMPackagePrefixes(resolver.jvmPackagePrefixes)
-	for _, file := range files {
+	for i, file := range files {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		if !strings.EqualFold(filepath.Ext(file.Path), ".csproj") {
 			continue
 		}
@@ -20891,7 +21219,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	var csharpPaths []string
 	var phpPaths []string
 	var rustPaths []string
-	for _, file := range files {
+	// Path-only classification: no readContent call anywhere in this loop, so
+	// nothing in it was ever gated by the caller's budgeted reader. On a
+	// repository-wide file list this pass alone can outlast an already-expired
+	// deadline before the very first gated read below ever runs.
+	for i, file := range files {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		if strings.EqualFold(filepath.Ext(file.Path), ".go") {
 			goPaths = append(goPaths, filepath.ToSlash(file.Path))
 		}
@@ -20951,8 +21286,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 		return goPaths[i] < goPaths[j]
 	})
+	if stopped(stop) {
+		return resolver
+	}
 	if resolver.goModule != "" {
-		for _, path := range goPaths {
+		for i, path := range goPaths {
+			if i%stopPollStride == 0 && stopped(stop) {
+				return resolver
+			}
 			dir := filepath.ToSlash(filepath.Dir(path))
 			importPath := resolver.goModule
 			if dir != "." {
@@ -20964,7 +21305,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(jsPaths)
-	for _, path := range jsPaths {
+	for i, path := range jsPaths {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		key := strings.TrimSuffix(path, filepath.Ext(path))
 		if _, exists := resolver.jsModuleFiles[key]; !exists {
 			resolver.jsModuleFiles[key] = path
@@ -20984,7 +21328,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	for _, path := range pyPaths {
 		pyFileSet[path] = true
 	}
-	for _, path := range pyPaths {
+	for i, path := range pyPaths {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		for _, key := range pythonModuleKeysForPath(path, resolver.pythonSourceRoots, pyFileSet) {
 			if _, exists := resolver.pythonModules[key.Module]; !exists {
 				resolver.pythonModules[key.Module] = path
@@ -21003,7 +21350,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(jvmPaths)
-	for _, path := range jvmPaths {
+	for i, path := range jvmPaths {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -21019,7 +21369,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(csharpPaths)
-	for _, path := range csharpPaths {
+	for i, path := range csharpPaths {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -21037,7 +21390,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(phpPaths)
-	for _, path := range phpPaths {
+	for i, path := range phpPaths {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -21057,7 +21413,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	}
 	// Build per-crate src roots from every Cargo.toml [package] (Cargo workspaces
 	// put crates under <crate>/src/, not ./src/). Longest dir first for nearest-match.
-	for _, cp := range cargoPaths {
+	for i, cp := range cargoPaths {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(cp)
 		if !ok {
 			continue
@@ -21085,14 +21444,20 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	}
 	rustPaths = uniqueStrings(rustPaths)
 	sort.Strings(rustPaths)
-	for _, path := range rustPaths {
+	for i, path := range rustPaths {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		for _, module := range resolver.rustModuleKeysForPath(path) {
 			if _, exists := resolver.rustModules[module]; !exists {
 				resolver.rustModules[module] = path
 			}
 		}
 	}
-	for _, path := range rustPaths {
+	for i, path := range rustPaths {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -25310,7 +25675,7 @@ func resolveRouteHandlerSymbol(handlers map[string]SymbolRecord, expr string) (S
 	return SymbolRecord{}, false
 }
 
-func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {
+func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []expressRouteRelation {
 	knownFiles := map[string]bool{}
 	for _, file := range files {
 		knownFiles[file.Path] = true
@@ -25393,6 +25758,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		})
 	}
 	for _, file := range files {
+		if stopped(stop) {
+			break
+		}
 		if !strings.EqualFold(filepath.Ext(file.Path), ".py") {
 			continue
 		}
@@ -25402,6 +25770,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		}
 		if !includedTargets[file.Path] {
 			for _, registration := range djangoRouteRegistrations(content) {
+				if stopped(stop) {
+					break
+				}
 				symbols := symbolsByFileAndName
 				if registration.AllowTypeHandler {
 					symbols = typeSymbolsByFileAndName
@@ -25414,6 +25785,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 			}
 		}
 		for _, mount := range djangoIncludeMounts(content) {
+			if stopped(stop) {
+				break
+			}
 			targetFile, ok := djangoResolveIncludeTarget(file.Path, mount, importsByFile[file.Path], moduleFiles, knownFiles)
 			if !ok {
 				continue
@@ -25423,6 +25797,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 				continue
 			}
 			for _, registration := range djangoRouteRegistrations(targetContent) {
+				if stopped(stop) {
+					break
+				}
 				symbols := symbolsByFileAndName
 				if registration.AllowTypeHandler {
 					symbols = typeSymbolsByFileAndName
@@ -27203,7 +27580,7 @@ func splitJavaScriptMember(value string) (string, string) {
 	return strings.TrimSpace(before), strings.TrimSpace(after)
 }
 
-func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool) []expressRouteRelation {
+func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool, stop func() bool) []expressRouteRelation {
 	routesByFile := map[string][]jsRouterRoute{}
 	pluginRoutesByFile := map[string]map[string][]jsRouterRoute{}
 	mountsByFile := map[string][]jsRouterMount{}
@@ -27212,6 +27589,15 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 	defaultExportsByFile := map[string]string{}
 	symbolsByFileAndName := map[string]map[string]SymbolRecord{}
 	for _, file := range files {
+		// A file this loop has not reached yet is simply absent from every
+		// *ByFile map below, which the join loop already treats the same as
+		// readContent failing for it (a plain lookup miss, skipped). Stopping
+		// mid-scan and joining only what was gathered is therefore as safe as
+		// a normal partial read failure -- no relation is ever built from a
+		// half-populated file's data.
+		if stopped(stop) {
+			break
+		}
 		if !jsLikeExtension(filepath.Ext(file.Path)) {
 			continue
 		}
@@ -27246,13 +27632,22 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 	var relations []expressRouteRelation
 	seen := map[string]bool{}
 	for _, file := range files {
+		if stopped(stop) {
+			break
+		}
 		for _, mount := range mountsByFile[file.Path] {
+			if stopped(stop) {
+				break
+			}
 			targetLocal, targetMember := splitJavaScriptMember(mount.Target)
 			localReceiver := targetLocal
 			if targetMember != "" {
 				localReceiver = targetMember
 			}
 			for _, route := range routesByFile[file.Path] {
+				if stopped(stop) {
+					break
+				}
 				if route.Receiver != localReceiver || route.Handler == "" {
 					continue
 				}
@@ -27291,6 +27686,9 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 				})
 			}
 			for _, binding := range importBindingsByFile[file.Path][targetLocal] {
+				if stopped(stop) {
+					break
+				}
 				routeFile, ok := resolveLocalImport(file.Path, binding.Module, knownFiles)
 				if !ok || routeFile == file.Path {
 					continue
@@ -27308,6 +27706,9 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 					routeReceiver = targetLocal
 				}
 				for _, route := range routesByFile[routeFile] {
+					if stopped(stop) {
+						break
+					}
 					if route.Receiver != routeReceiver || route.Handler == "" {
 						continue
 					}
@@ -27348,8 +27749,14 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 			}
 		}
 		for _, mount := range pluginMountsByFile[file.Path] {
+			if stopped(stop) {
+				break
+			}
 			targetLocal, targetMember := splitJavaScriptMember(mount.Target)
 			for _, binding := range importBindingsByFile[file.Path][targetLocal] {
+				if stopped(stop) {
+					break
+				}
 				routeFile, ok := resolveLocalImport(file.Path, binding.Module, knownFiles)
 				if !ok || routeFile == file.Path {
 					continue
@@ -27367,6 +27774,9 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 					pluginName = targetLocal
 				}
 				for _, route := range pluginRoutesByFile[routeFile][pluginName] {
+					if stopped(stop) {
+						break
+					}
 					if route.Handler == "" {
 						continue
 					}
@@ -27453,11 +27863,17 @@ func javascriptDefaultExportName(content string) string {
 	return ""
 }
 
-func pythonIncludeRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool) []expressRouteRelation {
+func pythonIncludeRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool, stop func() bool) []expressRouteRelation {
 	routesByFile := map[string][]pythonRouterRoute{}
 	mountsByFile := map[string][]pythonRouterMount{}
 	importsByFile := map[string]map[string][]pythonImportBinding{}
 	for _, file := range files {
+		// See crossFileExpressRouterRelations: a file this scan has not
+		// reached is absent from every *ByFile map, which the join loop
+		// below already treats like a plain readContent miss.
+		if stopped(stop) {
+			break
+		}
 		if !strings.EqualFold(filepath.Ext(file.Path), ".py") {
 			continue
 		}
@@ -27472,12 +27888,24 @@ func pythonIncludeRouterRelations(files []FileRecord, recordsByFile map[string][
 	var relations []expressRouteRelation
 	seen := map[string]bool{}
 	for _, file := range files {
+		if stopped(stop) {
+			break
+		}
 		if len(mountsByFile[file.Path]) == 0 {
 			continue
 		}
 		for _, mount := range mountsByFile[file.Path] {
+			if stopped(stop) {
+				break
+			}
 			for _, target := range pythonRouterTargetFiles(file.Path, mount.Target, importsByFile[file.Path], knownFiles) {
+				if stopped(stop) {
+					break
+				}
 				for _, route := range routesByFile[target.File] {
+					if stopped(stop) {
+						break
+					}
 					if route.Receiver != target.Receiver {
 						continue
 					}

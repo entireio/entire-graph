@@ -496,6 +496,24 @@ following bounds are enforced:
   overrides; negative removes it). Truncation is deterministic in sorted path
   order and always reported as `W_FILE_LIMIT`, naming the real count, the limit
   and the override.
+- **Cancellation** — a cancelled context, or a deadline on the caller's own
+  context, stops `snapshot`, `symbols` and `edges` cooperatively: the parse and
+  relation phases poll it, and so do the content reader they share, so work
+  stops within one in-flight file read or parse per worker. A stopped run
+  returns the context's error and never emits a summary record, so a consumer
+  can tell a stopped stream from a complete one, and nothing it produced is
+  cached or served to a later query.
+  When SIGINT/SIGTERM caused the cancellation the CLI exits with status 130/143;
+  a signal that races with a command that nevertheless completes keeps that
+  success, and an independent command error keeps its own status. There is no
+  wall-clock ceiling on indexing: a deadline that should bound a run belongs on
+  the caller's context or a supervisor, and its expiry is an error, not a
+  truncation.
+- **Truncated snapshots are never cached** — every cache writer (the record
+  cache's `ProviderRecordsCacheTransaction.Store` and all three search snapshot
+  writers) refuses a snapshot carrying `E_ANALYSIS_BUDGET_EXCEEDED`, and the
+  CLI says so on stderr. The checks live in the writers so a new call site
+  cannot reintroduce the hole.
 - **Git worktree discovery cap** — each index, eligible-worktree, or explicitly
   requested ignored-worktree listing accepts at most 1,000,000 raw
   NUL-delimited records and 256 MiB including delimiters. These listings must

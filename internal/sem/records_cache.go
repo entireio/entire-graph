@@ -370,6 +370,14 @@ func (transaction *ProviderRecordsCacheTransaction) Store(spool *ProviderRecords
 		spool.Abandon()
 		return nil
 	}
+	if SnapshotTruncated(summary) {
+		// A truncated stream is not this tree's answer. The key is derived from
+		// the tree and the graph-shaping options only, so persisting a
+		// truncation would hand it to every later caller as the complete index.
+		// Not an error: persistence here is best effort by contract, and the
+		// caller already has the (correctly self-describing) records in hand.
+		return nil
+	}
 	if observed.SchemaVersion != SchemaVersion ||
 		observed.Tree != transaction.tree ||
 		observed.Commit != transaction.commit ||
