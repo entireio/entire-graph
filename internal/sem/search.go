@@ -2598,25 +2598,42 @@ func preselectSearchFiles(
 			for _, path := range source.paths {
 				allowed[path] = true
 			}
-			seen := map[string]bool{}
 			patterns := searchGitAliasPatternsForTerms(q, q.terms)
 			if patterns == nil {
 				grepErr = fmt.Errorf("query requires Unicode content preselection")
 			} else {
-				grepErr = gitutil.GrepTreePatternLines(ctx, source.absRepo, source.commit, patterns, func(match gitutil.GrepMatch) error {
-					if allowed[match.Path] && !seen[match.Path] {
-						text := match.Text
-						if !textMatchesSearchQuery(q, text) {
-							// A conservative locale boundary may need validation.
-							if content, ok := validationRead(match.Path); ok {
-								text = content
-								selection.filesContentRead++
-							}
+				// The expression is a conservative superset (a locale boundary may
+				// over-match), so every hit is validated against the matcher on its
+				// content. Git lists files (-l) rather than first lines: it reads a
+				// file only to its first match, and the matcher is line-local and
+				// monotone, so validating the content admits exactly the files that
+				// validating the first matching line did.
+				grepErr = gitutil.GrepTreePatternFiles(ctx, source.absRepo, source.commit, patterns, searchGitGrepExcludedPaths(ctx, source.absRepo, source.commit, allowed), func(path string) error {
+					if !allowed[path] {
+						return ctx.Err()
+					}
+					if content, ok := validationRead(path); ok {
+						selection.filesContentRead++
+						if textMatchesSearchQuery(q, content) {
+							matches = append(matches, path)
 						}
-						if textMatchesSearchQuery(q, text) {
-							matches = append(matches, match.Path)
-						}
-						seen[match.Path] = true
+						return ctx.Err()
+					}
+					// The bounded reader declined the blob (in practice: it is over
+					// the cap). Stream it and admit it if any line validates. That
+					// admits a superset of the first-matching-line rule it replaces
+					// and differs only when that line fails validation and a later
+					// one passes. A blob that cannot be streamed either cannot be
+					// validated and stays out.
+					found, err := gitutil.ScanBlobLinesAtRev(ctx, source.absRepo, source.commit, path, func(line string) bool {
+						return textMatchesSearchQuery(q, line)
+					})
+					if err != nil {
+						return ctx.Err()
+					}
+					selection.filesContentRead++
+					if found {
+						matches = append(matches, path)
 					}
 					return ctx.Err()
 				})
