@@ -271,17 +271,25 @@ func loadOrBuildSearchSnapshotPersisting(
 	if options.Profile == "" {
 		options.Profile = ProfileFull
 	}
+	// uncached is every route that builds what options asks for without the
+	// cache. None of them is a complete build published under the lock, so a
+	// selection that assumed one (coldCompletePolicy.required) is refused here.
+	uncached := func() (ProviderSnapshot, bool, error) {
+		if options.coldComplete.required {
+			return ProviderSnapshot{}, false, errColdCompleteUnavailable
+		}
+		snapshot, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
+		return snapshot, false, buildErr
+	}
 	if disableCache || cacheDir == "" {
-		snapshot, err := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
-		return snapshot, false, err
+		return uncached()
 	}
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
 	if !worktreeSnapshotCacheable(ctx, absRepo, options) {
-		snapshot, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
-		return snapshot, false, buildErr
+		return uncached()
 	}
 	capturedOptions, captureErr := ensureProviderCachePolicy(absRepo, options)
 	if captureErr != nil {
@@ -289,14 +297,12 @@ func loadOrBuildSearchSnapshotPersisting(
 		// can safely consume. Preserve cache/no-cache behavior parity by taking
 		// the existing uncached build path; ordinary input errors still surface
 		// from that build.
-		snapshot, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
-		return snapshot, false, buildErr
+		return uncached()
 	}
 	options = capturedOptions
 	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
 	if headErr != nil {
-		snapshot, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
-		return snapshot, false, buildErr
+		return uncached()
 	}
 	repositoryKey := repoKey(ctx, absRepo)
 	// A selective snapshot is DERIVED from the complete one for the same tree, so
@@ -471,6 +477,13 @@ func loadOrBuildSearchSnapshotPersisting(
 			}
 		}
 	}
+	// A selection that assumed the cold-complete build is served only from a
+	// complete snapshot: from the cache above, or built and published under the
+	// lock (above for a selective view, below for a complete one). Building the
+	// selection itself would parse every file the uncapped grep matched.
+	if options.coldComplete.required && (len(options.OnlyFiles) > 0 || !persistBuilt || !generationKnown) {
+		return ProviderSnapshot{}, false, errColdCompleteUnavailable
+	}
 	// A complete query that missed builds exactly the artifact a concurrent cold
 	// query on the same tree is building, so it takes the same lock and re-checks
 	// the entry once it holds it.
@@ -490,9 +503,15 @@ func loadOrBuildSearchSnapshotPersisting(
 	}
 	snapshot, err := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
 	if err != nil {
+		if options.coldComplete.required && ctx.Err() == nil {
+			return ProviderSnapshot{}, false, errColdCompleteUnavailable
+		}
 		return ProviderSnapshot{}, false, err
 	}
 	if err := validateBuiltSearchSnapshot(snapshot, repositoryKey, providerVersion, tree, options); err != nil {
+		if options.coldComplete.required {
+			return ProviderSnapshot{}, false, errColdCompleteUnavailable
+		}
 		return ProviderSnapshot{}, false, fmt.Errorf(
 			"search snapshot provenance changed while building from commit %q tree %q: %w",
 			commit, tree, err,
@@ -528,7 +547,7 @@ var coldCompleteSnapshotMaxFiles = 3000
 // selective build then reports it.
 func completeSnapshotAffordableOnColdQuery(ctx context.Context, absRepo string, options ProviderSnapshotOptions) bool {
 	if known := options.coldComplete.sourceFiles; known > 0 {
-		return known <= coldCompleteSnapshotMaxFiles
+		return coldCompleteSnapshotFits(known)
 	}
 	source, err := prepareSource(ctx, absRepo, options)
 	if err != nil {
@@ -537,7 +556,21 @@ func completeSnapshotAffordableOnColdQuery(ctx context.Context, absRepo string, 
 	if source.close != nil {
 		defer source.close()
 	}
-	return len(source.paths) <= coldCompleteSnapshotMaxFiles
+	return coldCompleteSnapshotFits(len(source.paths))
+}
+
+// errColdCompleteUnavailable is how the snapshot loader refuses a selection that
+// assumed the cold-complete build (coldCompletePolicy.required) when no complete
+// snapshot can serve it: the cache generation is unreadable, the cache policy
+// cannot be captured, HEAD does not resolve, or the complete build failed or did
+// not validate. The search then selects again with the bounded content scan, so
+// the fallback builds exactly what it built before the warm route existed.
+var errColdCompleteUnavailable = errors.New("no complete snapshot for a cold-complete selection")
+
+// coldCompleteSnapshotFits is the corpus-size bound on the cold-complete build. Cold
+// preselection asks it too, so it takes the warm route only where that build can follow.
+func coldCompleteSnapshotFits(sourceFiles int) bool {
+	return sourceFiles <= coldCompleteSnapshotMaxFiles
 }
 
 // loadOrDeriveSelectiveSearchSnapshot serves a selective query from an

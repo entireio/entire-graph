@@ -565,6 +565,14 @@ type coldCompletePolicy struct {
 	// same options a complete build lists with, so the bound can be checked
 	// without listing the tree again. Zero means unknown.
 	sourceFiles int
+	// required says the search's file selection assumed the complete build: a
+	// cold query took the warm Git tree grep route, which keeps every matching
+	// file and is bounded only by the complete build it expects to follow. Such
+	// a view may come only from a complete snapshot, loaded or built and
+	// published under the build lock. Any other route reports
+	// errColdCompleteUnavailable instead of building the selection itself, and
+	// the search selects again with the bounded content scan.
+	required bool
 }
 
 type BuildPhase string
