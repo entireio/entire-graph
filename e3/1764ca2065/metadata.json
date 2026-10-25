@@ -1,0 +1,49 @@
+{
+  "cli_version": "0.11.5-nightly.202610100625.1f44a6f96.0.20261024214757-e7c0393725dd",
+  "checkpoint_id": "e31764ca2065",
+  "strategy": "manual-commit",
+  "branch": "fix/index-partial-clones",
+  "checkpoints_count": 2,
+  "files_touched": [
+    ".github/workflows/lazy-fetch-git-matrix.yml",
+    "internal/gitutil/git.go",
+    "internal/gitutil/lazy_fetch_guard_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e3/1764ca2065/0/metadata.json",
+      "transcript": "/e3/1764ca2065/0/full.jsonl",
+      "compact_transcript": "/e3/1764ca2065/0/transcript.jsonl",
+      "content_hash": "/e3/1764ca2065/0/content_hash.txt",
+      "prompt": "/e3/1764ca2065/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8,
+    "cache_creation_tokens": 1014,
+    "cache_read_tokens": 1039901,
+    "output_tokens": 12,
+    "api_call_count": 2,
+    "subagent_tokens": {
+      "input_tokens": 20,
+      "cache_creation_tokens": 11723,
+      "cache_read_tokens": 3944553,
+      "output_tokens": 9575,
+      "api_call_count": 8
+    }
+  },
+  "redaction": {
+    "replacements": 312,
+    "layers": {
+      "betterleaks": 5,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 67,
+      "credentialed_uri": 3,
+      "entropy": 242,
+      "key_context": 0,
+      "provider_token": 9,
+      "shell_stdin": 0
+    }
+  }
+}
