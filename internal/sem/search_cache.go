@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -1385,18 +1386,8 @@ func loadCachedSearchSnapshot(
 			// history edges disappeared. Fall back through the ordinary build.
 			return cachedSearchSnapshot{}, false
 		}
-		refreshed := make([]RelationRecord, 0, len(cached.Snapshot.Relations))
-		for _, relation := range cached.Snapshot.Relations {
-			if relation.Type != "FILE_CHANGES_WITH" {
-				refreshed = append(refreshed, relation)
-			}
-		}
 		history := fileChangesWithRelations(ctx, absRepo, commit, repositoryKey, cached.Snapshot.Files, &capturedFileCochanges{pairs: cochanges})
-		refreshed = append(refreshed, history...)
-		sort.Slice(refreshed, func(i, j int) bool {
-			left, right := refreshed[i], refreshed[j]
-			return left.Type+left.FromID+left.ToID < right.Type+right.FromID+right.ToID
-		})
+		refreshed := spliceFileChangesWithRelations(cached.Snapshot.Relations, history)
 		cached.Snapshot.Relations = refreshed
 		cached.Snapshot.Header.Stats.Relations = len(refreshed)
 		counts := make(map[string]int, len(cached.Snapshot.Header.Completeness.Relations))
@@ -1411,6 +1402,86 @@ func loadCachedSearchSnapshot(
 		cached.Snapshot.Header.Completeness.Relations = counts
 	}
 	return cached, true
+}
+
+// spliceFileChangesWithRelations returns relations, which are in snapshot order
+// (sorted by the concatenation Type+FromID+ToID), with every FILE_CHANGES_WITH
+// record replaced by history, in exactly the order re-sorting them all gives.
+//
+// Re-sorting every relation on every full-profile hit cost more than the
+// history lookup it served. It is also unnecessary: the history records share
+// one type, and no other type is a prefix of FILE_CHANGES_WITH or has it as a
+// prefix, so every other record orders against them on its type alone and they
+// form one contiguous block. Replacing that block with the history, sorted by
+// the same key, is the full sort's answer; an unchanged block needs no work.
+//
+// The key is the concatenation itself, never a (Type, FromID, ToID) tuple: the
+// two disagree when one ID is a prefix of another (…:Foo and …:FooBar), and the
+// snapshot bytes follow the concatenation. Keys are unique (dedupeRelations
+// keeps one record per edge, and history has one record per file pair), so the
+// sorted order is unique too. Where the block argument does not hold, a type
+// related to FILE_CHANGES_WITH by prefix or a block that is not contiguous, this
+// falls back to the full re-sort.
+func spliceFileChangesWithRelations(relations, history []RelationRecord) []RelationRecord {
+	const historyType = "FILE_CHANGES_WITH"
+	resort := func() []RelationRecord {
+		refreshed := make([]RelationRecord, 0, len(relations))
+		for _, relation := range relations {
+			if relation.Type != historyType {
+				refreshed = append(refreshed, relation)
+			}
+		}
+		refreshed = append(refreshed, history...)
+		sort.Slice(refreshed, func(i, j int) bool {
+			left, right := refreshed[i], refreshed[j]
+			return left.Type+left.FromID+left.ToID < right.Type+right.FromID+right.ToID
+		})
+		return refreshed
+	}
+	keys := make([]string, len(history))
+	order := make([]int, len(history))
+	for index, relation := range history {
+		keys[index] = relation.Type + relation.FromID + relation.ToID
+		order[index] = index
+	}
+	sort.Slice(order, func(i, j int) bool { return keys[order[i]] < keys[order[j]] })
+	sorted := make([]RelationRecord, len(history))
+	for position, index := range order {
+		sorted[position] = history[index]
+	}
+	start, end, insert := -1, -1, len(relations)
+	for index := range relations {
+		kind := relations[index].Type
+		if kind == historyType {
+			if start < 0 {
+				start = index
+			} else if end != index {
+				return resort()
+			}
+			end = index + 1
+			continue
+		}
+		if strings.HasPrefix(historyType, kind) || strings.HasPrefix(kind, historyType) {
+			return resort()
+		}
+		if kind > historyType && insert == len(relations) {
+			insert = index
+		}
+	}
+	if start < 0 {
+		start, end = insert, insert
+	}
+	unchanged := relations != nil && end-start == len(sorted)
+	for offset := 0; unchanged && offset < len(sorted); offset++ {
+		unchanged = reflect.DeepEqual(relations[start+offset], sorted[offset])
+	}
+	if unchanged {
+		return relations
+	}
+	refreshed := make([]RelationRecord, 0, len(relations)-(end-start)+len(sorted))
+	refreshed = append(refreshed, relations[:start]...)
+	refreshed = append(refreshed, sorted...)
+	return append(refreshed, relations[end:]...)
 }
 
 // rebindCachedSearchSnapshot adopts an entry, which may have been written from
