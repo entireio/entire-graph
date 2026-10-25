@@ -35,7 +35,10 @@ var unbudgetedParseAllowlist = map[string]string{
 	// reaches loadSearchStoreForEntry intact, so the fallback is the
 	// no-context default, not a parse stage escaping the caller's context.
 	"search_cache.go.readSearchSnapshotPreferringStore": "ctx := context.Background()",
-	"records_cache.go.providerRecordsKeyForSchema":      "ctx := context.Background()",
+	// The records key body moved from providerRecordsKeyForSchema into
+	// providerRecordsKeyForVersions (which also takes the cache version, so a
+	// test can address an earlier build's entry). Same no-context fallback.
+	"records_cache.go.providerRecordsKeyForVersions": "ctx := context.Background()",
 }
 
 // TestTF142R6NoUnbudgetedParseContext closes the CLASS the three round-six
