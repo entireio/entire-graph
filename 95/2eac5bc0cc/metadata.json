@@ -1,0 +1,47 @@
+{
+  "cli_version": "0.11.5-nightly.202610100625.1f44a6f96.0.20261024214757-e7c0393725dd",
+  "checkpoint_id": "952eac5bc0cc",
+  "strategy": "manual-commit",
+  "branch": "integration/g3-all",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/sem/tf142r6_parsectx_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/95/2eac5bc0cc/0/metadata.json",
+      "transcript": "/95/2eac5bc0cc/0/full.jsonl",
+      "compact_transcript": "/95/2eac5bc0cc/0/transcript.jsonl",
+      "content_hash": "/95/2eac5bc0cc/0/content_hash.txt",
+      "prompt": "/95/2eac5bc0cc/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 18,
+    "cache_creation_tokens": 10189,
+    "cache_read_tokens": 4060059,
+    "output_tokens": 5966,
+    "api_call_count": 7,
+    "subagent_tokens": {
+      "input_tokens": 56,
+      "cache_creation_tokens": 667496,
+      "cache_read_tokens": 9895966,
+      "output_tokens": 16053,
+      "api_call_count": 27
+    }
+  },
+  "redaction": {
+    "replacements": 312,
+    "layers": {
+      "betterleaks": 5,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 67,
+      "credentialed_uri": 3,
+      "entropy": 242,
+      "key_context": 0,
+      "provider_token": 9,
+      "shell_stdin": 0
+    }
+  }
+}
