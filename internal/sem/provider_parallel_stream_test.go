@@ -382,6 +382,15 @@ func TestIndexedStreamingPipelineCancelMidStreamJoinsWithoutLeak(t *testing.T) {
 				func(int, int) error {
 					if consumed.Add(1) == cancelAt {
 						close(trigger)
+						// The cancel comes from another goroutine. Hold the
+						// consumer until it lands, so the stream cannot drain
+						// first and return nil on a busy runner; producers keep
+						// running and filling their buffers meanwhile.
+						select {
+						case <-ctx.Done():
+						case <-time.After(5 * time.Second):
+							t.Errorf("rep %d: the external cancel never landed", rep)
+						}
 					}
 					return nil
 				},
