@@ -1,0 +1,64 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "900f55b2c521",
+  "session_id": "b139feea-8f46-4a23-84a2-f871154c9a2d",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-26T05:12:30.142373Z",
+  "branch": "evisdren/prefix-cache-abs-key",
+  "checkpoints_count": 4,
+  "save_step_count": 3,
+  "files_touched": [
+    "internal/gitutil/git.go",
+    "internal/gitutil/repo_prefix_cache_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "bd290b24904a",
+  "checkpoint_transcript_start": 720,
+  "transcript_lines_at_start": 720,
+  "compact_transcript_start": 88,
+  "token_usage": {
+    "input_tokens": 48,
+    "cache_creation_tokens": 379213,
+    "cache_read_tokens": 4130511,
+    "output_tokens": 13128,
+    "api_call_count": 24
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01Ki4bkr14DnEGZHtpx93D7N",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "entire:address-findings"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "bd290b24904a",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 795,
+        "end": 796,
+        "entry_ids": [
+          "b322a548-4b49-4d6a-bed5-4135daa4a88e"
+        ],
+        "tool_use_id": "toolu_01Ki4bkr14DnEGZHtpx93D7N"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Ki4bkr14DnEGZHtpx93D7N"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: entire:address-findings",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 11
+  }
+}

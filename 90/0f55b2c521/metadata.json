@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "900f55b2c521",
+  "strategy": "manual-commit",
+  "branch": "evisdren/prefix-cache-abs-key",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "internal/gitutil/git.go",
+    "internal/gitutil/repo_prefix_cache_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/90/0f55b2c521/0/metadata.json",
+      "transcript": "/90/0f55b2c521/0/full.jsonl",
+      "compact_transcript": "/90/0f55b2c521/0/transcript.jsonl",
+      "content_hash": "/90/0f55b2c521/0/content_hash.txt",
+      "prompt": "/90/0f55b2c521/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 48,
+    "cache_creation_tokens": 379213,
+    "cache_read_tokens": 4130511,
+    "output_tokens": 13128,
+    "api_call_count": 24
+  }
+}
