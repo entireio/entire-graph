@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.11.6",
+  "checkpoint_id": "3c87084c67cf",
+  "strategy": "manual-commit",
+  "branch": "evisdren/subprocess-overhead-check",
+  "checkpoints_count": 7,
+  "files_touched": [
+    "internal/gitutil/git.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3c/87084c67cf/0/metadata.json",
+      "transcript": "/3c/87084c67cf/0/full.jsonl",
+      "compact_transcript": "/3c/87084c67cf/0/transcript.jsonl",
+      "content_hash": "/3c/87084c67cf/0/content_hash.txt",
+      "prompt": "/3c/87084c67cf/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 140,
+    "cache_creation_tokens": 695219,
+    "cache_read_tokens": 8385277,
+    "output_tokens": 46026,
+    "api_call_count": 70
+  }
+}
