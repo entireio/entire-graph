@@ -7,7 +7,7 @@ import (
 
 func TestParserIdentityRevisionsSnapshotAndCaches(t *testing.T) {
 	header := leanHeader(sourceContext{}, "same-release", profileSpec{})
-	if header.IdentityRevision != "4" {
+	if header.IdentityRevision != "5" {
 		t.Fatalf("identity=%q", header.IdentityRevision)
 	}
 	if !strings.HasSuffix(searchSnapshotCacheVersion, "-"+header.IdentityRevision) || !strings.HasSuffix(providerRecordsCacheVersion, "-"+header.IdentityRevision) {
