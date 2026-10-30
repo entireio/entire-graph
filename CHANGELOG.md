@@ -35,6 +35,13 @@ auto-generated notes on
   agent and text output print one line beside the callers with a `grep` the
   reader can run to find those references. A degenerate `impact` ("no callers")
   keeps its marker line and prints the disclosure after it.
+- `query --format agent` labels coverage `degraded` (compact `!D`) only when a
+  partial failure can remove a code fact: one not confined to a single file
+  (repo-ignore shortfalls, a spent analysis budget), or one in a source file.
+  Failures confined to data, configuration or documentation files (JSON, YAML,
+  TOML, XML, Markdown and the like) now give `Coverage: notice` (`!N`); they are
+  still counted and listed. A repository whose only failures were minified JSON
+  fixtures no longer opens every answer with `Coverage: degraded`.
 
 ### Fixed
 
