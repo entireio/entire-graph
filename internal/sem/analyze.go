@@ -1030,6 +1030,8 @@ func parseFailureWarning(path string, status ParseStatus, outcome diffParseOutco
 	switch {
 	case outcome == diffSuppressed && code == "E_PARSE_TIMEOUT":
 		effect = "file diff suppressed; changes omitted because parser time budget was exceeded"
+	case outcome == diffSuppressed && status.GrammarGap:
+		effect = "file diff suppressed; the file is valid Go (go/parser accepts it), but the bundled tree-sitter Go grammar recovered no declarations from it on one side, so its changes are omitted"
 	case outcome == diffSuppressed:
 		effect = "file diff suppressed; changes omitted because the file could not be parsed"
 	case outcome == diffEntitiesSkipped:
@@ -1044,6 +1046,8 @@ func parseFailureWarning(path string, status ParseStatus, outcome diffParseOutco
 		// this outcome, so what is omitted is a real change below the limit,
 		// not a phantom one.
 		effect = "diff kept, but declarations nested deeper than the parser walk limit were not compared on one side; only changes visible on both sides are reported, so an addition or removal below the limit is omitted"
+	case status.GrammarGap:
+		effect = "the file is valid Go (go/parser accepts it) that the bundled tree-sitter Go grammar cannot fully parse on one side; diff kept, but changes inside the construct the grammar could not parse may be missing or reported as phantom changes"
 	default:
 		effect = "file parsed with syntax errors on one side; diff kept but may be incomplete or contain phantom changes"
 	}

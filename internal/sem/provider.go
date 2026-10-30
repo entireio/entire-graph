@@ -1463,6 +1463,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	languageSet := map[string]struct{}{}
 	completenessLangs := map[string]LanguageCompleteness{}
 	var failures []PartialFailure
+	var fileWarnings []ProviderWarning
 	var files []FileRecord
 	recordsByFile := map[string][]SymbolRecord{}
 	structuralByFile := map[string][]structuralSymbol{}
@@ -1509,6 +1510,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		},
 		func(result providerFileResult) error {
 			failures = append(failures, result.failures...)
+			fileWarnings = append(fileWarnings, result.warnings...)
 			if result.hasPrecomputedImports {
 				precomputedImports[result.path] = result.precomputedImports
 			}
@@ -1726,6 +1728,12 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		}
 	}
 	warnings := sc.warnings
+	if len(fileWarnings) > 0 {
+		// Per-file warnings follow the source-listing warnings, in path order.
+		// The selective view derived from this snapshot places them the same
+		// way (selectiveSearchSnapshotFromFull), so cold and warm agree.
+		warnings = append(append([]ProviderWarning{}, sc.warnings...), fileWarnings...)
+	}
 	if warnings == nil {
 		warnings = []ProviderWarning{}
 	}
