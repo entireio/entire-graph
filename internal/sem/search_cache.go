@@ -1182,8 +1182,8 @@ func selectiveSearchSnapshotFromFull(
 	}
 	selective.Header.Languages = sortedKeys(languageSet)
 	selective.Header.LanguageTiers = languageTiers(languageSet)
-	selective.Header.Warnings = warnings
-	selective.Header.PartialFailures = failures
+	selective.Header.Warnings = withWarningEffectScopes(warnings)
+	selective.Header.PartialFailures = withFailureEffectScopes(failures)
 	selective.Header.Stats = ProviderStats{
 		Files:           len(selective.Files),
 		ParsedFiles:     parsedFiles,

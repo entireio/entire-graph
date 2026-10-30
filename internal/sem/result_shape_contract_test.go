@@ -86,6 +86,7 @@ var resultWireShape = map[string][]string{
 		`name="severity" type="string" tagged=true anonymous=false options=""`,
 		`name="file_path" type="string" tagged=true anonymous=false options="omitempty"`,
 		`name="effect_on_semantic_completeness" type="string" tagged=true anonymous=false options=""`,
+		`name="effect_scope" type="string" tagged=true anonymous=false options="omitempty"`,
 		`name="detail" type="string" tagged=true anonymous=false options="omitempty"`,
 	},
 }
@@ -885,8 +886,8 @@ func resultWireShapeDigest() string {
 func TestResultWireShapeIsBoundToTheSchemaVersion(t *testing.T) {
 	t.Parallel()
 	const (
-		pinnedSchemaVersion = "1.4"
-		pinnedShapeDigest   = "a8d4cd9b7a4a6735"
+		pinnedSchemaVersion = "1.5"
+		pinnedShapeDigest   = "3d0288de2e95c268"
 	)
 	if SchemaVersion != pinnedSchemaVersion || resultWireShapeDigest() != pinnedShapeDigest {
 		t.Fatalf(

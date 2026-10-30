@@ -793,6 +793,9 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		return Result{}, err
 	}
 	emitProgress("complete", len(changed), len(changed))
+	// Every warning is in; stamp each one's effect_scope here, once, rather
+	// than at each of the builders above.
+	result.Warnings = withWarningEffectScopes(result.Warnings)
 	return result, nil
 }
 

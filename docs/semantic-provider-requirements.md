@@ -394,6 +394,9 @@ allowed as human detail, but every warning needs:
 - severity
 - file path when applicable
 - effect on semantic completeness
+- effect scope (`file` or `snapshot`, schema 1.5): whether what the diagnostic
+  says may be missing is confined to the file it names; see
+  [snapshot format](snapshot-format.md#diagnostic-effect-scope-schema-15)
 - optional human detail
 
 One parser failure should not fail a whole-repo snapshot. The provider should

@@ -34,14 +34,15 @@ import (
 )
 
 const (
-	// SchemaVersion 1.4 adds optional derived relation provenance; 1.3 added
+	// SchemaVersion 1.5 adds the optional effect_scope on warnings and partial
+	// failures; 1.4 added optional derived relation provenance; 1.3 added
 	// source-file health accounting; 1.2 added
 	// optional parser identity metadata.
 	// Schema 1.1 added the snapshot fields introduced
 	// alongside boundary source locations (the `external` flag on external records
 	// and the per-symbol source-location fields). The shape is backward compatible
 	// for tolerant readers; the bump lets consumers detect the new fields.
-	SchemaVersion         = "1.4"
+	SchemaVersion         = "1.5"
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
 	// IdentityRevision is a global, opaque revision of parser identity rules across
@@ -229,6 +230,7 @@ var schemaFeatures = []string{
 	"completeness_breakdown",
 	"completeness_health",
 	"language_versions",
+	"partial_failure_effect_scope",
 	"relation_evidence",
 	"relation_evidence_dropped",
 	"relation_provenance",
@@ -310,7 +312,12 @@ type ProviderWarning struct {
 	Severity             string `json:"severity"`
 	FilePath             string `json:"file_path,omitempty"`
 	EffectOnCompleteness string `json:"effect_on_semantic_completeness"`
-	Detail               string `json:"detail,omitempty"`
+	// EffectScope is the machine-readable bound on what this diagnostic can
+	// affect: EffectScopeFile or EffectScopeSnapshot (schema 1.5). It is
+	// always DiagnosticEffectScope(Code, FilePath), stamped where diagnostics
+	// leave the provider (see withWarningEffectScopes).
+	EffectScope string `json:"effect_scope,omitempty"`
+	Detail      string `json:"detail,omitempty"`
 }
 
 type PartialFailure struct {
@@ -319,7 +326,9 @@ type PartialFailure struct {
 	FilePath             string `json:"file_path,omitempty"`
 	Language             string `json:"language,omitempty"`
 	EffectOnCompleteness string `json:"effect_on_semantic_completeness"`
-	Detail               string `json:"detail,omitempty"`
+	// EffectScope: see ProviderWarning.EffectScope (schema 1.5).
+	EffectScope string `json:"effect_scope,omitempty"`
+	Detail      string `json:"detail,omitempty"`
 }
 
 // AnalysisBudgetExceededCode marks a snapshot that did not run to completion:
@@ -814,6 +823,10 @@ func Capabilities() CapabilityReport {
 			// `graph context --allow-ancestor`: a consumer passes the flag only
 			// when this is true, so an older provider (key absent) is a plain no.
 			"context_allow_ancestor": true,
+			// effect_scope ("file" or "snapshot") on every partial failure and
+			// warning, including `graph diff` warnings. Absent key: the field is
+			// not populated and the scope must be read as unknown.
+			"partial_failure_effect_scope": true,
 		},
 		FeaturesRequiringNetworkAccess: map[string]bool{
 			"grammar_download":  false,
@@ -1724,8 +1737,8 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		RecordType:      "summary",
 		Languages:       sortedKeys(languageSet),
 		LanguageTiers:   languageTiers(languageSet),
-		Warnings:        warnings,
-		PartialFailures: failures,
+		Warnings:        withWarningEffectScopes(warnings),
+		PartialFailures: withFailureEffectScopes(failures),
 		Stats: ProviderStats{
 			Files:           len(files),
 			ParsedFiles:     parsedFileCount,

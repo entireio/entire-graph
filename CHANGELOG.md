@@ -24,6 +24,17 @@ auto-generated notes on
   exact and now refuses a store whose recorded tree differs from its key's.
   `capabilities --json` advertises it as
   `optional_local_only_features.context_allow_ancestor: true`.
+- Every warning and partial failure now carries a machine-readable
+  `effect_scope` (schema 1.5): `file` when what it says may be missing is
+  confined to the file it names (its symbols, and relations that start or end at
+  them), `snapshot` when it is not bounded by one file. This includes the
+  `warnings` of `diff`, `commit` and `checkpoint` results, so a consumer can
+  tell an oversized JSON file from a narrowed corpus without parsing
+  `effect_on_semantic_completeness`. Every code the provider emits is
+  classified. `capabilities --json` advertises it as
+  `optional_local_only_features.partial_failure_effect_scope: true`, and the
+  snapshot header lists `partial_failure_effect_scope` in `schema_features`.
+  The schema minor bump rebuilds cache entries written without the field.
 
 ### Changed
 
