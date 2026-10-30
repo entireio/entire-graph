@@ -56,7 +56,9 @@ import (
 // W_COCHANGE_HISTORY_UNAVAILABLE. The sidecar sits beside the entry under this
 // version's directory, so the bump orphans stale stores as well.
 // v29 retires body-laden Julia signatures and module DATA_FLOWS edges.
-const searchSnapshotCacheVersion = "search-snapshot-v29-" + IdentityRevision
+// v30 retires headers that report valid Go the bundled grammar cannot fully
+// parse as an E_PARSE_ERROR partial failure instead of a W_GO_GRAMMAR_GAP warning.
+const searchSnapshotCacheVersion = "search-snapshot-v30-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -1125,6 +1127,13 @@ func selectiveSearchSnapshotFromFull(
 	})
 
 	warnings := append([]ProviderWarning{}, sc.warnings...)
+	// Per-file warnings come next, where a build of the view places them, kept
+	// only for the files the view retains.
+	for _, warning := range full.Header.Warnings {
+		if warning.Code == GoGrammarGapCode && allowedFiles[filepath.ToSlash(filepath.Clean(warning.FilePath))] {
+			warnings = append(warnings, warning)
+		}
+	}
 	// The complete graph's own W_DATA_FLOW_EVIDENCE_UNMERGED counts the whole
 	// tree; this view recounts the unmerged edges it kept, placed where a build
 	// of the view would place it, after the source warnings.

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	goparser "go/parser"
+	gotoken "go/token"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -230,8 +232,30 @@ type ParseStatus struct {
 	// the depth limit" — as opposed to "is what came back trustworthy" —
 	// read this field, not Partial.
 	DepthExceeded bool
-	Code          string
-	Detail        string
+	// GrammarGap reports that the bundled tree-sitter grammar found syntax
+	// errors in bytes the language's reference parser accepts: the file is
+	// valid, and the grammar is behind the language (Go 1.26's new(expr) is the
+	// case that prompted it). ParseError stays true, because the tree really
+	// was recovered from errors and facts inside the construct may be missing,
+	// so every consumer still reports the file; GrammarGap tells them to report
+	// a grammar limitation rather than a file that failed to parse. Only Go sets
+	// it, with go/parser as the reference.
+	GrammarGap bool
+	Code       string
+	Detail     string
+}
+
+// GoGrammarGapCode is the warning code for a Go file that go/parser accepts but
+// the bundled tree-sitter Go grammar reports syntax errors in.
+const GoGrammarGapCode = "W_GO_GRAMMAR_GAP"
+
+// goSourceIsValid reports whether the Go toolchain's parser accepts src as a Go
+// source file. It checks syntax only, which is the question a grammar gap asks.
+// The caller runs it only for Go files tree-sitter already rejected, and the
+// input is bounded by the parser's byte cap.
+func goSourceIsValid(src []byte) bool {
+	_, err := goparser.ParseFile(gotoken.NewFileSet(), "", src, goparser.SkipObjectResolution)
+	return err == nil
 }
 
 func (TreeSitterParser) Parse(path, content string) ([]Entity, string) {
@@ -635,6 +659,23 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 		}
 	case root.HasError():
 		status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetailWithLineOffset(root, entitySrc, entityLineOffset)}
+		// Every consumer turns this status into its diagnostic, so deciding the
+		// grammar gap here is what lets all of them inherit it. A Go file that
+		// go/parser accepts is valid Go: the error nodes are the grammar's, not
+		// the file's.
+		if spec.language == "Go" {
+			if stopped(stop) {
+				return nil, spec.language, parseStoppedStatus(ctx, "go syntax check")
+			}
+			if goSourceIsValid(src) {
+				status = ParseStatus{
+					ParseError: true,
+					GrammarGap: true,
+					Code:       GoGrammarGapCode,
+					Detail:     status.Detail + "; go/parser accepts the file",
+				}
+			}
+		}
 	}
 	return entities, spec.language, status
 }

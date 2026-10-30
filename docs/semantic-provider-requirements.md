@@ -411,6 +411,16 @@ files dominating large-repo runs. Files above the cap still emit file records,
 but symbol parsing is skipped and an `E_FILE_TOO_LARGE` partial failure is
 reported.
 
+A grammar that lags its language is not a malformed file. When the bundled
+tree-sitter Go grammar recovers a file from errors but `go/parser` accepts the
+same bytes (Go 1.26's `new(expr)` is the known case), the file is valid Go, and
+the provider reports a `W_GO_GRAMMAR_GAP` warning naming it instead of an
+`E_PARSE_ERROR` partial failure. The warning does not count against
+completeness; its effect says that facts inside the construct the grammar could
+not parse may be missing. The same decision reaches the snapshot, search and
+`diff` paths, including the `diff` dependents scan. Go that `go/parser` rejects
+keeps `E_PARSE_ERROR`.
+
 ## Git Subprocess Configuration Boundary
 
 Every production Git subprocess must discard inherited repository-selection,

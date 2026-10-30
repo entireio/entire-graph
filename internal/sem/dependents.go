@@ -547,11 +547,15 @@ func dependentsParseFailureWarning(path string, status ParseStatus) ProviderWarn
 	if code == "" {
 		code = "E_PARSE_ERROR"
 	}
+	effect := "dependent references in this file may be undercounted because it failed to parse cleanly"
+	if status.GrammarGap {
+		effect = "the file is valid Go (go/parser accepts it), but dependent references inside the construct the bundled tree-sitter Go grammar could not parse may be undercounted"
+	}
 	return ProviderWarning{
 		Code:                 code,
 		Severity:             "warning",
 		FilePath:             path,
-		EffectOnCompleteness: "dependent references in this file may be undercounted because it failed to parse cleanly",
+		EffectOnCompleteness: effect,
 		Detail:               status.Detail,
 	}
 }
