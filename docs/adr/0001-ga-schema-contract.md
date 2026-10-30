@@ -7,7 +7,7 @@ Date: 2026-07-03
 
 `entire-graph` emits a semantic index consumed by downstream tools (notably
 `entire-brain`). The wire format carries `schema_version` in `major.minor` form.
-The provider currently advertises **`1.4`** (`internal/sem/provider.go`
+The provider currently advertises **`1.5`** (`internal/sem/provider.go`
 `SchemaVersion`), where the `1.1` minor adds *optional, additive* relation fields
 that tolerant readers ignore. A compatibility policy already exists in the
 [semantic provider requirements](../semantic-provider-requirements.md), but it
@@ -19,7 +19,7 @@ against it and so future changes have clear, non-breaking rules.
 
 ## Decision
 
-**GA ships on schema `1.x`, with `1.4` as the current minor. `1.x` is the frozen,
+**GA ships on schema `1.x`, with `1.5` as the current minor. `1.x` is the frozen,
 stable GA contract.** We do NOT roll back to `1.0`; `1.1` is strictly additive
 over `1.0` and every `1.0` reader already tolerates it.
 
@@ -209,3 +209,22 @@ unchanged. The Result version is re-pinned to 1.4 with its existing shape digest
 Both cache families already include the exact schema version in their addresses
 and reject a mismatched envelope, so this bump invalidates pre-provenance data
 without changing parser identity or the compact v1 row layout.
+
+### Diagnostic effect scope (schema 1.5)
+
+Schema 1.5 adds the optional `effect_scope` field (`file` or `snapshot`) to
+`ProviderWarning` and `PartialFailure`, advertised as
+`schema_features: partial_failure_effect_scope` and in capabilities. No existing
+field is removed, retyped, or reinterpreted; `effect_on_semantic_completeness`
+keeps its prose. Older supported-major readers ignore the field and may warn on
+the newer minor.
+
+`ProviderWarning` is reachable from the persisted `Result`, so its frozen shape
+gains the field and the Result is re-pinned to 1.5 with a new shape digest. The
+field is a plain tagged string, not a JSON hook: it is stamped from
+`DiagnosticEffectScope(code, file_path)` where diagnostics leave the provider
+(snapshot summary, derived selective view, search response, diff result), and
+every code in the source must be classified. Both cache families address the
+exact schema version, so this bump also retires entries written without the
+field. Parser identity revision and stable symbol IDs are unchanged.
+
