@@ -394,6 +394,9 @@ allowed as human detail, but every warning needs:
 - severity
 - file path when applicable
 - effect on semantic completeness
+- effect scope (`file` or `snapshot`, schema 1.5): whether what the diagnostic
+  says may be missing is confined to the file it names; see
+  [snapshot format](snapshot-format.md#diagnostic-effect-scope-schema-15)
 - optional human detail
 
 One parser failure should not fail a whole-repo snapshot. The provider should
@@ -410,6 +413,16 @@ provider applies a per-file parser input cap to avoid pathological generated
 files dominating large-repo runs. Files above the cap still emit file records,
 but symbol parsing is skipped and an `E_FILE_TOO_LARGE` partial failure is
 reported.
+
+A grammar that lags its language is not a malformed file. When the bundled
+tree-sitter Go grammar recovers a file from errors but `go/parser` accepts the
+same bytes (Go 1.26's `new(expr)` is the known case), the file is valid Go, and
+the provider reports a `W_GO_GRAMMAR_GAP` warning naming it instead of an
+`E_PARSE_ERROR` partial failure. The warning does not count against
+completeness; its effect says that facts inside the construct the grammar could
+not parse may be missing. The same decision reaches the snapshot, search and
+`diff` paths, including the `diff` dependents scan. Go that `go/parser` rejects
+keeps `E_PARSE_ERROR`.
 
 ## Git Subprocess Configuration Boundary
 

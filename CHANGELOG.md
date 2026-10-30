@@ -24,6 +24,17 @@ auto-generated notes on
   exact and now refuses a store whose recorded tree differs from its key's.
   `capabilities --json` advertises it as
   `optional_local_only_features.context_allow_ancestor: true`.
+- Every warning and partial failure now carries a machine-readable
+  `effect_scope` (schema 1.5): `file` when what it says may be missing is
+  confined to the file it names (its symbols, and relations that start or end at
+  them), `snapshot` when it is not bounded by one file. This includes the
+  `warnings` of `diff`, `commit` and `checkpoint` results, so a consumer can
+  tell an oversized JSON file from a narrowed corpus without parsing
+  `effect_on_semantic_completeness`. Every code the provider emits is
+  classified. `capabilities --json` advertises it as
+  `optional_local_only_features.partial_failure_effect_scope: true`, and the
+  snapshot header lists `partial_failure_effect_scope` in `schema_features`.
+  The schema minor bump rebuilds cache entries written without the field.
 
 ### Changed
 
@@ -35,9 +46,24 @@ auto-generated notes on
   agent and text output print one line beside the callers with a `grep` the
   reader can run to find those references. A degenerate `impact` ("no callers")
   keeps its marker line and prints the disclosure after it.
+- `query --format agent` labels coverage `degraded` (compact `!D`) only when a
+  partial failure can remove a code fact: one not confined to a single file
+  (repo-ignore shortfalls, a spent analysis budget), or one in a source file.
+  Failures confined to data, configuration or documentation files (JSON, YAML,
+  TOML, XML, Markdown and the like) now give `Coverage: notice` (`!N`); they are
+  still counted and listed. A repository whose only failures were minified JSON
+  fixtures no longer opens every answer with `Coverage: degraded`.
 
 ### Fixed
 
+- Valid Go that the bundled tree-sitter grammar cannot fully parse (Go 1.26's
+  `new(expr)`, for example `new(0)`) is no longer reported as an `E_PARSE_ERROR`
+  partial failure. When `go/parser` accepts the file, snapshots, search and
+  `diff` report a `W_GO_GRAMMAR_GAP` warning naming it instead: it does not
+  count against completeness, and its effect says facts inside the construct the
+  grammar could not parse may be missing. Go that `go/parser` rejects keeps
+  `E_PARSE_ERROR`. Records and search caches are versioned so a cached
+  `E_PARSE_ERROR` for such a file is not replayed.
 - Partial clones (`--filter=blob:none`, or any repository with a promisor
   remote) are no longer refused outright when the Git that runs in them is
   2.45.1 or newer (or, on an older release line, 2.39.4+, 2.40.2+, 2.41.1+,
