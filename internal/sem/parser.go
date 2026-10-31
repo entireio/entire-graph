@@ -21,6 +21,7 @@ import (
 	objc "github.com/entireio/entire-graph/internal/sem/grammars/objc"
 	perl "github.com/entireio/entire-graph/internal/sem/grammars/perl"
 	rlang "github.com/entireio/entire-graph/internal/sem/grammars/r"
+	swift "github.com/entireio/entire-graph/internal/sem/grammars/swift"
 	zig "github.com/entireio/entire-graph/internal/sem/grammars/zig"
 	"github.com/entireio/entire-graph/internal/sem/pgsql"
 	"github.com/entireio/entire-graph/internal/sem/zsh"
@@ -43,7 +44,6 @@ import (
 	"github.com/smacker/go-tree-sitter/ruby"
 	"github.com/smacker/go-tree-sitter/rust"
 	"github.com/smacker/go-tree-sitter/scala"
-	"github.com/smacker/go-tree-sitter/swift"
 	treesittertsx "github.com/smacker/go-tree-sitter/typescript/tsx"
 	treesitterts "github.com/smacker/go-tree-sitter/typescript/typescript"
 	treesitteryaml "github.com/smacker/go-tree-sitter/yaml"
@@ -1633,12 +1633,8 @@ func maskSwiftUnsupportedSyntax(content string) string {
 			continue
 		}
 		text = maskSwiftPropertyWrapperPrefix(text)
-		text = maskSwiftEmptyAttributeCalls(text)
 		text = replacePatternSameLength(text, swiftTypedThrowsPattern, "throws")
 		if replacement, ok := maskSwiftAsyncForLine(text); ok {
-			text = replacement
-		}
-		if replacement, ok := maskSwiftOptionalBindingShorthand(text); ok {
 			text = replacement
 		}
 		if strings.Contains(text, `"""`) {
@@ -1647,26 +1643,6 @@ func maskSwiftUnsupportedSyntax(content string) string {
 				continue
 			}
 			break
-		}
-		if swiftLeadingOperatorContinuationLinePattern.MatchString(text) {
-			if strings.Contains(text, "{") {
-				balance := strings.Count(text, "(") - strings.Count(text, ")")
-				balance += strings.Count(text, "{") - strings.Count(text, "}")
-				lines[i] = maskLineText(text) + newline
-				for balance > 0 && i+1 < len(lines) {
-					i++
-					text, newline = splitLineEnding(lines[i])
-					balance += strings.Count(text, "(") - strings.Count(text, ")")
-					balance += strings.Count(text, "{") - strings.Count(text, "}")
-					lines[i] = maskLineText(text) + newline
-				}
-				continue
-			}
-			if strings.HasSuffix(strings.TrimSpace(text), ")") && !strings.Contains(text, "(") {
-				text = paddedReplacement(leadingWhitespace(text), ")", len(text))
-			} else {
-				text = maskLineText(text)
-			}
 		}
 		lines[i] = text + newline
 	}
@@ -1768,12 +1744,6 @@ func swiftNextNonEmptyTrimmedLine(lines []string, start int) string {
 	return ""
 }
 
-func maskSwiftEmptyAttributeCalls(text string) string {
-	return swiftEmptyAttributeCallPattern.ReplaceAllStringFunc(text, func(match string) string {
-		return strings.TrimSuffix(match, "()") + strings.Repeat(" ", len("()"))
-	})
-}
-
 func swiftComputedStringPropertyHasRecoverableBody(lines []string) bool {
 	hasExpression := false
 	for _, line := range lines {
@@ -1789,22 +1759,6 @@ func swiftComputedStringPropertyHasRecoverableBody(lines []string) bool {
 		return false
 	}
 	return hasExpression
-}
-
-func maskSwiftPropertyWrapperPrefix(text string) string {
-	matches := swiftPropertyWrapperPrefixPattern.FindStringIndex(text)
-	if len(matches) != 2 {
-		return text
-	}
-	wrapperEnd := strings.LastIndex(text[:matches[1]], " var ")
-	if wrapperEnd < 0 {
-		wrapperEnd = strings.LastIndex(text[:matches[1]], " let ")
-	}
-	if wrapperEnd < 0 {
-		return text
-	}
-	declStart := wrapperEnd + 1
-	return text[:matches[0]] + strings.Repeat(" ", declStart-matches[0]) + text[declStart:]
 }
 
 func maskSwiftAsyncForLine(text string) (string, bool) {
@@ -1826,29 +1780,33 @@ func maskSwiftAsyncForLine(text string) (string, bool) {
 	return paddedReplacement(leadingWhitespace(text), replacement, len(text)), true
 }
 
-func maskSwiftOptionalBindingShorthand(text string) (string, bool) {
-	matches := swiftOptionalBindingShorthandPattern.FindStringSubmatchIndex(text)
-	if len(matches) != 4 {
-		return text, false
+func maskSwiftPropertyWrapperPrefix(text string) string {
+	matches := swiftPropertyWrapperPrefixPattern.FindStringIndex(text)
+	if len(matches) != 2 {
+		return text
 	}
-	replacement := "if true {"
-	return text[:matches[0]] + sameLengthReplacement(replacement, matches[1]-matches[0]) + text[matches[1]:], true
+	wrapperEnd := strings.LastIndex(text[:matches[1]], " var ")
+	if wrapperEnd < 0 {
+		wrapperEnd = strings.LastIndex(text[:matches[1]], " let ")
+	}
+	if wrapperEnd < 0 {
+		return text
+	}
+	declStart := wrapperEnd + 1
+	return text[:matches[0]] + strings.Repeat(" ", declStart-matches[0]) + text[declStart:]
 }
 
 var (
-	cSharpPointerDerefCastPattern               = regexp.MustCompile(`\*+\(\s*[A-Za-z_@][\w<>,.\s]*?\*+\s*\)`)
-	cSharpBareAsyncArgumentPattern              = regexp.MustCompile(`([(,]\s*)async(\s*[,)])`)
-	cSharpDictionaryIndexInitializerPattern     = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
-	swiftTypedThrowsPattern                     = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
-	swiftOptionalBindingShorthandPattern        = regexp.MustCompile(`\bif\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{`)
-	swiftEmptyAttributeCallPattern              = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*\(\)`)
-	swiftPropertyWrapperPrefixPattern           = regexp.MustCompile(`^(\s*)@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+(?:var|let)\s+`)
-	swiftLeadingOperatorContinuationLinePattern = regexp.MustCompile(`^\s*(?:<|>|<=|>=|==|!=|&&|\|\|)\s+`)
-	swiftComputedStringPropertyStartPattern     = regexp.MustCompile(`^((?:(?:private|fileprivate|internal|public)\s+)?)var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|\[String\])\s*\{$`)
-	cControlIteratorMacroPattern                = regexp.MustCompile(`^(?:(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)|(?:foreach|foreach_ptr|foreach_node|foreach_oid|foreach_int|foreach_xid|foreach_delete_current|forboth|for_both_cell|forthree|for_fourth_cell|for_each_from|dlist_foreach(?:_modify)?|dclist_foreach(?:_modify)?|slist_foreach(?:_modify)?|hash_seq_search|SGITITERATE))\s*\(`)
-	cGenerateMacroPattern                       = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
-	cEnumMacroPattern                           = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
-	cFileScopeStatementMacroPattern             = regexp.MustCompile(`^(?:PG_MODULE_MAGIC(?:_EXT)?|PG_FUNCTION_INFO_V1|PGDLLEXPORT|PG_KEYWORD|PG_FUNCTION_ARGS|PG_USED_FOR_ASSERTS_ONLY|DECLARE_[A-Z][A-Z0-9_]*|MAKE_SYSCACHE)\s*\(`)
+	cSharpPointerDerefCastPattern           = regexp.MustCompile(`\*+\(\s*[A-Za-z_@][\w<>,.\s]*?\*+\s*\)`)
+	cSharpBareAsyncArgumentPattern          = regexp.MustCompile(`([(,]\s*)async(\s*[,)])`)
+	cSharpDictionaryIndexInitializerPattern = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
+	swiftTypedThrowsPattern                 = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
+	swiftPropertyWrapperPrefixPattern       = regexp.MustCompile(`^(\s*)@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+(?:var|let)\s+`)
+	swiftComputedStringPropertyStartPattern = regexp.MustCompile(`^((?:(?:private|fileprivate|internal|public)\s+)?)var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|\[String\])\s*\{$`)
+	cControlIteratorMacroPattern            = regexp.MustCompile(`^(?:(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)|(?:foreach|foreach_ptr|foreach_node|foreach_oid|foreach_int|foreach_xid|foreach_delete_current|forboth|for_both_cell|forthree|for_fourth_cell|for_each_from|dlist_foreach(?:_modify)?|dclist_foreach(?:_modify)?|slist_foreach(?:_modify)?|hash_seq_search|SGITITERATE))\s*\(`)
+	cGenerateMacroPattern                   = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
+	cEnumMacroPattern                       = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
+	cFileScopeStatementMacroPattern         = regexp.MustCompile(`^(?:PG_MODULE_MAGIC(?:_EXT)?|PG_FUNCTION_INFO_V1|PGDLLEXPORT|PG_KEYWORD|PG_FUNCTION_ARGS|PG_USED_FOR_ASSERTS_ONLY|DECLARE_[A-Z][A-Z0-9_]*|MAKE_SYSCACHE)\s*\(`)
 	// PostgreSQL system-catalog header macros: the `CATALOG(name,oid,...) BKI_...`
 	// struct opener (the `{` follows on the next line) and BKI_* field/struct
 	// annotations. BEGIN/END_CATALOG_STRUCT markers are handled as bare lines.
