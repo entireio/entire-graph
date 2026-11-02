@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.12.1-nightly.202610240623.b9639ba5b",
+  "checkpoint_id": "c25836843887",
+  "strategy": "manual-commit",
+  "branch": "ashtom/pr357-swift-regressions",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/grammars/swift/README.md",
+    "internal/sem/grammars/swift/VALIDATION.md",
+    "internal/sem/grammars/swift/binding.go",
+    "internal/sem/swift_grammar_regression_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c2/5836843887/0/metadata.json",
+      "transcript": "/c2/5836843887/0/full.jsonl",
+      "compact_transcript": "/c2/5836843887/0/transcript.jsonl",
+      "content_hash": "/c2/5836843887/0/content_hash.txt",
+      "prompt": "/c2/5836843887/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 342154,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 31331072,
+    "output_tokens": 76033,
+    "api_call_count": 246,
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 112,
+    "layers": {
+      "betterleaks": 96,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 2,
+      "credentialed_uri": 24,
+      "entropy": 102,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}
