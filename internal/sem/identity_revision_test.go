@@ -7,7 +7,7 @@ import (
 
 func TestParserIdentityRevisionsSnapshotAndCaches(t *testing.T) {
 	header := leanHeader(sourceContext{}, "same-release", profileSpec{})
-	if header.IdentityRevision != "6" {
+	if header.IdentityRevision != "7" {
 		t.Fatalf("identity=%q", header.IdentityRevision)
 	}
 	if !strings.HasSuffix(searchSnapshotCacheVersion, "-"+header.IdentityRevision) || !strings.HasSuffix(providerRecordsCacheVersion, "-"+header.IdentityRevision) {
@@ -126,5 +126,11 @@ func TestRemainingNestedCallableCorrectionsAreRevisioned(t *testing.T) {
 func TestSwiftGrammarRefreshIsRevisioned(t *testing.T) {
 	if IdentityRevision == "5" {
 		t.Fatal("the Swift grammar refresh must invalidate revision 5")
+	}
+}
+
+func TestSwiftGrammarRecoveryIsRevisioned(t *testing.T) {
+	if IdentityRevision == "6" {
+		t.Fatal("the Swift grammar recovery must invalidate revision 6")
 	}
 }

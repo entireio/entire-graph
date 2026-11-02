@@ -164,7 +164,8 @@
       "tree_sitter/array.h",
       "tree_sitter/parser.h"
     ],
-    "abi": 14
+    "abi": 14,
+    "note": "grammar.js and src/scanner.c patched with swift/compatibility.patch; parser.c regenerated with tree-sitter-cli 0.24.7 --abi 14. See swift/README.md; a verbatim refresh must reapply this patch."
   },
   {
     "language": "zig",

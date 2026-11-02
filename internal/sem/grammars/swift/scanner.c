@@ -4,7 +4,7 @@
 #include <string.h>
 #include <wctype.h>
 
-#define TOKEN_COUNT 34
+#define TOKEN_COUNT 35
 
 enum TokenType {
     BLOCK_COMMENT,
@@ -40,7 +40,8 @@ enum TokenType {
     DIRECTIVE_ELSEIF,
     DIRECTIVE_ELSE,
     DIRECTIVE_ENDIF,
-    FAKE_TRY_BANG
+    FAKE_TRY_BANG,
+    DIRECTIVE_ENDIF_AS_SEMI
 };
 
 #define OPERATOR_COUNT 20
@@ -807,14 +808,17 @@ static enum ParseDirective eat_whitespace(
                 // This is a multiline comment. This scanner should be parsing those, so we might want to bail out and
                 // emit it instead. However, we only want to do that if we haven't advanced through a _single_ line
                 // comment on the way - otherwise that will get lumped into this.
-                if (!has_seen_single_comment) {
+                // When a separator is valid, look through the comment first: returning
+                // the comment here would erase the preceding newline. mark_end stays
+                // before the comment so the next scan can emit it separately.
+                if (!has_seen_single_comment && !semi_is_valid) {
                     lexer->mark_end(lexer);
                     *symbol_result = multiline_comment_result;
                     return STOP_PARSING_TOKEN_FOUND;
                 }
             } else if (any_comment == STOP_PARSING_END_OF_FILE) {
                 return STOP_PARSING_END_OF_FILE;
-            } else if (any_comment == CONTINUE_PARSING_SLASH_CONSUMED) {
+            } else if (any_comment == CONTINUE_PARSING_SLASH_CONSUMED && lexer->lookahead != '/') {
                 // We accidentally ate a slash -- we should actually bail out, say we saw nothing, and let the next pass
                 // take it from after the newline.
                 return CONTINUE_PARSING_SLASH_CONSUMED;
@@ -825,7 +829,7 @@ static enum ParseDirective eat_whitespace(
                 // the second one of those and it means we have a single-line comment.
                 has_seen_single_comment = true;
                 while (lexer->lookahead != '\n' && lexer->lookahead != '\0') {
-                    lexer->advance(lexer, true);
+                    lexer->advance(lexer, false);
                 }
             } else if (iswspace(lexer->lookahead)) {
                 // We didn't see any type of comment - in fact, we saw an operator that we don't normally treat as an
@@ -836,7 +840,7 @@ static enum ParseDirective eat_whitespace(
             // If we skipped through some comment, we're at whitespace now, so advance.
             while(iswspace(lexer->lookahead)) {
                 any_comment = CONTINUE_PARSING_NOTHING_FOUND; // We're advancing, so clear out the comment
-                lexer->advance(lexer, true);
+                lexer->advance(lexer, false);
             }
         }
 
@@ -962,7 +966,7 @@ static bool eat_raw_str_part(
     enum TokenType *symbol_result
 ) {
     uint32_t hash_count = state->ongoing_raw_str_hash_count;
-    if (!valid_symbols[RAW_STR_PART]) {
+    if (!valid_symbols[RAW_STR_PART] && !valid_symbols[DIRECTIVE_ENDIF_AS_SEMI]) {
         return false;
     } else if (hash_count == 0) {
         // If this is a raw_str_part, it's the first one - look for hashes
@@ -976,11 +980,22 @@ static bool eat_raw_str_part(
         }
 
         if (lexer->lookahead == '"') {
+            if (!valid_symbols[RAW_STR_PART]) {
+                return false;
+            }
             advance(lexer);
         } else if (hash_count == 1) {
             lexer->mark_end(lexer);
             *symbol_result = find_possible_compiler_directive(lexer);
-            return true;
+            // Swift permits an inline closing directive after an expression.
+            // Keep this separate from DIRECTIVE_ENDIF: making the normal
+            // directive valid at every separator would suppress newlines
+            // before unrelated #if directives in eat_whitespace.
+            if (*symbol_result == DIRECTIVE_ENDIF && !valid_symbols[DIRECTIVE_ENDIF]
+                && valid_symbols[DIRECTIVE_ENDIF_AS_SEMI]) {
+                *symbol_result = DIRECTIVE_ENDIF_AS_SEMI;
+            }
+            return valid_symbols[*symbol_result];
         } else {
             return false;
         }
