@@ -108,6 +108,18 @@ var commandDocs = []commandDoc{
 		examples: []string{`echo '{"hook_event_name":"SubagentStart","cwd":"'"$PWD"'","agent_type":"Explore"}' | entire graph hook claude-subagent-start`},
 	},
 	{
+		name:    "statusline",
+		group:   groupSetup,
+		summary: "Render the Claude Code status line (run by Claude Code, not by hand)",
+		usage:   []string{"entire graph statusline [--cache-dir path] < status.json"},
+		long: "Reads Claude Code's status line JSON on stdin and prints at most two lines: whether a committed-tree index exists for HEAD (full or fast profile), the graph lookups in this session, and two estimated token figures from `stats --transcript` for the same session, gross (gross_covered_est_tokens) and net (modeled_balance_est_tokens, which can be negative; n/a without a comparison). Line 2 is the context window's used percentage, omitted while Claude Code reports none. Token estimates only, never prices. Whole segments are dropped from the right to fit COLUMNS (default 120); NO_COLOR drops the colours.\n\n" +
+			"The repository is workspace.project_dir, else workspace.current_dir, else cwd, walked up to its checkout root. The computed figures are cached under <cache-dir>/statusline/, keyed on every in-scope transcript file's size and mtime, HEAD's tree and this binary. Any failure prints nothing and exits 0.",
+		flags: []flagDoc{
+			{name: "--cache-dir", arg: "path", desc: "Cache root holding the index and the status line figures"},
+		},
+		examples: []string{`echo '{"transcript_path":"/path/to/session.jsonl","workspace":{"project_dir":"'"$PWD"'"}}' | entire graph statusline`},
+	},
+	{
 		name:    "agent-guide",
 		group:   groupSetup,
 		summary: "Print the coding-agent operating guide",

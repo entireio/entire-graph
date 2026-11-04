@@ -42,8 +42,8 @@ const savingsModelText = "Model (assumption, not a measurement): assume each obs
 	"token approximation. Unmatched queries, transformed or truncated outputs, and task quality " +
 	"are not controlled. Transcripts cannot establish what would have been read instead or causal " +
 	"billed-token savings. Legacy JSON savings fields retain their positive-only floor for " +
-	"compatibility; the status line uses the signed unfloored fields, and the stats headline uses " +
-	"observed follow-up rates instead of this assumption."
+	"compatibility; the status line shows modeled_balance_est_tokens and gross_covered_est_tokens, " +
+	"and the stats headline uses observed follow-up rates instead of this assumption."
 
 // bytesPerToken is the standard rough transcript-accounting conversion. Tool results are raw
 // text, so token counts are not recorded per call anywhere; 4 bytes/token is the usual
@@ -99,7 +99,7 @@ var graphVerbs = map[string]bool{
 	"query": true, "search": true, "context": true, "store": true, "neighbors": true, "impact": true, "diff": true, "commit": true,
 	"checkpoint": true, "analyze": true, "doctor": true, "capabilities": true,
 	"snapshot": true, "snapshot-query": true, "symbols": true, "edges": true, "index": true,
-	"stats": true, "def": true, "explain": true, "verify": true, "health": true,
+	"stats": true, "statusline": true, "def": true, "explain": true, "verify": true, "health": true,
 	"agent-guide": true, "setup": true, "hook": true, "version": true, "help": true,
 }
 
@@ -160,7 +160,8 @@ type statsTokens struct {
 }
 
 // statsResponse is a machine contract: fields are only ever ADDED, never removed or renamed.
-// The statusline reads the signed unfloored estimate plus comparison availability.
+// The status line reads modeled_balance_est_tokens, gross_covered_est_tokens and comparison
+// availability.
 type statsResponse struct {
 	FormatVersion             int          `json:"format_version"`
 	Provider                  string       `json:"provider"`

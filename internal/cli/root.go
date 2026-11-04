@@ -347,6 +347,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runVerify(ctx, opts, args[1:])
 	case "stats":
 		return runStats(ctx, opts, args[1:])
+	case "statusline":
+		return runStatusline(ctx, opts, args[1:])
 	case "agent-guide":
 		return runAgentGuide(opts, args[1:])
 	case "setup":
