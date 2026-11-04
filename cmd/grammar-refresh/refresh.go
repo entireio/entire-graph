@@ -48,6 +48,11 @@ func languageABI(parserC []byte) (int, error) {
 // of those kinds already in destDir that the new grammar lacks are removed;
 // everything else there, such as binding.go, is left alone. Nothing in destDir
 // changes unless the grammar has a parser.c the go-tree-sitter runtime can load.
+//
+// Every new file is written before any stale one is removed, so a failure part
+// way through leaves a superset of the two grammars rather than a hole: the
+// package still compiles and `git checkout` restores it. Deleting first would
+// strip a header the newly written parser.c still includes.
 func vendor(repoRoot, subdir, destDir string) ([]string, int, error) {
 	grammarRoot := filepath.Join(repoRoot, subdir)
 	parserC, err := os.ReadFile(filepath.Join(grammarRoot, "src", "parser.c"))
@@ -89,13 +94,6 @@ func vendor(repoRoot, subdir, destDir string) ([]string, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	for _, rel := range stale {
-		if _, keep := sources[rel]; !keep {
-			if err := os.Remove(filepath.Join(destDir, filepath.FromSlash(rel))); err != nil {
-				return nil, 0, err
-			}
-		}
-	}
 	files := make([]string, 0, len(sources))
 	for rel, src := range sources {
 		data, err := os.ReadFile(src)
@@ -110,6 +108,13 @@ func vendor(repoRoot, subdir, destDir string) ([]string, int, error) {
 			return nil, 0, err
 		}
 		files = append(files, rel)
+	}
+	for _, rel := range stale {
+		if _, keep := sources[rel]; !keep {
+			if err := os.Remove(filepath.Join(destDir, filepath.FromSlash(rel))); err != nil {
+				return nil, 0, err
+			}
+		}
 	}
 	sort.Strings(files)
 	return files, abi, nil
@@ -156,7 +161,8 @@ func vendoredFiles(destDir string) ([]string, error) {
 			for _, h := range headers {
 				out = append(out, "tree_sitter/"+filepath.Base(h))
 			}
-		case name == "parser.c" || name == "scanner.c", !e.IsDir() && strings.HasSuffix(name, ".h"),
+		case !e.IsDir() && (name == "parser.c" || name == "scanner.c"),
+			!e.IsDir() && strings.HasSuffix(name, ".h"),
 			strings.HasPrefix(upper, "LICENSE"), strings.HasPrefix(upper, "COPYING"):
 			out = append(out, name)
 		}
@@ -176,6 +182,16 @@ func loadManifest(path string) ([]Grammar, error) {
 	if err := json.Unmarshal(data, &grammars); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	// One entry per language, because every lookup here resolves a language to
+	// exactly one origin. A duplicate would let a refresh read one entry's
+	// local_changes guard and overwrite the files the other describes.
+	seen := make(map[string]bool, len(grammars))
+	for _, g := range grammars {
+		if seen[g.Language] {
+			return nil, fmt.Errorf("%s: %q is listed twice; keep one entry per language", path, g.Language)
+		}
+		seen[g.Language] = true
+	}
 	return grammars, nil
 }
 
@@ -190,16 +206,25 @@ func saveManifest(path string, grammars []Grammar) error {
 	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
 
-// upsert replaces the entry for g.Language, or inserts it, keeping the
+// upsert replaces the entry for g.Language, or inserts it, and returns the
 // manifest sorted by language.
+//
+// The scan is linear and the sort unconditional on purpose: a binary search
+// would need the manifest to already be sorted, and nothing enforces that. One
+// entry hand-appended out of order made the search miss a language that was
+// present and insert a second entry for it.
 func upsert(grammars []Grammar, g Grammar) []Grammar {
-	i := sort.Search(len(grammars), func(i int) bool { return grammars[i].Language >= g.Language })
-	if i < len(grammars) && grammars[i].Language == g.Language {
-		grammars[i] = g
-		return grammars
+	replaced := false
+	for i := range grammars {
+		if grammars[i].Language == g.Language {
+			grammars[i] = g
+			replaced = true
+			break
+		}
 	}
-	grammars = append(grammars, Grammar{})
-	copy(grammars[i+1:], grammars[i:])
-	grammars[i] = g
+	if !replaced {
+		grammars = append(grammars, g)
+	}
+	sort.Slice(grammars, func(i, j int) bool { return grammars[i].Language < grammars[j].Language })
 	return grammars
 }

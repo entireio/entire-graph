@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -107,9 +108,33 @@ func TestVendorRefusesABI15(t *testing.T) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
 	}
+	// Nothing in destDir may change, which holds only while the ABI gate runs
+	// before every write and every removal in vendor.
 	got, _ := os.ReadFile(filepath.Join(dest, "parser.c"))
 	if string(got) != "old\n" {
 		t.Fatalf("destination changed on refusal: %q", got)
+	}
+}
+
+// A grammar whose new file set drops a file must keep every file it does ship,
+// even when a later write fails: deleting first can strip a header the parser.c
+// just written still includes, leaving a directory that does not compile.
+func TestVendorKeepsOldFilesWhenAWriteFails(t *testing.T) {
+	src := grammarSource(t, "14", false)
+	writeTestFile(t, filepath.Join(src, "src", "unicode.h"), "// unicode\n")
+	dest := t.TempDir()
+	writeTestFile(t, filepath.Join(dest, "parser.c"), "old\n")
+	writeTestFile(t, filepath.Join(dest, "scanner.c"), "old scanner\n")
+	// A regular file where the tree_sitter/ directory must go makes MkdirAll
+	// fail part way through the writes, standing in for ENOSPC or EACCES.
+	writeTestFile(t, filepath.Join(dest, "tree_sitter"), "not a directory\n")
+	if _, _, err := vendor(src, "", dest); err == nil {
+		t.Fatal("want error when tree_sitter/ cannot be created")
+	}
+	// scanner.c is absent from the new grammar, so the stale sweep would have
+	// removed it. The sweep must not have run at all.
+	if _, err := os.Stat(filepath.Join(dest, "scanner.c")); err != nil {
+		t.Fatalf("a failed vendor deleted scanner.c: %v", err)
 	}
 }
 
@@ -276,6 +301,51 @@ func TestUpsertKeepsManifestSorted(t *testing.T) {
 	}
 	if !reflect.DeepEqual(names, []string{"dart", "swift", "zig"}) || grammars[1].Revision != "b" {
 		t.Fatalf("upsert = %+v", grammars)
+	}
+}
+
+// Appending a new grammar to the end of grammars.json is the natural hand
+// edit, and it leaves the manifest unsorted. upsert must still replace the
+// entry it is given rather than add a second one for the same language: a
+// duplicate makes the manifest describe one language two ways, and the stale
+// half then drives the next refresh.
+func TestUpsertReplacesInAnUnsortedManifest(t *testing.T) {
+	for _, appended := range []string{"kotlin", "ada", "lua"} {
+		t.Run(appended, func(t *testing.T) {
+			base := []string{"clojure", "csharp", "dart", "erlang", "fsharp", "haskell", "julia", "objc", "perl", "r", "swift", "zig"}
+			var grammars []Grammar
+			for _, lang := range base {
+				grammars = append(grammars, Grammar{Language: lang, Revision: "old"})
+			}
+			grammars = append(grammars, Grammar{Language: appended, Revision: "old"})
+			for _, target := range append(base, appended) {
+				got := upsert(append([]Grammar(nil), grammars...), Grammar{Language: target, Revision: "new"})
+				count := 0
+				for _, g := range got {
+					if g.Language == target {
+						count++
+						if g.Revision != "new" {
+							t.Errorf("refreshing %q left a stale entry: %+v", target, g)
+						}
+					}
+				}
+				if count != 1 {
+					t.Errorf("refreshing %q with %q appended produced %d entries for it", target, appended, count)
+				}
+				if !sort.SliceIsSorted(got, func(i, j int) bool { return got[i].Language < got[j].Language }) {
+					t.Errorf("refreshing %q left the manifest unsorted", target)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadManifestRejectsADuplicateLanguage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "grammars.json")
+	writeTestFile(t, path, `[{"language":"swift","local_changes":true,"note":"patched"},{"language":"swift"}]`)
+	_, err := loadManifest(path)
+	if err == nil || !strings.Contains(err.Error(), "listed twice") {
+		t.Fatalf("loadManifest with a duplicate language = %v; want it refused", err)
 	}
 }
 
