@@ -127,3 +127,20 @@ its symbols.
 | Supertype members (`def.go:1078-1087`) | `Kinship`: for every symbol reached through a retained `EXTENDS`/`INHERITS`/`IMPLEMENTS`/`OVERRIDES` relation, its `CONTAINS` out-relations and its `container_id` children |
 | Co-change (`impact.go:525-541`) | the post-load history splice, which covers every file |
 | Order | every slice is read by `rowid`, the snapshot's own order |
+
+Not loaded: the sidecar's `unmerged_data_flow_edges`. Only the selective
+derivation for `query` reads them (`search_cache.go`), and it never consumes a
+focused snapshot.
+
+## The focus each verb builds (Task 5)
+
+A `FocusHop` applies one direction set to all of its types, so a hop that
+needs `Out` for one type and both directions for another asks for both. That
+loads extra rows but never drops a needed one.
+
+| Verb | `Names` | `Hops` | `Kinship` |
+| --- | --- | --- | --- |
+| neighbors | `--symbol` | hop 1: `--relation` (+`CONSTRUCTS` for `CALLS`); `In` unless `--direction out`, `Out` unless `--direction in` | no |
+| impact | `--symbol` | hop 1: `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `USES_TYPE`, `PARAM_TYPE`, `RETURNS_TYPE`, `DATA_FLOWS`, `In`+`Out`; hop 2 (depth 2): `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `In` | yes |
+| def | every `defQualifiedNameForms` form of every name | hop 1: `CONTAINS`, `EXTENDS`, `INHERITS`, `IMPLEMENTS`, `In`+`Out`; hop 2: `OVERRIDES`, `Out` | yes |
+| explain | the candidate names | none | yes |

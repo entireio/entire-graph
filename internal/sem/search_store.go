@@ -36,7 +36,10 @@ import (
 // (the store context query's fan-out); v1 entries lack them and are rebuilt.
 // v3 adds the versioned read-only projection used by Brain inspection.
 // v4 fixes the file content identity projection to use the indexed Git blob.
-const searchStoreVersion = "search-store-sqlite-v4"
+// v5 adds the indexed symbol columns name_fold, qname_fold and container_id
+// and the relation_type_counts meta key, with their first reader, the focused
+// lookup load (search_store_focus.go); v4 stores lack them and are rebuilt.
+const searchStoreVersion = "search-store-sqlite-v5"
 
 // searchStoreEnv gates both the write and the read of the sidecar. It is ON
 // unless the operator opts out: the focused lookup reads depend on the store
@@ -82,7 +85,10 @@ CREATE TABLE symbols (
 	sig_param_types TEXT,
 	sig_return_types TEXT,
 	has_signature_types INTEGER NOT NULL,
-	record TEXT NOT NULL
+	record TEXT NOT NULL,
+	name_fold TEXT NOT NULL,
+	qname_fold TEXT NOT NULL,
+	container_id TEXT NOT NULL
 );
 CREATE TABLE relations (
 	from_id TEXT NOT NULL,
@@ -122,9 +128,17 @@ CREATE VIEW brain_symbol_fts_v1 AS SELECT id,
 
 // Secondary indexes land WITH their first reader, never speculatively: the
 // relation endpoint indexes serve the store context query's fan-out
-// (searchStoreRelationsForIDs). The symbol name/path columns stay unindexed —
-// their reader scans with Go-side scoring, and a B-tree cannot serve the
-// substring match it does.
+// (searchStoreRelationsForIDs) and the focused load's hops. The raw symbol
+// name/path columns stay unindexed — their reader scans with Go-side scoring,
+// and a B-tree cannot serve the substring match it does. The folded name
+// columns and container_id serve the focused load's starting set and kinship
+// reads; they are created after the rows are inserted, which is cheaper than
+// maintaining them row by row.
+const searchStoreFocusIndexes = `
+CREATE INDEX symbols_name_fold ON symbols(name_fold);
+CREATE INDEX symbols_qname_fold ON symbols(qname_fold);
+CREATE INDEX symbols_container ON symbols(container_id);
+`
 
 // searchStoreRelationExtra carries the two composite RelationRecord fields.
 // WarningCodes is deliberately NOT omitempty: production relations always
@@ -260,8 +274,9 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 	putSymbol, err := tx.PrepareContext(ctx, `INSERT INTO symbols(
 		id, name, qualified_name, file_path, kind, local, bodyless, name_line,
 		byte_start, byte_end, param_names, param_names_known,
-		sig_param_types, sig_return_types, has_signature_types, record
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		sig_param_types, sig_return_types, has_signature_types, record,
+		name_fold, qname_fold, container_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -295,6 +310,7 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 			boolToInt(local[symbol.ID]), boolToInt(bodyless[symbol.ID]), cache.SymbolNameLines[symbol.ID],
 			byteStart, byteEnd, paramNames, boolToInt(paramKnown[symbol.ID]),
 			sigParams, sigReturns, boolToInt(hasSignatureTypes), string(record),
+			foldSymbolName(symbol.Name), foldSymbolName(symbol.QualifiedName), symbol.ContainerID,
 		); err != nil {
 			return err
 		}
@@ -308,8 +324,10 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 		return err
 	}
 	defer putRelation.Close()
+	relationTypeCounts := map[string]int{}
 	for index := range cache.Snapshot.Relations {
 		relation := &cache.Snapshot.Relations[index]
+		relationTypeCounts[relation.Type]++
 		var extra any
 		if relation.Evidence != nil || relation.WarningCodes != nil {
 			encoded, err := json.Marshal(searchStoreRelationExtra{
@@ -329,6 +347,17 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 			return err
 		}
 	}
+	// The per-type counts of exactly the rows inserted above. A focused load
+	// holds only part of the relations, yet must report the whole snapshot's
+	// Stats.Relations; reading these is O(1) where counting FILE_CHANGES_WITH
+	// rows in SQL would scan the whole relations table on every lookup.
+	encodedCounts, err := json.Marshal(relationTypeCounts)
+	if err != nil {
+		return err
+	}
+	if _, err := putMeta.ExecContext(ctx, "relation_type_counts", string(encodedCounts)); err != nil {
+		return err
+	}
 
 	putUnmerged, err := tx.PrepareContext(ctx, `INSERT INTO unmerged_data_flow_edges(from_id, to_id) VALUES (?, ?)`)
 	if err != nil {
@@ -340,6 +369,9 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 		if _, err := putUnmerged.ExecContext(ctx, fromID, toID); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx, searchStoreFocusIndexes); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -396,6 +428,70 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 	if err := readSearchStoreMetaKey(ctx, db, "envelope", &meta); err != nil {
 		return cachedSearchSnapshot{}, err
 	}
+	cache.applySearchStoreMeta(meta)
+	if err := readSearchStoreMetaKey(ctx, db, "header", &cache.Snapshot.Header); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	if err := readSearchStoreFiles(ctx, db, &cache); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	if err := scanSearchStoreRows(ctx, db, `SELECT `+searchStoreExternalColumns+` FROM externals ORDER BY rowid`, func(scan rowScanner) error {
+		external, err := scanSearchStoreExternal(scan)
+		if err != nil {
+			return err
+		}
+		cache.Snapshot.Externals = append(cache.Snapshot.Externals, external)
+		return nil
+	}); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	var symbolRows []searchStoreSymbolRow
+	if err := scanSearchStoreRows(ctx, db, `SELECT `+searchStoreSymbolColumns+` FROM symbols ORDER BY rowid`, func(scan rowScanner) error {
+		row, err := scanSearchStoreSymbolRow(scan)
+		if err != nil {
+			return err
+		}
+		symbolRows = append(symbolRows, row)
+		return nil
+	}); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+	if err := decodeSearchStoreSymbols(&cache, symbolRows); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	if err := scanSearchStoreRows(ctx, db, `SELECT `+searchStoreRelationColumns+` FROM relations ORDER BY rowid`, func(scan rowScanner) error {
+		relation, err := scanSearchStoreRelation(scan)
+		if err != nil {
+			return err
+		}
+		cache.Snapshot.Relations = append(cache.Snapshot.Relations, relation)
+		return nil
+	}); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	if err := scanSearchStoreRows(ctx, db, `SELECT from_id, to_id FROM unmerged_data_flow_edges ORDER BY rowid`, func(scan rowScanner) error {
+		var fromID, toID string
+		if err := scan(&fromID, &toID); err != nil {
+			return err
+		}
+		cache.UnmergedDataFlowEdges = append(cache.UnmergedDataFlowEdges, [2]string{fromID, toID})
+		return nil
+	}); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	restoreCachedSearchInternals(&cache)
+	return cache, nil
+}
+
+// applySearchStoreMeta restores the envelope scalars a store keeps under its
+// "envelope" meta key.
+func (cache *cachedSearchSnapshot) applySearchStoreMeta(meta searchStoreMeta) {
 	cache.CacheVersion = meta.CacheVersion
 	cache.ProviderVersion = meta.ProviderVersion
 	cache.Commit = meta.Commit
@@ -405,11 +501,30 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 	cache.Worktree = meta.Worktree
 	cache.DerivedFrom = meta.DerivedFrom
 	cache.RepoScope = meta.RepoScope
-	if err := readSearchStoreMetaKey(ctx, db, "header", &cache.Snapshot.Header); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
+}
 
-	if err := scanSearchStoreRows(ctx, db, `SELECT lines, record FROM files ORDER BY rowid`, func(scan rowScanner) error {
+func readSearchStoreMetaKey(ctx context.Context, db *sql.DB, key string, value any) error {
+	var encoded string
+	if err := db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&encoded); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("search store is missing meta key %q", key)
+		}
+		return err
+	}
+	return json.Unmarshal([]byte(encoded), value)
+}
+
+type rowScanner func(dest ...any) error
+
+// The row decoders below are shared by the full load (loadSearchStore) and the
+// focused load (search_store_focus.go), so a focused snapshot's records are
+// decoded byte for byte as the full snapshot's are. Each *Columns constant is
+// the column list its scanner reads, in order.
+
+// readSearchStoreFiles appends every file row, in snapshot order, with its
+// line count restored into FileLines.
+func readSearchStoreFiles(ctx context.Context, db *sql.DB, cache *cachedSearchSnapshot) error {
+	return scanSearchStoreRows(ctx, db, `SELECT lines, record FROM files ORDER BY rowid`, func(scan rowScanner) error {
 		var record string
 		var lines int
 		if err := scan(&lines, &record); err != nil {
@@ -427,51 +542,49 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 			cache.FileLines[file.ID] = lines
 		}
 		return nil
-	}); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
+	})
+}
 
-	if err := scanSearchStoreRows(ctx, db, `SELECT record FROM externals ORDER BY rowid`, func(scan rowScanner) error {
-		var record string
-		if err := scan(&record); err != nil {
-			return err
-		}
-		var external ExternalRecord
-		if err := json.Unmarshal([]byte(record), &external); err != nil {
-			return err
-		}
-		cache.Snapshot.Externals = append(cache.Snapshot.Externals, external)
-		return nil
-	}); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
+const searchStoreExternalColumns = `record`
 
-	type symbolRow struct {
-		record            string
-		local, bodyless   bool
-		nameLine          int
-		byteStart         sql.NullInt64
-		byteEnd           sql.NullInt64
-		paramNames        sql.NullString
-		paramKnown        bool
-		sigParams         sql.NullString
-		sigReturns        sql.NullString
-		hasSignatureTypes bool
+func scanSearchStoreExternal(scan rowScanner) (ExternalRecord, error) {
+	var record string
+	if err := scan(&record); err != nil {
+		return ExternalRecord{}, err
 	}
-	var symbolRows []symbolRow
-	if err := scanSearchStoreRows(ctx, db, `SELECT record, local, bodyless, name_line, byte_start, byte_end,
-		param_names, param_names_known, sig_param_types, sig_return_types, has_signature_types
-		FROM symbols ORDER BY rowid`, func(scan rowScanner) error {
-		var row symbolRow
-		if err := scan(&row.record, &row.local, &row.bodyless, &row.nameLine, &row.byteStart, &row.byteEnd,
-			&row.paramNames, &row.paramKnown, &row.sigParams, &row.sigReturns, &row.hasSignatureTypes); err != nil {
-			return err
-		}
-		symbolRows = append(symbolRows, row)
-		return nil
-	}); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
+	var external ExternalRecord
+	err := json.Unmarshal([]byte(record), &external)
+	return external, err
+}
+
+const searchStoreSymbolColumns = `record, local, bodyless, name_line, byte_start, byte_end,
+	param_names, param_names_known, sig_param_types, sig_return_types, has_signature_types`
+
+// searchStoreSymbolRow is one symbol row before its record is decoded: the
+// record JSON plus the side-map columns the private symbol fields travel in.
+type searchStoreSymbolRow struct {
+	record            string
+	local, bodyless   bool
+	nameLine          int
+	byteStart         sql.NullInt64
+	byteEnd           sql.NullInt64
+	paramNames        sql.NullString
+	paramKnown        bool
+	sigParams         sql.NullString
+	sigReturns        sql.NullString
+	hasSignatureTypes bool
+}
+
+func scanSearchStoreSymbolRow(scan rowScanner) (searchStoreSymbolRow, error) {
+	var row searchStoreSymbolRow
+	err := scan(&row.record, &row.local, &row.bodyless, &row.nameLine, &row.byteStart, &row.byteEnd,
+		&row.paramNames, &row.paramKnown, &row.sigParams, &row.sigReturns, &row.hasSignatureTypes)
+	return row, err
+}
+
+// decodeSearchStoreSymbols decodes rows, in the order given, into
+// cache.Snapshot.Symbols and restores the side maps for exactly those symbols.
+func decodeSearchStoreSymbols(cache *cachedSearchSnapshot, symbolRows []searchStoreSymbolRow) error {
 	// The side maps allocate lazily, exactly like the producer in
 	// newCachedSearchSnapshot: the fidelity pin compares DeepEqual against the
 	// JSON round-trip, and an eagerly allocated empty map would differ from the
@@ -480,7 +593,7 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 	if err := decodeSearchStoreParallel(len(symbolRows), func(index int) error {
 		return json.Unmarshal([]byte(symbolRows[index].record), &cache.Snapshot.Symbols[index])
 	}); err != nil {
-		return cachedSearchSnapshot{}, err
+		return err
 	}
 	for index := range symbolRows {
 		row := &symbolRows[index]
@@ -506,7 +619,7 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 		if row.paramNames.Valid {
 			var names []string
 			if err := json.Unmarshal([]byte(row.paramNames.String), &names); err != nil {
-				return cachedSearchSnapshot{}, err
+				return err
 			}
 			if cache.SymbolParameterNames == nil {
 				cache.SymbolParameterNames = make(map[string][]string)
@@ -526,58 +639,32 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 			}
 		}
 	}
-
-	if err := scanSearchStoreRows(ctx, db, `SELECT from_id, to_id, type, confidence, reason,
-		relation_scope, resolution, target_kind, evidence_dropped, extra
-		FROM relations ORDER BY rowid`, func(scan rowScanner) error {
-		relation := RelationRecord{RecordType: "relation"}
-		var extra sql.NullString
-		if err := scan(&relation.FromID, &relation.ToID, &relation.Type, &relation.Confidence,
-			&relation.Reason, &relation.RelationScope, &relation.Resolution,
-			&relation.TargetKind, &relation.EvidenceDropped, &extra); err != nil {
-			return err
-		}
-		if extra.Valid {
-			var composite searchStoreRelationExtra
-			if err := json.Unmarshal([]byte(extra.String), &composite); err != nil {
-				return err
-			}
-			relation.Evidence = composite.Evidence
-			relation.WarningCodes = composite.WarningCodes
-		}
-		cache.Snapshot.Relations = append(cache.Snapshot.Relations, relation)
-		return nil
-	}); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
-
-	if err := scanSearchStoreRows(ctx, db, `SELECT from_id, to_id FROM unmerged_data_flow_edges ORDER BY rowid`, func(scan rowScanner) error {
-		var fromID, toID string
-		if err := scan(&fromID, &toID); err != nil {
-			return err
-		}
-		cache.UnmergedDataFlowEdges = append(cache.UnmergedDataFlowEdges, [2]string{fromID, toID})
-		return nil
-	}); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
-
-	restoreCachedSearchInternals(&cache)
-	return cache, nil
+	return nil
 }
 
-func readSearchStoreMetaKey(ctx context.Context, db *sql.DB, key string, value any) error {
-	var encoded string
-	if err := db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&encoded); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("search store is missing meta key %q", key)
-		}
-		return err
-	}
-	return json.Unmarshal([]byte(encoded), value)
-}
+const searchStoreRelationColumns = `from_id, to_id, type, confidence, reason,
+	relation_scope, resolution, target_kind, evidence_dropped, extra`
 
-type rowScanner func(dest ...any) error
+// scanSearchStoreRelation decodes one full relation row: every field the
+// record carries, Evidence and WarningCodes included.
+func scanSearchStoreRelation(scan rowScanner) (RelationRecord, error) {
+	relation := RelationRecord{RecordType: "relation"}
+	var extra sql.NullString
+	if err := scan(&relation.FromID, &relation.ToID, &relation.Type, &relation.Confidence,
+		&relation.Reason, &relation.RelationScope, &relation.Resolution,
+		&relation.TargetKind, &relation.EvidenceDropped, &extra); err != nil {
+		return RelationRecord{}, err
+	}
+	if extra.Valid {
+		var composite searchStoreRelationExtra
+		if err := json.Unmarshal([]byte(extra.String), &composite); err != nil {
+			return RelationRecord{}, err
+		}
+		relation.Evidence = composite.Evidence
+		relation.WarningCodes = composite.WarningCodes
+	}
+	return relation, nil
+}
 
 func scanSearchStoreRows(ctx context.Context, db *sql.DB, query string, each func(rowScanner) error) error {
 	rows, err := db.QueryContext(ctx, query)

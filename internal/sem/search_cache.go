@@ -1453,6 +1453,46 @@ func loadCachedSearchSnapshot(
 	if err != nil {
 		return cachedSearchSnapshot{}, false
 	}
+	return bindCachedSearchSnapshot(cached, storedRelationCountsOf(cached.Snapshot.Relations),
+		absRepo, commit, repositoryKey, providerVersion, tree, options, contexts...)
+}
+
+// storedRelationCounts are the relation counts of a cache entry as stored,
+// before the post-load chain replaces its FILE_CHANGES_WITH relations with
+// fresh history. The chain takes them as inputs rather than reading
+// len(Relations), so a loader that holds only part of the relations still
+// reports the whole snapshot's Stats.Relations.
+type storedRelationCounts struct {
+	total           int
+	fileChangesWith int
+}
+
+// storedRelationCountsOf counts a complete relation slice.
+func storedRelationCountsOf(relations []RelationRecord) storedRelationCounts {
+	counts := storedRelationCounts{total: len(relations)}
+	for index := range relations {
+		if relations[index].Type == "FILE_CHANGES_WITH" {
+			counts.fileChangesWith++
+		}
+	}
+	return counts
+}
+
+// bindCachedSearchSnapshot is the post-load chain every cache read applies
+// once its entry is decoded: the scope check, the local/ namespace rebind, the
+// validity check, the commit restamp and, on the full profile, the
+// FILE_CHANGES_WITH refresh with its warning retirement. A history read that
+// fails is a miss. The full load and the focused sidecar load
+// (search_store_focus.go) both go through it, so neither can drift from the
+// other. stored carries the entry's relation counts; Stats.Relations is
+// derived from them, never from len(cached.Snapshot.Relations).
+func bindCachedSearchSnapshot(
+	cached cachedSearchSnapshot,
+	stored storedRelationCounts,
+	absRepo, commit, repositoryKey, providerVersion, tree string,
+	options ProviderSnapshotOptions,
+	contexts ...context.Context,
+) (cachedSearchSnapshot, bool) {
 	// Restamp the root only between checkouts of the same scope. The key already
 	// separates scopes; this keeps a hand-edited, colliding or pre-scope entry from
 	// being adopted by a checkout whose subtree it does not describe. Same root
@@ -1491,7 +1531,9 @@ func loadCachedSearchSnapshot(
 		// leaves the relations untouched but still retires the warning.
 		cached.Snapshot.Header.Warnings = withoutWarningCode(cached.Snapshot.Header.Warnings, CochangeHistoryUnavailableCode)
 		cached.Snapshot.Relations = refreshed
-		cached.Snapshot.Header.Stats.Relations = len(refreshed)
+		// The splice replaces the stored FILE_CHANGES_WITH block with history, so
+		// for a complete slice this is len(refreshed).
+		cached.Snapshot.Header.Stats.Relations = stored.total - stored.fileChangesWith + len(history)
 		counts := make(map[string]int, len(cached.Snapshot.Header.Completeness.Relations))
 		for kind, count := range cached.Snapshot.Header.Completeness.Relations {
 			if kind != "FILE_CHANGES_WITH" {

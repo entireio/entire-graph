@@ -27,7 +27,8 @@ import (
 var unbudgetedParseAllowlist = map[string]string{
 	"parser.go.ParseWithStatus":                "return TreeSitterParser{}.ParseWithStatusCtx(context.Background(), path, content)",
 	"search_cache.go.cacheCheckoutScope":       "ctx := context.Background()",
-	"search_cache.go.loadCachedSearchSnapshot": "ctx := context.Background()",
+	"search_cache.go.bindCachedSearchSnapshot": "ctx := context.Background()", // the post-load chain, shared by the full and focused loads
+
 	// Same entry point as the line above, after main factored the sidecar read
 	// out of loadCachedSearchSnapshot: both take `contexts ...context.Context`
 	// and fall back to Background only when the caller supplied none. A
