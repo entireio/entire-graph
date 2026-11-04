@@ -528,10 +528,13 @@ type summaryCall struct {
 	Disp string `json:"d,omitempty"`
 	// Paths are the normalized files a successful (non-error) locate result names, and Root is
 	// the directory that call resolved them against: its own --repo (absolute against the
-	// record's cwd), else that cwd, else empty for the report's --repo. Only names are kept: file
-	// sizes depend on the repository at report time, never on the transcript this memo keys on.
+	// record's cwd), else that cwd, else empty for the report's --repo. Top is set when the call
+	// passed no --repo: the graph then resolved the checkout containing Root, so the sizer walks
+	// up to it. Only names are kept: the checkout root and file sizes are filesystem facts read
+	// at report time, never stored in this memo, which is keyed on the transcript alone.
 	Paths []string `json:"p,omitempty"`
 	Root  string   `json:"o,omitempty"`
+	Top   bool     `json:"t,omitempty"`
 }
 
 // summaryUsage is one assistant message's billed usage, kept per message.id so the same message
@@ -575,7 +578,7 @@ type fileScanner struct {
 	locateAt   map[int]int
 	deliveries int
 	// locateRoot maps a locate call's summary.Calls index to the root it resolved against.
-	locateRoot map[int]string
+	locateRoot map[int]graphRoot
 }
 
 func newFileScanner() *fileScanner {
@@ -584,7 +587,7 @@ func newFileScanner() *fileScanner {
 		seenUse:    map[string]bool{},
 		usageIdx:   map[string]int{},
 		locateAt:   map[int]int{},
-		locateRoot: map[int]string{},
+		locateRoot: map[int]graphRoot{},
 	}
 }
 
@@ -707,7 +710,8 @@ func (s *fileScanner) consumeToolResult(block contentBlock) {
 		entry.delivered = graphDeliveredSpans(text)
 		if !block.IsError && len(entry.paths) > 0 {
 			s.summary.Calls[index].Paths = entry.paths
-			s.summary.Calls[index].Root = s.locateRoot[index]
+			root := s.locateRoot[index]
+			s.summary.Calls[index].Root, s.summary.Calls[index].Top = root.dir, root.top
 		}
 	}
 }
@@ -794,7 +798,7 @@ func (a *sessionAcc) merge(summary fileSummary) {
 				// Keep its original classification and count the result only once.
 				if !previous.HasResult && call.HasResult {
 					previous.HasResult, previous.Bytes, previous.Disp = true, call.Bytes, call.Disp
-					previous.Paths, previous.Root = call.Paths, call.Root
+					previous.Paths, previous.Root, previous.Top = call.Paths, call.Root, call.Top
 					a.seenCalls[call.ID] = previous
 					if previous.Verb != "" {
 						a.verbResults[previous.Verb]++
@@ -1254,17 +1258,7 @@ func graphRepoFromCommandDepth(command string, depth int) string {
 		if _, ok := graphVerbFromSegments(segment); !ok {
 			continue
 		}
-		fields := strings.Fields(segment)
-		for index, field := range fields {
-			word := shellWord(field)
-			if word == "--repo" && index+1 < len(fields) {
-				return shellWord(fields[index+1])
-			}
-			if value, ok := strings.CutPrefix(word, "--repo="); ok {
-				return value
-			}
-		}
-		return ""
+		return graphRepoFromWords(shellArgWords(segment))
 	}
 	if depth >= maxSubstitutionDepth {
 		return ""
@@ -1277,17 +1271,102 @@ func graphRepoFromCommandDepth(command string, depth int) string {
 	return ""
 }
 
-// graphCallRoot is the directory a graph call resolved its paths against: its own --repo made
-// absolute against the record's cwd, else that cwd. A relative --repo with no cwd stays relative
-// and is resolved against the report's --repo; "" means the report's --repo.
-func graphCallRoot(repo, cwd string) string {
+// graphRepoFromWords reads --repo only among the arguments after `entire graph <verb>`,
+// `entire sem <verb>` or `entire-graph <verb>`, so a wrapper's own options never count.
+func graphRepoFromWords(words []string) string {
+	for index, word := range words {
+		verbAt := -1
+		switch base := filepath.Base(word); {
+		case base == "entire" && index+2 < len(words) && (words[index+1] == "graph" || words[index+1] == "sem"):
+			verbAt = index + 2
+		case base == "entire-graph" && index+1 < len(words):
+			verbAt = index + 1
+		}
+		if verbAt < 0 {
+			continue
+		}
+		args := words[verbAt+1:]
+		for at, arg := range args {
+			if arg == "--repo" && at+1 < len(args) {
+				return args[at+1]
+			}
+			if value, ok := strings.CutPrefix(arg, "--repo="); ok {
+				return value
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
+// shellArgWords splits one shell segment into words the way the shell does: whitespace inside
+// quotes or a substitution does not split (shellQuoteMask), and quoting is removed from each
+// word, so `--query 'how does --repo work'` is two words and `--repo="C:/My Repo"` is one.
+func shellArgWords(segment string) []string {
+	runes := []rune(segment)
+	literal := shellQuoteMask(runes)
+	var words []string
+	var current []rune
+	for index, character := range runes {
+		if !literal[index] && (character == ' ' || character == '\t') {
+			if len(current) > 0 {
+				words = append(words, shellUnquote(current))
+				current = current[:0]
+			}
+			continue
+		}
+		current = append(current, character)
+	}
+	if len(current) > 0 {
+		words = append(words, shellUnquote(current))
+	}
+	return words
+}
+
+// shellUnquote removes quoting from one word. Single quotes are literal. A backslash escapes the
+// next character outside quotes, and inside double quotes only before $, a backtick, ", \ or a
+// newline, as in POSIX sh (so "C:\Users" keeps its backslash).
+func shellUnquote(word []rune) string {
+	var out []rune
+	var quote rune
+	for index := 0; index < len(word); index++ {
+		character := word[index]
+		switch {
+		case quote == 0 && (character == '\'' || character == '"'):
+			quote = character
+		case quote != 0 && character == quote:
+			quote = 0
+		case character == '\\' && quote != '\'' && index+1 < len(word) &&
+			(quote == 0 || strings.ContainsRune("$`\"\\\n", word[index+1])):
+			index++
+			out = append(out, word[index])
+		default:
+			out = append(out, character)
+		}
+	}
+	return string(out)
+}
+
+// graphRoot is the directory a graph call resolved its named paths against.
+type graphRoot struct {
+	dir string
+	// top: the call passed no --repo, so the graph resolved the checkout containing dir.
+	top bool
+}
+
+// graphCallRoot mirrors resolveRepo. An explicit --repo is used as given (the graph prints paths
+// relative to it, even for a subdirectory), made absolute against the record's cwd; a relative
+// --repo with no cwd stays relative and is resolved against the report's --repo. With no --repo
+// the graph resolves the git toplevel of its cwd, so the root is that cwd (else the report's
+// --repo, dir "") with top set.
+func graphCallRoot(repo, cwd string) graphRoot {
 	switch {
 	case repo == "":
-		return cwd
+		return graphRoot{dir: cwd, top: true}
 	case filepath.IsAbs(repo) || cwd == "":
-		return repo
+		return graphRoot{dir: repo}
 	default:
-		return filepath.Join(cwd, repo)
+		return graphRoot{dir: filepath.Join(cwd, repo)}
 	}
 }
 
@@ -2074,7 +2153,7 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 			report.SessionsWithPositiveSavings++
 		}
 		for _, call := range acc.covered {
-			report.GrossCoveredBytes += max(0, sizer.size(call.Root, call.Paths)-call.Bytes)
+			report.GrossCoveredBytes += max(0, sizer.size(call)-call.Bytes)
 		}
 	}
 
@@ -2129,11 +2208,13 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 }
 
 // coveredFileSizer prices the gross estimate from the files on disk at report time. Each root is
-// opened once, and each distinct (root, path) is statted once. Reads go through os.Root, so an
-// absolute, `..`-escaping, symlink-escaping or UNC path is refused rather than followed; that
-// refusal is the no-egress guard on Windows. A refused, missing or non-regular path is size 0.
+// resolved and opened once, and each distinct (root, path) is statted once. Reads go through
+// os.Root, so an absolute, `..`-escaping, symlink-escaping or UNC path NAMED BY A RESULT is
+// refused rather than followed. A refused, missing or non-regular path is size 0. Checkout roots
+// are found by a filesystem walk (discoverImplicitCheckoutRoot); stats never runs git.
 type coveredFileSizer struct {
 	reportRepo string
+	tops       map[string]string   // a call's cwd -> the checkout root containing it
 	roots      map[string]*os.Root // nil when the root cannot be opened
 	sizes      map[string]map[string]int64
 }
@@ -2141,28 +2222,54 @@ type coveredFileSizer struct {
 func newCoveredFileSizer(reportRepo string) *coveredFileSizer {
 	return &coveredFileSizer{
 		reportRepo: reportRepo,
+		tops:       map[string]string{},
 		roots:      map[string]*os.Root{},
 		sizes:      map[string]map[string]int64{},
 	}
 }
 
-// size sums the on-disk bytes of the distinct paths under the call's root.
-func (z *coveredFileSizer) size(root string, paths []string) int64 {
+// remoteVolume reports a root spelled on a UNC or device volume: anything but a drive letter on
+// Windows, never elsewhere. The check is lexical on the spelling only. It does not see a
+// junction, symlink or mapped drive that redirects a local-looking path to the network.
+func remoteVolume(root string) bool {
+	return len(filepath.VolumeName(root)) > 2
+}
+
+// resolve is the absolute root a call's named paths are relative to, or "" when it has none.
+func (z *coveredFileSizer) resolve(call summaryCall) string {
+	root := call.Root
 	switch {
 	case root == "":
 		root = z.reportRepo
 	case !filepath.IsAbs(root) && z.reportRepo != "":
 		root = filepath.Join(z.reportRepo, root)
 	}
+	if root == "" || !call.Top || remoteVolume(root) {
+		return root
+	}
+	top, ok := z.tops[root]
+	if !ok {
+		top = root
+		if found, discovered := discoverImplicitCheckoutRoot(root); discovered {
+			top = found
+		}
+		z.tops[root] = top
+	}
+	return top
+}
+
+// size sums the on-disk bytes of the distinct paths a call names under its resolved root.
+func (z *coveredFileSizer) size(call summaryCall) int64 {
+	root := z.resolve(call)
 	if root == "" {
 		return 0
 	}
 	opened, ok := z.roots[root]
 	if !ok {
 		var err error
-		// A root on a UNC or device volume (anything but a drive letter) is never opened:
-		// opening `\\host\share` is itself network I/O, before os.Root can refuse anything.
-		if len(filepath.VolumeName(root)) > 2 {
+		// A UNC or device root is never opened: opening `\\host\share` is itself network I/O,
+		// before os.Root can refuse anything.
+		if remoteVolume(root) {
 			opened = nil
 		} else if opened, err = os.OpenRoot(root); err != nil {
 			opened = nil
@@ -2176,7 +2283,7 @@ func (z *coveredFileSizer) size(root string, paths []string) int64 {
 	known := z.sizes[root]
 	seen := map[string]bool{}
 	var total int64
-	for _, path := range paths {
+	for _, path := range call.Paths {
 		if seen[path] {
 			continue
 		}

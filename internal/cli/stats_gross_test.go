@@ -62,11 +62,18 @@ func grossRecord(t *testing.T, recordType, cwd string, content []any) string {
 // callRepo, answered by result. extra lines are appended after it.
 func writeGrossTranscript(t *testing.T, cwd, callRepo, result string, extra ...string) string {
 	t.Helper()
+	command := "entire graph query --repo " + filepath.ToSlash(callRepo) + " --query 'where is A'"
+	return writeGrossCommandTranscript(t, cwd, command, result, extra...)
+}
+
+// writeGrossCommandTranscript is writeGrossTranscript with the Bash command spelled out.
+func writeGrossCommandTranscript(t *testing.T, cwd, command, result string, extra ...string) string {
+	t.Helper()
 	dir := t.TempDir()
 	lines := append([]string{
 		grossRecord(t, "assistant", cwd, []any{map[string]any{
 			"type": "tool_use", "id": "toolu_gross", "name": "Bash",
-			"input": map[string]any{"command": "entire graph query --repo " + filepath.ToSlash(callRepo) + " --query 'where is A'"},
+			"input": map[string]any{"command": command},
 		}}),
 		grossRecord(t, "user", cwd, []any{map[string]any{
 			"type": "tool_result", "tool_use_id": "toolu_gross", "content": result,
@@ -156,4 +163,50 @@ func TestGrossFollowsTheCallsOwnRepo(t *testing.T) {
 		t.Fatalf("transcripts_from_cache = %d, want 1: the re-run must be served from the memo", got)
 	}
 	assertGross(t, report, 7400, 1850)
+}
+
+// TestGrossResolvesACwdCallAgainstItsCheckoutRoot catches pricing a call with no --repo against
+// its raw cwd. Run from <repo>/sub, the graph resolves the checkout root and names
+// `sub/a.go`; that 4,000-byte file minus the 600-byte result covers 3,400 bytes. The report's own
+// --repo is an unrelated empty directory, so only the checkout root can find the file.
+func TestGrossResolvesACwdCallAgainstItsCheckoutRoot(t *testing.T) {
+	t.Parallel()
+	repo := grossRepo(t, nil)
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeGrossFile(t, filepath.Join(repo, "sub"), "a.go", 4000)
+	result := grossResult(t, 600, "1. sub/a.go:10 func A()")
+	transcript := writeGrossCommandTranscript(t, filepath.Join(repo, "sub"), "entire graph query --query 'where is A'", result)
+	assertGross(t, runGrossStats(t, grossRepo(t, nil), transcript, t.TempDir()), 3400, 850)
+}
+
+// TestGrossReadsOnlyTheCallsOwnRepoFlag catches quote-unaware --repo parsing: "--repo" inside a
+// quoted query is query text, and a quoted --repo value is one word with its quotes removed,
+// spaces included. Every spelling resolves to B (a.go 4,000 bytes; the cwd A has none), so a
+// 600-byte result covers 3,400 bytes.
+func TestGrossReadsOnlyTheCallsOwnRepoFlag(t *testing.T) {
+	t.Parallel()
+	repoA := grossRepo(t, nil)
+	repoB := filepath.Join(t.TempDir(), "My Repo")
+	if err := os.MkdirAll(repoB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeGrossFile(t, repoB, "a.go", 4000)
+	b := filepath.ToSlash(repoB)
+	result := grossResult(t, 600, "1. a.go:10 func A()")
+	for name, command := range map[string]string{
+		"flag inside a quoted query": `entire graph query --query 'how does --repo work' --repo "` + b + `"`,
+		"double-quoted equals value": `entire graph query --repo="` + b + `" --query 'where is A'`,
+		"single-quoted value":        `entire graph query --repo '` + b + `' --query 'where is A'`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			transcript := writeGrossCommandTranscript(t, repoA, command, result)
+			assertGross(t, runGrossStats(t, repoA, transcript, t.TempDir()), 3400, 850)
+		})
+	}
 }
