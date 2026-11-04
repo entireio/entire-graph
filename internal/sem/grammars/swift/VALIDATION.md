@@ -35,6 +35,9 @@ They must remain diagnostics rather than being hidden by source masking.
 - Hummingbird 2.28.0's `HTTP2ServerConnectionManager+StateMachine.swift` retains
   exactly the baseline's 42 symbol IDs and 113 relation triples, with no parse
   failure. The unpatched PR produced only 23 symbols and 59 relations.
+  **Not re-measured on the final parser**, for the same reason as the
+  whole-repository totals below: these counts predate the last scanner and
+  grammar fixes. The per-file audit above is the current measurement.
 - Regression tests cover conditional attributes and extensions, ownership
   switches, conditional switch cases and nested case bodies, multiline
   associated-type constraints, compiler diagnostics, internal/versioned

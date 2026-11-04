@@ -451,10 +451,45 @@ func TestSwiftGrammarStillReportsMalformedSource(t *testing.T) {
 		"struct Broken { func run() { switch consume } }",
 		"#if hasFeature(\nstruct Broken {}\n#endif",
 		"protocol Broken { associatedtype Items where Items.Index == }",
+		// compatibility.patch changed how the scanner looks through block
+		// comments when deciding whether a newline separates statements, and
+		// none of the cases above reach that path. An unterminated comment
+		// swallows the rest of the file, so it has to stay a diagnostic.
+		"struct Broken {\n    func run() {}\n}\n/* unterminated\n",
 	} {
 		_, _, status := TreeSitterParser{}.ParseWithStatus("Broken.swift", source)
 		if !status.ParseError {
 			t.Errorf("malformed Swift silently accepted: %q", source)
+		}
+	}
+}
+
+// A comment that is merely nested or multi-line must not cost the declarations
+// after it. The look-through compatibility.patch added runs at every newline,
+// where an off-by-one in its depth tracking would silently eat the rest of the
+// file rather than report anything.
+func TestSwiftGrammarKeepsDeclarationsAfterBlockComments(t *testing.T) {
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("Comments.swift", `struct Thing {
+    /* one */
+    func first() {}
+    /* outer /* inner */ still outer */
+    func second() {}
+    /*
+     * spanning
+     */
+    func third() {}
+}
+`)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error: %s", status.Detail)
+	}
+	names := map[string]bool{}
+	for _, e := range entities {
+		names[e.Name] = true
+	}
+	for _, want := range []string{"Thing.first", "Thing.second", "Thing.third"} {
+		if !names[want] {
+			t.Errorf("declaration %q lost after a block comment; names=%v", want, names)
 		}
 	}
 }
