@@ -36,10 +36,14 @@ import (
 //
 // The default is a smoke sample; run FULL (ENTIRE_GRAPH_EQUIV_FULL=1) before
 // changing focused loading.
-//   - default: the guard-only fixtures under testdata/focus-guard take three
-//     fixed-seed symbols, and every name form meets every verb (neighbors, def,
-//     impact, explain) at least once across them, with direction, depth and
-//     format in rotation. Every other fixture runs one fixed-seed symbol by its
+//   - default: each guard-only fixture under testdata/focus-guard takes, from
+//     every source file, its first top-level type and that type's first member,
+//     or the file's first symbol when it declares no type. Each of those is
+//     looked up by plain name with def and with one other verb, and by its
+//     upper-cased name, so every case-fold collision among them is reached.
+//     Every other name form meets every verb (neighbors, def, impact, explain)
+//     at least once, spread across the symbols. Direction, depth and format
+//     rotate per verb. Every other fixture runs one fixed-seed symbol by its
 //     plain name through one verb, rotating verb, variant and format across
 //     fixtures.
 //   - FULL: every symbol of every fixture. The plain name runs every verb in
@@ -48,7 +52,12 @@ import (
 //
 // Explain takes no symbol flag, so a form reaches it as the name in a
 // compiler-style "file:line:1: undefined: Name" line, with --file and --line
-// moved into that location.
+// moved into that location. It runs with --no-echo, so it prints only what it
+// resolved.
+//
+// Equality holds trivially when both sides fail or print nothing, so each
+// fixture must also have at least one plain-name lookup that succeeded with
+// non-empty output on both sides ("answered").
 //
 // Normalization, and nothing else:
 //   - json: decoded, then every key ending "_latency_ms" or starting
@@ -109,10 +118,20 @@ func TestLookupsAnswerIdenticallyFromSidecarAndFullLoad(t *testing.T) {
 			if len(fixture.symbols) == 0 {
 				t.Skip("no symbols to look up")
 			}
+			answered := false
 			for _, lookup := range lookups {
-				if lookup.fixture == fixture && !lookup.equal() {
+				if lookup.fixture != fixture {
+					continue
+				}
+				answered = answered || (lookup.plain && lookup.answered())
+				if !lookup.equal() {
 					t.Errorf("%s: entire graph %s\n%s", fixture.name, strings.Join(lookup.displayArgs(), " "), lookup.diff())
 				}
+			}
+			// Two sides that fail, or print nothing, in the same way are equal,
+			// so equality alone would pass if every lookup broke.
+			if !answered {
+				t.Errorf("%s: no plain-name lookup succeeded with output on both sides", fixture.name)
 			}
 		})
 	}
@@ -122,11 +141,8 @@ func TestLookupsAnswerIdenticallyFromSidecarAndFullLoad(t *testing.T) {
 var focusGuardSkipped = map[string]bool{"formats-config": true, "services-config": true, "terraform-basic": true}
 
 const (
-	// focusGuardGuardSample is how many symbols a guard-only fixture checks by
-	// default.
-	focusGuardGuardSample = 3
-	focusGuardSeed        = 20261103
-	focusGuardVersion     = "focus-guard-test"
+	focusGuardSeed    = 20261103
+	focusGuardVersion = "focus-guard-test"
 )
 
 type focusGuardFixture struct {
@@ -147,6 +163,7 @@ type focusGuardSymbol struct {
 	Kind          string `json:"kind"`
 	FilePath      string `json:"file_path"`
 	StartLine     int    `json:"start_line"`
+	ContainerID   string `json:"container_id"`
 }
 
 func focusGuardFixtureDirs(t *testing.T) []*focusGuardFixture {
@@ -300,6 +317,49 @@ func (f *focusGuardFixture) sample(n int) []focusGuardSymbol {
 	return picked[:n]
 }
 
+// representatives is a deterministic choice of at least one symbol per source
+// file: the file's first top-level type (a symbol other symbols name as their
+// container) together with its first member, or the file's first symbol when
+// it declares no type. Types and members are where a focused subgraph has to
+// carry containment, inheritance, override and extension edges.
+func (f *focusGuardFixture) representatives() []focusGuardSymbol {
+	ordered := append([]focusGuardSymbol(nil), f.symbols...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].FilePath != ordered[j].FilePath {
+			return ordered[i].FilePath < ordered[j].FilePath
+		}
+		return ordered[i].StartLine < ordered[j].StartLine
+	})
+	containers := map[string]bool{}
+	for _, symbol := range ordered {
+		containers[symbol.ContainerID] = true
+	}
+	var picked []focusGuardSymbol
+	for start := 0; start < len(ordered); {
+		end := start
+		for end < len(ordered) && ordered[end].FilePath == ordered[start].FilePath {
+			end++
+		}
+		file := ordered[start:end]
+		chosen := []focusGuardSymbol{file[0]}
+		for _, symbol := range file {
+			if symbol.ContainerID == "" && containers[symbol.ID] {
+				chosen = []focusGuardSymbol{symbol}
+				for _, member := range ordered {
+					if member.ContainerID == symbol.ID {
+						chosen = append(chosen, member)
+						break
+					}
+				}
+				break
+			}
+		}
+		picked = append(picked, chosen...)
+		start = end
+	}
+	return picked
+}
+
 // nameForm is one way of addressing a symbol: the --symbol value (positional
 // for def) plus the selector flags that go with it.
 type focusGuardNameForm struct {
@@ -376,12 +436,35 @@ func (b *focusGuardBuilder) add(verb, format, stdin string, args ...string) {
 	if verb == "def" && format == "json" {
 		full = append(full, "--max-context-bytes", "0")
 	}
+	if verb == "explain" {
+		// Without the echo, explain prints only what it resolved, so an
+		// answer that resolved nothing is empty rather than the input again.
+		full = append(full, "--no-echo")
+	}
 	full = append(full, "--format", format)
 	b.lookups = append(b.lookups, &focusGuardLookup{fixture: b.fixture, args: full, stdin: stdin, json: format == "json"})
 }
 
+// plain marks the lookups added by add as plain-name lookups of a symbol that
+// exists, which the guard requires at least one of to answer.
+func (b *focusGuardBuilder) plain(add func()) {
+	start := len(b.lookups)
+	add()
+	for _, lookup := range b.lookups[start:] {
+		lookup.plain = true
+	}
+}
+
 // rotated runs verb once for form, in the verb's next variant and format.
 func (b *focusGuardBuilder) rotated(verb string, symbol focusGuardSymbol, form focusGuardNameForm) {
+	if symbol.ID != "" && form.symbol == symbol.Name && len(form.flags) == 0 {
+		b.plain(func() { b.rotatedForm(verb, symbol, form) })
+		return
+	}
+	b.rotatedForm(verb, symbol, form)
+}
+
+func (b *focusGuardBuilder) rotatedForm(verb string, symbol focusGuardSymbol, form focusGuardNameForm) {
 	turn := b.turns[verb]
 	b.turns[verb] = turn + 1
 	switch verb {
@@ -446,7 +529,7 @@ func (f *focusGuardFixture) lookups(exhaustive bool, ordinal int) []*focusGuardL
 	case exhaustive:
 		b.everyForm(f.symbols)
 	case f.guardOnly:
-		b.everyFormKind(f.sample(focusGuardGuardSample))
+		b.everyFormKind(f.representatives())
 	default:
 		// One symbol by its plain name, one verb; the verb, its variant and
 		// its format rotate across fixtures so the set covers all of them.
@@ -459,11 +542,39 @@ func (f *focusGuardFixture) lookups(exhaustive bool, ordinal int) []*focusGuardL
 	return b.lookups
 }
 
-// everyFormKind gives every name form every verb once, spread across the
-// sampled symbols, then adds the def rewrites, an unknown name and a
-// three-name def.
+// everyFormKind looks up every chosen symbol by its plain name with def, by
+// its plain name with one more verb, and by its upper-cased name, so every
+// symbol, and every case-fold collision between them, is reached. Every other
+// name form then meets every verb once, spread across the symbols. Finally it
+// adds the def rewrites, an unknown name and a three-name def.
 func (b *focusGuardBuilder) everyFormKind(symbols []focusGuardSymbol) {
-	for kindIndex, kind := range focusGuardNameFormKinds {
+	plainKind, upperKind := focusGuardNameFormKinds[0], focusGuardNameFormKinds[1]
+	// Wrapping past the last symbol keeps every verb in each rotation even
+	// when there are fewer symbols than verbs.
+	others := []string{"neighbors", "impact", "explain"}
+	for index := range max(len(symbols), len(others)) {
+		symbol := symbols[index%len(symbols)]
+		plain, _ := plainKind(symbol)
+		if index < len(symbols) {
+			b.rotated("def", symbol, plain)
+		}
+		b.rotated(others[index%len(others)], symbol, plain)
+	}
+	var upperSymbols []focusGuardSymbol
+	var upperForms []focusGuardNameForm
+	for _, symbol := range symbols {
+		if upper, ok := upperKind(symbol); ok {
+			upperSymbols, upperForms = append(upperSymbols, symbol), append(upperForms, upper)
+		}
+	}
+	for index := range max(len(upperSymbols), len(focusGuardVerbs)) {
+		if len(upperSymbols) == 0 {
+			break
+		}
+		at := index % len(upperSymbols)
+		b.rotated(focusGuardVerbs[index%len(focusGuardVerbs)], upperSymbols[at], upperForms[at])
+	}
+	for kindIndex, kind := range focusGuardNameFormKinds[2:] {
 		for verbIndex, verb := range focusGuardVerbs {
 			// Start at a different symbol per verb, and fall through to the
 			// next symbol when this form would only repeat the plain name.
@@ -495,15 +606,17 @@ func (b *focusGuardBuilder) everyForm(symbols []focusGuardSymbol) {
 	for _, symbol := range symbols {
 		forms := focusGuardNameForms(symbol)
 		plain := forms[0]
-		for _, variant := range focusGuardNeighborVariants {
-			b.neighbors(plain, variant, focusGuardThreeFormats...)
-		}
-		b.neighbors(plain, []string{"--relation", "USES_TYPE"}, "json")
-		for _, variant := range focusGuardImpactVariants {
-			b.impact(plain, variant, focusGuardTwoFormats...)
-		}
-		b.def([]string{plain.symbol}, focusGuardThreeFormats...)
-		b.explain(symbol, plain, focusGuardThreeFormats...)
+		b.plain(func() {
+			for _, variant := range focusGuardNeighborVariants {
+				b.neighbors(plain, variant, focusGuardThreeFormats...)
+			}
+			b.neighbors(plain, []string{"--relation", "USES_TYPE"}, "json")
+			for _, variant := range focusGuardImpactVariants {
+				b.impact(plain, variant, focusGuardTwoFormats...)
+			}
+			b.def([]string{plain.symbol}, focusGuardThreeFormats...)
+			b.explain(symbol, plain, focusGuardThreeFormats...)
+		})
 		for _, form := range forms[1:] {
 			for _, verb := range focusGuardVerbs {
 				b.rotated(verb, symbol, form)
@@ -564,6 +677,8 @@ type focusGuardLookup struct {
 	args    []string
 	stdin   string
 	json    bool
+	// plain is a lookup of an existing symbol by its plain name.
+	plain bool
 	// sidecar is the answer with the store enabled, full the one without.
 	sidecar, full focusGuardAnswer
 }
@@ -580,6 +695,11 @@ func (l *focusGuardLookup) run() focusGuardAnswer {
 		answer.err = err.Error()
 	}
 	return answer
+}
+
+// answered reports that both sides succeeded and printed something.
+func (l *focusGuardLookup) answered() bool {
+	return l.sidecar.err == "" && l.full.err == "" && l.sidecar.stdout != "" && l.full.stdout != ""
 }
 
 func (l *focusGuardLookup) equal() bool {
