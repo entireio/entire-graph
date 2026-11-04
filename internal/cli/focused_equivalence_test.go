@@ -44,12 +44,20 @@ import (
 //     Every other name form meets every verb (neighbors, def, impact, explain)
 //     at least once, spread across the symbols. Direction, depth and format
 //     rotate per verb. Each chosen symbol also runs neighbors --depth 2 in
-//     both directions, the one variant that prints two-hop paths. Every
-//     other fixture runs one fixed-seed symbol by its plain name through one
-//     verb, rotating verb, variant and format across fixtures.
+//     both directions, the one variant that prints two-hop paths, and
+//     neighbors --relation EXTENDS; the other extra variants (neighbors
+//     --exclude-tests, --internal-only and --profile fast, impact
+//     --exclude-tests and --profile fast, def and explain --profile fast)
+//     rotate across the symbols. Every other fixture runs one fixed-seed
+//     symbol by its plain name through one verb, rotating verb, variant and
+//     format across fixtures.
 //   - FULL: every symbol of every fixture. The plain name runs every verb in
 //     every direction, depth and format, plus neighbors --depth 2 in both
-//     directions; every other form runs every verb once, in rotation.
+//     directions and every extra variant in json; every other form runs every
+//     verb once, in rotation.
+//
+// A fixture that runs --profile fast lookups is indexed under both profiles,
+// so those lookups read a fast sidecar too.
 //
 // Explain takes no symbol flag, so a form reaches it as the name in a
 // compiler-style "file:line:1: undefined: Name" line, with --file and --line
@@ -82,6 +90,10 @@ func TestLookupsAnswerIdenticallyFromSidecarAndFullLoad(t *testing.T) {
 	exhaustive := os.Getenv("ENTIRE_GRAPH_EQUIV_FULL") == "1"
 
 	fixtures := focusGuardFixtureDirs(t)
+	for _, fixture := range fixtures {
+		// The fixtures that run the extra variants (extraVariants).
+		fixture.fast = exhaustive || fixture.guardOnly
+	}
 	root := t.TempDir()
 	if err := focusGuardEach(len(fixtures), func(index int) error {
 		return fixtures[index].prepare(root)
@@ -153,6 +165,9 @@ type focusGuardFixture struct {
 	// history adds co-change commits before the index and an edit/revert pair
 	// after it, so lookups run on a cache hit whose history has moved on.
 	history bool
+	// fast fixtures run lookups with --profile fast, so prepare indexes that
+	// cache variant as well and storeAvailable checks its sidecar too.
+	fast    bool
 	symbols []focusGuardSymbol
 }
 
@@ -226,8 +241,10 @@ func (f *focusGuardFixture) prepare(root string) error {
 			}
 		}
 	}
-	if _, err := f.cli("", "index", "--repo", f.repo, "--head", "--cache-dir", f.cache, "--format", "json"); err != nil {
-		return fmt.Errorf("%s: index: %w", f.name, err)
+	for _, profile := range f.profiles() {
+		if _, err := f.cli("", "index", "--repo", f.repo, "--head", "--cache-dir", f.cache, "--profile", profile, "--format", "json"); err != nil {
+			return fmt.Errorf("%s: index --profile %s: %w", f.name, profile, err)
+		}
 	}
 	if f.history {
 		// Same tree as the index (a cache hit), different history.
@@ -284,12 +301,26 @@ func (f *focusGuardFixture) touchAndCommit(message string, paths ...string) erro
 	return focusGuardGit(f.repo, "commit", "-qm", message)
 }
 
-func (f *focusGuardFixture) storeAvailable() bool {
-	out, err := f.cli("", "store", "--repo", f.repo, "--cache-dir", f.cache)
-	var descriptor struct {
-		Unavailable bool `json:"store_unavailable"`
+// profiles are the cache variants the fixture's lookups read, each indexed
+// by prepare.
+func (f *focusGuardFixture) profiles() []string {
+	if f.fast {
+		return []string{"full", "fast"}
 	}
-	return err == nil && json.Unmarshal([]byte(out), &descriptor) == nil && !descriptor.Unavailable
+	return []string{"full"}
+}
+
+func (f *focusGuardFixture) storeAvailable() bool {
+	for _, profile := range f.profiles() {
+		out, err := f.cli("", "store", "--repo", f.repo, "--cache-dir", f.cache, "--profile", profile)
+		var descriptor struct {
+			Unavailable bool `json:"store_unavailable"`
+		}
+		if err != nil || json.Unmarshal([]byte(out), &descriptor) != nil || descriptor.Unavailable {
+			return false
+		}
+	}
+	return true
 }
 
 // cli runs one command in-process. ENTIRE_PLUGIN_DATA_DIR is the fixture's
@@ -416,9 +447,21 @@ var (
 	// focusGuardNeighborPathsVariant is the only one that prints two-hop paths.
 	focusGuardNeighborPathsVariant = []string{"--direction", "both", "--depth", "2"}
 	focusGuardImpactVariants       = [][]string{{"--depth", "1"}, {"--depth", "2"}}
-	focusGuardThreeFormats         = []string{"json", "agent", "text"}
-	focusGuardTwoFormats           = []string{"json", "text"}
-	focusGuardVerbs                = []string{"neighbors", "def", "impact", "explain"}
+	// focusGuardNeighborExtraVariants and focusGuardImpactExtraVariants change
+	// what the focus must carry rather than how far it reaches: a relation
+	// outside the call family, the two result filters, and the fast profile,
+	// whose cache variant prepare indexes too (focusGuardFixture.fast).
+	focusGuardNeighborExtraVariants = [][]string{
+		{"--relation", "EXTENDS"},
+		{"--exclude-tests"},
+		{"--internal-only"},
+		focusGuardFastProfile,
+	}
+	focusGuardImpactExtraVariants = [][]string{{"--exclude-tests"}, focusGuardFastProfile}
+	focusGuardFastProfile         = []string{"--profile", "fast"}
+	focusGuardThreeFormats        = []string{"json", "agent", "text"}
+	focusGuardTwoFormats          = []string{"json", "text"}
+	focusGuardVerbs               = []string{"neighbors", "def", "impact", "explain"}
 )
 
 // focusGuardBuilder accumulates one fixture's lookups. Each verb keeps its own
@@ -506,6 +549,11 @@ func (b *focusGuardBuilder) def(args []string, formats ...string) {
 // selector flags, so --file and --line move into the line's location, which
 // is what explain ranks candidates by.
 func (b *focusGuardBuilder) explain(symbol focusGuardSymbol, form focusGuardNameForm, formats ...string) {
+	b.explainWith(symbol, form, nil, formats...)
+}
+
+// explainWith is explain with extra command flags, such as --profile.
+func (b *focusGuardBuilder) explainWith(symbol focusGuardSymbol, form focusGuardNameForm, args []string, formats ...string) {
 	file, line := symbol.FilePath, strconv.Itoa(symbol.StartLine)
 	for index := 0; index+1 < len(form.flags); index += 2 {
 		switch form.flags[index] {
@@ -517,7 +565,46 @@ func (b *focusGuardBuilder) explain(symbol focusGuardSymbol, form focusGuardName
 	}
 	stdin := fmt.Sprintf("%s:%s:1: undefined: %s\n", file, line, form.symbol)
 	for _, format := range formats {
-		b.add("explain", format, stdin)
+		b.add("explain", format, stdin, args...)
+	}
+}
+
+// extraVariants runs the extra variants by plain name, with def and explain
+// under the fast profile too. FULL runs each of them on every symbol. The
+// default sample runs neighbors --relation EXTENDS on every symbol, since
+// inheritance sits on the types it picks, and rotates the rest across the
+// symbols, wrapping past the last one so each is reached at least once.
+func (b *focusGuardBuilder) extraVariants(symbols []focusGuardSymbol, all bool) {
+	neighborRest := focusGuardNeighborExtraVariants[1:]
+	rounds := len(symbols)
+	if !all {
+		rounds = max(len(symbols), len(neighborRest))
+	}
+	for index := range rounds {
+		symbol := symbols[index%len(symbols)]
+		plain, _ := focusGuardNameFormKinds[0](symbol)
+		fastDef := func(format string) { b.def(append([]string{plain.symbol}, focusGuardFastProfile...), format) }
+		if all {
+			for _, variant := range focusGuardNeighborExtraVariants {
+				b.neighbors(plain, variant, "json")
+			}
+			for _, variant := range focusGuardImpactExtraVariants {
+				b.impact(plain, variant, "json")
+			}
+			fastDef("json")
+			b.explainWith(symbol, plain, focusGuardFastProfile, "json")
+			continue
+		}
+		if index < len(symbols) {
+			b.neighbors(plain, focusGuardNeighborExtraVariants[0], "json")
+		}
+		b.neighbors(plain, neighborRest[index%len(neighborRest)], focusGuardThreeFormats[index%3])
+		b.impact(plain, focusGuardImpactExtraVariants[index%2], focusGuardTwoFormats[(index/2)%2])
+		if index%2 == 0 {
+			fastDef(focusGuardThreeFormats[(index/2)%3])
+		} else {
+			b.explainWith(symbol, plain, focusGuardFastProfile, focusGuardThreeFormats[(index/2)%3])
+		}
 	}
 }
 
@@ -592,6 +679,7 @@ func (b *focusGuardBuilder) everyFormKind(symbols []focusGuardSymbol) {
 	}
 	plain, _ := focusGuardNameFormKinds[0](symbols[0])
 	b.neighbors(plain, []string{"--relation", "USES_TYPE"}, "json")
+	b.extraVariants(symbols, false)
 	// Two-hop paths pair a focus's incoming and outgoing edges, so only
 	// --direction both (the default) at --depth 2 prints them.
 	for _, symbol := range symbols {
@@ -638,6 +726,7 @@ func (b *focusGuardBuilder) everyForm(symbols []focusGuardSymbol) {
 			}
 		}
 	}
+	b.extraVariants(symbols, true)
 	b.unknownAndMultiName(symbols, true)
 }
 
