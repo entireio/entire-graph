@@ -319,7 +319,7 @@ func querySearchStoreContext(ctx context.Context, path, wantEntryDigest, wantTre
 // as it would with the plugin absent; the remedy is one indexed build with the
 // store enabled.
 var ErrSearchStoreMissing = fmt.Errorf(
-	"search store not built for this commit: run `entire graph index --head` with %s=1", searchStoreEnv)
+	"search store not built for this commit: run `entire graph index --head` (with %s unset or 1)", searchStoreEnv)
 
 // LoadSearchStoreContext resolves the committed tree's complete search entry
 // and answers the context query from its sqlite sidecar. It never builds: a
@@ -617,12 +617,20 @@ func openExactSearchStore(ctx context.Context, cacheDir, key, tree string) (exac
 	if err != nil {
 		return exactSearchStore{}, nil, err
 	}
+	return openExactSearchStoreForEntry(ctx, entry, tree, cacheEntry.digest)
+}
+
+// openExactSearchStoreForEntry is openExactSearchStore's check for an entry
+// already resolved, reading only the sidecar's meta. entryDigest supplies the
+// gz entry's digest and is called only once a sidecar exists; the prebuild's
+// repair passes one that reuses the digest its cache hit already hashed.
+func openExactSearchStoreForEntry(ctx context.Context, entry cacheEntry, tree string, entryDigest func(cacheEntry) (cacheDigest, error)) (exactSearchStore, *sql.DB, error) {
 	store := searchStoreEntryFor(entry)
 	path := filepath.Join(store.root, store.relative)
 	if _, err := os.Stat(path); err != nil {
 		return exactSearchStore{}, nil, ErrSearchStoreMissing
 	}
-	digest, err := entry.digest()
+	digest, err := entryDigest(entry)
 	if err != nil {
 		return exactSearchStore{}, nil, ErrSearchStoreMissing
 	}

@@ -92,7 +92,10 @@ store as a JSON descriptor without building it. Consumers open read-only and
 verify the entry digest; see [the store contract](docs/store-contract.md).
 `--ignore-file` and `--include-file` are repeatable and must match the indexed
 policy. `--cache-dir` selects its cache root. Missing stores report
-`store_unavailable=true`; build with `ENTIRE_GRAPH_SEARCH_STORE=1 entire graph index --head`.
+`store_unavailable=true`; build with `entire graph index --head`. The store is
+written by default (`ENTIRE_GRAPH_SEARCH_STORE=0` turns it off). A cache-hit
+`index` that cannot rebuild a missing store still succeeds and carries a
+`W_SEARCH_STORE_UNAVAILABLE` warning; lookups then take the full snapshot load.
 
 ### context — bounded task context from the code store
 

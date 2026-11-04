@@ -535,7 +535,17 @@ func loadOrBuildSearchSnapshotPersisting(
 	// Cache persistence is best effort. Retrieval correctness never depends on
 	// a writable cache directory.
 	if generationKnown && persistBuilt {
-		_ = writeSearchSnapshot(entry, newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot, ctx))
+		cache := newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot, ctx)
+		if len(options.OnlyFiles) == 0 {
+			// A complete entry gets its sidecar here too, as on the cold-query
+			// path above: this is where a cold lookup (`def`, `neighbors`,
+			// `impact`, `explain` with --head) persists, and without the
+			// sidecar the NEXT lookup on this tree would pay the full gz decode
+			// instead of reading the store.
+			_ = writeSearchSnapshotAndStore(ctx, entry, cache)
+		} else {
+			_ = writeSearchSnapshot(entry, cache)
+		}
 	}
 	return snapshot, false, nil
 }
@@ -652,13 +662,17 @@ func preindexProviderSnapshotWithPersistenceVerifier(
 	repositoryKey := repoKey(ctx, absRepo)
 	var snapshot ProviderSnapshot
 	var cacheHit bool
+	// The load below writes nothing (persistBuilt is false), so a digest it
+	// hashes while checking the store sidecar still describes the entry when
+	// the hit's sidecar repair checks it again.
+	hitCtx := withEntryDigestMemo(ctx)
 	if options.ForceRebuild {
 		// --force: rebuild from HEAD regardless of any cached entry. The fresh
 		// snapshot overwrites that entry below so later queries serve it.
 		snapshot, err = BuildProviderSnapshotWithOptions(ctx, absRepo, providerVersion, options)
 	} else {
 		// The complete entry is persisted below, verified, rather than best effort here.
-		snapshot, cacheHit, err = loadOrBuildSearchSnapshotPersisting(ctx, absRepo, providerVersion, options, cacheDir, false, nil, false)
+		snapshot, cacheHit, err = loadOrBuildSearchSnapshotPersisting(hitCtx, absRepo, providerVersion, options, cacheDir, false, nil, false)
 	}
 	if err != nil {
 		return ProviderSnapshot{}, false, err
@@ -685,12 +699,24 @@ func preindexProviderSnapshotWithPersistenceVerifier(
 		// A hit is returned only after the persisted entry has been fully decoded
 		// and validated, so reading the same artifact again cannot strengthen the
 		// durability guarantee. The store sidecar, though, may be missing when
-		// the entry was persisted by a run without the store flag; the explicit
+		// the entry was persisted by a run with the store disabled; the explicit
 		// prebuild is the documented remedy for that, so it repairs the sidecar
-		// rather than no-op on the hit. Surfaced, not best effort: the operator
-		// asked for the store and would otherwise retry forever.
-		if err := repairSearchStoreSidecarForEntry(ctx, entry); err != nil {
-			return ProviderSnapshot{}, false, fmt.Errorf("build store sidecar for cached preindex entry: %w", err)
+		// rather than no-op on the hit.
+		//
+		// A repair failure does not fail the index: the sidecar is on by
+		// default, so an operator who never asked for it must not see `index`
+		// start failing on, say, a full disk. The complete entry is durable and
+		// every lookup falls back to it. The failure is surfaced as a header
+		// warning instead, never dropped.
+		if err := repairSearchStoreSidecarForEntry(hitCtx, entry, tree); err != nil {
+			if ctx.Err() != nil {
+				return ProviderSnapshot{}, false, ctx.Err()
+			}
+			// A fresh slice: the hit's warnings may share a backing array with
+			// the cached snapshot's.
+			warnings := make([]ProviderWarning, 0, len(snapshot.Header.Warnings)+1)
+			warnings = append(warnings, snapshot.Header.Warnings...)
+			snapshot.Header.Warnings = append(warnings, searchStoreUnavailableWarning(err))
 		}
 		return snapshot, true, nil
 	}
@@ -1667,7 +1693,7 @@ func readSearchSnapshot(entry cacheEntry) (cachedSearchSnapshot, error) {
 var ErrTruncatedSnapshotNotCacheable = errors.New("refusing to cache a truncated snapshot (E_ANALYSIS_BUDGET_EXCEEDED)")
 
 // readSearchSnapshotPreferringStore answers from the sqlite sidecar when the
-// operator opted in (ENTIRE_GRAPH_SEARCH_STORE) and the sidecar matches the
+// store is enabled (ENTIRE_GRAPH_SEARCH_STORE, on unless set to 0) and the sidecar matches the
 // entry, and otherwise from the gz JSON entry. The sidecar exists because the
 // monolithic JSON decode is the single largest cost of a warm query; the gz
 // entry remains authoritative and every sidecar problem is a silent fallback.

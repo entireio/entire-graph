@@ -38,16 +38,18 @@ import (
 // v4 fixes the file content identity projection to use the indexed Git blob.
 const searchStoreVersion = "search-store-sqlite-v4"
 
-// searchStoreEnv gates the READ path while the store rolls out: the artifact
-// is written beside complete JSON entries, but it is only served when the
-// operator opts in, so a rollout problem degrades to the measured JSON path
-// rather than to a broken query.
+// searchStoreEnv gates both the write and the read of the sidecar. It is ON
+// unless the operator opts out: the focused lookup reads depend on the store
+// existing without anyone having asked for it. An unset variable means
+// enabled; a set value keeps the original parse, so "", 0, false, off and no
+// disable it and anything else enables it. Disabled, every reader degrades to
+// the gz JSON entry, which stays authoritative either way.
 const searchStoreEnv = "ENTIRE_GRAPH_SEARCH_STORE"
 
 func searchStoreEnabled() bool {
 	value, ok := os.LookupEnv(searchStoreEnv)
 	if !ok {
-		return false
+		return true
 	}
 	switch strings.TrimSpace(strings.ToLower(value)) {
 	case "", "0", "false", "off", "no":
@@ -641,10 +643,10 @@ func searchStoreEntryFor(entry cacheEntry) cacheEntry {
 // (search_store_retention.go); the gz entries are never trimmed.
 func writeSearchStoreSidecar(ctx context.Context, entry cacheEntry, entryDigest string, cache *cachedSearchSnapshot) error {
 	if !searchStoreEnabled() {
-		// The write is gated by the same flag as the read: with no reader, an
-		// unconditional sidecar taxed every complete persist with the build
-		// plus ~144MB per cache variant. Enabling the flag costs one rebuild
-		// (`graph index`, or the next cold build) instead.
+		// The write is gated by the same flag as the read: with no reader, a
+		// sidecar taxes every complete persist with the build plus ~144MB per
+		// cache variant. Re-enabling costs one rebuild (`graph index`, or the
+		// next cold build) instead.
 		return nil
 	}
 	directory, err := openCacheEntryDirectory(entry)
@@ -710,17 +712,27 @@ func writeSearchStoreSidecar(ctx context.Context, entry cacheEntry, entryDigest 
 
 // repairSearchStoreSidecarForEntry builds the sidecar for an ALREADY-persisted
 // entry when it is missing or does not match the entry. The explicit prebuild
-// needs this: a gz entry persisted by a run without the store flag (a plain
-// query, or an index before the operator opted in) would otherwise make
-// `entire graph index` with the flag a cache-hit no-op that never creates the
-// store its own degradation message tells the operator to build. The sidecar
-// is built from the raw persisted bytes, not from the request-bound snapshot
-// in memory, so it mirrors the entry exactly as the fidelity contract demands.
-func repairSearchStoreSidecarForEntry(ctx context.Context, entry cacheEntry) error {
+// needs this: a gz entry persisted by a run with the store disabled (or by a
+// build before the sidecar was on by default) would otherwise make
+// `entire graph index` a cache-hit no-op that never creates the store its own
+// degradation message tells the operator to build. The sidecar is built from
+// the raw persisted bytes, not from the request-bound snapshot in memory, so
+// it mirrors the entry exactly as the fidelity contract demands.
+//
+// Whether a sidecar is needed is decided from its meta alone (version, entry
+// digest and tree, the check openExactSearchStore makes), never by loading it:
+// on a no-op index the hit has already decoded the store once, and a second
+// full decode just to learn it exists made the kernel no-op 104s with the
+// store against 51s without. The entry digest is the one that hit already hashed, reused
+// through the run's digest memo; a rebuild hashes the entry afresh because it
+// stamps the digest into the new sidecar.
+func repairSearchStoreSidecarForEntry(ctx context.Context, entry cacheEntry, tree string) error {
 	if !searchStoreEnabled() {
 		return nil
 	}
-	if _, ok := loadSearchStoreForEntry(ctx, entry); ok {
+	memoized := func(entry cacheEntry) (cacheDigest, error) { return memoizedEntryDigest(ctx, entry) }
+	if _, db, err := openExactSearchStoreForEntry(ctx, entry, tree, memoized); err == nil {
+		_ = db.Close()
 		return nil
 	}
 	digest, err := entry.digest()
@@ -734,8 +746,64 @@ func repairSearchStoreSidecarForEntry(ctx context.Context, entry cacheEntry) err
 	return writeSearchStoreSidecar(ctx, entry, digest.String(), &raw)
 }
 
+// SearchStoreUnavailableCode names the header warning `index` carries when a
+// cache hit could not build or repair the sqlite sidecar. The index itself
+// succeeded; the warning says why `graph store` reports store_unavailable and
+// why lookups on this tree take the full snapshot load.
+const SearchStoreUnavailableCode = "W_SEARCH_STORE_UNAVAILABLE"
+
+func searchStoreUnavailableWarning(err error) ProviderWarning {
+	return ProviderWarning{
+		Code:                 SearchStoreUnavailableCode,
+		Severity:             "warning",
+		EffectOnCompleteness: "none: the graph is complete, but its sqlite search store could not be written, so `graph store` and `graph context` report store_unavailable and lookups fall back to the full snapshot load (correct, slower)",
+		Detail:               err.Error(),
+	}
+}
+
+// entryDigestMemo holds the gz entry digests one run has already hashed, so
+// the run's later checks against the same entry do not hash it again. A
+// kernel-scale entry is about a gigabyte; each hash is seconds. It lives on
+// the context of the run that installed it (withEntryDigestMemo) and nowhere
+// else, so a digest never outlives the command that computed it. Only callers
+// that do not write the entry in between may install one.
+type entryDigestMemo struct {
+	mu      sync.Mutex
+	digests map[string]cacheDigest
+}
+
+type entryDigestMemoKey struct{}
+
+func withEntryDigestMemo(ctx context.Context) context.Context {
+	return context.WithValue(ctx, entryDigestMemoKey{}, &entryDigestMemo{digests: map[string]cacheDigest{}})
+}
+
+// memoizedEntryDigest is entry.digest(), served from the context's memo when
+// that entry was hashed before in this run. Without a memo it always hashes.
+func memoizedEntryDigest(ctx context.Context, entry cacheEntry) (cacheDigest, error) {
+	memo, _ := ctx.Value(entryDigestMemoKey{}).(*entryDigestMemo)
+	if memo == nil {
+		return entry.digest()
+	}
+	path := filepath.Join(entry.root, entry.relative)
+	memo.mu.Lock()
+	digest, ok := memo.digests[path]
+	memo.mu.Unlock()
+	if ok {
+		return digest, nil
+	}
+	digest, err := entry.digest()
+	if err != nil {
+		return cacheDigest{}, err
+	}
+	memo.mu.Lock()
+	memo.digests[path] = digest
+	memo.mu.Unlock()
+	return digest, nil
+}
+
 // loadSearchStoreForEntry serves the entry's snapshot from the sqlite sidecar
-// when the operator opted in and the sidecar matches the entry on disk. The
+// when the store is enabled and the sidecar matches the entry on disk. The
 // bool reports whether the store answered; every failure is a quiet miss so
 // the gz entry stays authoritative.
 func loadSearchStoreForEntry(ctx context.Context, entry cacheEntry) (cachedSearchSnapshot, bool) {
@@ -747,7 +815,7 @@ func loadSearchStoreForEntry(ctx context.Context, entry cacheEntry) (cachedSearc
 	if _, err := os.Stat(path); err != nil {
 		return cachedSearchSnapshot{}, false
 	}
-	digest, err := entry.digest()
+	digest, err := memoizedEntryDigest(ctx, entry)
 	if err != nil {
 		return cachedSearchSnapshot{}, false
 	}

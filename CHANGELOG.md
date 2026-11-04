@@ -27,6 +27,13 @@ auto-generated notes on
 
 ### Changed
 
+- The sqlite search store is now written and read by default. `index --head`
+  and a cold `--head` lookup (`def`, `neighbors`, `impact`, `explain`) write it
+  beside the gz cache entry, so `graph store` and `graph context` find it without
+  `ENTIRE_GRAPH_SEARCH_STORE=1`. Set `ENTIRE_GRAPH_SEARCH_STORE=0` to turn it off.
+  A cache-hit `index` that cannot rebuild a missing store no longer fails: it
+  succeeds with a `W_SEARCH_STORE_UNAVAILABLE` warning, and lookups take the full
+  snapshot load.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being
   assigned to a variable, passed as an argument, or stored in a struct field or
