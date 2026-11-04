@@ -450,33 +450,47 @@ Delete `HeadIndexed`; the status line is its only caller.
 **Git key:** a key built without running git, from:
 - the repo path, the cache dir path (the path, not its stat), `statsCacheSalt(version)`, and the resolved max-files value (`resolveMaxSourceFiles`, which reads `ENTIRE_GRAPH_MAX_FILES`);
 - the contents of `.git/HEAD`, of the loose ref HEAD names, and of `.git/config` (all small);
-- when the loose ref is absent, the contents of `.git/packed-refs`;
+- when the loose ref is absent, the `packed-refs` lines that can name its value: the header, the named ref's line and its `^` peeled line. They come from a streaming scan of `.git/packed-refs` (up to 256 MiB); a repo that has run `git gc` keeps hitting;
 - the contents of `<repo>/.graphignore`, or "absent".
 
-Contents are hashed rather than statted, so a same-size ref rewrite within one mtime tick still changes the key. Every read goes through the repo `os.Root` with `Lstat`, and must find a regular, non-link file under 1 MiB. Git's user and system config are not inputs: `gitutil` runs git with both set to `/dev/null`.
+Contents are hashed rather than statted, so a same-size ref rewrite within one mtime tick still changes the key. Every read goes through the repo `os.Root` with `Lstat`, and must find a regular, non-link file. Each file is read up to 1 MiB, except `packed-refs` (above). Git's user and system config are not inputs: `gitutil` runs git with both set to `/dev/null`.
 
 **Fallback:** the render takes today's full path, validation included, when:
-- `.git` is not a plain directory (a linked worktree, a submodule, or a link);
+- `.git` is not a plain directory (a linked worktree, a submodule, or a link), or `.git/commondir` exists;
 - HEAD is neither `ref: refs/...` nor a 40- or 64-hex id;
 - the loose ref is itself `ref: ...` (a symbolic-ref chain);
-- `.git/config` contains `include`, `includeIf`, `worktreeConfig` or `refStorage`;
-- any key input is a link, is not a regular file, or is over 1 MiB.
+- `.git/config` contains `include`, `includeIf`, `worktreeConfig` or `refStorage`, matched case-insensitively;
+- any key input is a link, is not a regular file, or exceeds its read bound.
 
 **Hit and miss:**
 - A full-path render writes `<cacheDir>/statusline/git-<sha256(repo)>.json`. It holds the git key, the HEAD tree and the `[]IndexEntry`, and no figures or rendered text.
+  - It writes the record only when validation passed, HEAD resolved (or is unborn), and the context was not cancelled.
+  - A cancelled, timed-out or refused render writes nothing. That keeps a transient failure from pinning "not indexed" under an unchanged key.
 - On a key hit the render runs no git and skips `WithGitMetadataValidationForSetup`. The validation guards git subprocesses, and a hit spawns none.
 - `AnyIndexEntryExists` runs on every render, so a later `index` at the same HEAD shows `✓ indexed` on the next render.
 - The figures cache (Task 9) is unchanged, except that its key takes the stored tree.
 
 - [ ] Step 1: Re-measure the Task 9 breakdown (validation, each git call, listing, collector) with `ENTIRE_GRAPH_PPROF` or timers in a scratch build, and correct the statusline row in `docs/perf-ledger.md`.
 - [ ] Step 2: Write the tests. Use the Task 9 harness: real `runStatusline`, a real repo and transcript, `NO_COLOR=1`, explicit `COLUMNS` and a temp cache dir. Each test renders twice before it mutates anything, so the render under test is a warm one.
-  - `TestStatuslineWarmRenderRunsNoGit`: index, render twice, then render with `PATH` holding no `git`. Expect `✓ indexed`. This catches a hit path that still runs git. It FAILS on Task 9's code.
-  - `TestStatuslineNoticesKeyInputChanges`, a table with one subtest per input: a new commit; a change from one `https://github.com/...` origin URL to another (a non-GitHub remote leaves the repo key unchanged); an edited `.graphignore`; a commit through a symbolic-ref chain (HEAD → `alias` → `main`); and a commit inside a linked worktree. Each subtest indexes, renders, mutates and renders again, and expects `not indexed`. This catches a key that misses a ref, config, policy or fallback case. It must PASS on Task 9's code.
+  - `TestStatuslineWarmRenderRunsNoGit`:
+    - Index, render twice, then render with `PATH` set to an empty temp dir. Git for Windows ships `git.exe` in several directories, so filtering git out of PATH is not enough.
+    - Expect `✓ indexed`.
+    - This catches a hit path that needs git. It FAILS on Task 9's code.
+    - A hit path that spawns git and ignores the failure would still pass this test. Step 5's latency gate catches that case instead.
+  - `TestStatuslineNoticesKeyInputChanges` is a table test with one subtest per input:
+    - a new commit;
+    - a change from one `https://github.com/...` origin URL to another (a non-GitHub remote leaves the repo key unchanged);
+    - an edited `.graphignore`;
+    - a commit through a symbolic-ref chain (HEAD → `alias` → `main`);
+    - a commit inside a linked worktree, with the stdin anchor set to the linked worktree.
+
+    Each subtest indexes, renders, mutates and renders again, and expects `not indexed`. This catches a key that misses a ref, config, policy or fallback case. The test must PASS on Task 9's code.
   - `TestStatuslineNoticesALaterIndex`: render (`not indexed`), run `index` at the same HEAD, render again. Expect `✓ indexed`. This catches a cached indexed state. It must PASS on Task 9's code.
 - [ ] Step 3: Implement `HeadIndexEntries`/`AnyIndexEntryExists`, the git key, the fallback and the hit path. Run the new tests. Then check the table test bites:
   - drop `.git/config` from the key, and expect the remote subtest to fail;
   - drop the loose ref, and expect the commit subtest to fail;
-  - restore both.
+  - drop the "`.git` is not a plain directory" fallback, and expect the worktree subtest to fail. An unreadable input must hash as a stable "absent" for this check to bite;
+  - restore all three.
 - [ ] Step 4: Run `go test -short -timeout 40m ./internal/cli`, `go test -short ./internal/sem` and `go vet ./...`.
 - [ ] Step 5: Measure on the Task 9 transcript, 20 runs each. Keep the change if and only if:
   - warm-hit p50 ≤ 150 ms;
