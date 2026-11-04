@@ -20,14 +20,21 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 	strict := fs.Bool("strict", false, "Use strict guidance (saved by setup; preview only for agent-guide)")
 	normal := fs.Bool("normal", false, "Use normal guidance (saved by setup; preview only for agent-guide)")
 	noClaudeHook := new(bool)
+	statusline := new(bool)
+	noStatusline := new(bool)
 	if install {
 		fs.BoolVar(noClaudeHook, "no-claude-hook", false, "Do not register the Claude Code SubagentStart hook")
+		fs.BoolVar(statusline, "statusline", false, "Install the Claude Code status line even when another settings scope defines one")
+		fs.BoolVar(noStatusline, "no-statusline", false, "Do not install the Claude Code status line")
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments")
+	}
+	if *statusline && *noStatusline {
+		return fmt.Errorf("--statusline and --no-statusline are mutually exclusive")
 	}
 	mode, err := agentsetup.SelectMode(*strict, *normal)
 	if err != nil {
@@ -69,6 +76,15 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 				return err
 			}
 		}
+		foreignStatusLine := ""
+		if !*noStatusline {
+			if err := agentsetup.CheckClaudeStatusLine(root); err != nil {
+				return err
+			}
+			if foreignStatusLine, err = agentsetup.ForeignStatusLine(root, userHomeDir()); err != nil {
+				return fmt.Errorf("setup: %w (fix it, or pass --no-statusline)", err)
+			}
+		}
 		// InstallChanged rather than Install: the installer's own line-per-write
 		// output is replaced by one settled row per phase, composed here the way
 		// brain's setup composes its rows.
@@ -86,20 +102,24 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 		}
 		if *noClaudeHook {
 			ui.Row(setupMarkSkipped, "Claude hook", "skipped (--no-claude-hook)")
-			ui.End()
-			return nil
+		} else {
+			path, created, hookChanged, err := agentsetup.InstallClaudeSubagentHookChanged(root)
+			if err != nil {
+				return err
+			}
+			switch {
+			case !hookChanged:
+				ui.Row(setupMarkDone, "Claude hook", "unchanged "+path+" (Claude Code SubagentStart hook already present)")
+			case created:
+				ui.Row(setupMarkDone, "Claude hook", "wrote "+path+" (Claude Code SubagentStart hook; per-user, keep it untracked)")
+			default:
+				ui.Row(setupMarkDone, "Claude hook", "updated "+path+" (Claude Code SubagentStart hook; per-user, keep it untracked)")
+			}
 		}
-		path, created, hookChanged, err := agentsetup.InstallClaudeSubagentHookChanged(root)
-		if err != nil {
+		if *noStatusline {
+			ui.Row(setupMarkSkipped, "status line", "skipped (--no-statusline)")
+		} else if err := installStatusLine(ui, root, foreignStatusLine, *statusline); err != nil {
 			return err
-		}
-		switch {
-		case !hookChanged:
-			ui.Row(setupMarkDone, "Claude hook", "unchanged "+path+" (Claude Code SubagentStart hook already present)")
-		case created:
-			ui.Row(setupMarkDone, "Claude hook", "wrote "+path+" (Claude Code SubagentStart hook; per-user, keep it untracked)")
-		default:
-			ui.Row(setupMarkDone, "Claude hook", "updated "+path+" (Claude Code SubagentStart hook; per-user, keep it untracked)")
 		}
 		ui.End()
 		return nil
@@ -111,6 +131,49 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 	_, err = fmt.Fprint(opts.Stdout, guide)
 	return err
 }
+
+// installStatusLine settles setup's status line row. A project-local statusLine overrides the
+// shared and user ones, so writing ours would silently hide a status line the user already has:
+// without force (--statusline) a foreign line in any scope is kept and nothing is written. A
+// foreign line inside settings.local.json itself is kept even with force.
+func installStatusLine(ui *setupUI, root, foreign string, force bool) error {
+	const title = "status line"
+	local := filepath.Join(root, filepath.FromSlash(agentsetup.ClaudeLocalSettings))
+	if foreign != "" && !force {
+		if foreign == local {
+			ui.Row(setupMarkSkipped, title, "kept your status line ("+foreign+")")
+		} else {
+			ui.Row(setupMarkSkipped, title, "kept your status line ("+foreign+") — rerun with --statusline to use entire graph's in this repo")
+		}
+		return nil
+	}
+	path, _, changed, foreignLocal, err := agentsetup.InstallClaudeStatusLineChanged(root)
+	if err != nil {
+		return err
+	}
+	switch {
+	case foreignLocal:
+		ui.Row(setupMarkSkipped, title, "kept your status line ("+path+")")
+	case !changed:
+		ui.Row(setupMarkDone, title, "unchanged "+path+" (Claude Code status line already present)")
+	case foreign != "":
+		ui.Row(setupMarkDone, title, "wrote "+path+" ("+agentsetup.StatusLineCommand+"); overrides "+foreign+" in this repo")
+	default:
+		ui.Row(setupMarkDone, title, "wrote "+path+" (Claude Code status line: "+agentsetup.StatusLineCommand+")")
+	}
+	return nil
+}
+
+// userHomeDir is the home whose ~/.claude/settings.json may hold the user's own status line; ""
+// when it cannot be determined, which skips that scope.
+func userHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
 func runAgentGuide(opts Options, args []string) error { return graphAgentCommand(opts, args, false) }
 func runSetup(opts Options, args []string) error      { return graphAgentCommand(opts, args, true) }
 

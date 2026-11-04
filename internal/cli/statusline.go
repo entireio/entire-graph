@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -122,6 +123,8 @@ func renderStatusline(ctx context.Context, opts Options, cacheDir string) (lines
 	if err != nil || len(data) > statuslineMaxStdin {
 		return nil
 	}
+	// Windows PowerShell 5.1 prefixes text it pipes to a native command with a UTF-8 BOM.
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	var input statuslineInput
 	if json.Unmarshal(data, &input) != nil || input.TranscriptPath == "" {
 		return nil

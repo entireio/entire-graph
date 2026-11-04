@@ -58,6 +58,10 @@ const ClaudeLocalSettings = ".claude/settings.local.json"
 // maxClaudeSettingsBytes bounds the settings read. A settings file is a few KiB.
 const maxClaudeSettingsBytes = 1 << 20
 
+// claudeSettingsHint ends every refusal of settings.local.json. The hook and the status line both
+// rewrite that file, so skipping it takes both opt-outs.
+const claudeSettingsHint = "(fix it, or pass --no-claude-hook and --no-statusline)"
+
 // SubagentDirective is the additionalContext the hook injects. It is SHIPPED text and carries the
 // same obligation and the same command lines as graphObligation (graphCommands, unindented),
 // compressed: Explore and Plan receive it as their only instruction about the graph, so it must
@@ -94,14 +98,9 @@ func subagentHookGroup() map[string]any {
 // SubagentStart are not the documented shapes, belong to the user, and rewriting them would lose
 // whatever they meant.
 func mergeSubagentHook(existing []byte) ([]byte, bool, error) {
-	settings := map[string]json.RawMessage{}
-	if trimmed := bytes.TrimSpace(existing); len(trimmed) > 0 {
-		if trimmed[0] != '{' {
-			return nil, false, fmt.Errorf("%s is not a JSON object", ClaudeLocalSettings)
-		}
-		if err := json.Unmarshal(trimmed, &settings); err != nil {
-			return nil, false, fmt.Errorf("%s is not valid JSON: %w", ClaudeLocalSettings, err)
-		}
+	settings, err := parseSettingsObject(ClaudeLocalSettings, existing)
+	if err != nil {
+		return nil, false, err
 	}
 	hooks := map[string]json.RawMessage{}
 	if raw, ok := settings["hooks"]; ok {
@@ -146,6 +145,21 @@ func mergeSubagentHook(existing []byte) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	return append(rendered, '\n'), true, nil
+}
+
+// parseSettingsObject decodes a Claude Code settings document, naming it in errors. Empty content
+// is an empty object; anything that is not a JSON object is refused, never repaired.
+func parseSettingsObject(name string, content []byte) (map[string]json.RawMessage, error) {
+	settings := map[string]json.RawMessage{}
+	if trimmed := bytes.TrimSpace(content); len(trimmed) > 0 {
+		if trimmed[0] != '{' {
+			return nil, fmt.Errorf("%s is not a JSON object", name)
+		}
+		if err := json.Unmarshal(trimmed, &settings); err != nil {
+			return nil, fmt.Errorf("%s is not valid JSON: %w", name, err)
+		}
+	}
+	return settings, nil
 }
 
 // marshalSettingsValue is json.MarshalIndent without HTML escaping: the hook command holds `>` and
@@ -247,7 +261,7 @@ func CheckClaudeSubagentHook(root string) error {
 	defer repo.Close()
 	_, _, _, err = planClaudeSubagentHook(repo)
 	if err != nil {
-		return fmt.Errorf("setup: %w (fix it, or pass --no-claude-hook)", err)
+		return fmt.Errorf("setup: %w %s", err, claudeSettingsHint)
 	}
 	return nil
 }
@@ -266,7 +280,7 @@ func InstallClaudeSubagentHookChanged(root string) (path string, created, change
 	defer repo.Close()
 	state, rendered, changed, err := planClaudeSubagentHook(repo)
 	if err != nil {
-		return "", false, false, fmt.Errorf("setup: %w (fix it, or pass --no-claude-hook)", err)
+		return "", false, false, fmt.Errorf("setup: %w %s", err, claudeSettingsHint)
 	}
 	path = filepath.Join(root, filepath.FromSlash(ClaudeLocalSettings))
 	if !changed {

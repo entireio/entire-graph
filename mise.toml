@@ -26,7 +26,7 @@ env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null" }
 run = "go test -race -timeout 30m ./..."
 
 [tasks."test:statusline"]
-description = "Test the Claude Code status line script"
+description = "Test the Claude Code status line compatibility shim"
 depends = ["build"]
 run = "sh scripts/entire-graph-statusline_test.sh"
 

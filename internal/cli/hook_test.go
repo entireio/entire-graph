@@ -213,14 +213,15 @@ func TestInitAgentsInstallsClaudeSubagentHook(t *testing.T) {
 
 func TestInitAgentsClaudeHookOptOutAndPreflight(t *testing.T) {
 	t.Parallel()
-	t.Run("opt out writes nothing under .claude", func(t *testing.T) {
+	// The status line also writes settings.local.json, so leaving .claude alone takes both opt-outs.
+	t.Run("opting out of both writes nothing under .claude", func(t *testing.T) {
 		repo := gitRepoForTest(t, false)
 		var out bytes.Buffer
-		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"setup", "--repo", repo, "--no-claude-hook"}); err != nil {
+		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"setup", "--repo", repo, "--no-claude-hook", "--no-statusline"}); err != nil {
 			t.Fatalf("%v\n%s", err, out.String())
 		}
 		if _, err := os.Stat(filepath.Join(repo, ".claude")); !os.IsNotExist(err) {
-			t.Fatalf("--no-claude-hook still created .claude (err %v)", err)
+			t.Fatalf("--no-claude-hook --no-statusline still created .claude (err %v)", err)
 		}
 		if _, err := os.Stat(filepath.Join(repo, agentsetup.Path)); err != nil {
 			t.Fatalf("guide not written: %v", err)

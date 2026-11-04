@@ -204,10 +204,9 @@ The comparison is `unavailable` unless a session has both result types; an
 available zero can also be cancellation between positive and negative sessions.
 `--verbose` includes observed usage, transcript-reported tokens, comparison
 population and assumptions, plus the legacy unvalidated 1:1 context model.
-`--format json` remains additive and independent of `--verbose`. The status line
-continues to use `estimated_savings_est_tokens_unfloored` and
-`sessions_with_savings_comparison`; the default stats headline uses the observed
-follow-up and `modeled_balance_*` fields. Legacy positive-only savings, percentage
+`--format json` remains additive and independent of `--verbose`. The default stats
+headline and the status line use the observed follow-up and `modeled_balance_*`
+fields. Legacy positive-only savings, percentage
 and graph-first fields are retained for compatibility, not endorsed as evidence.
 
 `--since` prunes transcripts by file mtime before parsing them, and unchanged
@@ -215,11 +214,12 @@ transcripts are memoised under the cache directory keyed on file identity plus
 the binary's own identity, so repeat runs do not re-parse gigabytes of session
 log. `--no-cache` forces a full re-parse; `--cache-dir` relocates the memo.
 
-`scripts/entire-graph-statusline.sh` renders the single-session variant as a
-Claude Code status line: `1:1 model +N tok`, `-N tok`, `0 tok`, or `unavailable`.
-It does not fall back to positive-only estimates from older binaries. Detail
-mode adds observed counts and estimated exploration tokens, not a savings
-percentage or an inferred graph-first behavior claim.
+`entire graph statusline` renders the single-session variant as a Claude Code
+status line: graph lookups, gross covered tokens (`gross_covered_est_tokens`) and
+the signed modeled balance (`modeled_balance_est_tokens`), in estimated tokens
+only. `entire graph setup` installs it in `.claude/settings.local.json`; see
+[agent activation](agents.md). `scripts/entire-graph-statusline.sh` remains only
+as a shim that runs the subcommand, for settings that still name it.
 
 ## Release archives
 

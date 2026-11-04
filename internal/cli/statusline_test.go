@@ -138,6 +138,16 @@ func TestStatuslineReportsMissingIndex(t *testing.T) {
 	}
 }
 
+// Windows PowerShell 5.1 prefixes piped text with a UTF-8 BOM, so `'<json>' | powershell -Command
+// "entire graph statusline"` used to print nothing.
+func TestStatuslineAcceptsAUTF8BOM(t *testing.T) {
+	repo := statuslineRepo(t)
+	stdin := "\xef\xbb\xbf" + statuslineStdin(t, statuslineTranscript(t, repo), repo, "")
+	if lines := statuslineLines(runStatuslineForTest(t, 120, t.TempDir(), stdin)); len(lines) == 0 {
+		t.Fatal("a BOM-prefixed status JSON rendered nothing")
+	}
+}
+
 func TestStatuslinePrintsNothingOnBadInput(t *testing.T) {
 	repo := statuslineRepo(t)
 	missing := filepath.Join(t.TempDir(), "missing.jsonl")

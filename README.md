@@ -91,8 +91,14 @@ The command creates or updates these files:
 - `AGENTS.md` and `CLAUDE.md`: created if absent; otherwise one managed block
   between `<!-- entire-agent:begin -->` and `<!-- entire-agent:end -->` markers
   is added or replaced. Text outside the markers is preserved.
+- `.claude/settings.local.json` (per-user, keep it untracked): a Claude Code
+  `SubagentStart` hook (`--no-claude-hook` skips it) and the status line
+  `entire graph statusline`, which shows this session's graph lookups and
+  estimated tokens. When `.claude/settings.json` or `~/.claude/settings.json`
+  already sets a status line, setup keeps yours unless you pass `--statusline`;
+  `--no-statusline` skips it. See [agent activation](docs/agents.md).
 
-Review the three files, then commit them together when the instructions should
+Review the three instruction files, then commit them together when the instructions should
 apply to your team.
 
 After that, the interface is your coding agent: start it with the new instructions,

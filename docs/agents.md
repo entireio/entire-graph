@@ -37,8 +37,18 @@ settings file:
   existing keys and hooks are preserved, the hook is added once, and a rerun
   leaves the file unchanged. `setup` refuses, before writing anything,
   settings that are not a JSON object, and a `.claude` or settings file that is
-  a symlink, hard link or other non-regular file. `--no-claude-hook` skips this
-  file. To remove the hook, delete its `SubagentStart` entry.
+  a symlink, hard link or other non-regular file. `--no-claude-hook` skips the
+  hook. To remove the hook, delete its `SubagentStart` entry.
+
+  The same file also gets the Claude Code status line, a `statusLine` whose
+  command is `entire graph statusline`: this session's graph lookups and
+  estimated tokens, never prices. A project-local status line overrides the
+  shared and user ones, so when `.claude/settings.local.json`,
+  `.claude/settings.json` or `~/.claude/settings.json` already defines another,
+  `setup` keeps it, writes nothing, and says so. `--statusline` installs ours
+  anyway, overriding a shared or user status line in this repository only; a
+  status line already in `settings.local.json` is never replaced.
+  `--no-statusline` skips this step. To remove it, delete the `statusLine` key.
 
 The installer preserves your ignore policy; it does not automatically ignore
 `.claude/settings.local.json`. Add `/.claude/settings.local.json` to your root
@@ -51,6 +61,12 @@ On macOS/Linux the hook uses a POSIX shell wrapper. On Windows it explicitly
 selects PowerShell, with syntax supported by PowerShell 5.1 and later, so it does
 not require Git Bash. Both wrappers suppress an unavailable/older Graph binary's
 error and return success. See Claude's [hook shell selection](https://code.claude.com/docs/en/hooks#command-hook-fields).
+
+The status line command is the bare `entire graph statusline` on every OS, with
+no `shell` key and no wrapper: on Windows Claude Code runs it through Git Bash
+when installed, else PowerShell, and neither wrapper syntax works under both.
+The subcommand fails open itself, printing nothing on any error, and an older
+binary's "unknown command" goes to stderr, which Claude Code does not render.
 
 The direct managed block contains a pointer to the generated guide. Its
 identifying lines are:
@@ -157,8 +173,9 @@ creating or changing `.entire/agent-guide.md`, `AGENTS.md`, or `CLAUDE.md`.
 Preflight validates the current inputs, not future write access. Installation is
 not one transaction across the guide and settings files. A later permission,
 disk-full, or concurrent-change error can leave the guides installed without the
-hook. The command returns an error; fix its cause and rerun to finish, or rerun
-with `--no-claude-hook` to keep only guide activation. Existing settings are not
+hook or status line. The command returns an error; fix its cause and rerun to
+finish, or rerun with `--no-claude-hook --no-statusline` to keep only guide
+activation. Existing settings are not
 rolled back over a concurrent writer's changes.
 
 After preflight succeeds, a rerun:

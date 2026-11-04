@@ -1217,9 +1217,9 @@ func TestRoundToRoundsHalfAwayFromZero(t *testing.T) {
 
 // --- the JSON contract ----------------------------------------------------------------------
 
-// TestStatsJSONContractKeepsEveryPublishedKey guards the machine contract. Callers exist —
-// scripts/entire-graph-statusline.sh reads two of these on every prompt render — so keys may be
-// added but never removed or renamed.
+// TestStatsJSONContractKeepsEveryPublishedKey guards the machine contract. Callers exist — status
+// line scripts written against `stats --format json` read these keys — so keys may be added but
+// never removed or renamed.
 func TestStatsJSONContractKeepsEveryPublishedKey(t *testing.T) {
 	t.Parallel()
 	raw, err := json.Marshal(statsResponse{})
@@ -1417,9 +1417,9 @@ func sortedKeys(report map[string]any) []string {
 //
 // Savings are computed per session and the total sums max(0, saved). Wins are kept and losses are
 // discarded, so the headline can only ever move up: a corpus that lost bytes overall still reports
-// a positive saving. The floored total stays — scripts/entire-graph-statusline.sh reads it on every
-// prompt render, and its awk `number()` returns -1 for a MISSING key, so a genuine negative on that
-// key would be indistinguishable from an absent one — and the signed total is published beside it.
+// a positive saving. The floored total stays — it is a published JSON key, and a reader that maps a
+// MISSING key to -1 (as the old awk status line script did) could not tell a genuine negative on it
+// from an absent one — and the signed total is published beside it.
 //
 // Two sessions, one of each sign: s1 saves 500 B, s2 loses 1,900 B. Floored: +500. Truth: -1,400.
 func TestStatsUnflooredSavingsKeepsTheLosses(t *testing.T) {

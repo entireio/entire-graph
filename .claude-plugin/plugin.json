@@ -5,7 +5,7 @@
   "settings": {
     "statusLine": {
       "type": "command",
-      "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/entire-graph-statusline.sh\""
+      "command": "entire graph statusline"
     }
   }
 }

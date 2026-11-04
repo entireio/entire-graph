@@ -97,28 +97,31 @@ Two consequences worth stating to the user:
 
 ## Status line
 
-The same numbers render as a live one-line Claude Code badge:
+The same numbers render as a live Claude Code status line, in estimated tokens only:
 
 ```text
-[GRAPH] ↗ 2.1M saved · 28 search · 9 impact · graph-first ✓ · 75% of locates · 12% of session
+◤ entire graph · ✓ indexed · 23 lookups · ~184K tok gross · ~12.4K net
 ```
 
-If the user wants it on, add to `~/.claude/settings.json` (project-local: `.claude/settings.json`):
+`entire graph setup` installs it in the repository's `.claude/settings.local.json`. If the user
+already has a status line in `.claude/settings.json` or `~/.claude/settings.json`, setup keeps
+theirs; `entire graph setup --statusline` replaces it in this repository only. To set it by hand:
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "sh /path/to/entire-graph/scripts/entire-graph-statusline.sh"
+    "command": "entire graph statusline"
   }
 }
 ```
 
-Under the plugin, the path is `sh "$CLAUDE_PLUGIN_ROOT/scripts/entire-graph-statusline.sh"`.
 The plugin manifest declares the same block, but Claude Code drops non-allowlisted
-plugin-provided settings (`statusLine` is not on the list as of 2.1.219), so the settings.json
-entry is what actually enables it.
+plugin-provided settings (`statusLine` is not on the list as of 2.1.219), so the settings entry
+is what actually enables it. A settings file that still runs `scripts/entire-graph-statusline.sh`
+keeps working: that script is now a shim that runs the subcommand.
 
-The badge is scoped to the CURRENT session via `--transcript` and is cached on the transcript's
-size+mtime, so it costs one bounded transcript scan rather than a re-scan of every session in the
-project. Its savings number carries exactly the caveats above — same estimator, same assumption.
+The line is scoped to the CURRENT session (its transcript and subagent transcripts) and caches
+its figures until a transcript, HEAD's tree or the binary changes, so a render does not re-scan
+every session in the project. Its net number carries exactly the caveats above — same estimator,
+same assumption.
