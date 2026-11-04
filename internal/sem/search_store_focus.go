@@ -31,9 +31,10 @@ type SnapshotFocus struct {
 	// children, and the members of supertypes reached through
 	// EXTENDS/INHERITS/IMPLEMENTS/OVERRIDES. Precisely:
 	//   - the container_id children of the starting set (its members) are
-	//     loaded and join the hop-2 frontier, as if hop 1 had reached them
-	//     through CONTAINS, so a member known only by container_id still has
-	//     its own relations walked;
+	//     loaded and, when hop 1 walks CONTAINS outward, join the hop-2
+	//     frontier, as if hop 1 had reached them through CONTAINS, so a
+	//     member known only by container_id still has its own relations
+	//     walked;
 	//   - the container_id children of the starting set's containers (its
 	//     siblings) are loaded, not expanded;
 	//   - every symbol a retained EXTENDS/INHERITS/IMPLEMENTS/OVERRIDES
@@ -47,6 +48,24 @@ type SnapshotFocus struct {
 type FocusHop struct {
 	Types   []string // nil means every type
 	In, Out bool
+	// Terminal retains the hop's relations and loads their endpoints, but the
+	// next hop expands the frontier this one expanded rather than the symbols
+	// it reached. impact reads its focus's callees and type edges that way:
+	// only its callers are walked a second hop.
+	Terminal bool
+}
+
+// walks reports whether the hop reads relations of this type.
+func (hop FocusHop) walks(relationType string) bool {
+	if hop.Types == nil {
+		return true
+	}
+	for _, kind := range hop.Types {
+		if kind == relationType {
+			return true
+		}
+	}
+	return false
 }
 
 // kinshipSupertypeRelations are the relations whose target's members Kinship
@@ -69,7 +88,8 @@ var kinshipSupertypeRelations = map[string]bool{
 //     or qualified name equals one of them under strings.EqualFold;
 //   - for each hop, every relation of the hop's types with the frontier on the
 //     requested side, uncapped and with every field; the symbols among their
-//     endpoints are the next frontier, files and externals are never expanded;
+//     endpoints are the next frontier unless the hop is Terminal, and files
+//     and externals are never expanded;
 //   - the Kinship closure, when asked for;
 //   - every symbol and external a retained relation names.
 //
@@ -87,6 +107,17 @@ func LoadFocusedProviderSnapshot(ctx context.Context, repo, providerVersion stri
 	}
 	snapshot, cacheHit, err := LoadOrBuildProviderSnapshot(ctx, repo, providerVersion, options, cacheDir, disableCache)
 	return snapshot, false, cacheHit, err
+}
+
+// WithLookupDigestMemo returns ctx carrying a digest memo for one lookup. A
+// lookup may check the same gz entry against its sidecar twice: in its focused
+// load and in the full load it falls back to. Neither writes the entry before
+// checking it, so the second check can reuse the first one's hash. A full load
+// writes the entry only after its own check missed; if another process
+// rewrites it meanwhile, a remembered digest can at worst match the sidecar of
+// the entry's earlier bytes, which under one key are the same snapshot.
+func WithLookupDigestMemo(ctx context.Context) context.Context {
+	return withEntryDigestMemo(ctx)
 }
 
 // loadFocusedSearchSnapshot addresses the complete entry exactly as the full
@@ -127,6 +158,8 @@ func loadFocusedSearchSnapshot(ctx context.Context, repo, providerVersion string
 	if err != nil {
 		return ProviderSnapshot{}, false
 	}
+	// The hash goes through the caller's digest memo when it installed one
+	// (WithLookupDigestMemo).
 	store, db, err := openExactSearchStoreForEntry(ctx, entry, tree, func(entry cacheEntry) (cacheDigest, error) {
 		return memoizedEntryDigest(ctx, entry)
 	})
@@ -385,11 +418,15 @@ func (read *focusedStoreRead) walk(names []string, focus SnapshotFocus) error {
 			}
 			reached = append(reached, relations...)
 		}
+		if hop.Terminal {
+			// Its endpoints are loaded with every retained relation's below.
+			continue
+		}
 		next, err := read.symbolsByID(relationEndpoints(reached))
 		if err != nil {
 			return err
 		}
-		if index == 0 {
+		if index == 0 && hop.Out && hop.walks("CONTAINS") {
 			next = append(next, members...)
 		}
 		frontier = distinctIDs(next)

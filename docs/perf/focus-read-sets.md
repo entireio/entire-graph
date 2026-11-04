@@ -120,10 +120,10 @@ its symbols.
 | Positional `path:line` | full snapshot (`focused=false`) |
 | Header, `Stats`, `Completeness` | meta header through the shared post-load chain, which takes the stored relation counts rather than `len(Relations)` |
 | `Files` scans | all file rows |
-| Relations a verb walks | `Hops`: hop i takes every relation of the hop's types with the frontier on the requested side, uncapped, full rows |
+| Relations a verb walks | `Hops`: hop i takes every relation of the hop's types with the frontier on the requested side, uncapped, full rows. The symbols among their endpoints are the next frontier, unless the hop is `Terminal` |
 | Relation endpoints | every symbol and external a retained relation names; files are always loaded and never expanded |
 | Containers (`impact.go:457`, `def.go:820,1038`, `explain.go:528,575`) | `Kinship`: the container of every retained symbol |
-| Members and siblings (`impact.go:609-620`, `def.go:827-831`) | `Kinship`: `container_id` children of the starting set and of its containers. The starting set's children join the hop-2 frontier, as if reached by `CONTAINS` at hop 1, so their `OVERRIDES` are walked (`def.go:1063-1067`) |
+| Members and siblings (`impact.go:609-620`, `def.go:827-831`) | `Kinship`: `container_id` children of the starting set and of its containers. When hop 1 walks `CONTAINS` outward (def), the starting set's children join the hop-2 frontier, as if reached by `CONTAINS` at hop 1, so their `OVERRIDES` are walked (`def.go:1063-1067`) |
 | Supertype members (`def.go:1078-1087`) | `Kinship`: for every symbol reached through a retained `EXTENDS`/`INHERITS`/`IMPLEMENTS`/`OVERRIDES` relation, its `CONTAINS` out-relations and its `container_id` children |
 | Co-change (`impact.go:525-541`) | the post-load history splice, which covers every file |
 | Order | every slice is read by `rowid`, the snapshot's own order |
@@ -136,11 +136,13 @@ focused snapshot.
 
 A `FocusHop` applies one direction set to all of its types, so a hop that
 needs `Out` for one type and both directions for another asks for both. That
-loads extra rows but never drops a needed one.
+loads extra rows but never drops a needed one. A `Terminal` hop retains its
+relations and their endpoints but does not move the frontier: the next hop
+expands the same frontier again.
 
 | Verb | `Names` | `Hops` | `Kinship` |
 | --- | --- | --- | --- |
 | neighbors | `--symbol` | hop 1: `--relation` (+`CONSTRUCTS` for `CALLS`); `In` unless `--direction out`, `Out` unless `--direction in` | no |
-| impact | `--symbol` | hop 1: `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `USES_TYPE`, `PARAM_TYPE`, `RETURNS_TYPE`, `DATA_FLOWS`, `In`+`Out`; hop 2 (depth 2): `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `In` | yes |
+| impact | `--symbol` | terminal: `USES_TYPE`, `PARAM_TYPE`, `RETURNS_TYPE`, `DATA_FLOWS`, `In`+`Out`; terminal: `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `Out` (callees); then `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `In` (callers), once per level of `--depth` | yes |
 | def | every `defQualifiedNameForms` form of every name | hop 1: `CONTAINS`, `EXTENDS`, `INHERITS`, `IMPLEMENTS`, `In`+`Out`; hop 2: `OVERRIDES`, `Out` | yes |
 | explain | the candidate names | none | yes |

@@ -131,3 +131,39 @@ func TestFoldSymbolNameAgreesWithEqualFold(t *testing.T) {
 		}
 	}
 }
+
+// A terminal hop's relations are retained, but the next hop expands the same
+// frontier again rather than the symbols the terminal hop reached: impact
+// reads the focus's own type edges, yet walks a second hop only from callers.
+func TestTerminalHopIsNotExpanded(t *testing.T) {
+	fixture := indexFocusFixture(t)
+	resizeParamType := func(terminal bool) bool {
+		t.Helper()
+		snapshot, focused, _, err := LoadFocusedProviderSnapshot(t.Context(), fixture.repo, fixture.version,
+			fixture.options, fixture.cacheDir, false, SnapshotFocus{
+				Names: []string{"grow"},
+				Hops: []FocusHop{
+					{Types: []string{"CALLS"}, In: true, Terminal: terminal},
+					{Types: []string{"PARAM_TYPE"}, Out: true},
+				},
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !focused {
+			t.Fatal("an exact sidecar was present, but the full snapshot was returned")
+		}
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "PARAM_TYPE" && strings.HasSuffix(relation.FromID, ":function:resize") {
+				return true
+			}
+		}
+		return false
+	}
+	if !resizeParamType(false) {
+		t.Fatal("the caller's PARAM_TYPE edge is missing after an expanding hop, so the terminal check would hold vacuously")
+	}
+	if resizeParamType(true) {
+		t.Error("a terminal hop's endpoint (the caller resize) was expanded by the next hop")
+	}
+}

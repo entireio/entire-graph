@@ -43,12 +43,13 @@ import (
 //     upper-cased name, so every case-fold collision among them is reached.
 //     Every other name form meets every verb (neighbors, def, impact, explain)
 //     at least once, spread across the symbols. Direction, depth and format
-//     rotate per verb. Every other fixture runs one fixed-seed symbol by its
-//     plain name through one verb, rotating verb, variant and format across
-//     fixtures.
+//     rotate per verb. Each chosen symbol also runs neighbors --depth 2 in
+//     both directions, the one variant that prints two-hop paths. Every
+//     other fixture runs one fixed-seed symbol by its plain name through one
+//     verb, rotating verb, variant and format across fixtures.
 //   - FULL: every symbol of every fixture. The plain name runs every verb in
-//     every direction, depth and format; every other form runs every verb once,
-//     in rotation.
+//     every direction, depth and format, plus neighbors --depth 2 in both
+//     directions; every other form runs every verb once, in rotation.
 //
 // Explain takes no symbol flag, so a form reaches it as the name in a
 // compiler-style "file:line:1: undefined: Name" line, with --file and --line
@@ -412,10 +413,12 @@ var (
 		{"--direction", "in", "--depth", "2"},
 		{"--direction", "out", "--depth", "2"},
 	}
-	focusGuardImpactVariants = [][]string{{"--depth", "1"}, {"--depth", "2"}}
-	focusGuardThreeFormats   = []string{"json", "agent", "text"}
-	focusGuardTwoFormats     = []string{"json", "text"}
-	focusGuardVerbs          = []string{"neighbors", "def", "impact", "explain"}
+	// focusGuardNeighborPathsVariant is the only one that prints two-hop paths.
+	focusGuardNeighborPathsVariant = []string{"--direction", "both", "--depth", "2"}
+	focusGuardImpactVariants       = [][]string{{"--depth", "1"}, {"--depth", "2"}}
+	focusGuardThreeFormats         = []string{"json", "agent", "text"}
+	focusGuardTwoFormats           = []string{"json", "text"}
+	focusGuardVerbs                = []string{"neighbors", "def", "impact", "explain"}
 )
 
 // focusGuardBuilder accumulates one fixture's lookups. Each verb keeps its own
@@ -589,6 +592,12 @@ func (b *focusGuardBuilder) everyFormKind(symbols []focusGuardSymbol) {
 	}
 	plain, _ := focusGuardNameFormKinds[0](symbols[0])
 	b.neighbors(plain, []string{"--relation", "USES_TYPE"}, "json")
+	// Two-hop paths pair a focus's incoming and outgoing edges, so only
+	// --direction both (the default) at --depth 2 prints them.
+	for _, symbol := range symbols {
+		plain, _ := focusGuardNameFormKinds[0](symbol)
+		b.neighbors(plain, focusGuardNeighborPathsVariant, "json")
+	}
 	for _, symbol := range symbols {
 		if strings.Contains(symbol.QualifiedName, ".") {
 			for index, separator := range []string{"::", "->", "#"} {
@@ -611,6 +620,7 @@ func (b *focusGuardBuilder) everyForm(symbols []focusGuardSymbol) {
 				b.neighbors(plain, variant, focusGuardThreeFormats...)
 			}
 			b.neighbors(plain, []string{"--relation", "USES_TYPE"}, "json")
+			b.neighbors(plain, focusGuardNeighborPathsVariant, "json")
 			for _, variant := range focusGuardImpactVariants {
 				b.impact(plain, variant, focusGuardTwoFormats...)
 			}

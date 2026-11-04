@@ -152,13 +152,13 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	totalStarted := time.Now()
 	indexStarted := totalStarted
-	snapshot, cacheHit, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
+	snapshot, cacheHit, err := loadLookupSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Worktree:     flags.Worktree,
 		IgnoreFiles:  flags.IgnoreFile,
 		IncludeFiles: flags.IncludeFile,
 		Profile:      profile,
-	}, cacheDir, flags.DisableCache)
+	}, cacheDir, flags.DisableCache, neighborLookupFocus(flags))
 	if err != nil {
 		return err
 	}

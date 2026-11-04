@@ -278,13 +278,13 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 	// Worktree is the default on purpose: the agent has just edited the tree, and a declaration read
 	// from HEAD would describe code that no longer exists. --head remains available for callers that
 	// explicitly want the committed baseline.
-	snapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
+	snapshot, _, err := loadLookupSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Worktree:     flags.Worktree,
 		IgnoreFiles:  flags.IgnoreFile,
 		IncludeFiles: flags.IncludeFile,
 		Profile:      profile,
-	}, cacheDir, flags.DisableCache)
+	}, cacheDir, flags.DisableCache, explainLookupFocus(candidates))
 	if err != nil {
 		return err
 	}

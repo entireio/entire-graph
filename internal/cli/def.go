@@ -169,13 +169,13 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	}
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	totalStarted := time.Now()
-	snapshot, cacheHit, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
+	snapshot, cacheHit, err := loadLookupSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Worktree:     flags.Worktree,
 		IgnoreFiles:  flags.IgnoreFile,
 		IncludeFiles: flags.IncludeFile,
 		Profile:      profile,
-	}, cacheDir, flags.DisableCache)
+	}, cacheDir, flags.DisableCache, defLookupFocus(flags, symbols))
 	if err != nil {
 		return err
 	}
@@ -845,15 +845,7 @@ func defExternalTypeName(id string) string {
 // symbol name or its qualified name — never a substring — so a query can only
 // ever return the thing it named.
 func (index *defIndex) resolve(flags defFlags) []sem.SymbolRecord {
-	forms := defQualifiedNameForms(flags.Symbol)
-	var matches []sem.SymbolRecord
-	for _, form := range forms {
-		ref := parseSymbolRef(form, flags.File, flags.Line, flags.Kind, index.repoRoot, index.filePaths)
-		matches = resolveFocusSymbols(index.symbols, ref)
-		if len(matches) > 0 {
-			break
-		}
-	}
+	matches := index.resolveExact(flags)
 	// FIX B: every spelling of the name missed, so degrade to the fuzzy ladder rather than answering
 	// "(no symbol named X)". The ref is rebuilt from the caller's ORIGINAL spelling: the qualified-name
 	// forms above are exact-match aids and would only narrow the fuzzy search.
@@ -885,6 +877,18 @@ func (index *defIndex) resolve(flags defFlags) []sem.SymbolRecord {
 		return defKindRank(matches[left].Kind) < defKindRank(matches[right].Kind)
 	})
 	return matches
+}
+
+// resolveExact is resolve's exact half: the matches of the first spelling of
+// the name that has any, unsorted, or none.
+func (index *defIndex) resolveExact(flags defFlags) []sem.SymbolRecord {
+	for _, form := range defQualifiedNameForms(flags.Symbol) {
+		ref := parseSymbolRef(form, flags.File, flags.Line, flags.Kind, index.repoRoot, index.filePaths)
+		if matches := resolveFocusSymbols(index.symbols, ref); len(matches) > 0 {
+			return matches
+		}
+	}
+	return nil
 }
 
 func defKindRank(kind string) int {
