@@ -11,10 +11,11 @@ lookup (`def`, `neighbors`, `impact`, `explain`) that persists a complete entry,
 write it beside the gz entry. `ENTIRE_GRAPH_SEARCH_STORE` set to `0`, `false`,
 `off`, `no` or the empty string turns both the write and the read off; unset or
 any other value leaves them on. A no-op `graph index --head` whose store is
-missing or stale rebuilds it from the entry. When that rebuild fails (a full
-disk, for example) the index still succeeds and its `warnings` carry
-`W_SEARCH_STORE_UNAVAILABLE` with the reason; lookups then take the full
-snapshot load. After a search-store version bump, an existing store is treated
+missing or stale rebuilds it from the entry. Whenever a store write fails (a
+full disk, for example), on that rebuild or on a cold build by `index`, a
+`--head` lookup or `query`, the command still succeeds and its `warnings` carry
+`W_SEARCH_STORE_UNAVAILABLE` with the reason (`explain` prints no warnings);
+lookups then take the full snapshot load. After a search-store version bump, an existing store is treated
 as missing: lookups fall back to the full snapshot load (correct, slower) until
 `graph index --head` or the next cache-miss write rebuilds the store.
 

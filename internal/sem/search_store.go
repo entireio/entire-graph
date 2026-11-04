@@ -839,11 +839,27 @@ func repairSearchStoreSidecarForEntry(ctx context.Context, entry cacheEntry, tre
 	return writeSearchStoreSidecar(ctx, entry, digest.String(), &raw)
 }
 
-// SearchStoreUnavailableCode names the header warning `index` carries when a
-// cache hit could not build or repair the sqlite sidecar. The index itself
-// succeeded; the warning says why `graph store` reports store_unavailable and
-// why lookups on this tree take the full snapshot load.
+// SearchStoreUnavailableCode names the header warning a command carries when
+// it tried to write the sqlite sidecar and could not: `index` on a hit (the
+// repair) or a miss, and a cold build by a `--head` lookup or `query`. The
+// command itself succeeded; the warning says why `graph store` reports
+// store_unavailable and why lookups on this tree take the full snapshot load.
 const SearchStoreUnavailableCode = "W_SEARCH_STORE_UNAVAILABLE"
+
+// withSearchStoreUnavailable is how every sidecar write site reports its
+// failure: snapshot with a SearchStoreUnavailableCode header warning appended,
+// or snapshot unchanged when err is nil. The slice is fresh because the
+// warnings may share a backing array with a cached or just-persisted snapshot,
+// which must not carry a warning about one run's write.
+func withSearchStoreUnavailable(snapshot ProviderSnapshot, err error) ProviderSnapshot {
+	if err == nil {
+		return snapshot
+	}
+	warnings := make([]ProviderWarning, 0, len(snapshot.Header.Warnings)+1)
+	warnings = append(warnings, snapshot.Header.Warnings...)
+	snapshot.Header.Warnings = append(warnings, searchStoreUnavailableWarning(err))
+	return snapshot
+}
 
 func searchStoreUnavailableWarning(err error) ProviderWarning {
 	return ProviderWarning{

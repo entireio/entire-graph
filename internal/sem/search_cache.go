@@ -474,8 +474,11 @@ func loadOrBuildSearchSnapshotPersisting(
 				if buildErr == nil && validateBuiltSearchSnapshot(full, repositoryKey, providerVersion, tree, completeOptions) == nil {
 					full.Header.Commit = commit
 					// Best effort, like every query-time store: an unwritable cache
-					// still serves this query from the snapshot in memory.
-					_ = writeSearchSnapshotAndStore(ctx, fullEntry, newCachedSearchSnapshot(providerVersion, commit, tree, completeOptions, full, ctx))
+					// still serves this query from the snapshot in memory. A sidecar
+					// failure rides on the complete header, which is the header
+					// the query reports (onCompleteDerivation).
+					storeErr, _ := writeSearchSnapshotAndStore(ctx, fullEntry, newCachedSearchSnapshot(providerVersion, commit, tree, completeOptions, full, ctx))
+					full = withSearchStoreUnavailable(full, storeErr)
 					if selective, ok := deriveFromFull(full); ok {
 						return selective, false, true, nil
 					}
@@ -541,8 +544,10 @@ func loadOrBuildSearchSnapshotPersisting(
 			// path above: this is where a cold lookup (`def`, `neighbors`,
 			// `impact`, `explain` with --head) persists, and without the
 			// sidecar the NEXT lookup on this tree would pay the full gz decode
-			// instead of reading the store.
-			_ = writeSearchSnapshotAndStore(ctx, entry, cache)
+			// instead of reading the store. A sidecar failure is surfaced on
+			// the snapshot this call returns; the gz entry stays best effort.
+			storeErr, _ := writeSearchSnapshotAndStore(ctx, entry, cache)
+			snapshot = withSearchStoreUnavailable(snapshot, storeErr)
 		} else {
 			_ = writeSearchSnapshot(entry, cache)
 		}
@@ -712,11 +717,7 @@ func preindexProviderSnapshotWithPersistenceVerifier(
 			if ctx.Err() != nil {
 				return ProviderSnapshot{}, false, ctx.Err()
 			}
-			// A fresh slice: the hit's warnings may share a backing array with
-			// the cached snapshot's.
-			warnings := make([]ProviderWarning, 0, len(snapshot.Header.Warnings)+1)
-			warnings = append(warnings, snapshot.Header.Warnings...)
-			snapshot.Header.Warnings = append(warnings, searchStoreUnavailableWarning(err))
+			snapshot = withSearchStoreUnavailable(snapshot, err)
 		}
 		return snapshot, true, nil
 	}
@@ -726,9 +727,16 @@ func preindexProviderSnapshotWithPersistenceVerifier(
 		snapshot.Header.Commit = commit
 	}
 	cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot, ctx)
-	if err := persistVerifiedSearchSnapshot(ctx, entry, cache, readPersistedDigest); err != nil {
+	storeErr, err := persistVerifiedSearchSnapshot(ctx, entry, cache, readPersistedDigest)
+	if err != nil {
 		return ProviderSnapshot{}, false, fmt.Errorf("persist preindex snapshot: %w", err)
 	}
+	if storeErr != nil && ctx.Err() != nil {
+		return ProviderSnapshot{}, false, ctx.Err()
+	}
+	// A sidecar that could not be written does not fail the index, for the
+	// reason given on the hit path above; it is a header warning instead.
+	snapshot = withSearchStoreUnavailable(snapshot, storeErr)
 	if options.ForceRebuild {
 		// Refreshing the complete entry is not what --force promises. A selective
 		// search is served from its OWN entry before the complete one is ever
@@ -776,15 +784,15 @@ func persistVerifiedSearchSnapshot(
 	entry cacheEntry,
 	cache cachedSearchSnapshot,
 	readPersistedDigest func(cacheEntry) (cacheDigest, error),
-) error {
+) (storeErr, err error) {
 	if err := refuseTruncatedSnapshot(cache); err != nil {
-		return err
+		return nil, err
 	}
 	var verifyErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		written, err := entry.writeDigest("snapshot", cache)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		stored, err := readPersistedDigest(entry)
 		switch {
@@ -794,12 +802,12 @@ func persistVerifiedSearchSnapshot(
 			verifyErr = errors.New("persisted entry does not match the bytes written")
 		default:
 			// The explicit prebuild is exactly where a reader expects the
-			// sidecar to exist; best effort, like writeSearchSnapshot's.
-			_ = writeSearchStoreSidecar(ctx, entry, written.String(), &cache)
-			return nil
+			// sidecar to exist. Its failure does not fail the persist, as in
+			// writeSearchSnapshotAndStore; it is returned as storeErr.
+			return writeSearchStoreSidecar(ctx, entry, written.String(), &cache), nil
 		}
 	}
-	return verifyErr
+	return nil, verifyErr
 }
 
 // validateBuiltSearchSnapshot closes the transaction between cache keying and
@@ -1775,18 +1783,18 @@ func refuseTruncatedSnapshot(cache cachedSearchSnapshot) error {
 // sidecar. Derived selective views stay on writeSearchSnapshot: they are small
 // per-query artifacts whose JSON decode was never the cost the store exists to
 // remove, so building a store there would spend the build and the disk on
-// queries that had no problem. The sidecar is best effort: the gz entry is
-// authoritative, and writeSearchStoreSidecar removes any previous sidecar on
-// failure so a stale one cannot outlive the entry it mirrored (readers also
-// verify the embedded digest).
-func writeSearchSnapshotAndStore(ctx context.Context, entry cacheEntry, cache cachedSearchSnapshot) error {
+// queries that had no problem. The sidecar never fails the write: the gz entry
+// is authoritative, and writeSearchStoreSidecar removes any previous sidecar
+// on failure so a stale one cannot outlive the entry it mirrored (readers also
+// verify the embedded digest). Its error is returned apart from the entry's,
+// as storeErr, for the caller to surface (withSearchStoreUnavailable).
+func writeSearchSnapshotAndStore(ctx context.Context, entry cacheEntry, cache cachedSearchSnapshot) (storeErr, err error) {
 	if err := refuseTruncatedSnapshot(cache); err != nil {
-		return err
+		return nil, err
 	}
 	digest, err := entry.writeDigest("snapshot", cache)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_ = writeSearchStoreSidecar(ctx, entry, digest.String(), &cache)
-	return nil
+	return writeSearchStoreSidecar(ctx, entry, digest.String(), &cache), nil
 }

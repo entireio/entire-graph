@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -170,5 +171,105 @@ func TestIndexWritesTheStoreWithoutOptIn(t *testing.T) {
 			t.Fatalf("def: %v %s", err, out.String())
 		}
 		requireAvailable(t, describe(t, cache))
+	})
+}
+
+// TestColdIndexSurfacesStoreWriteFailureAsWarning is the cache-MISS half of
+// TestPreindexHitSurfacesStoreRepairFailureAsWarning: a cold build whose sqlite
+// sidecar cannot be written (here a non-empty directory sits where it belongs,
+// as a full disk would refuse it) still succeeds, and says so with a
+// W_SEARCH_STORE_UNAVAILABLE warning in the JSON it prints. Break caught: a
+// cold-path sidecar write failure dropped silently, so `index` reports a clean
+// success while `graph store` says store_unavailable.
+func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, output)
+		}
+	}
+	git("init", "-q")
+	git("config", "user.email", "fixture@example.test")
+	git("config", "user.name", "Fixture")
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package sample\nfunc Render() {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "main.go")
+	git("-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture")
+	const version = "store-write-failure-test"
+	run := func(t *testing.T, verb func(context.Context, Options, []string) error, args ...string) []byte {
+		t.Helper()
+		var out, stderr bytes.Buffer
+		if err := verb(context.Background(), Options{Stdout: &out, Stderr: &stderr, Version: version}, args); err != nil {
+			t.Fatalf("a sidecar write failure failed the command: %v %s", err, stderr.String())
+		}
+		return out.Bytes()
+	}
+	// coldCacheWithBlockedSidecar returns a cache directory with no complete
+	// entry for the fixture's tree and a non-empty directory where that
+	// entry's sidecar will be written. An index run without the store first
+	// names the entry, then the entry is removed so the next build is cold.
+	coldCacheWithBlockedSidecar := func(t *testing.T) string {
+		t.Helper()
+		cache := filepath.Join(t.TempDir(), "cache")
+		t.Setenv("ENTIRE_GRAPH_SEARCH_STORE", "0")
+		run(t, runIndex, "--repo", repo, "--cache-dir", cache, "--profile", "full", "--format", "json")
+		os.Unsetenv("ENTIRE_GRAPH_SEARCH_STORE")
+		var entries []string
+		if err := filepath.WalkDir(cache, func(path string, d fs.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && strings.HasSuffix(path, ".json.gz") {
+				entries = append(entries, path)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("want one complete entry, got %q", entries)
+		}
+		if err := os.Remove(entries[0]); err != nil {
+			t.Fatal(err)
+		}
+		sidecar := strings.TrimSuffix(entries[0], ".json.gz") + ".sqlite"
+		if err := os.MkdirAll(filepath.Join(sidecar, "blocker"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return cache
+	}
+	type response struct {
+		CacheHit bool `json:"index_cache_hit"`
+		Warnings []struct {
+			Code     string `json:"code"`
+			Severity string `json:"severity"`
+			Detail   string `json:"detail"`
+		} `json:"warnings"`
+	}
+	requireWarning := func(t *testing.T, output []byte) {
+		t.Helper()
+		var got response
+		if err := json.Unmarshal(output, &got); err != nil {
+			t.Fatalf("output %q: %v", output, err)
+		}
+		if got.CacheHit {
+			t.Fatalf("the build was not cold: %s", output)
+		}
+		for _, warning := range got.Warnings {
+			if warning.Code == "W_SEARCH_STORE_UNAVAILABLE" && warning.Severity == "warning" && warning.Detail != "" {
+				return
+			}
+		}
+		t.Fatalf("sidecar write failure not surfaced as a W_SEARCH_STORE_UNAVAILABLE warning: %s", output)
+	}
+
+	t.Run("index", func(t *testing.T) {
+		cache := coldCacheWithBlockedSidecar(t)
+		requireWarning(t, run(t, runIndex, "--repo", repo, "--cache-dir", cache, "--profile", "full", "--format", "json"))
+	})
+	t.Run("cold def --head", func(t *testing.T) {
+		cache := coldCacheWithBlockedSidecar(t)
+		requireWarning(t, run(t, runDef, "--repo", repo, "--head", "--cache-dir", cache, "--profile", "full", "--format", "json", "Render"))
 	})
 }
