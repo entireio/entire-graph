@@ -18,13 +18,13 @@ compiler corpus includes deliberately malformed inputs.
 | SnapKit/SnapKit | 0 | 0 | 511 | 511 |
 | SwiftyJSON/SwiftyJSON | 0 | 0 | 693 | 693 |
 | airbnb/lottie-ios | 2 | 1 | 4,758 | 4,758 |
-| apple/swift | 10,581 | 9,739 | 180,725 | 181,974 |
+| apple/swift | 10,581 | 9,736 | 180,725 | 181,979 |
 | onevcat/Kingfisher | 4 | 3 | 4,504 | 4,504 |
 | pointfreeco/swift-composable-architecture | 201 | 51 | 9,861 | 9,872 |
 | realm/realm-swift | 30 | 21 | 11,039 | 11,093 |
 | vapor/vapor | 53 | 7 | 4,232 | 4,232 |
 
-Net change: 1,055 fewer parse errors and 1,314 additional symbols. No previously
+Net change: 1,058 fewer parse errors and 1,319 additional symbols. No previously
 clean file in the nine application/library repositories gains a parse error.
 The 20 newly flagged compiler fixtures contain invalid syntax (including
 unterminated comments, malformed conditions and compiler-crasher inputs).
@@ -38,7 +38,9 @@ They must remain diagnostics rather than being hidden by source masking.
 - Regression tests cover conditional attributes and extensions, ownership
   switches, conditional switch cases and nested case bodies, multiline
   associated-type constraints, compiler diagnostics, internal/versioned
-  compilation conditions, inline `#endif`, and comment lookahead.
+  compilation conditions, inline `#endif`, comment lookahead (including leading
+  operators and closures after comments), string `canImport` versions, flags
+  named like predicates, and macros whose names begin with a directive word.
 - Graph assertions preserve declaration ranges, attributes, containment,
   calls and field reads/writes. Malformed-source tests require parse failures.
 - All 296 upstream grammar corpus tests and the upstream highlighting/outline
@@ -61,6 +63,10 @@ corpus benchmark ran concurrently, without an assertion failure. The final
 suite uses the larger timeout above and runs without that benchmark load.
 
 ## Whole-repository graph comparison
+
+Measured before the final scanner and grammar fixes, which changed three
+`apple/swift` parse results and five symbols in the per-file audit above. The
+totals below have not been re-measured on the final parser.
 
 Every repository retains or increases its total symbols and relations:
 

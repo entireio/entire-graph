@@ -52,8 +52,10 @@ cache. CI additionally runs the POSIX shell suite
   `go run ./cmd/grammar-refresh -lang <name> -ref <tag|branch|commit>` (add
   `-url` for a new grammar); it needs the network, and its output is committed.
   The go-tree-sitter runtime loads ABI 13-14 only, so a grammar generated for
-  ABI 15 must be regenerated with `tree-sitter generate --abi 14` first. Check
-  the entry's `note` for manual steps, regenerate `NOTICES`, and bump
+  ABI 15 must be regenerated with `tree-sitter generate --abi 14` first. An entry
+  with `local_changes` differs from upstream, so the tool refuses it unless you
+  pass `-allow-local-changes` and reapply those changes afterwards. Check the
+  entry's `note` for manual steps, regenerate `NOTICES`, and bump
   `IdentityRevision` in `internal/sem/provider.go` in the same commit when parse
   results change.
 - **User-visible behavior** belongs in `CHANGELOG.md` under the unreleased

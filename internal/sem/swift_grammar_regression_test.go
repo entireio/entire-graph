@@ -226,6 +226,147 @@ struct MacroTests {
 `,
 			want: []string{"MacroTests", "MacroTests.checks", "MacroTests.fallback"},
 		},
+		{
+			name: "comments before leading operators",
+			source: `func lineTernary(a: Bool, d: Int, e: Int) -> Int {
+    let value = a
+        // explain
+        ? d : e
+    return value
+}
+func blockTernary(a: Bool, d: Int, e: Int) -> Int {
+    let value = a
+        /* explain */
+        ? d : e
+    return value
+}
+func comparisons(a: Int, b: Int) -> Bool {
+    let less = a
+        // explain
+        < b
+    let greater = a
+        /* explain */
+        > b
+    return less && greater
+}
+func bitwise(a: Int, b: Int) -> Int {
+    let either = a
+        // explain
+        | b
+    let exclusive = a
+        // explain
+        ^ b
+    let both = a
+        /* explain */
+        & b
+    return either + exclusive + both
+}
+`,
+			want: []string{"lineTernary", "blockTernary", "comparisons", "bitwise"},
+		},
+		{
+			name: "closures after comments",
+			source: `class Capture {
+    func foo() {
+        func bar() {
+            self.foo()
+        }
+        // A closure can start a statement, so the comment keeps the separator.
+        {[weak self] in _ = self!; bar() }()
+    }
+}
+func braces(a: Bool, b: Int, c: Int) -> Int
+// explain
+{
+    if a
+    // explain
+    {
+        return a
+            ? b
+            // explain
+            : c
+    }
+    return c
+}
+`,
+			want: []string{"Capture", "Capture.foo", "braces"},
+		},
+		{
+			name: "comments still separate statements",
+			source: `func separated() {
+    let first = make()
+    // explain
+    let second = make()
+    /* explain */
+    consume(first, second)
+}
+func make() -> Int { 1 }
+func consume(_ a: Int, _ b: Int) {}
+`,
+			want: []string{"separated", "make", "consume"},
+		},
+		{
+			name: "string canImport versions",
+			source: `#if canImport(Foundation, _version: "113.330.1.2")
+func stringVersion() {}
+#elseif canImport(Foundation, _underlyingVersion: "3.3")
+func stringUnderlying() {}
+#endif
+`,
+			want: []string{"stringVersion", "stringUnderlying"},
+		},
+		{
+			name: "diagnostics before the first switch case",
+			source: `func warned(_ value: Int) {
+    switch value {
+    #warning("before the first case")
+    default: break
+    }
+    switch value {
+    #error("before the first case")
+    #if DEBUG
+    case 0: break
+    #endif
+    default: break
+    }
+}
+`,
+			want: []string{"warned"},
+		},
+		{
+			name: "compilation flags named like predicates",
+			source: `#if hasFeature
+func feature() {}
+#elseif hasAttribute && !_runtime
+func attribute() {}
+#elseif _endian || _pointerBitWidth || _hasAtomicBitWidth || _compiler_version
+func others() {}
+#endif
+#if hasFeature(BareSlashRegexLiterals) && hasAttribute(retroactive)
+func predicate() {}
+#endif
+`,
+			want: []string{"feature", "attribute", "others", "predicate"},
+		},
+		{
+			name: "macros prefixed by directive names",
+			source: `func macros() {
+    #elsewhere
+    #endifx
+    #elseifx(1)
+    #iffy(1)
+    #elsei
+}
+#if DEBUG
+func debug() {}
+#elseif RELEASE
+func release() {}
+#else
+func other() {}
+#endif
+`,
+			want: []string{"macros", "debug", "release", "other"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entities, language, status := TreeSitterParser{}.ParseWithStatus("Regression.swift", tc.source)

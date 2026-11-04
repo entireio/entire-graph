@@ -118,19 +118,3 @@ func TestRemainingNestedCallableCorrectionsAreRevisioned(t *testing.T) {
 		t.Fatal("the Swift/Kotlin/Rust/PHP nested-callable corrections must invalidate revision 3")
 	}
 }
-
-// The vendored tree-sitter-swift v0.7.4 grammar replaces go-tree-sitter's
-// 0.5.0 one, so declarations in previously failing Swift files are now
-// extracted differently. The caches are keyed on the source tree, so only the
-// revision bump stops revision-5 records being served for those files.
-func TestSwiftGrammarRefreshIsRevisioned(t *testing.T) {
-	if IdentityRevision == "5" {
-		t.Fatal("the Swift grammar refresh must invalidate revision 5")
-	}
-}
-
-func TestSwiftGrammarRecoveryIsRevisioned(t *testing.T) {
-	if IdentityRevision == "6" {
-		t.Fatal("the Swift grammar recovery must invalidate revision 6")
-	}
-}

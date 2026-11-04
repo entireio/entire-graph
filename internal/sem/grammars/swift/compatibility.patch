@@ -1,5 +1,5 @@
 diff --git a/grammar.js b/grammar.js
-index 2ee959f..e3fffba 100644
+index 2ee959f..fa1f6bd 100644
 --- a/grammar.js
 +++ b/grammar.js
 @@ -87,6 +87,7 @@ if (tree_sitter_version_supports_emoji()) {
@@ -34,7 +34,7 @@ index 2ee959f..e3fffba 100644
 +          optional($._consume_operator),
            field("expr", $._expression),
            "{",
-+          repeat(seq($.directive, optional($._semi))),
++          repeat(seq(choice($.directive, $.diagnostic), optional($._semi))),
            repeat($.switch_entry),
            "}"
          )
@@ -83,7 +83,7 @@ index 2ee959f..e3fffba 100644
      parameter_modifiers: ($) => repeat1($.parameter_modifier),
      _modifier: ($) =>
        choice($._non_local_scope_modifier, $._locally_permitted_modifier),
-@@ -2223,8 +2227,17 @@ module.exports = grammar({
+@@ -2223,10 +2227,24 @@ module.exports = grammar({
              sep1($.integer_literal, "."),
              ")"
            ),
@@ -92,7 +92,7 @@ index 2ee959f..e3fffba 100644
 +            "canImport", "(", sep1($.simple_identifier, "."),
 +            optional(seq(
 +              ",", choice("_version", "_underlyingVersion"), ":",
-+              sep1($.integer_literal, ".")
++              choice(sep1($.integer_literal, "."), $.line_string_literal)
 +            )),
 +            ")"
 +          ),
@@ -101,9 +101,16 @@ index 2ee959f..e3fffba 100644
 +          seq(choice("hasFeature", "hasAttribute", "_pointerBitWidth", "_hasAtomicBitWidth", "_endian", "_runtime"), "(", $.simple_identifier, ")"),
            $.boolean_literal,
            $.simple_identifier,
++          // The predicate names remain ordinary -D flags unless a `(` follows.
++          alias(
++            choice("hasFeature", "hasAttribute", "_pointerBitWidth", "_hasAtomicBitWidth", "_endian", "_runtime", "_compiler_version"),
++            $.simple_identifier
++          ),
            seq("(", $._compilation_condition, ")"),
+           seq("!", $._compilation_condition),
+           seq(
 diff --git a/src/scanner.c b/src/scanner.c
-index 6d53d68..acba9c4 100644
+index 6d53d68..c0cefeb 100644
 --- a/src/scanner.c
 +++ b/src/scanner.c
 @@ -4,7 +4,7 @@
@@ -154,16 +161,52 @@ index 6d53d68..acba9c4 100644
                  }
              } else if (iswspace(lexer->lookahead)) {
                  // We didn't see any type of comment - in fact, we saw an operator that we don't normally treat as an
-@@ -836,7 +840,7 @@ static enum ParseDirective eat_whitespace(
+@@ -836,7 +840,16 @@ static enum ParseDirective eat_whitespace(
              // If we skipped through some comment, we're at whitespace now, so advance.
              while(iswspace(lexer->lookahead)) {
                  any_comment = CONTINUE_PARSING_NOTHING_FOUND; // We're advancing, so clear out the comment
 -                lexer->advance(lexer, true);
 +                lexer->advance(lexer, false);
++            }
++        }
++
++        // The check below for characters that suppress the semi only sees the first character after the newline,
++        // which here was the comment's `/`. Apply it to what follows the comment instead, except for `{`: unlike
++        // the others it can start a statement, so a commented closure after a declaration must keep its semi.
++        for (int i = 0; i < NON_CONSUMING_CROSS_SEMI_CHAR_COUNT; i++) {
++            if (NON_CONSUMING_CROSS_SEMI_CHARS[i] == lexer->lookahead && lexer->lookahead != '{') {
++                return STOP_PARSING_NOTHING_FOUND;
              }
          }
  
-@@ -962,7 +966,7 @@ static bool eat_raw_str_part(
+@@ -906,6 +919,10 @@ const enum TokenType DIRECTIVE_SYMBOLS[DIRECTIVE_COUNT] = {
+     DIRECTIVE_ENDIF
+ };
+ 
++static bool is_identifier_continuation(int32_t c) {
++    return c == '_' || c >= 0x80 || (c >= 0 && c < 0x80 && iswalnum(c));
++}
++
+ static enum TokenType find_possible_compiler_directive(TSLexer *lexer) {
+     bool possible_directives[DIRECTIVE_COUNT];
+     for (int dir_idx = 0; dir_idx < DIRECTIVE_COUNT; dir_idx++) {
+@@ -922,8 +939,13 @@ static enum TokenType find_possible_compiler_directive(TSLexer *lexer) {
+ 
+             uint8_t expected_char = DIRECTIVES[dir_idx][str_idx];
+             if (expected_char == '\0') {
+-                full_match = dir_idx;
+-                lexer->mark_end(lexer);
++                // `#elsewhere` and `#endifx` are freestanding macros, not directives.
++                if (!is_identifier_continuation(lexer->lookahead)) {
++                    full_match = dir_idx;
++                    lexer->mark_end(lexer);
++                }
++                possible_directives[dir_idx] = false;
++                continue;
+             }
+ 
+             if (expected_char != lexer->lookahead) {
+@@ -962,7 +984,7 @@ static bool eat_raw_str_part(
      enum TokenType *symbol_result
  ) {
      uint32_t hash_count = state->ongoing_raw_str_hash_count;
@@ -172,7 +215,7 @@ index 6d53d68..acba9c4 100644
          return false;
      } else if (hash_count == 0) {
          // If this is a raw_str_part, it's the first one - look for hashes
-@@ -976,11 +980,22 @@ static bool eat_raw_str_part(
+@@ -976,11 +998,22 @@ static bool eat_raw_str_part(
          }
  
          if (lexer->lookahead == '"') {

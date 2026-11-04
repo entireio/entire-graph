@@ -227,7 +227,7 @@ func gitRepo(t *testing.T, files map[string]string) string {
 func TestRefreshMissingParserNamesRef(t *testing.T) {
 	repo := gitRepo(t, map[string]string{"grammar.js": "module.exports = grammar({})\n", "LICENSE": "MIT\n"})
 	root := t.TempDir()
-	err := refresh("demo", "v1", repo, "", filepath.Join(root, "grammars.json"), root)
+	err := refresh("demo", "v1", repo, "", filepath.Join(root, "grammars.json"), root, false)
 	if err == nil {
 		t.Fatal("want error for a ref without generated sources")
 	}
@@ -247,7 +247,7 @@ func TestRefreshRejectsUnsafeNames(t *testing.T) {
 		{"swift", "../outside"},
 		{"swift", "/abs"},
 	} {
-		err := refresh(tc.lang, "v1", filepath.Join(root, "no-such-repo"), tc.subdir, manifest, root)
+		err := refresh(tc.lang, "v1", filepath.Join(root, "no-such-repo"), tc.subdir, manifest, root, false)
 		if err == nil || !strings.Contains(err.Error(), "invalid -") {
 			t.Errorf("refresh(lang=%q, path=%q) = %v; want a validation error before any fetch", tc.lang, tc.subdir, err)
 		}
@@ -257,7 +257,7 @@ func TestRefreshRejectsUnsafeNames(t *testing.T) {
 func TestRefreshTreatsDashURLAsRepository(t *testing.T) {
 	root := t.TempDir()
 	marker := filepath.Join(root, "ran")
-	err := refresh("demo", "v1", "--upload-pack=touch "+marker, "", filepath.Join(root, "grammars.json"), root)
+	err := refresh("demo", "v1", "--upload-pack=touch "+marker, "", filepath.Join(root, "grammars.json"), root, false)
 	if err == nil {
 		t.Fatal("want fetch error")
 	}
@@ -276,5 +276,80 @@ func TestUpsertKeepsManifestSorted(t *testing.T) {
 	}
 	if !reflect.DeepEqual(names, []string{"dart", "swift", "zig"}) || grammars[1].Revision != "b" {
 		t.Fatalf("upsert = %+v", grammars)
+	}
+}
+
+func localChangesManifest(t *testing.T, repo, revision string) (manifest, root string) {
+	t.Helper()
+	root = t.TempDir()
+	manifest = filepath.Join(root, "grammars.json")
+	if err := saveManifest(manifest, []Grammar{{
+		Language:     "demo",
+		URL:          repo,
+		Reference:    "v0",
+		Revision:     revision,
+		Files:        []string{"LICENSE", "parser.c"},
+		ABI:          14,
+		LocalChanges: true,
+		Note:         "reapply demo.patch",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(root, "demo", "parser.c"), "patched\n")
+	return manifest, root
+}
+
+func generatedGrammarRepo(t *testing.T) (repo, revision string) {
+	t.Helper()
+	repo = gitRepo(t, map[string]string{"src/parser.c": "#define LANGUAGE_VERSION 14\n", "LICENSE": "MIT\n"})
+	revision, err := gitOutput(repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repo, revision
+}
+
+func TestRefreshRefusesLocalChanges(t *testing.T) {
+	repo, revision := generatedGrammarRepo(t)
+	for name, recorded := range map[string]string{"same revision": revision, "new revision": "0000000"} {
+		t.Run(name, func(t *testing.T) {
+			manifest, root := localChangesManifest(t, repo, recorded)
+			before, _ := os.ReadFile(manifest)
+			err := refresh("demo", "v1", "", "", manifest, root, false)
+			if err == nil {
+				t.Fatal("want refusal for a grammar with local changes")
+			}
+			for _, want := range []string{"-allow-local-changes", "reapply demo.patch"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+			if got, _ := os.ReadFile(filepath.Join(root, "demo", "parser.c")); string(got) != "patched\n" {
+				t.Fatalf("parser.c changed on refusal: %q", got)
+			}
+			if after, _ := os.ReadFile(manifest); string(after) != string(before) {
+				t.Fatalf("manifest changed on refusal:\n%s", after)
+			}
+		})
+	}
+}
+
+func TestRefreshKeepsNoteAcrossRevisions(t *testing.T) {
+	repo, revision := generatedGrammarRepo(t)
+	for name, recorded := range map[string]string{"same revision": revision, "new revision": "0000000"} {
+		t.Run(name, func(t *testing.T) {
+			manifest, root := localChangesManifest(t, repo, recorded)
+			if err := refresh("demo", "v1", "", "", manifest, root, true); err != nil {
+				t.Fatal(err)
+			}
+			grammars, err := loadManifest(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := grammars[0]
+			if got.Revision != revision || got.Note != "reapply demo.patch" || !got.LocalChanges {
+				t.Fatalf("entry = %+v", got)
+			}
+		})
 	}
 }

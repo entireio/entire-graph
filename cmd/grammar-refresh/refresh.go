@@ -26,7 +26,10 @@ type Grammar struct {
 	Path      string   `json:"path,omitempty"`
 	Files     []string `json:"files"`
 	ABI       int      `json:"abi"`
-	Note      string   `json:"note,omitempty"`
+	// LocalChanges marks vendored files that differ from upstream at Revision
+	// in ways a refresh would discard. Note says how to reapply them.
+	LocalChanges bool   `json:"local_changes,omitempty"`
+	Note         string `json:"note,omitempty"`
 }
 
 var languageVersionPattern = regexp.MustCompile(`(?m)^#define LANGUAGE_VERSION (\d+)\s*$`)

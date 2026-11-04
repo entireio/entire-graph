@@ -28,9 +28,10 @@ cp src/parser.c src/scanner.c /path/to/entire-graph/internal/sem/grammars/swift/
 ```
 
 Use the exact generator version above. No generation or download occurs when
-building or running Graph. `grammar-refresh` copies upstream verbatim, so after
-using it, reapply or reconcile this patch before committing. Update the manifest
-note and identity revision whenever the resulting parser changes.
+building or running Graph. `grammar-refresh` copies upstream verbatim, so it
+refuses this grammar unless passed `-allow-local-changes`; after that, reapply or
+reconcile this patch before committing. Update the manifest note and identity
+revision whenever the resulting parser changes.
 
 Regression coverage lives in `internal/sem/swift_grammar_regression_test.go`;
 `swift_test.go` also protects the newer Swift Testing macro support.

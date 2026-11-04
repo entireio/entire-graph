@@ -844,6 +844,15 @@ static enum ParseDirective eat_whitespace(
             }
         }
 
+        // The check below for characters that suppress the semi only sees the first character after the newline,
+        // which here was the comment's `/`. Apply it to what follows the comment instead, except for `{`: unlike
+        // the others it can start a statement, so a commented closure after a declaration must keep its semi.
+        for (int i = 0; i < NON_CONSUMING_CROSS_SEMI_CHAR_COUNT; i++) {
+            if (NON_CONSUMING_CROSS_SEMI_CHARS[i] == lexer->lookahead && lexer->lookahead != '{') {
+                return STOP_PARSING_NOTHING_FOUND;
+            }
+        }
+
         enum TokenType operator_result;
         bool saw_operator = eat_operators(
                                 lexer,
@@ -910,6 +919,10 @@ const enum TokenType DIRECTIVE_SYMBOLS[DIRECTIVE_COUNT] = {
     DIRECTIVE_ENDIF
 };
 
+static bool is_identifier_continuation(int32_t c) {
+    return c == '_' || c >= 0x80 || (c >= 0 && c < 0x80 && iswalnum(c));
+}
+
 static enum TokenType find_possible_compiler_directive(TSLexer *lexer) {
     bool possible_directives[DIRECTIVE_COUNT];
     for (int dir_idx = 0; dir_idx < DIRECTIVE_COUNT; dir_idx++) {
@@ -926,8 +939,13 @@ static enum TokenType find_possible_compiler_directive(TSLexer *lexer) {
 
             uint8_t expected_char = DIRECTIVES[dir_idx][str_idx];
             if (expected_char == '\0') {
-                full_match = dir_idx;
-                lexer->mark_end(lexer);
+                // `#elsewhere` and `#endifx` are freestanding macros, not directives.
+                if (!is_identifier_continuation(lexer->lookahead)) {
+                    full_match = dir_idx;
+                    lexer->mark_end(lexer);
+                }
+                possible_directives[dir_idx] = false;
+                continue;
             }
 
             if (expected_char != lexer->lookahead) {

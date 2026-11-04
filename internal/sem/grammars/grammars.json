@@ -73,6 +73,7 @@
       "tree_sitter/parser.h"
     ],
     "abi": 14,
+    "local_changes": true,
     "note": "the last ABI-14 generation; scanner.h is upstream's common/scanner.h, and scanner.c's include was rewritten from \"../../common/scanner.h\" to \"scanner.h\", which a refresh must redo by hand"
   },
   {
@@ -165,6 +166,7 @@
       "tree_sitter/parser.h"
     ],
     "abi": 14,
+    "local_changes": true,
     "note": "grammar.js and src/scanner.c patched with swift/compatibility.patch; parser.c regenerated with tree-sitter-cli 0.24.7 --abi 14. See swift/README.md; a verbatim refresh must reapply this patch."
   },
   {
