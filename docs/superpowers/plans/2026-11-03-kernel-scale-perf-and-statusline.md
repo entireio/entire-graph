@@ -44,10 +44,14 @@ Baseline tags are `base` and `base-store`. Run kernel jobs one at a time, since 
 **Files:**
 - Create: `cmd/entire-graph/pprof.go` (`//go:build pprof`)
 
-**Interfaces:** Produces: when built with `-tags pprof` and `ENTIRE_GRAPH_PPROF=<dir>` is set, the process writes `<dir>/cpu-<pid>.pprof` for its lifetime and `<dir>/heap-<pid>.pprof` at exit. Release builds are unaffected.
+**Interfaces:** Produces: when built with `-tags pprof` and `ENTIRE_GRAPH_PPROF=<dir>` is set, the process writes `<dir>/cpu-<pid>.pprof` for its lifetime, `<dir>/heap-peak-<pid>.pprof` near peak live heap, and `<dir>/heap-exit-<pid>.pprof` at exit. Release builds are unaffected.
 
-- [ ] Step 1: Implement it with an `init()` that starts `pprof.StartCPUProfile`, plus an exit hook. `main.go` calls `os.Exit`, so add a tag-gated `var atExit func()` in `pprof.go` and a no-op stub in `pprof_off.go` (`//go:build !pprof`). `main` calls `atExit()` before `os.Exit`.
-- [ ] Step 2: Check with `go build -tags pprof ./cmd/entire-graph`. Running `version` with `ENTIRE_GRAPH_PPROF` set writes both files, and `go tool pprof -top` reads them.
+- [ ] Step 1: Implement it.
+  - An `init()` starts `pprof.StartCPUProfile`.
+  - `main.go:51` is the only `os.Exit`, and signals return through it as `SignalError`. Add a tag-gated `var atExit func()` in `pprof.go` and a no-op stub in `pprof_off.go` (`//go:build !pprof`). `main` calls `atExit()` before `os.Exit`.
+  - **Peak heap, not exit heap.** A heap profile taken at exit shows memory after the work is done, so `inuse_space` would mislead. Instead, a goroutine samples `runtime/metrics` `/memory/classes/heap/objects:bytes` every 250 ms. Whenever that exceeds the previous maximum by more than 10%, it rewrites `<dir>/heap-peak-<pid>.pprof`. `atExit` also writes `heap-exit-<pid>.pprof`, which is still useful for `alloc_space`.
+  - Panics and OOM kills lose the CPU profile. That's acceptable for a dev tool; note it in the file comment.
+- [ ] Step 2: Check with `go build -tags pprof ./cmd/entire-graph`. Running `version` with `ENTIRE_GRAPH_PPROF` set writes the files, and `go tool pprof -top` reads them.
 - [ ] Step 3: Commit: `build: add pprof-tagged profiling hook for local profiling`.
 
 No test: it is tag-gated developer tooling with no production behavior.
@@ -55,92 +59,218 @@ No test: it is tag-gated developer tooling with no production behavior.
 ### Task 2: Differential equivalence guard (lands before any lookup change)
 
 **Files:**
-- Create: `internal/cli/focused_equivalence_test.go`
+- Create:
+  - `internal/cli/focused_equivalence_test.go`
+  - `internal/sem/testdata/fixtures/focus-edge-cases/` (guard-only fixture, described below)
+  - `internal/sem/testdata/fixtures/c-kernelish/` (C: a struct of function pointers assigned in a designated initializer, a static function called through a macro, a header and a `.c` file)
 
-**Interfaces:** Consumes the existing `runIndex`, `runNeighbors`, `runDef`, `runImpact`, `runExplain` and `Options`. Produces `TestLookupsAnswerIdenticallyFromSidecarAndFullLoad`.
+**Interfaces:** Consumes the existing `Run`/`Options` CLI entry. Produces `TestLookupsAnswerIdenticallyFromSidecarAndFullLoad`.
 
-The test pins one property: for any symbol name in a real repository, every lookup verb prints identical output whether it reads the sidecar or the gz entry. The break it catches is any focused-load subgraph that is missing a record the verb reads. The test is written once, never edited to make a change pass, and contains no expected literals, so it cannot drift from the code.
+**What it pins:** for any way of naming a symbol, every lookup verb prints identical output whether it reads the sidecar or the gz entry.
+- **Break it catches:** any focused subgraph missing a record, or a header count, that the verb reads.
+- **No expected literals:** it is written once and never edited to make a change pass, so it cannot drift from the code.
 
-- [ ] Step 1: Write the test.
-  - For each directory under `internal/sem/testdata/fixtures` with a semantic language (skip `formats-config`, `services-config`, `terraform-basic`), copy the tree into `t.TempDir()`, `git init`, and commit (use the `store_test.go` git helper pattern).
-  - Index once with `ENTIRE_GRAPH_SEARCH_STORE=1` into a temp cache dir.
-  - Collect symbol names by running `runIndex`'s sibling `symbols --format ndjson`. Decode with `encoding/json` and take the distinct `name` values, plus one name that does not exist (`zzNoSuchSymbol`) and one misspelled real name (first name with the last rune dropped), to cover the fuzzy path.
-  - For each name and each variant, run once with `ENTIRE_GRAPH_SEARCH_STORE=1` and once with `=0`, both `--head --cache-dir <same>`. Variants:
-    - `neighbors --direction in|out --depth 1|2 --format json`
-    - `def --format json`
-    - `impact --format json`
-    - `explain --format json` (if explain takes a symbol)
-  - Normalize both outputs by decoding the JSON into `map[string]any` and deleting top-level keys whose name ends in `_latency_ms` or starts with `index_cache_`, then compare with `reflect.DeepEqual`. On mismatch, report fixture, verb, args and a unified diff of the re-encoded JSON.
-  - Gate it with `testing.Short()` so `go test -short` skips it.
-- [ ] Step 2: Run `go test ./internal/cli -run TestLookupsAnswerIdenticallyFromSidecarAndFullLoad -v`. Expected: PASS today, because both paths currently fully materialize. That is the point: it is the regression guard for Tasks 3–5. Record the runtime. If it exceeds 60 s, sample at most 40 names per fixture with a fixed seed.
-- [ ] Step 3: Mutation check. Temporarily make `loadSearchStore` drop one relation (`continue` on the first row) and confirm the test FAILS. Revert.
+**The guard-only `focus-edge-cases` fixture** is built by the test as a temp git repo. It includes:
+- (a) A Go type `Config` and a function `config` in different files. These are case-colliding names.
+- (b) A Swift or Kotlin type plus an extension adding a member in another file. This gives `ContainerID` without a local CONTAINS edge (see `def.go:787-790`).
+- (c) A type with a supertype whose members def lists as inherited.
+- (d) A method that OVERRIDES another.
+- (e) **Co-change history.**
+  - Three commits that change `a.go` and `b.go` together, so `FileCochanges`' ≥ 2 threshold is met.
+  - After indexing, the test makes a commit that edits `a.go` and `c.go`, then a commit reverting it. The tree is unchanged, so the index is a cache hit, but history now differs. Lookups run after that.
+
+**Name forms per symbol (sampled):**
+- the plain name;
+- the name upper-cased (case-fold path);
+- the qualified name;
+- the stable ID;
+- `--file <its file>` and `--file wrong.go`;
+- `--kind <its kind>` and `--kind class` when the symbol is not a class;
+- `--line <its line>` and `--line 1`;
+- the positional `path:line` form;
+- for def, `A::b`/`A->b`/`A#b` rewrites of a qualified name, and a three-name `def A B C` call;
+- `zzNoSuchSymbol`;
+- a misspelling (the last rune dropped).
+
+**Verbs × formats:**
+- `neighbors --direction in|out --depth 1|2`, plus `--relation USES_TYPE` once;
+- `def`;
+- `impact --depth 1|2`.
+
+Each runs in `--format json` AND `--format agent` (and `text` where the verb has it), with `--head --cache-dir <same>`, once under `ENTIRE_GRAPH_SEARCH_STORE=1` and once under `=0`.
+- **Explain** reads compiler output on stdin, not a symbol flag. Add it only if the implementer can synthesize stdin that explain resolves (for example a gcc-style `file:line: error: … 'Name'` line built from each sampled symbol). Otherwise explain stays on the full load in Task 5, and the plan's ledger says so.
+
+**Normalization:**
+- **JSON:** decode it, then delete, recursively at any depth, keys ending `_latency_ms` or starting `index_cache_`. Compare with `reflect.DeepEqual`.
+- **Text/agent:** compare bytes after removing only the telemetry lines the verb emits. Find the exact patterns by reading the renderer, and list them in the test's doc comment.
+- **On mismatch:** report fixture, verb, args, and a unified diff.
+
+**Runtime:** runs go in-process through `Run`, not subprocesses.
+- **Default:** every fixture, at most 6 sampled symbols per fixture (fixed seed), all name forms. Target under 60 s, so `mise run test` stays green without `-short`.
+- **`ENTIRE_GRAPH_EQUIV_FULL=1`:** every symbol. Run this at every Task 5 step.
+- `-short` skips the guard.
+
+- [ ] Step 1: Write the test and both fixtures.
+- [ ] Step 2: Run `go test ./internal/cli -run TestLookupsAnswerIdenticallyFromSidecarAndFullLoad -v`, then again with `ENTIRE_GRAPH_EQUIV_FULL=1`. Expected: PASS, because both paths fully materialize today. Record both runtimes in the ledger.
+- [ ] Step 3: Mutation check.
+  - Temporarily make `loadSearchStore` skip one CALLS row into a sampled symbol while leaving the header untouched.
+  - Confirm the test FAILS, and that the diff shows a missing caller record (not only a count).
+  - Revert.
 - [ ] Step 4: Commit: `test(cli): pin lookup output equality between sidecar and full load`.
 
 ### Task 3: Sidecar on by default
 
 **Files:**
-- Modify: `internal/sem/search_store.go:47` (`searchStoreEnabled`)
-- Modify: docs that say "opt-in" (`AGENTS.md` store section, `docs/store-contract.md`, `README.md` if present)
+- Modify: `internal/sem/search_store.go` (`searchStoreEnabled` at :47, `repairSearchStoreSidecarForEntry` at :~715)
+- Modify: `internal/sem/search_cache.go` (how a repair error on a cache hit is surfaced, :~692)
+- Modify: docs that say "opt-in" (`AGENTS.md` store section, the `store_unavailable` hint, `docs/store-contract.md`, `README.md` if present)
 - Test: `internal/cli/store_test.go` (add one test)
 
-**Interfaces:** Produces: an unset `ENTIRE_GRAPH_SEARCH_STORE` means enabled. `0`, `false` and `off` (case-insensitive) disable it. Other values enable it.
+**Interfaces:** Produces:
+- An *unset* `ENTIRE_GRAPH_SEARCH_STORE` means enabled. A set value keeps today's parse exactly: `""`, `0`, `false`, `off` and `no` disable it, and anything else enables it.
+- A sidecar repair failure on a cache hit no longer fails `index`. It becomes a header warning (a new warning code, additive), and lookups fall back to the full load.
+  - Users who never opted in must not see `index` start failing, for example on a full disk.
+  - The failure is still surfaced, never silent.
 
-- [ ] Step 1: Write the failing test `TestIndexWritesTheStoreWithoutOptIn`. With `t.Setenv("ENTIRE_GRAPH_SEARCH_STORE", "")` (unset semantics), index a one-file repo, then `runStore` must report `store_unavailable` false and a `path` that exists on disk. A second case with `"0"` must report `store_unavailable: true`. Break caught: default flipped back, or opt-out ignored.
+**Fix the doubled no-op cost first.** On a cache hit, preindex already loads the store fully (`search_cache.go:661 → 1426 → 1679`). Then `repairSearchStoreSidecarForEntry` calls `loadSearchStoreForEntry`, a second full decode, just to learn whether the store exists.
+- Replace that call with the meta-only exactness check `openExactSearchStore` uses: version, entry digest and tree (`search_store_context.go:615-656`).
+- The digest it needs is already computed once per run; reuse it rather than hashing again.
+
+- [ ] Step 1: Write the failing test `TestIndexWritesTheStoreWithoutOptIn`.
+  - Case 1: with the variable unset (`os.Unsetenv` under `t.Setenv` restore), index a one-file repo. `store` must then report `store_unavailable` false and a `path` that exists on disk.
+  - Case 2: with `"0"` and a **separate** cache dir, it must report `store_unavailable: true`.
+  - Break caught: the default flipped back, or the opt-out ignored.
 - [ ] Step 2: Run it. Expected: FAIL on the first case.
-- [ ] Step 3: Implement the parse in `searchStoreEnabled`.
-- [ ] Step 4: Run the full `./internal/...` suite. Tests that set `"1"` explicitly stay valid. Fix any test that assumed default-off by setting `"0"` explicitly where the test is about the gz path; record each such edit in the commit body.
-- [ ] Step 5: Commit: `feat(store): write and read the sqlite sidecar by default`.
+- [ ] Step 3: Implement the unset-means-on parse, the meta-only repair check, and the warning on repair failure.
+- [ ] Step 4: Run the full `./internal/...` suite.
+  - Tests that set `"1"` explicitly stay valid.
+  - Fix any test that assumed default-off by setting `"0"` explicitly where the test is about the gz path. Record each such edit in the commit body.
+- [ ] Step 5: **Keep/revert gate.** Build `eg-t3.exe` and run `perf_run.py` for `index-cold` and `index-noop` on both repos with no `store` argument (the default now applies).
+  - Record the results against `base` and `base-store`.
+  - Kernel no-op index must come in within noise of `base` (~51 s), not `base-store` (104 s). If it doesn't, find out why before continuing.
+  - Cold index pays the sidecar build (~+26% on the kernel). Record that as the accepted cost of the lookup win, which is measured in Task 5.
+  - Also record orbweaver cold `def` latency: a cold lookup now writes a sidecar too.
+- [ ] Step 6: Close two gaps.
+  - **Lookup cache misses.** Today a miss on the lookup path writes the gz entry with no sidecar (`search_cache.go:~538`), unlike the query path (`:~478`). Make it write the sidecar the same way, so the first `--head` lookup on a fresh repo leaves the next one fast.
+    - Extend `TestIndexWritesTheStoreWithoutOptIn` with a case that runs `def --head` on a fresh cache, then `store`, and expects the store to be available.
+  - **Document** that after a sidecar schema bump, lookups fall back to the full load (correct, slower) until `index` or the next cache-miss write rebuilds the sidecar.
+- [ ] Step 7: Commit: `feat(store): write and read the sqlite sidecar by default`, with the measurements in the body.
 
 ### Task 4: Focused subgraph loader in `sem`
 
 **Files:**
-- Create: `internal/sem/search_store_focus.go`
-- Modify: `internal/sem/search_store.go` (schema: `CREATE INDEX symbols_name ON symbols(name)`; bump the sidecar schema version constant or meta key that `loadSearchStoreForEntry` checks)
+- Create: `internal/sem/search_store_focus.go`, `docs/perf/focus-read-sets.md`
+- Modify: `internal/sem/search_store.go`, `internal/sem/search_cache.go` (extract the post-load chain, see below)
 - Test: covered by Task 2's guard, plus one sem-level test below
+
+**Step 0 (before any code): write the read-set table.** For each of neighbors, def, impact (and explain if it's guarded), trace the verb from its `LoadOrBuildProviderSnapshot` call to output. Record every snapshot field and every whole-slice scan it does, in `docs/perf/focus-read-sets.md`. The reviewer found these, so the table must cover at least:
+- **Name resolution:**
+  - `resolveFocusSymbols` (`symbolref.go:197`) matches an exact ID, then `EqualFold` on Name OR QualifiedName, then filters by `--file`/`--kind`/`--line`;
+  - `def` rewrites forms (`def.go:684-692`);
+  - `def A B C` takes several names;
+  - positional `path:line`;
+  - the fuzzy ladder ranks over *every* symbol (`symbolref.go:606-676`).
+- **Containment by `ContainerID` scan, not CONTAINS:** impact siblings/members (`impact.go:609-620`), impact's container (457-461), def members (`def.go:827-831`), def/explain owner (`def.go:1038`, `explain.go:528,575`), and extension members (`def.go:787-790,1050-1052`).
+- **def's second hop:** inherited members via supertypes' members (`def.go:1078-1086`), and `impl:` via OVERRIDES, then the target's `ContainerID` (815-822).
+- **Relation fields read:** `Evidence` (call-site spans), `Resolution` (doc-mention label, `impact.go:357-365`), `Reason` (co-change detail, 538).
+- **Header:** `Stats` printed by neighbors (`:405`) and impact (`:432`), and completeness.
+- **Per-hop walk:** which relation types and directions each verb walks at hop 1 and hop 2. Impact's hop 2 is incoming call-family only.
+
+Task 4's reviewer checks the closure below against this table.
 
 **Interfaces:** Produces:
 ```go
-// SnapshotFocus names the one symbol a lookup verb answers about.
+// SnapshotFocus describes what one lookup verb will read. Built by the verb.
 type SnapshotFocus struct {
-	Name  string // bare or qualified name as typed by the user (--symbol / positional)
-	File  string // optional --file disambiguator, repo-relative or absolute as typed
-	Depth int    // relation hops the verb walks from the focus (1 or 2)
+	Names []string    // every candidate spelling the verb may resolve: as typed, plus def's rewritten forms
+	Hops  []FocusHop  // hop i expands the frontier through these relation types and directions
+	Kinship bool      // also load containers (by container_id), their container_id children,
+	                  // and the members of supertypes reached through EXTENDS/IMPLEMENTS/OVERRIDES
+}
+type FocusHop struct {
+	Types   []string // nil means every type
+	In, Out bool
 }
 
-// LoadFocusedProviderSnapshot returns a ProviderSnapshot containing everything a
-// lookup verb reads when answering about focus, read from the sidecar. When the
-// sidecar is absent or stale, or the name has no exact match (fuzzy path), it
-// returns LoadOrBuildProviderSnapshot's full snapshot instead. Same return
+// LoadFocusedProviderSnapshot returns (snapshot, focused, cacheHit, err).
+// focused=false means the full snapshot was returned (no exact sidecar, a
+// positional path:line ref, or any error reading the sidecar), with the same
 // contract as LoadOrBuildProviderSnapshot.
 func LoadFocusedProviderSnapshot(ctx context.Context, repo, providerVersion string,
 	options ProviderSnapshotOptions, cacheDir string, disableCache bool,
-	focus SnapshotFocus) (ProviderSnapshot, bool, error)
+	focus SnapshotFocus) (ProviderSnapshot, bool, bool, error)
 ```
 
-Focused content is a superset closure:
-- **Header:** full header from sidecar meta (stats, completeness, warnings, all partial failures).
-- **Files:** all file rows. Path lists feed `parseSymbolRef` and line readers, and on the kernel that is 65k small rows, which is cheap.
-- **Symbols, starting set:** symbols whose `name` equals the focus's last segment.
-- **Relations:** every relation with `from_id` or `to_id` in the current set, iterated `Depth` times, adding the other endpoint each time.
-- **Containment:** symbols that are containers of the set (CONTAINS edges into it) and their CONTAINS children (siblings).
+**Fallback contract.** The verb resolves exactly as it does today, against the snapshot it gets back.
+- If the snapshot was focused and the verb's *exact* resolution (ID / EqualFold name / qualified name, then filters) comes back empty, the verb discards it and calls `LoadOrBuildProviderSnapshot` before running the fuzzy ladder. The ladder ranks over every symbol, so it always sees the full set.
+- This is sound because the starting set below is a superset of every symbol exact resolution could return. Filters only ever narrow.
+
+**Sidecar schema additions.** Bump the sidecar version so old sidecars are rebuilt.
+- New symbol columns, each with an index:
+  - `name_fold` and `qname_fold`, each folded in Go. Map every rune to the smallest rune in its `unicode.SimpleFold` orbit, so equality matches `strings.EqualFold` exactly. Don't use sqlite `NOCASE`, which is ASCII-only.
+  - `container_id`.
+- An index on `relations(type)` only if the Step 6 measurement needs it.
+
+**Starting set:** symbols where `id IN names` OR `name_fold IN fold(names)` OR `qname_fold IN fold(names)`.
+
+**Closure:**
+- **Header:** the full header from sidecar meta (warnings, partial failures, completeness).
+- **Files:** all file rows. They feed `parseSymbolRef` and path readers; 65k small rows on the kernel.
+- **Relations:**
+  - For each `FocusHop`, take every relation with the frontier on the given side and of the given types. This is uncapped and fetches full rows (Evidence, Resolution, Reason, Confidence, …) through the same row decoder `loadSearchStore` uses: refactor the decoder so both paths call it.
+  - Do NOT use `searchStoreRelationsForIDs`. It caps at `limit`, orders by confidence, and returns only 4 fields.
+  - Endpoints of each retained relation join the next frontier only if they are symbols. Files and externals are loaded, but never expanded.
+- **Kinship:** as described in `SnapshotFocus`, through `container_id`.
 - **Endpoints:** every symbol and external referenced by a retained relation.
-- **History:** the FILE_CHANGES_WITH refresh for the focus symbols' files, applied exactly as `loadCachedSearchSnapshot` applies it.
+- **Order:** every slice is the full snapshot's order restricted to the retained rows: read `ORDER BY rowid` (the sidecar is written in snapshot order). Do not re-sort. Step 1's test verifies the rowid assumption.
+- **Side maps:** the sidecar's internal side maps (byte ranges, parameter names, signature types, bodyless, name lines, local IDs) are restored for retained symbols only.
 
-The sidecar's internal side maps (byte ranges, parameter names, signature types, bodyless, name lines, local IDs) are restored for the retained symbols only. Ordering of every slice matches the full snapshot's order (relations by the `Type+FromID+ToID` concatenation, symbols and files as the full snapshot sorts them), so order-sensitive verb logic sees the same sequence.
+**Post-load chain.** Reproduce it once, not twice. Extract the steps `loadCachedSearchSnapshot` applies after decode (`search_cache.go:~1419-1480` and `:1597`) into one function that both the full and the focused paths call:
+- validity check (`validCachedSearchSnapshot`);
+- scope check;
+- commit restamp;
+- `local/` repo-key rebind (`rebindCachedSearchSnapshot`);
+- the FILE_CHANGES_WITH refresh (drop stored FILE_CHANGES_WITH, splice fresh history);
+- warning retirement;
+- a history read failure treated as a miss.
 
-- [ ] Step 1: Write the failing sem test `TestFocusedSnapshotNeverLoadsUnrelatedSymbols`. Index the `multilang-relations` fixture with the sidecar, then call `LoadFocusedProviderSnapshot` for one leaf function. The returned `Symbols` must not contain a hand-picked symbol from an unrelated file that shares no relation path with it, which you name in the test after reading the fixture. It must contain the focus. Break caught: the loader silently returns the full snapshot, which is the whole point of the task.
-- [ ] Step 2: Run it. Expected: FAIL (undefined function).
-- [ ] Step 3: Implement it, reusing `loadSearchStore`'s row decoders: refactor the per-row decode into functions both paths call, so there is no second decoder. Use `searchStoreRelationsForIDs` (`search_store_context.go`) for the fan-out.
-- [ ] Step 4: Run the sem test plus `go test ./internal/sem/...`. Expected: PASS.
+That function takes the *total* relation count and per-type completeness counts as inputs, rather than `len(relations)`.
+- Full path: `len(all)`.
+- Focused path: `stored_total − stored_FILE_CHANGES_WITH + len(history)`, counted in SQL from the sidecar.
+
+This keeps `Stats.Relations` and `Completeness.Relations` identical.
+
+- [ ] Step 1: Write the failing sem tests.
+  - `TestFocusedSnapshotNeverLoadsUnrelatedSymbols`:
+    - Index the `multilang-relations` fixture with the sidecar.
+    - Call `LoadFocusedProviderSnapshot` for one leaf function with a one-hop CALLS focus.
+    - Expect `focused == true` and the focus present.
+    - Expect a hand-picked symbol from an unrelated file absent. Name it in the test after reading the fixture.
+    - Break caught: the loader silently returns everything.
+  - `TestFocusedSnapshotIsAnOrderedSubsetOfTheFull`:
+    - For the same focus, compare the focused `Symbols`, `Relations` and `Files` against `LoadOrBuildProviderSnapshot`'s.
+    - Each focused slice must be a subsequence of the full slice.
+    - Header `Stats` and `Completeness` must be equal.
+    - Break caught: a re-sort, a wrong rowid assumption, or header counts taken from the subset. This is a property, not a literal.
+- [ ] Step 2: Run them. Expected: FAIL (undefined function).
+- [ ] Step 3: Implement it.
+- [ ] Step 4: Run the sem tests plus `go test ./internal/sem/...`. Expected: PASS.
 - [ ] Step 5: Commit: `feat(sem): load a focused subgraph from the sidecar`.
 
 ### Task 5: Lookup verbs use the focused loader
 
 **Files:**
-- Modify: `internal/cli/neighbors.go:155`, `internal/cli/def.go:172`, `internal/cli/impact.go:183`, `internal/cli/explain.go:281` (each `LoadOrBuildProviderSnapshot` call becomes `LoadFocusedProviderSnapshot` with the verb's focus: neighbors uses `--symbol/--file/--depth`; def uses its positional name with depth 1; impact uses `--symbol/--file/--depth` (default 2); explain uses its symbol with depth 1)
+- Modify:
+  - `internal/cli/neighbors.go:155`, `internal/cli/def.go:172`, `internal/cli/impact.go:183`;
+  - `internal/cli/explain.go:281`, only if Task 2 guards explain.
+  - Each `LoadOrBuildProviderSnapshot` call becomes `LoadFocusedProviderSnapshot`, with the `SnapshotFocus` the read-set table prescribes for that verb.
+  - Add the fallback: exact resolution empty on a focused snapshot → full load, then today's code path, including fuzzy.
 
-- [ ] Step 1: Switch neighbors only and run Task 2's guard. Every mismatch is a missing record in the Task 4 closure: fix it in the loader, never in the verb or the test. Repeat until green.
-- [ ] Step 2: Do the same for def, then impact, then explain, one at a time.
+- [ ] Step 1: Switch neighbors only and run Task 2's guard (`ENTIRE_GRAPH_EQUIV_FULL=1`).
+  - Every mismatch is a missing record in the closure. Fix it in the loader or in the verb's `SnapshotFocus` (and update the read-set table), never in the test. Repeat until green.
+- [ ] Step 2: Do the same for def, then impact (then explain if guarded), one at a time.
+- [ ] Step 2b: **Closure size check on kernel hubs.** With the Task 1 build, run `impact --symbol` and `neighbors --depth 2` on `kmalloc`, `file_operations` and `spin_lock`. Record wall time, RSS and retained relation count in the ledger.
+  - If any exceeds the target (single-digit seconds, < 1 GiB), narrow that verb's `Hops` to what the read-set table says it walks, rather than raising the target.
 - [ ] Step 3: Run the full suite, `go vet ./...` and `gofmt -l .`. Expected: clean.
 - [ ] Step 4: Measure: build to `graph-eval/tools/eg-w1.exe`, then `PERF_STEPS=index-cold,neighbors,def,impact python -I tools/perf_run.py <exe> w1 orbweaver` and the same for `linux`. Compare to `base-store` and `base`. Diff `raw/perf-w1-*-{neighbors,def,impact}.txt` against `raw/perf-base-*` (ignore latency lines). Ledger entry.
 - [ ] Step 5: Commit: `perf(cli): answer lookups from a focused sidecar subgraph`, with before/after numbers in the body.
@@ -149,12 +279,13 @@ The sidecar's internal side maps (byte ranges, parameter names, signature types,
 
 **Files:** determined by the profile. Ledger at `docs/perf-ledger.md`.
 
-- [ ] Step 1: Profile with the Task 1 build on the kernel: `index --force` (cold) and `query`. Save `go tool pprof -top -sample_index=alloc_space` and `inuse_space` summaries to the ledger.
+- [ ] Step 1: Profile with the Task 1 build on the kernel: `index --force` (cold) and `query`. Save `go tool pprof -top -sample_index=alloc_space` (from `heap-exit`) and `inuse_space` (from `heap-peak`) summaries to the ledger.
 - [ ] Step 2: For each candidate, in order of profile weight, make the one change, rebuild, re-measure the same step twice on the kernel, and keep it only if it beats the variance of the two baseline runs. Candidates:
   - (a) allocation-free relation comparator: compare `Type`, then `FromID`, then `ToID` piecewise with prefix semantics equal to the concatenation, as the existing `spliceFileChangesWithRelations` comment requires;
   - (b) string interning on gz decode and during index build (`unique.Make` or a local map interner) for IDs, paths, reasons and types;
-  - (c) hold symbols by index or pointer instead of by-value copies in `StreamSnapshot`/`forEachRelation` maps;
-  - (d) a default `debug.SetMemoryLimit` sized from physical RAM unless `GOMEMLIMIT` is set.
+  - (c) hold symbols by index or pointer instead of by-value copies in `StreamSnapshot`/`forEachRelation` maps.
+  - (a) is only correct if it compares `Type`, `FromID`, `ToID` as one virtual concatenation: walk the bytes across the boundaries, not field-by-field. Add a property test: for random triples (including prefix and empty cases), `sign(new(a,b)) == sign(strings.Compare(a.Type+a.FromID+a.ToID, ...))`.
+  - No default memory limit: sizing from physical RAM ignores cgroup limits and can turn an OOM into GC thrash. Document `GOMEMLIMIT` for large repos in operations docs instead, and record that in the ledger as a considered-and-rejected candidate.
 - [ ] Step 3: After each kept change, run the full test suite and Task 2's guard, and confirm `raw/perf-*` lookup outputs are unchanged. A kept change that needs a test edited is a revert.
 - [ ] Step 4: One commit per kept change: `perf(sem): <change> (<metric> before → after)`. Reverted attempts get a ledger row only.
 
@@ -163,44 +294,96 @@ The sidecar's internal side maps (byte ranges, parameter names, signature types,
 **Files:** `internal/sem/search.go:1226` area, `internal/sem/search_cache.go:956` (`selectiveSearchSnapshotFromFull`)
 
 - [ ] Step 1: Profile `query --head --profile full` on the kernel with the Task 1 build and record the ledger.
-- [ ] Step 2: Add a guard test first, `TestQueryAnswersIdenticallyFromSidecarAndFullLoad`. Same shape as Task 2, over 5 fixed natural-language queries per fixture, `--format json`, normalized the same way. It must PASS before the change.
-- [ ] Step 3: When the sidecar is present, build the selective view by reading only the preselected files' rows (symbols by `file_path`, which needs `CREATE INDEX symbols_file ON symbols(file_path)` landing with this reader, with the sidecar version bumped, plus relations from those symbols, plus the endpoints they name) instead of `selectiveSearchSnapshotFromFull`. Fall back to today's path otherwise.
-- [ ] Step 4: Guard green, full suite green, kernel `query` re-measured, ledger entry. Keep or revert.
-- [ ] Step 5: Commit: `perf(search): derive the selective view from the sidecar`.
+- [ ] Step 2: Add a guard test first, `TestQueryAnswersIdenticallyFromSidecarAndFullLoad`.
+  - Same shape as Task 2, over 5 fixed natural-language queries per fixture, in `--format json` and `--format agent`.
+  - JSON normalization must be the *recursive* key strip. Query's latency and cache fields are nested under `stats` (`search.go:505-513`), so a top-level strip fails on timing alone.
+  - Include one query that matches nothing, and one on a fixture small enough that preselection selects every file.
+  - It must PASS before the change.
+- [ ] Step 3: Today `loadCachedCompleteSearchSnapshotBinding` loads the full snapshot before preselection (`search.go:1226`), and three things depend on it. Replace each with a sidecar read:
+  - (a) The no-hit `SymbolsConsidered = len(Symbols)` (`:1335`) becomes a sidecar `count(*)`.
+  - (b) The diagnostics header (`:2132,2179`) comes from the Task 4 post-load chain, applied to the sidecar header.
+  - (c) A selection covering every file (`:1379-1395`) keeps today's full load.
+- [ ] Step 4: For a partial selection, build the selective view from sidecar rows *fed through the same pipeline `selectiveSearchSnapshotFromFull` uses*: `emitRelation`, `externalRecordFor`/`mergeExternalRecord`, and the dedupe and profile filters (`search_cache.go:~1041-1062`), in rowid order. Concretely:
+  - Refactor that function so its per-row body takes an iterator.
+  - The full path iterates the in-memory snapshot. The sidecar path iterates `symbols WHERE file_path IN selected` (add `CREATE INDEX symbols_file ON symbols(file_path)` with this reader and bump the sidecar version) and `relations WHERE from_id IN (selected symbol IDs ∪ selected file IDs)`. Selected *file* IDs are relation sources too (`selectiveRelationRetained`, `:1199-1203`).
+  - Externals are re-derived by the pipeline, never copied from the externals table.
+  - Fall back to today's path when there is no exact sidecar.
+- [ ] Step 5: Guard green, full suite green, kernel `query` re-measured, ledger entry. Keep or revert.
+- [ ] Step 6: Commit: `perf(search): derive the selective view from the sidecar`.
 
 ### Task 8: `stats` gross estimate
 
 **Files:**
-- Modify: `internal/cli/stats.go` (`statsResponse`, `sessionAcc`, `finish`), `internal/cli/stats_displacement.go` (reuse the named-path extraction already used for follow-up classification)
+- Modify: `internal/cli/stats.go` (`summaryCall`, `statsResponse`, `finish`), `internal/cli/stats_cache.go` (`statsCacheSchema` `v4` → `v5`)
 - Test: `internal/cli/stats_gross_test.go`
+
+**Where the data lives:**
+- Named paths exist only in `fileScanner`'s timeline (`entry.paths = graphOutputPaths(text)`, `stats.go:~687`).
+- The per-transcript memo (`stats_cache.go`) is keyed by transcript identity plus binary, not by repo, so file sizes must NEVER be computed inside the scanner or stored in the memo.
+- Instead, the scanner records each successful (non-`is_error`) locate result's normalized named paths, plus the root that the call resolved against, on `summaryCall`:
+  - new `json:"p,omitempty"` and `json:"o,omitempty"` fields;
+  - bump `statsCacheSchema` to `v5`.
+- `finish` stats each distinct (root, path) once and sums per call.
+- Replay dedup by call ID (`merge`) then covers sidechain duplicates for free.
+
+**Root resolution per call:**
+1. the call's own `--repo` argument, made absolute against the record's `cwd`;
+2. else the record's `cwd`;
+3. else the report's `--repo`.
+
+Stat through `os.OpenRoot(root)`, so absolute, `..` and UNC paths are refused rather than followed. That refusal is the no-egress guard on Windows. A refused or missing path contributes 0.
 
 **Interfaces:** Produces two additive JSON fields on `statsResponse`:
 ```go
-// Sum over graph locate results of max(0, size of the distinct existing files the
-// result names - the result's own bytes). Resolved against the repo root.
+// Sum over successful graph locate results of max(0, size of the distinct existing
+// files the result names - the result's own bytes). Never negative per result.
 GrossCoveredBytes     int64 `json:"gross_covered_bytes"`
 GrossCoveredEstTokens int64 `json:"gross_covered_est_tokens"` // bytes / 4
 ```
 
 - [ ] Step 1: Write the failing tests.
-  - `TestGrossCountsNamedFilesMinusResultBytes`: a temp repo with `a.go` of exactly 4,000 bytes and `b.go` of exactly 2,000 bytes. A transcript fixture (written in the test, mirroring the real Claude Code JSONL shape that `stats_test.go` fixtures use) has one Bash `entire graph query ...` tool_use. Its tool_result is a 600-byte text naming `a.go:10` and `b.go:3` (pad with spaces to exactly 600 bytes). Run `stats --repo <tmp> --transcript <file> --since all --format json`. Expect `gross_covered_bytes == 5400` and `gross_covered_est_tokens == 1350`.
+  - **Fixture shape.** Result texts must use the renderer's row shape, which is the only shape that names a file (`graphLocatedRowPattern`). Use rows such as `1. a.go:10 func A()`, one per line. Prose like "found in a.go:10" names nothing.
+  - **Transcript shape.** Write it in the test, mirroring the real Claude Code JSONL shape that `stats_test.go` fixtures use. The tool_use is a Bash `entire graph query --repo <tmp> ...`.
+  - **Command.** Run `stats --repo <tmp> --transcript <file> --since all --format json --cache-dir <t.TempDir()>`.
+  - `TestGrossCountsNamedFilesMinusResultBytes`:
+    - Setup: a temp repo with `a.go` of exactly 4,000 bytes and `b.go` of exactly 2,000 bytes. The query's tool_result is exactly 600 bytes, with rows naming `a.go:10` and `b.go:3`, padded with a trailing comment line.
+    - Expect `gross_covered_bytes == 5400` and `gross_covered_est_tokens == 1350`.
   - `TestGrossIgnoresResultsNamingNoFile`: the same with a result naming no file. Expect `0`.
   - `TestGrossNeverGoesNegative`: a result naming one 100-byte file, with the result itself 500 bytes. Expect `0`.
-  - `TestGrossCountsEachFileOncePerResult`: a result naming `a.go:1` and `a.go:50`. Expect 4000 − result bytes.
+  - `TestGrossCountsEachFileOncePerResult`: a result naming `a.go:1` and `a.go:50`. Expect `4000 − result bytes`.
+  - `TestGrossFollowsTheCallsOwnRepo`:
+    - Setup: the report runs with `--repo <tmpA>`. The query call passes `--repo <tmpB>`, where `a.go` is 4,000 bytes; `<tmpA>` has no `a.go`.
+    - Expect the 4,000-byte figure.
+    - Then re-run with `a.go` in `<tmpB>` grown to 8,000 bytes and the same cache dir. Expect the new figure.
 
-  Break caught by each: wrong sum, double-counting, a negative leak, counting unnamed results.
+  Break caught by each: wrong sum, double-counting, a negative leak, counting unnamed results, the wrong root, and sizes frozen into the memo.
 - [ ] Step 2: Run. Expected: FAIL (unknown field, zero).
-- [ ] Step 3: Implement it in the accumulator. Stat each named path once per result relative to the repo root. Missing files contribute 0.
+- [ ] Step 3: Implement as described under "Where the data lives". Exclude `is_error` results.
 - [ ] Step 4: Run the stats tests and the full `./internal/cli`. Expected: PASS.
 - [ ] Step 5: Commit: `feat(stats): report a gross covered-files estimate beside the modeled balance`.
 
 ### Task 9: `entire graph statusline` subcommand
 
 **Files:**
-- Create: `internal/cli/statusline.go`, `internal/cli/statusline_test.go`
-- Modify: `internal/cli/root.go` (dispatch `statusline`; add it to meta verbs that `stats` excludes from its verb split)
+- Create: `internal/cli/statusline.go`, `internal/cli/statusline_test.go`, `internal/sem/head_indexed.go`
+- Modify:
+  - `internal/cli/root.go`: dispatch `statusline`.
+  - `internal/cli/stats.go` `graphVerbs`: add `statusline`, or `TestGraphVerbsCoverEveryCommand` fails.
+  - `internal/cli/help.go` `commandDocs`: add an entry.
+  - `internal/cli/help_test.go` `dispatchCommands`: add it, or `TestRegistryMatchesDispatch` fails.
+  - `savingsModelText` (`stats.go:~45`) and AGENTS.md's stats section: both say the status line reads `estimated_savings_est_tokens_unfloored`. Update them to name `modeled_balance_est_tokens` and `gross_covered_est_tokens`.
 
-**Interfaces:** Consumes the Task 8 fields and `sem.DescribeSearchStore`. Produces `runStatusline(ctx, opts Options, args []string) error`. It reads the Claude Code status JSON from `opts.Stdin` (fields `transcript_path`, `workspace.current_dir`, `cwd`, `session_id`, `context_window.used_percentage`) and writes ≤ 2 lines.
+**Interfaces:**
+- **Consumes** the Task 8 fields.
+- **Produces** `runStatusline(ctx, opts Options, args []string) error`.
+  - It reads the Claude Code status JSON from `opts.Stdin`. Fields: `transcript_path`, `workspace.project_dir`, `workspace.current_dir`, `cwd`, `context_window.used_percentage`.
+  - The repo anchor is `workspace.project_dir`, falling back to `current_dir`, then `cwd`, resolved to the git top level.
+  - It writes ≤ 2 lines.
+- **Produces** in `sem`: `func HeadIndexed(ctx context.Context, repo, providerVersion, cacheDir string) (bool, error)`.
+  - True when a committed-tree cache entry exists for HEAD under any profile (full or fast, with the repo's default policy inputs).
+  - It only stats entry paths. It never hashes or opens the entry or the sidecar.
+  - `DescribeSearchStore` is NOT usable here: it SHA-256s the whole gz entry (404 MiB on the kernel; `cache_entry.go:358`), runs `count(*)` over four tables, and only sees the full-profile sidecar.
+  - Cost: one `git` HEAD/tree resolution plus a few `stat`s.
 
 Render, with ANSI colours unless `NO_COLOR` is set (indigo `38;2;84;111;255` for the brand mark and figures, muted `38;5;244` for separators):
 ```
@@ -211,44 +394,91 @@ Render, with ANSI colours unless `NO_COLOR` is set (indigo `38;2;84;111;255` for
 - `gross`: `gross_covered_est_tokens`.
 - `net`: `modeled_balance_est_tokens`, which may be negative (`−7.3K net`). It reads `net n/a` when `sessions_with_savings_comparison == 0`.
 - With no lookups, line 1 drops the three figures.
-- `not indexed · run entire graph index` replaces `✓ indexed` when the store descriptor is unavailable.
-- Line 2 is omitted when `context_window` is absent.
-- Width: segments are dropped from the right until the visible width is ≤ `COLUMNS` (default 120).
-- Any error prints nothing and returns nil.
-- Results are cached in `os.UserCacheDir()/entire-graph/statusline/<sha256(transcript_path)>.json`, keyed by transcript size + mtime.
+- `not indexed · run entire graph index` replaces `✓ indexed` when `HeadIndexed` is false, or when HEAD is unborn or unresolvable. That case is a state, not an error.
+- Line 2 is omitted when `context_window` or `used_percentage` is absent or `null`. It can be `null` early in a session, per the Claude Code status line docs.
+- Width: segments are dropped from the right until the visible width is ≤ `COLUMNS`, which Claude Code sets. The default is 120.
+- Any other error prints nothing and returns nil.
+- **Caching:** cache the computed figures, never the rendered line, so width and `NO_COLOR` always apply live.
+  - Location: `<resolveCacheDir>/statusline/<sha256(transcript_path)>.json`, so `--cache-dir` and the plugin data dir are honoured.
+  - Key: size and mtime of every transcript file in scope (main plus `<session>/subagents/*.jsonl`), plus the HEAD tree and the binary identity.
+  - A miss recomputes synchronously.
+  - Claude Code debounces at 300 ms and cancels an in-flight run when a new update arrives. Step 5 therefore measures the render on a large real transcript. If p50 > 300 ms, record it in the ledger and file incremental (append-offset) parsing as a follow-up. Do not add a background refresher: no daemons.
 
-- [ ] Step 1: Write the failing tests. They run real `runStatusline` with real stdin bytes and a transcript and repo built in the test, plus `NO_COLOR=1`, and use literal expected lines.
-  - `TestStatuslineShowsLookupsGrossNetAndContext`: a transcript with 1 graph query result naming the 4,000-byte `a.go` (result 400 bytes → gross 900 tok) and the exploration calls needed for a known net value, hand-computed from `savingsBytes`'s documented formula in a comment. Stdin is `{"transcript_path":…,"cwd":…,"context_window":{"used_percentage":41.6}}`. Expect line 2 `▸ ctx 42%` and line 1 containing the exact segments `1 lookups`, `~900 tok gross` and the hand-computed net. Assert segment presence and order, not the full line, so colours and separators can change.
-  - `TestStatuslinePrintsNothingOnBadInput`: empty stdin, `{`, and a transcript path that does not exist each give empty stdout and a nil error.
-  - `TestStatuslineDropsWholeSegmentsToFit`: `COLUMNS=40`. The output's visible width is ≤ 40 and every segment present is complete (no cut words).
+- [ ] Step 1: Write the failing tests.
+  - **Harness.** Each test runs the real `runStatusline` with real stdin bytes, a transcript and repo built in the test, `NO_COLOR=1`, an explicit `COLUMNS` (so an inherited CI value can't change the result) and a `t.TempDir()` cache dir.
+  - `TestStatuslineShowsLookupsGrossNetAndContext`:
+    - Transcript: 1 graph query result whose rows name the 4,000-byte `a.go`. The result is 400 bytes, so gross is 900 tokens.
+    - Stdin: `{"transcript_path":…,"workspace":{"project_dir":…},"context_window":{"used_percentage":41.6}}`.
+    - Expect line 2 `▸ ctx 42%`. Expect line 1 to contain, in order, `1 lookups`, `~900 tok gross`, and a net segment equal to `stats --transcript <same> --format json`'s `modeled_balance_est_tokens` passed through the formatter (or `net n/a` when `sessions_with_savings_comparison == 0`).
+    - The net is a differential, not a hand literal: its formula (`modeledBalanceBytes` with its 5-call follow-up window) belongs to `stats`, and this test only pins that the status line shows what `stats` computes.
+    - Assert segment presence and order, not the full line.
+  - `TestStatuslineShowsIndexedAfterIndex`: index the temp repo (fast profile) into the test cache dir. Line 1 contains `✓ indexed`.
   - `TestStatuslineReportsMissingIndex`: a fresh repo with no index gives line 1 containing `not indexed`.
+  - `TestStatuslinePrintsNothingOnBadInput`: empty stdin, `{`, and a transcript path that does not exist each give empty stdout and a nil error.
+  - `TestStatuslineOmitsContextWhenNull`: `"used_percentage":null` gives exactly one line.
+  - `TestStatuslineDropsWholeSegmentsToFit`: `COLUMNS=40`. The output's visible width is ≤ 40, and every segment present is one of the segments from the 120-column render, unchanged.
 - [ ] Step 2: Run. Expected: FAIL (unknown verb).
-- [ ] Step 3: Implement it, reusing the stats collector in-process (no subprocess) and `DescribeSearchStore` for the indexed state. Format numbers as `~N` below 1,000, then `~N.NK` and `~N.NM`. Negatives use U+2212.
+- [ ] Step 3: Implement it.
+  - Reuse the stats collector in-process (no subprocess), and use `HeadIndexed` for the indexed state.
+  - Format numbers as `~N` below 1,000, then `~N.NK` and `~N.NM`. Negatives use U+2212.
 - [ ] Step 4: Run it plus the full `./internal/cli`. Expected: PASS.
-- [ ] Step 5: Commit: `feat(cli): add a Claude Code status line subcommand`.
+- [ ] Step 5: Measure render latency (cold cache and miss-after-append) on the largest real transcript under `~/.claude/projects/O---web-omnith/`. Record it in the ledger.
+- [ ] Step 6: Commit: `feat(cli): add a Claude Code status line subcommand`.
 
 ### Task 10: `setup` installs the status line
 
 **Files:**
-- Modify: `internal/agentsetup/claude_hook.go` (reuse its settings read/merge/write), `internal/cli/agents.go:60-110` (flag `--no-statusline`, preflight, UI row)
-- Test: `internal/agentsetup/claude_statusline_test.go`
+- Modify:
+  - `internal/agentsetup/claude_hook.go`: reuse its settings read/merge/refuse-malformed/atomic-write.
+  - `internal/cli/agents.go` `graphAgentCommand` install branch: add flags and preflight, and move the status line step so `--no-claude-hook`'s early return (`agents.go:~87`) no longer skips it.
+  - `internal/cli/help.go`: document the flags.
+- Test: `internal/agentsetup/claude_statusline_test.go`, plus one `internal/cli` setup test.
 
 **Interfaces:** Produces:
 ```go
-func CheckClaudeStatusLine(root string) error
+// ForeignStatusLine reports which settings scope already defines a statusLine that
+// is not ours, in Claude Code precedence order: project local, project shared
+// (<root>/.claude/settings.json), user (<home>/.claude/settings.json). "" when none.
+// home is a parameter so tests never read the real one.
+func ForeignStatusLine(root, home string) (path string, err error)
+func CheckClaudeStatusLine(root string) error // preflight: settings.local.json readable and an object
 // InstallClaudeStatusLineChanged merges statusLine into <root>/.claude/settings.local.json.
-// foreign=true (and nothing written) when a statusLine it did not write is present.
+// It never touches a foreign statusLine in that file.
 func InstallClaudeStatusLineChanged(root string) (path string, created, changed, foreign bool, err error)
 ```
-The command written is `entire graph statusline`, wrapped the same way the SubagentStart hook command is on Windows and POSIX (fail-open). "Ours" means the command string contains `entire graph statusline`.
 
-- [ ] Step 1: Write the failing tests, all against real files in a temp dir.
+**Command:**
+- The command written is the bare `entire graph statusline` on every OS.
+- `statusLine` has no `shell` key. On Windows Claude Code runs it through Git Bash when that is installed, else PowerShell. The hook's PowerShell `try{…}` wrapper would break under bash, and the POSIX `|| true` wrapper breaks under PowerShell 5.1.
+- The subcommand fails open itself. An older binary's "unknown command" goes to stderr, which Claude Code never renders.
+- "Ours" means the command string contains `entire graph statusline`.
+
+**Precedence:**
+- A project-local `statusLine` overrides the shared-project and user ones. Installing one silently hides a user's existing status line (for example a graft line in `~/.claude/settings.json`).
+- Default behavior:
+  - If `ForeignStatusLine` finds one in any scope, setup writes nothing and reports `kept your status line (<path>) — rerun with --statusline to use entire graph's in this repo`.
+  - `--statusline` installs into settings.local.json even when a shared/user status line exists, and says that it now overrides `<path>` in this repo.
+  - A foreign line *inside settings.local.json* is never replaced, even with `--statusline`.
+- `--no-statusline` skips the step entirely, including its preflight.
+- The preflight error hint changes from "(fix it, or pass --no-claude-hook)" to name both opt-outs.
+
+- [ ] Step 1: Write the failing tests, all against real files in a temp dir, with `home` set to another temp dir.
   - `TestStatusLineInstallIsIdempotent`: install twice. First call `changed=true`; second `changed=false`; file bytes are equal after both.
-  - `TestStatusLineInstallKeepsForeignStatusLine`: pre-write settings.local.json with `{"statusLine":{"type":"command","command":"node graft-statusline.cjs"}}`. Install returns `foreign=true, changed=false`, and the file is byte-identical.
+  - `TestStatusLineInstallKeepsForeignLocalStatusLine`: pre-write settings.local.json with `{"statusLine":{"type":"command","command":"node graft-statusline.cjs"}}`. Install returns `foreign=true, changed=false`, and the file is byte-identical.
+  - `TestForeignStatusLineFindsUserScope`: a user-scope settings.json with a foreign `statusLine` and an empty project. Expect its path. Ours in user scope → "".
   - `TestStatusLineInstallPreservesOtherSettings`: pre-existing `hooks.SubagentStart` and an unrelated key survive the install (decode and compare those subtrees).
-  - `TestSetupNoStatuslineFlagWritesNone`: `runSetup --repo <tmp> --no-statusline` leaves no `statusLine` key.
+  - `TestSetupInstallsStatusLineByDefault` (cli): with an empty home, `setup --repo <tmp>` writes a `statusLine` whose command is `entire graph statusline`. With `--no-claude-hook` it still writes it.
+  - `TestSetupNoStatuslineFlagWritesNone` (cli): `setup --repo <tmp> --no-statusline` leaves no `statusLine` key.
+  - `TestSetupKeepsUserStatusLineUnlessAsked` (cli): with a home that has a foreign user status line, setup writes none. With `--statusline` it writes ours.
+  - Setup tests in `internal/cli` need a way to point `home` at a temp dir: use the existing `Options` env/home seam if there is one, else `t.Setenv("HOME")` and `USERPROFILE`.
 - [ ] Step 2: Run. Expected: FAIL.
-- [ ] Step 3: Implement the install and a UI row with the outcomes: `wrote`, `unchanged`, `kept your existing status line (… ) — pass --no-statusline to silence`, or `skipped (--no-statusline)`.
+- [ ] Step 3: Implement the install and a UI row with these outcomes:
+  - `wrote`
+  - `unchanged`
+  - `kept your status line (<path>) — rerun with --statusline …`
+  - `overrides <path> in this repo`
+  - `skipped (--no-statusline)`
+- [ ] Step 3b: Manually check on this Windows machine. With Git Bash present, Claude Code shows the line. Confirm piped stdin reaches the binary when the command runs under PowerShell 5.1 (run `'{}' | powershell -NoProfile -Command "entire graph statusline"`). Record the result in the commit body.
 - [ ] Step 4: Run the full suite and `go vet`. Update the README/AGENTS.md `setup` descriptions and the statusline-script header to point at the subcommand.
 - [ ] Step 5: Commit: `feat(setup): install the Claude Code status line`.
 

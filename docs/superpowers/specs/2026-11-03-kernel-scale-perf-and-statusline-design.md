@@ -70,26 +70,47 @@ stays green. Every attempt, kept or reverted, goes in `docs/perf-ledger.md`.
     relations, FILE_CHANGES_WITH for the focus file);
   - the header.
 - The existing verb logic then runs unchanged on that snapshot.
-- Name lookup needs a `symbols(name)` index, which lands with its first reader,
-  as `search_store.go` requires. The fuzzy-suggestion ladder reads a name-only
-  column scan.
-- `index` writes the sidecar by default. `ENTIRE_GRAPH_SEARCH_STORE=0` opts out.
-- A missing or mismatched sidecar falls back silently to today's full load.
+- The starting set is a superset of everything the verb's exact resolution
+  could return:
+  - ID, or Unicode case-folded name or qualified name, via new indexed columns;
+  - def's rewritten forms;
+  - all of `def A B C`'s names.
+  - Containment uses a new indexed `container_id` column, because the verbs
+    scan `ContainerID`, not CONTAINS edges.
+  - These columns land with their first reader, as `search_store.go` requires.
+- The header and FILE_CHANGES_WITH refresh go through the same post-load
+  function as the full path, with relation totals counted from the sidecar.
+- Falls back to the full load:
+  - when the verb's exact resolution comes back empty on a focused snapshot.
+    The fuzzy ladder therefore always ranks the full set; a name-only fuzzy
+    scan is a follow-up;
+  - for positional `path:line` refs;
+  - when there is no exact sidecar.
+- The sidecar is on by default, for `index` and for lookup/query cache misses.
+  An explicitly set `0`/`false`/`off`/`no` opts out.
+  - A sidecar repair failure on a cache hit is a header warning, not an
+    `index` failure.
+  - The no-op index's second full store decode is removed first, so the
+    default doesn't double no-op time (51 s → 104 s on the kernel today).
+  - Cold index pays ~+26% to build the sidecar, measured and recorded.
 - Target on the kernel: lookups in single-digit seconds and under 1 GiB RSS.
 
 **W2 — Load and index memory, profile-driven.**
 - Candidates:
   - intern repeated strings while decoding;
   - hold symbols by pointer or index instead of by-value copies during the build;
-  - allocation-free relation comparators;
-  - a default soft memory limit (`debug.SetMemoryLimit`) unless `GOMEMLIMIT` is
-    set.
+  - allocation-free relation comparators, with exact concatenation ordering.
+- No default memory limit: sizing from RAM ignores cgroups. `GOMEMLIMIT` is
+  documented instead.
 - Each candidate is measured on its own.
 
 **W3 — `query --head`.**
-- Derive the selective view from the sidecar, reading only the preselected files'
-  rows, instead of decoding the full snapshot and filtering it. Release the full
-  snapshot before ranking where the store is absent.
+- Stop loading the full snapshot before preselection:
+  - "symbols considered" and the diagnostics header come from the sidecar;
+  - the selective view feeds the preselected files' sidecar rows (symbols and
+    file-sourced relations, in rowid order) through the same
+    emit/external/dedupe pipeline the full path uses.
+- A selection covering every file keeps the full load.
 - Profile-driven, same keep/revert rule.
 
 **W4 — Claude Code status line.**
@@ -105,17 +126,34 @@ stays green. Every attempt, kept or reverted, goes in `docs/perf-ledger.md`.
   ```
   - `ctx N%` is `context_window.used_percentage` from stdin.
   - `net` is the existing modeled balance from `stats` (it can be negative).
-  - `gross` is new in `stats`: for each graph locate result, the summed on-disk
-    size of the distinct files the result names, minus the result's bytes, /4.
-    It never goes below zero per result.
-  - `✓ indexed` / `not indexed` checks whether a cache entry exists for HEAD,
-    without decoding it.
-  - Segments are dropped from the right to fit the width.
-  - Renders are cached by transcript size and mtime.
+  - `gross` is new in `stats`: for each successful graph locate result, the
+    summed on-disk size of the distinct files the result names, minus the
+    result's bytes, /4.
+    - It never goes below zero per result.
+    - Files resolve against the root that call ran on (its `--repo`, else its
+      cwd) through `os.OpenRoot`.
+    - Sizes are computed at report time, never stored in the per-transcript
+      memo.
+  - `✓ indexed` / `not indexed` checks whether a cache entry exists for HEAD
+    under any profile.
+    - It only stats paths: it never hashes or opens the entry.
+    - `DescribeSearchStore` hashes the whole entry, so it is too slow for this.
+  - Segments are dropped from the right to fit `COLUMNS`. Line 2 is dropped
+    when `used_percentage` is absent or null.
+  - The computed figures, not the rendered line, are cached. The key is every
+    in-scope transcript file's size and mtime, plus HEAD and the binary.
 - `entire graph setup` installs it into the repo's `.claude/settings.local.json`
   (the file it already writes its SubagentStart hook to):
+  - the command is the bare `entire graph statusline` on every OS:
+    `statusLine` has no `shell` key, and Windows runs it under Git Bash or
+    PowerShell;
   - `--no-statusline` opts out;
-  - it never replaces a `statusLine` it did not write and reports that instead;
+  - a local status line overrides the user's own, so setup leaves things alone
+    when any scope (local, shared project, user) already has a foreign
+    `statusLine`, and reports that instead;
+  - `--statusline` installs anyway, overriding a shared or user line in this
+    repo only;
+  - a foreign local line is never replaced;
   - re-running it is a no-op.
 - The shell script stays for now. The README points to the subcommand.
 
@@ -126,10 +164,22 @@ the kernel, then update the comparison doc.
 
 Tests pin behavior at public boundaries and never assert source text or
 internal structure.
-- **Differential equivalence (W1, W3).** For every symbol in the existing
-  multi-language fixture repos, and for both directions and depths, the focused
-  path's verb output is byte-identical to the full-load path's. This needs no
-  hand-written expectations and survives any internal refactor.
+- **Differential equivalence (W1, W3).** The focused path's output must be
+  identical to the full-load path's (JSON with telemetry stripped recursively;
+  agent/text output byte-for-byte minus telemetry lines). The guard covers:
+  - sampled symbols from every fixture;
+  - every way of naming a symbol: name, case variant, qualified name, ID,
+    `--file`, `--kind`, `--line`, `path:line`, def rewrites and multi-name, a
+    miss, a misspelling;
+  - both directions and depths.
+
+  Two new fixtures cover what the existing ones cannot:
+  - case-colliding names, extension members, inherited members, overrides, and
+    multi-commit co-change history that changes on an unchanged tree;
+  - a C fixture.
+
+  The guard needs no hand-written expectations and survives any internal
+  refactor.
 - **Status line (W4).** Real-shaped stdin JSON plus a small transcript fixture
   go in; hand-derived literal values come out: ctx %, lookup count, gross and
   net tokens. Malformed or empty stdin gives empty output and exit 0. A width
