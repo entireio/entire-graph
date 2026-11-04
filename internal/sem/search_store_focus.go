@@ -158,11 +158,12 @@ func loadFocusedSearchSnapshot(ctx context.Context, repo, providerVersion string
 	if err != nil {
 		return ProviderSnapshot{}, false
 	}
-	// The hash goes through the caller's digest memo when it installed one
-	// (WithLookupDigestMemo).
+	// A lookup trusts the entry's recorded stamp instead of hashing it
+	// (searchStoreEntryStamp); a stamp that does not match is hashed, through
+	// the caller's digest memo when it installed one (WithLookupDigestMemo).
 	store, db, err := openExactSearchStoreForEntry(ctx, entry, tree, func(entry cacheEntry) (cacheDigest, error) {
 		return memoizedEntryDigest(ctx, entry)
-	})
+	}, true)
 	if err != nil {
 		return ProviderSnapshot{}, false
 	}

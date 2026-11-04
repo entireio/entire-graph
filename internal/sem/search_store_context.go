@@ -617,22 +617,33 @@ func openExactSearchStore(ctx context.Context, cacheDir, key, tree string) (exac
 	if err != nil {
 		return exactSearchStore{}, nil, err
 	}
-	return openExactSearchStoreForEntry(ctx, entry, tree, cacheEntry.digest)
+	return openExactSearchStoreForEntry(ctx, entry, tree, cacheEntry.digest, false)
 }
 
 // openExactSearchStoreForEntry is openExactSearchStore's check for an entry
 // already resolved, reading only the sidecar's meta. entryDigest supplies the
 // gz entry's digest and is called only once a sidecar exists; the prebuild's
 // repair passes one that reuses the digest its cache hit already hashed.
-func openExactSearchStoreForEntry(ctx context.Context, entry cacheEntry, tree string, entryDigest func(cacheEntry) (cacheDigest, error)) (exactSearchStore, *sql.DB, error) {
+//
+// trustStamp lets an entry whose size and modification time are the ones the
+// sidecar recorded stand for the recorded digest without being hashed (see
+// searchStoreEntryStamp). Only the lookup verbs' focused load passes it; the
+// store descriptor, `graph context` and the prebuild hash the entry.
+func openExactSearchStoreForEntry(ctx context.Context, entry cacheEntry, tree string, entryDigest func(cacheEntry) (cacheDigest, error), trustStamp bool) (exactSearchStore, *sql.DB, error) {
 	store := searchStoreEntryFor(entry)
 	path := filepath.Join(store.root, store.relative)
 	if _, err := os.Stat(path); err != nil {
 		return exactSearchStore{}, nil, ErrSearchStoreMissing
 	}
-	digest, err := entryDigest(entry)
-	if err != nil {
-		return exactSearchStore{}, nil, ErrSearchStoreMissing
+	// Without trustStamp the entry is hashed before the sidecar is opened, as
+	// it always was, so an unreadable entry is a quiet miss whatever state the
+	// sidecar is in. With it, the hash waits for the sidecar's recorded stamp.
+	var digest cacheDigest
+	var err error
+	if !trustStamp {
+		if digest, err = entryDigest(entry); err != nil {
+			return exactSearchStore{}, nil, ErrSearchStoreMissing
+		}
 	}
 
 	db, err := sql.Open("sqlite", "file:"+sqliteURLPath(path)+"?immutable=1&mode=ro")
@@ -650,7 +661,17 @@ func openExactSearchStoreForEntry(ctx context.Context, entry cacheEntry, tree st
 	if err := readSearchStoreMetaKey(ctx, db, "entry_digest", &storedDigest); err != nil {
 		return fail(err)
 	}
-	if version != searchStoreVersion || storedDigest != digest.String() {
+	if version != searchStoreVersion {
+		return fail(ErrSearchStoreMissing)
+	}
+	// A matching stamp stands for the recorded digest (searchStoreEntryStamp).
+	stamped := trustStamp && searchEntryStampMatches(ctx, db, entry)
+	if trustStamp && !stamped {
+		if digest, err = entryDigest(entry); err != nil {
+			return fail(ErrSearchStoreMissing)
+		}
+	}
+	if !stamped && storedDigest != digest.String() {
 		return fail(ErrSearchStoreMissing)
 	}
 	var meta searchStoreMeta

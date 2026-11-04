@@ -2,10 +2,12 @@ package sem
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -172,7 +174,7 @@ type searchStoreMeta struct {
 // absent rather than serving a stale snapshot. The build runs with journaling
 // off: the file is a temporary the caller renames into place on success and
 // removes on failure, so a crashed build can never be read as an entry.
-func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cachedSearchSnapshot) error {
+func buildSearchStore(ctx context.Context, path, entryDigest string, stamp *searchStoreEntryStamp, cache *cachedSearchSnapshot) error {
 	db, err := sql.Open("sqlite", "file:"+sqliteURLPath(path)+"?_pragma=journal_mode(OFF)&_pragma=synchronous(OFF)")
 	if err != nil {
 		return err
@@ -208,12 +210,16 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 		DerivedFrom:     cache.DerivedFrom,
 		RepoScope:       cache.RepoScope,
 	}
-	for key, value := range map[string]any{
+	metaValues := map[string]any{
 		"store_version": searchStoreVersion,
 		"entry_digest":  entryDigest,
 		"envelope":      meta,
 		"header":        cache.Snapshot.Header,
-	} {
+	}
+	if stamp != nil {
+		metaValues["entry_stamp"] = stamp
+	}
+	for key, value := range metaValues {
 		encoded, err := json.Marshal(value)
 		if err != nil {
 			return err
@@ -765,7 +771,7 @@ func writeSearchStoreSidecar(ctx context.Context, entry cacheEntry, entryDigest 
 	}
 	directoryPath := filepath.Join(entry.root, filepath.Dir(entry.relative))
 	temporaryPath := filepath.Join(directoryPath, temporaryName)
-	if err := buildSearchStore(ctx, temporaryPath, entryDigest, cache); err != nil {
+	if err := buildSearchStore(ctx, temporaryPath, entryDigest, stampSearchEntry(entry, entryDigest), cache); err != nil {
 		return err
 	}
 	if beforeSearchStorePublish != nil {
@@ -818,7 +824,7 @@ func repairSearchStoreSidecarForEntry(ctx context.Context, entry cacheEntry, tre
 		return nil
 	}
 	memoized := func(entry cacheEntry) (cacheDigest, error) { return memoizedEntryDigest(ctx, entry) }
-	if _, db, err := openExactSearchStoreForEntry(ctx, entry, tree, memoized); err == nil {
+	if _, db, err := openExactSearchStoreForEntry(ctx, entry, tree, memoized, false); err == nil {
 		_ = db.Close()
 		return nil
 	}
@@ -887,6 +893,81 @@ func memoizedEntryDigest(ctx context.Context, entry cacheEntry) (cacheDigest, er
 	memo.digests[path] = digest
 	memo.mu.Unlock()
 	return digest, nil
+}
+
+// searchStoreEntryStamp is the gz entry's size and modification time as they
+// were when its sidecar was written, recorded beside the digest (meta key
+// entry_stamp). A lookup that finds the entry with the same stamp takes the
+// recorded digest instead of hashing the entry (openExactSearchStoreForEntry,
+// trustStamp): on the Linux kernel the entry is 400 MB and its hash a fifth of
+// a focused lookup.
+//
+// This is an integrity cache, not a security boundary. The digest check it
+// stands in for catches an entry and a sidecar left by different writes, not
+// tampering: whoever can rewrite the entry can rewrite the sidecar beside it.
+// Every writer replaces the entry by renaming a freshly written file over it,
+// which gives it a new modification time; the bytes written under one key are
+// deterministic; and `index --force` rewrites the entry and the sidecar
+// together. An entry whose size and time to the nanosecond are still the
+// recorded ones is therefore the entry the sidecar was written from, and any
+// difference brings the hash back. A sidecar written without a stamp (an
+// older one, or one whose entry changed while it was stamped) is always
+// checked by hash.
+type searchStoreEntryStamp struct {
+	Size      int64 `json:"size"`
+	ModTimeNS int64 `json:"mtime_ns"`
+}
+
+func searchEntryStampOf(file *os.File) (searchStoreEntryStamp, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return searchStoreEntryStamp{}, err
+	}
+	return searchStoreEntryStamp{Size: info.Size(), ModTimeNS: info.ModTime().UnixNano()}, nil
+}
+
+// stampSearchEntry returns the entry's stamp for a sidecar that records
+// entryDigest, or nil. The entry is hashed here, once per sidecar write, so a
+// stamp is recorded only for an entry whose bytes are the digest's and whose
+// stamp held across the read: a stamp that does not provably belong to the
+// digest would let a lookup skip the hash for the wrong bytes.
+func stampSearchEntry(entry cacheEntry, entryDigest string) *searchStoreEntryStamp {
+	file, err := entry.open()
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	before, err := searchEntryStampOf(file)
+	if err != nil {
+		return nil
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return nil
+	}
+	after, err := searchEntryStampOf(file)
+	var digest cacheDigest
+	copy(digest[:], hash.Sum(nil))
+	if err != nil || after != before || digest.String() != entryDigest {
+		return nil
+	}
+	return &before
+}
+
+// searchEntryStampMatches reports whether the sidecar on db recorded a stamp
+// and the entry on disk still has it.
+func searchEntryStampMatches(ctx context.Context, db *sql.DB, entry cacheEntry) bool {
+	var recorded searchStoreEntryStamp
+	if err := readSearchStoreMetaKey(ctx, db, "entry_stamp", &recorded); err != nil {
+		return false
+	}
+	file, err := entry.open()
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	current, err := searchEntryStampOf(file)
+	return err == nil && current == recorded
 }
 
 // loadSearchStoreForEntry serves the entry's snapshot from the sqlite sidecar
