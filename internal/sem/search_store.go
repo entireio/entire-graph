@@ -852,13 +852,19 @@ const SearchStoreUnavailableCode = "W_SEARCH_STORE_UNAVAILABLE"
 // warnings may share a backing array with a cached or just-persisted snapshot,
 // which must not carry a warning about one run's write.
 func withSearchStoreUnavailable(snapshot ProviderSnapshot, err error) ProviderSnapshot {
-	if err == nil {
-		return snapshot
-	}
-	warnings := make([]ProviderWarning, 0, len(snapshot.Header.Warnings)+1)
-	warnings = append(warnings, snapshot.Header.Warnings...)
-	snapshot.Header.Warnings = append(warnings, searchStoreUnavailableWarning(err))
+	snapshot.Header.Warnings = appendSearchStoreUnavailable(snapshot.Header.Warnings, err)
 	return snapshot
+}
+
+// appendSearchStoreUnavailable is withSearchStoreUnavailable for a bare
+// warning list, such as a search response's.
+func appendSearchStoreUnavailable(warnings []ProviderWarning, err error) []ProviderWarning {
+	if err == nil {
+		return warnings
+	}
+	fresh := make([]ProviderWarning, 0, len(warnings)+1)
+	fresh = append(fresh, warnings...)
+	return append(fresh, searchStoreUnavailableWarning(err))
 }
 
 func searchStoreUnavailableWarning(err error) ProviderWarning {

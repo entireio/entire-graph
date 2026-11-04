@@ -192,6 +192,25 @@ type ExplainResponse struct {
 	Commit           string `json:"commit,omitempty"`
 	Tree             string `json:"tree,omitempty"`
 	WorktreeSnapshot bool   `json:"worktree_snapshot,omitempty"`
+	// Warnings reports what went wrong in this run's own work rather than the
+	// graph's diagnostics: today a sqlite store this run could not write
+	// (explainWarnings). Absent when there is none.
+	Warnings []sem.ProviderWarning `json:"warnings,omitempty"`
+}
+
+// explainWarnings selects the snapshot warnings explain reports. Explain has
+// never printed the graph's own diagnostics, and a working-tree snapshot
+// always carries one, so passing them all through would change every answer.
+// A failed store write is different: it is this run's partial failure, and
+// it is never dropped silently.
+func explainWarnings(warnings []sem.ProviderWarning) []sem.ProviderWarning {
+	var reported []sem.ProviderWarning
+	for _, warning := range warnings {
+		if warning.Code == sem.SearchStoreUnavailableCode {
+			reported = append(reported, warning)
+		}
+	}
+	return reported
 }
 
 type explainFlags struct {
@@ -295,6 +314,7 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 	useHead := !flags.Worktree && snapshot.Header.Commit != ""
 	response.Commit, response.Tree = snapshot.Header.Commit, snapshot.Header.Tree
 	response.WorktreeSnapshot = !useHead
+	response.Warnings = explainWarnings(snapshot.Header.Warnings)
 	switch flags.Format {
 	case "json":
 		encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
@@ -621,7 +641,23 @@ func RenderExplain(response ExplainResponse, maxBytes int) []byte {
 // RenderExplainWithProvenance renders the same declaration block while making
 // its source view explicit. useHead is true only when a committed snapshot was
 // actually selected; the no-HEAD fallback therefore keeps the worktree label.
+// Any response warnings follow the block, one "- warning" line each, as in
+// the neighbors and impact coverage banner.
 func RenderExplainWithProvenance(response ExplainResponse, maxBytes int, useHead bool) []byte {
+	block := renderExplainBlock(response, maxBytes, useHead)
+	// The warning lines sit outside the byte budget, which bounds the
+	// declarations: a budget that dropped them would drop a failure silently.
+	for _, warning := range response.Warnings {
+		if warning.FilePath == "" {
+			block = fmt.Appendf(block, "- warning %s\n", warning.Code)
+		} else {
+			block = fmt.Appendf(block, "- warning %s: %s\n", warning.Code, termsafe.Line(warning.FilePath))
+		}
+	}
+	return block
+}
+
+func renderExplainBlock(response ExplainResponse, maxBytes int, useHead bool) []byte {
 	if len(response.Symbols) == 0 {
 		return nil
 	}

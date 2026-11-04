@@ -33,9 +33,11 @@ auto-generated notes on
   `ENTIRE_GRAPH_SEARCH_STORE=1`. Set `ENTIRE_GRAPH_SEARCH_STORE=0` to turn it off.
   A store that cannot be written never fails the command and is never silent:
   `index` (a cold build, or a cache hit rebuilding a missing store) and a cold
-  `def`, `neighbors`, `impact` or `query` succeed with a
+  `def`, `neighbors`, `impact`, `explain` or `query` succeed with a
   `W_SEARCH_STORE_UNAVAILABLE` warning in their `warnings`, and lookups take the
-  full snapshot load.
+  full snapshot load. `explain` gains a `warnings` array for this, present only
+  when there is one, and its text form prints a `- warning` line after the
+  declarations.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being
   assigned to a variable, passed as an argument, or stored in a struct field or

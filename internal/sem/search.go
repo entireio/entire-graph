@@ -1419,7 +1419,14 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			retry := requestedOptions
 			retry.coldCompleteUnavailable = true
 			retry.coldCompleteRetryLatency = time.Since(searchStarted)
-			return searchRepository(ctx, repo, providerVersion, query, retry)
+			response, retryErr := searchRepository(ctx, repo, providerVersion, query, retry)
+			// A refused build may still have tried, and failed, to write the
+			// store; the retry is the answer that has to say so.
+			var refusal coldCompleteRefusal
+			if retryErr == nil && errors.As(err, &refusal) {
+				response.Warnings = appendSearchStoreUnavailable(response.Warnings, refusal.storeErr)
+			}
+			return response, retryErr
 		}
 		if err != nil {
 			return SearchResponse{}, err

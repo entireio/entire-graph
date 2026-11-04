@@ -178,9 +178,10 @@ func TestIndexWritesTheStoreWithoutOptIn(t *testing.T) {
 // TestPreindexHitSurfacesStoreRepairFailureAsWarning: a cold build whose sqlite
 // sidecar cannot be written (here a non-empty directory sits where it belongs,
 // as a full disk would refuse it) still succeeds, and says so with a
-// W_SEARCH_STORE_UNAVAILABLE warning in the JSON it prints. Break caught: a
-// cold-path sidecar write failure dropped silently, so `index` reports a clean
-// success while `graph store` says store_unavailable.
+// W_SEARCH_STORE_UNAVAILABLE warning in the JSON it prints (and, for explain,
+// in its text too). Break caught: a cold-path sidecar write failure dropped
+// silently, so `index` or a lookup reports a clean success while `graph store`
+// says store_unavailable.
 func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 	repo := t.TempDir()
 	git := func(args ...string) {
@@ -200,13 +201,18 @@ func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 	git("add", "main.go")
 	git("-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture")
 	const version = "store-write-failure-test"
-	run := func(t *testing.T, verb func(context.Context, Options, []string) error, args ...string) []byte {
+	runWithStdin := func(t *testing.T, stdin string, verb func(context.Context, Options, []string) error, args ...string) []byte {
 		t.Helper()
 		var out, stderr bytes.Buffer
-		if err := verb(context.Background(), Options{Stdout: &out, Stderr: &stderr, Version: version}, args); err != nil {
+		options := Options{Stdout: &out, Stderr: &stderr, Stdin: strings.NewReader(stdin), Version: version}
+		if err := verb(context.Background(), options, args); err != nil {
 			t.Fatalf("a sidecar write failure failed the command: %v %s", err, stderr.String())
 		}
 		return out.Bytes()
+	}
+	run := func(t *testing.T, verb func(context.Context, Options, []string) error, args ...string) []byte {
+		t.Helper()
+		return runWithStdin(t, "", verb, args...)
 	}
 	// coldCacheWithBlockedSidecar returns a cache directory with no complete
 	// entry for the fixture's tree and a non-empty directory where that
@@ -271,5 +277,22 @@ func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 	t.Run("cold def --head", func(t *testing.T) {
 		cache := coldCacheWithBlockedSidecar(t)
 		requireWarning(t, run(t, runDef, "--repo", repo, "--head", "--cache-dir", cache, "--profile", "full", "--format", "json", "Render"))
+	})
+	// explain reads the build error from stdin and prints no other warnings,
+	// so its text form must carry this one too.
+	const buildError = "main.go:2:1: undefined: Render\n"
+	explainArgs := func(cache, format string) []string {
+		return []string{"--repo", repo, "--head", "--cache-dir", cache, "--profile", "full", "--no-echo", "--format", format}
+	}
+	t.Run("cold explain --head", func(t *testing.T) {
+		cache := coldCacheWithBlockedSidecar(t)
+		requireWarning(t, runWithStdin(t, buildError, runExplain, explainArgs(cache, "json")...))
+	})
+	t.Run("cold explain --head text", func(t *testing.T) {
+		cache := coldCacheWithBlockedSidecar(t)
+		output := string(runWithStdin(t, buildError, runExplain, explainArgs(cache, "text")...))
+		if !strings.Contains(output, "\n- warning W_SEARCH_STORE_UNAVAILABLE\n") {
+			t.Fatalf("explain text does not carry the store warning:\n%s", output)
+		}
 	})
 }

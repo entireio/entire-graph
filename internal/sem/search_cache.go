@@ -378,6 +378,11 @@ func loadOrBuildSearchSnapshotPersisting(
 	// selective search without rebuilding the same tree for every query. Keep
 	// the selected file/symbol scope; relation resolution uses the complete graph
 	// and may omit guesses from a selection-only build, as documented below.
+	//
+	// completeStoreErr is the sidecar error of a complete build below that
+	// published its entry. It must reach the snapshot this call finally serves
+	// even when that is not the one derived from the build.
+	var completeStoreErr error
 	if len(options.OnlyFiles) > 0 {
 		deriveFromFull := func(full ProviderSnapshot) (ProviderSnapshot, bool) {
 			selective, deriveErr := selectiveSearchSnapshotFromFull(ctx, absRepo, providerVersion, options, full)
@@ -476,9 +481,10 @@ func loadOrBuildSearchSnapshotPersisting(
 					// Best effort, like every query-time store: an unwritable cache
 					// still serves this query from the snapshot in memory. A sidecar
 					// failure rides on the complete header, which is the header
-					// the query reports (onCompleteDerivation).
-					storeErr, _ := writeSearchSnapshotAndStore(ctx, fullEntry, newCachedSearchSnapshot(providerVersion, commit, tree, completeOptions, full, ctx))
-					full = withSearchStoreUnavailable(full, storeErr)
+					// the query reports (onCompleteDerivation); when the derivation
+					// fails, the fallback below carries it instead.
+					completeStoreErr, _ = writeSearchSnapshotAndStore(ctx, fullEntry, newCachedSearchSnapshot(providerVersion, commit, tree, completeOptions, full, ctx))
+					full = withSearchStoreUnavailable(full, completeStoreErr)
 					if selective, ok := deriveFromFull(full); ok {
 						return selective, false, true, nil
 					}
@@ -495,7 +501,7 @@ func loadOrBuildSearchSnapshotPersisting(
 	// lock (above for a selective view, below for a complete one). Building the
 	// selection itself would parse every file the uncapped grep matched.
 	if options.coldComplete.required && (len(options.OnlyFiles) > 0 || !persistBuilt || !generationKnown) {
-		return ProviderSnapshot{}, false, errColdCompleteUnavailable
+		return ProviderSnapshot{}, false, refuseColdComplete(completeStoreErr)
 	}
 	// A complete query that missed builds exactly the artifact a concurrent cold
 	// query on the same tree is building, so it takes the same lock and re-checks
@@ -552,7 +558,9 @@ func loadOrBuildSearchSnapshotPersisting(
 			_ = writeSearchSnapshot(entry, cache)
 		}
 	}
-	return snapshot, false, nil
+	// A selective build that fell through from a complete build which
+	// published its entry but could not serve this selection.
+	return withSearchStoreUnavailable(snapshot, completeStoreErr), false, nil
 }
 
 // coldCompleteSnapshotMaxFiles is the largest repository, in source files after
@@ -591,6 +599,23 @@ func completeSnapshotAffordableOnColdQuery(ctx context.Context, absRepo string, 
 // not validate. The search then selects again with the bounded content scan, so
 // the fallback builds exactly what it built before the warm route existed.
 var errColdCompleteUnavailable = errors.New("no complete snapshot for a cold-complete selection")
+
+// coldCompleteRefusal is errColdCompleteUnavailable from a complete build that
+// published its entry but whose sqlite sidecar could not be written. The search
+// retries the selection, and that retry reports storeErr: nothing else will,
+// since the retry finds the published entry and writes no sidecar itself.
+type coldCompleteRefusal struct{ storeErr error }
+
+func (r coldCompleteRefusal) Error() string { return errColdCompleteUnavailable.Error() }
+func (r coldCompleteRefusal) Unwrap() error { return errColdCompleteUnavailable }
+
+// refuseColdComplete is errColdCompleteUnavailable, carrying storeErr when there is one.
+func refuseColdComplete(storeErr error) error {
+	if storeErr == nil {
+		return errColdCompleteUnavailable
+	}
+	return coldCompleteRefusal{storeErr: storeErr}
+}
 
 // coldCompleteSnapshotFits is the corpus-size bound on the cold-complete build. Cold
 // preselection asks it too, so it takes the warm route only where that build can follow.
