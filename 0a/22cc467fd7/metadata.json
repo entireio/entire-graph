@@ -1,0 +1,58 @@
+{
+  "cli_version": "0.12.2",
+  "checkpoint_id": "0a22cc467fd7",
+  "strategy": "manual-commit",
+  "branch": "fix/pr-357-review",
+  "checkpoints_count": 8,
+  "files_touched": [
+    "CONTRIBUTING.md",
+    "cmd/grammar-refresh/main.go",
+    "cmd/grammar-refresh/refresh.go",
+    "cmd/grammar-refresh/refresh_test.go",
+    "internal/sem/grammars/grammars.json",
+    "internal/sem/grammars/swift/README.md",
+    "internal/sem/grammars/swift/VALIDATION.md",
+    "internal/sem/grammars/swift/compatibility.patch",
+    "internal/sem/grammars/swift/parser.c",
+    "internal/sem/grammars/swift/scanner.c",
+    "internal/sem/identity_revision_test.go",
+    "internal/sem/swift_grammar_regression_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0a/22cc467fd7/0/metadata.json",
+      "transcript": "/0a/22cc467fd7/0/full.jsonl",
+      "compact_transcript": "/0a/22cc467fd7/0/transcript.jsonl",
+      "content_hash": "/0a/22cc467fd7/0/content_hash.txt",
+      "prompt": "/0a/22cc467fd7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 100,
+    "cache_creation_tokens": 124293,
+    "cache_read_tokens": 4181009,
+    "output_tokens": 51401,
+    "api_call_count": 41,
+    "subagent_tokens": {
+      "input_tokens": 28,
+      "cache_creation_tokens": 148870,
+      "cache_read_tokens": 1396556,
+      "output_tokens": 47965,
+      "api_call_count": 14
+    }
+  },
+  "redaction": {
+    "replacements": 0,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}

@@ -1,0 +1,122 @@
+Review PR 357
+
+---
+
+<task-notification>
+<task-id>a012f5ee27e603f83</task-id>
+<tool-use-id>toolu_01BBZg4PvWtbnrzUCjnt2hxs</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-m1-Projects-entire-graph/9f568266-bccd-4fbf-9bd3-f476606be1eb/tasks/a012f5ee27e603f83.output</output-file>
+<status>completed</status>
+<summary>Agent "/code-review 357" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Review of PR 357 (head `1c625cdf`) found 7 issues; the worst is a Swift parse regression caused by the PR's scanner patch. I compared binaries built from `main` and the PR on about 100 hand-written Swift cases. The 1, 3, 4, 5 and 6 scenarios fail on the PR and parse cleanly on `main`.
+
+```json
+[
+  {
+    "file": "internal/sem/grammars/swift/scanner.c",
+    "line": 860,
+    "summary": "The patched comment look-through emits an implicit semicolon without re-checking NON_CONSUMING_CROSS_SEMI_CHARS, so a comment before a leading `?`, `&lt;` or `&gt;` wrongly ends the statement.",
+    "failure_scenario": "`let a = b\\n  // c\\n  ? d : e` (also `/* c */`, and leading `&lt;` or `&gt;`) parses cleanly on main but gives E_PARSE_ERROR on the PR ('missing ! at line 3'). The look-through sets ws_directive to STOP_PARSING_TOKEN_FOUND, which skips the suppressor check guarded by `ws_directive == CONTINUE_PARSING_TOKEN_FOUND`. Confirmed by scanner variants: reverting only the look-through removes the failure, but `j1_block_comment_trailing_stmt` then fails. Re-checking the suppressor characters on lexer-&gt;lookahead before the operator scan fixes these cases and keeps that gain. It also fixed leading `|` and `^` after a comment, which fail on both main and the PR. The fix must also change compatibility.patch or byte-for-byte reproduction breaks. No regression test covers this; the existing case only tests `+`."
+  },
+  {
+    "file": "cmd/grammar-refresh/main.go",
+    "line": 105,
+    "summary": "Refreshing Swift at its recorded ref silently replaces the patched grammar with unpatched upstream, exits 0, and keeps a manifest note saying the patch is applied.",
+    "failure_scenario": "Running the tool's own example at main.go:9, `go run ./cmd/grammar-refresh -lang swift -ref 0.7.4-with-generated-files`, printed success and rewrote parser.c and scanner.c (about 1M changed lines in parser.c). The revision matches, so grammars.json keeps its 'patched with swift/compatibility.patch' note, and the 'next:' hint never mentions the patch. A maintainer can commit a parser that undoes every compatibility fix, and the Swift regression tests are the only automated guard. The tool should refuse, or require an explicit flag, when the entry records local patches or a local generator step, and the example should change."
+  },
+  {
+    "file": "cmd/grammar-refresh/main.go",
+    "line": 105,
+    "summary": "The note is kept only when the revision is unchanged, so moving to a new ref deletes the manual-step warning at the moment it matters.",
+    "failure_scenario": "Refreshing Swift to a later ABI-14 ref, or F# to another ABI-14 commit, writes `note: \"\"`. That erases 'a verbatim refresh must reapply this patch' and F#'s 'include must be rewritten by hand'. For F#, vendor() also deletes scanner.h as stale because upstream keeps it in common/, while the fresh scanner.c includes ../../common/scanner.h, which would break the build. This comes from reading the code; the live F# run stopped earlier because `main` is ABI 15. CONTRIBUTING.md tells maintainers to check the entry's note, but it is gone from the manifest diff's new side after the refresh."
+  },
+  {
+    "file": "internal/sem/grammars/swift/compatibility.patch",
+    "line": 92,
+    "summary": "The versioned canImport rule accepts only integer-literal versions, not the string form the compiler also accepts.",
+    "failure_scenario": "`#if canImport(Foundation, _version: \"113.330.1.2\")` parses on main but on the PR gives ERROR near `, _version: \"113.330.1.2\"` and a partial failure. The string form is from my memory of the Swift compiler parser and tests, not re-checked here. Add `$.line_string_literal` as an alternative to sep1($.integer_literal, \".\")."
+  },
+  {
+    "file": "internal/sem/grammars/swift/compatibility.patch",
+    "line": 37,
+    "summary": "The switch-prefix rule allows only `directive`, so `#warning` or `#error` before the first case fails, unlike the diagnostic support added to type bodies.",
+    "failure_scenario": "`switch v {\\n    #warning(\"x\")\\n    default: break\\n}` parses on main but on the PR the whole switch becomes an ERROR. `#warning` after a case body still works. The fix is `repeat(seq(choice($.directive, $.diagnostic), optional($._semi)))`, plus a regression case."
+  },
+  {
+    "file": "internal/sem/grammars/swift/compatibility.patch",
+    "line": 101,
+    "summary": "The new predicate literals (`hasFeature`, `hasAttribute`, `_runtime`) shadow plain compilation flags with the same name inside #if conditions.",
+    "failure_scenario": "`#if hasFeature\\n...\\n#endif` and `#if hasAttribute &amp;&amp; !_runtime` parse on main but give ERROR at `#if` on the PR, because the literal token wins over $.simple_identifier and then requires `(`. Identifiers with those names outside conditions still parse. Low frequency, but valid for projects defining such -D flags."
+  },
+  {
+    "file": "internal/sem/grammars/swift/scanner.c",
+    "line": 913,
+    "summary": "Directive matching is prefix-based, so bare freestanding macros whose names begin with a directive word are misread now that macros parse.",
+    "failure_scenario": "`#elsewhere` and `#endifx` as bare statements give ERROR nodes on the PR but parse on main, because find_possible_compiler_directive never checks for an identifier boundary. A boundary check would fix them. This lives in upstream code but ships here, in the release whose purpose is macro support. `#iffy(1)` did not error in the same test."
+  }
+]
+```
+
+**Not in the JSON:**
+- **Stale PR description:** it doesn't cover head commit `1c625cdf`.
+  - It says the grammar was copied verbatim, but it now carries `compatibility.patch` and a regenerated `parser.c`.
+  - It says the revision is 6, but it is 7.
+  - It says re-running the tool reproduces the committed Swift files, which is now false.
+  - It lists regressions the last commit claims to fix, and its numbers disagree with `VALIDATION.md`. For example, Alamofire shows 7,392 symbols there against 7,388.
+- **Minor cleanup:** `TestSwiftGrammarRefreshIsRevisioned` and `TestSwiftGrammarRecoveryIsRevisioned` in `identity_revision_test.go` (lines 126 and 132) can't fail, because line 10 already pins `"7"`. Revision 6 only exists inside this PR, so one bump and one test would be enough.
+
+**Checked and fine:**
+- The vendored `scanner.c` matches upstream at the pinned commit plus the patch, and `LICENSE` matches upstream exactly. The `tree_sitter/` headers were not compared, because the comparison pointed at the wrong paths.
+- No extractor code depends on the removed node kinds.
+- Calls inside `#expect` and `#require` still produce CALLS relations.
+- Modifier-only `#if` (`#if X\npublic\n#endif`) also fails on the PR, but I dropped it because I believe Swift itself rejects it.
+
+**Limits:**
+- `entire brain brief` and `entire graph query` both failed because the plugins aren't installed, so I inspected source directly.
+- I ran `go test` for `./cmd/grammar-refresh`, `./internal/gitutil` and the `Swift|IdentityRevision` tests in `internal/sem`, and all pass. I did not run the full suite or race tests.
+- `tree-sitter` isn't installed, so I could not check that `parser.c` regenerates byte for byte, or test real corpus repositories.
+- GitHub shows the PR as mergeable but blocked, and its only check, "Entire Gates", is neutral.
+
+The scratch worktree and temporary `pr-357-review` ref are removed, and the main checkout is clean.</result>
+<usage><subagent_tokens>152120</subagent_tokens><tool_uses>21</tool_uses><duration_ms>567382</duration_ms></usage>
+</task-notification>
+
+---
+
+Uhm, just install tree-sitter then?
+
+---
+
+Just do it, I will approve
+
+---
+
+Try again
+
+---
+
+Ok, fix the findings then?
+
+---
+
+<task-notification>
+<task-id>bevgpgegq</task-id>
+<tool-use-id>toolu_01V63p2vB3x48THE6GJn67VT</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-m1-Projects-entire-graph/9f568266-bccd-4fbf-9bd3-f476606be1eb/tasks/bevgpgegq.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full test suite, race tests, vet and license check on the final grammar" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+You can check out brain and graph into ~/Projects
+
+---
+
+1. yes
+2. yes, update the PR
+
+---
+
+For the remaining fixes, walk me through the details and ask for decisions
