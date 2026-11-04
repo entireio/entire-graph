@@ -48,6 +48,7 @@ func main() {
 		// one a repository can append to.
 		fmt.Fprintln(os.Stderr, termsafe.Line(err.Error()))
 	}
+	atExit()
 	os.Exit(exitCode(err))
 }
 
