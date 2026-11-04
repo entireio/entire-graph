@@ -38,6 +38,22 @@ type Options struct {
 	// tests can hand runProviderRecords a summary no build in sem produces any
 	// more -- one marked truncated -- and prove the cache refusals still hold.
 	streamSnapshot func(ctx context.Context, repo, providerVersion string, options sem.ProviderSnapshotOptions, emit func(record any) error) error
+	// homeDir stands in for os.UserHomeDir when non-nil: the home whose ~/.claude/settings.json setup
+	// inspects for an existing status line. Tests set it so they never read the real one.
+	homeDir func() string
+}
+
+// userHome is the home setup inspects for the user's own status line; "" when it cannot be
+// determined, which skips that scope.
+func (o Options) userHome() string {
+	if o.homeDir != nil {
+		return o.homeDir()
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
 }
 
 // SignalError reports that Execute stopped because it received a signal

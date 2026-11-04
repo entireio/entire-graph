@@ -178,9 +178,10 @@ func TestInitAgentsInstallsClaudeSubagentHook(t *testing.T) {
 	if err := os.WriteFile(settingsPath, []byte(`{"permissions":{"allow":["Bash(ls)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./stop.sh"}]}]}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	home := tempHome(t)
 	initAgents := func(extra ...string) (string, error) {
 		var out bytes.Buffer
-		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, append([]string{"setup", "--repo", repo}, extra...))
+		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out, homeDir: home}, append([]string{"setup", "--repo", repo}, extra...))
 		return out.String(), err
 	}
 
@@ -237,7 +238,7 @@ func TestInitAgentsClaudeHookOptOutAndPreflight(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out bytes.Buffer
-		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"setup", "--repo", repo})
+		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out, homeDir: tempHome(t)}, []string{"setup", "--repo", repo})
 		if err == nil || !strings.Contains(err.Error(), "--no-claude-hook") {
 			t.Fatalf("err = %v, want a refusal naming the opt-out", err)
 		}

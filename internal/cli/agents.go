@@ -76,14 +76,15 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 				return err
 			}
 		}
+		// settings.local.json is rewritten, so a malformed one is refused here. The shared and user
+		// files are only inspected; one that cannot be read skips the status line, never the guides.
 		foreignStatusLine := ""
+		var statusLineScopeErr error
 		if !*noStatusline {
 			if err := agentsetup.CheckClaudeStatusLine(root); err != nil {
 				return err
 			}
-			if foreignStatusLine, err = agentsetup.ForeignStatusLine(root, userHomeDir()); err != nil {
-				return fmt.Errorf("setup: %w (fix it, or pass --no-statusline)", err)
-			}
+			foreignStatusLine, statusLineScopeErr = agentsetup.ForeignStatusLine(root, opts.userHome())
 		}
 		// InstallChanged rather than Install: the installer's own line-per-write
 		// output is replaced by one settled row per phase, composed here the way
@@ -118,7 +119,7 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 		}
 		if *noStatusline {
 			ui.Row(setupMarkSkipped, "status line", "skipped (--no-statusline)")
-		} else if err := installStatusLine(ui, root, foreignStatusLine, *statusline); err != nil {
+		} else if err := installStatusLine(ui, root, foreignStatusLine, statusLineScopeErr, *statusline); err != nil {
 			return err
 		}
 		ui.End()
@@ -136,9 +137,17 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 // shared and user ones, so writing ours would silently hide a status line the user already has:
 // without force (--statusline) a foreign line in any scope is kept and nothing is written. A
 // foreign line inside settings.local.json itself is kept even with force.
-func installStatusLine(ui *setupUI, root, foreign string, force bool) error {
+//
+// scopeErr is ForeignStatusLine's failure to inspect the scope named by foreign. Without force the
+// step is skipped, since that scope may hold a line ours would hide; with force ours is installed
+// and the row says the scope went unchecked.
+func installStatusLine(ui *setupUI, root, foreign string, scopeErr error, force bool) error {
 	const title = "status line"
 	local := filepath.Join(root, filepath.FromSlash(agentsetup.ClaudeLocalSettings))
+	if scopeErr != nil && !force {
+		ui.Row(setupMarkSkipped, title, "skipped (could not read "+foreign+": "+scopeErr.Error()+") — fix it, or rerun with --statusline")
+		return nil
+	}
 	if foreign != "" && !force {
 		if foreign == local {
 			ui.Row(setupMarkSkipped, title, "kept your status line ("+foreign+")")
@@ -156,22 +165,14 @@ func installStatusLine(ui *setupUI, root, foreign string, force bool) error {
 		ui.Row(setupMarkSkipped, title, "kept your status line ("+path+")")
 	case !changed:
 		ui.Row(setupMarkDone, title, "unchanged "+path+" (Claude Code status line already present)")
+	case scopeErr != nil:
+		ui.Row(setupMarkDone, title, "wrote "+path+" ("+agentsetup.StatusLineCommand+"); could not check "+foreign+": "+scopeErr.Error())
 	case foreign != "":
 		ui.Row(setupMarkDone, title, "wrote "+path+" ("+agentsetup.StatusLineCommand+"); overrides "+foreign+" in this repo")
 	default:
 		ui.Row(setupMarkDone, title, "wrote "+path+" (Claude Code status line: "+agentsetup.StatusLineCommand+")")
 	}
 	return nil
-}
-
-// userHomeDir is the home whose ~/.claude/settings.json may hold the user's own status line; ""
-// when it cannot be determined, which skips that scope.
-func userHomeDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return home
 }
 
 func runAgentGuide(opts Options, args []string) error { return graphAgentCommand(opts, args, false) }

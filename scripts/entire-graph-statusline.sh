@@ -9,8 +9,11 @@
 #
 # Change that command to `entire graph statusline`.
 #
-# Claude Code passes the status JSON on stdin; exec hands it to the subcommand unchanged. Without
-# an `entire` on PATH this prints nothing and exits 0: a status line must never surface an error.
+# Claude Code passes the status JSON on stdin; exec hands it to the subcommand unchanged.
+# ENTIRE_GRAPH_BIN, when it names an executable entire-graph binary, is run as `<bin> statusline`.
+# Without it or an `entire` on PATH this prints nothing and exits 0: a status line must never
+# surface an error.
 
+[ -x "${ENTIRE_GRAPH_BIN:-}" ] && exec "$ENTIRE_GRAPH_BIN" statusline "$@"
 command -v entire >/dev/null 2>&1 || exit 0
 exec entire graph statusline

@@ -215,7 +215,8 @@ these rules existed misses instead of re-emitting the paths it named.
   (skipped with `--no-claude-hook`) and a `statusLine` (skipped with
   `--no-statusline`) into the per-user `.claude/settings.local.json`; that path
   is never followed through a symlink or hard link. To decide whether another
-  status line is already set, it only reads `.claude/settings.json` and
+  status line is already set, it only reads `.claude/settings.json` (under the
+  same symlink, hard-link and regular-file refusals) and
   `~/.claude/settings.json`. Existing legacy Graph/Brain guide paths are
   also checked and rewritten as redirects under the same protections. See
   [coordination](agent-coordination.md) for detection and migration.

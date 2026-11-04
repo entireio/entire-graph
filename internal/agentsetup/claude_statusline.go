@@ -117,37 +117,73 @@ func InstallClaudeStatusLineChanged(root string) (path string, created, changed,
 // The first scope that defines a statusLine is the one Claude Code shows, so the scan stops there:
 // ours in a higher scope means the lower ones are already overridden. An empty home skips the
 // user scope.
+//
+// A scope that cannot be inspected stops the scan too, since it may hold a status line that
+// overrides the next: err is then non-nil and path names that scope. Both project files are read
+// through the repository root, never following a symlink, a hard link or a non-regular file,
+// because a checkout controls them. One leading UTF-8 BOM is tolerated in the two files setup only
+// reads (Windows PowerShell 5.1 writes one); settings.local.json, which setup rewrites, is refused
+// as before by CheckClaudeStatusLine.
 func ForeignStatusLine(root, home string) (path string, err error) {
-	scopes := []string{
-		filepath.Join(root, filepath.FromSlash(ClaudeLocalSettings)),
-		filepath.Join(root, ".claude", "settings.json"),
+	repo, err := os.OpenRoot(root)
+	if err != nil {
+		return root, err
 	}
+	defer repo.Close()
+	type scope struct {
+		path, name string
+		read       func() ([]byte, error)
+	}
+	repoScope := func(name string) scope {
+		return scope{
+			path: filepath.Join(root, filepath.FromSlash(name)),
+			name: name,
+			read: func() ([]byte, error) {
+				state, err := readRepoClaudeSettings(repo, name)
+				if err == nil && state.file == nil {
+					return nil, fs.ErrNotExist
+				}
+				return state.content, err
+			},
+		}
+	}
+	scopes := []scope{repoScope(ClaudeLocalSettings), repoScope(claudeSharedSettings)}
 	if home != "" {
-		scopes = append(scopes, filepath.Join(home, ".claude", "settings.json"))
+		user := filepath.Join(home, ".claude", "settings.json")
+		scopes = append(scopes, scope{path: user, name: "~/.claude/settings.json", read: func() ([]byte, error) { return readSettingsFile(user) }})
 	}
 	for _, scope := range scopes {
-		content, err := readSettingsFile(scope)
+		content, err := scope.read()
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return "", err
+			return scope.path, err
 		}
-		settings, err := parseSettingsObject(scope, content)
+		if scope.name != ClaudeLocalSettings {
+			content = bytes.TrimPrefix(content, utf8BOM)
+		}
+		settings, err := parseSettingsObject(scope.name, content)
 		if err != nil {
-			return "", err
+			return scope.path, err
 		}
 		if line := statusLineOf(settings); line != nil {
 			if isOurStatusLine(line) {
 				return "", nil
 			}
-			return scope, nil
+			return scope.path, nil
 		}
 	}
 	return "", nil
 }
 
-// readSettingsFile reads a settings file for inspection only, bounded like the local read.
+// claudeSharedSettings is the project's shared, usually committed, Claude Code settings file.
+const claudeSharedSettings = ".claude/settings.json"
+
+var utf8BOM = []byte{0xef, 0xbb, 0xbf}
+
+// readSettingsFile reads the user's own settings file for inspection only, bounded like the local
+// read. It is outside the repository, so no checkout controls it.
 func readSettingsFile(path string) ([]byte, error) {
 	handle, err := os.Open(path)
 	if err != nil {
@@ -156,10 +192,10 @@ func readSettingsFile(path string) ([]byte, error) {
 	defer handle.Close()
 	content, err := io.ReadAll(io.LimitReader(handle, maxClaudeSettingsBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, err
 	}
 	if len(content) > maxClaudeSettingsBytes {
-		return nil, fmt.Errorf("%s: %w", path, errContainedFileTooLarge)
+		return nil, errContainedFileTooLarge
 	}
 	return content, nil
 }

@@ -191,6 +191,14 @@ type claudeSettingsState struct {
 // a JSON rewrite at any object-shaped file in the tree (package.json, a CI config). Refusing is
 // free for every real installation.
 func readClaudeSettings(repo *os.Root) (claudeSettingsState, error) {
+	return readRepoClaudeSettings(repo, ClaudeLocalSettings)
+}
+
+// readRepoClaudeSettings reads one settings file under .claude (name is slash-separated and
+// repository-relative) with the refusals described on readClaudeSettings. The status line's
+// inspection of the shared .claude/settings.json uses it too, so a committed symlink there is
+// never followed.
+func readRepoClaudeSettings(repo *os.Root, name string) (claudeSettingsState, error) {
 	var state claudeSettingsState
 	dir, err := repo.Lstat(".claude")
 	if errors.Is(err, fs.ErrNotExist) {
@@ -203,7 +211,7 @@ func readClaudeSettings(repo *os.Root) (claudeSettingsState, error) {
 		return state, fmt.Errorf(".claude is not a directory (symlinks are not followed)")
 	}
 	state.dir = dir
-	file, err := repo.Lstat(ClaudeLocalSettings)
+	file, err := repo.Lstat(name)
 	if errors.Is(err, fs.ErrNotExist) {
 		return state, nil
 	}
@@ -211,9 +219,9 @@ func readClaudeSettings(repo *os.Root) (claudeSettingsState, error) {
 		return state, err
 	}
 	if !file.Mode().IsRegular() {
-		return state, fmt.Errorf("%s is not a regular file (symlinks are not followed)", ClaudeLocalSettings)
+		return state, fmt.Errorf("%s is not a regular file (symlinks are not followed)", name)
 	}
-	handle, err := repo.Open(ClaudeLocalSettings)
+	handle, err := repo.Open(name)
 	if err != nil {
 		return state, err
 	}
@@ -223,17 +231,17 @@ func readClaudeSettings(repo *os.Root) (claudeSettingsState, error) {
 		return state, err
 	}
 	if !os.SameFile(file, opened) {
-		return state, fmt.Errorf("%s changed while it was being read", ClaudeLocalSettings)
+		return state, fmt.Errorf("%s changed while it was being read", name)
 	}
 	if links, _, _, ok := openFileIdentity(handle); ok && links > 1 {
-		return state, fmt.Errorf("%w: %s has %d names", errSharedInodeManagedTarget, ClaudeLocalSettings, links)
+		return state, fmt.Errorf("%w: %s has %d names", errSharedInodeManagedTarget, name, links)
 	}
 	content, err := io.ReadAll(io.LimitReader(handle, maxClaudeSettingsBytes+1))
 	if err != nil {
 		return state, err
 	}
 	if len(content) > maxClaudeSettingsBytes {
-		return state, fmt.Errorf("%s: %w", ClaudeLocalSettings, errContainedFileTooLarge)
+		return state, fmt.Errorf("%s: %w", name, errContainedFileTooLarge)
 	}
 	state.file = file
 	state.content = content

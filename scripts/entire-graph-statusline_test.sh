@@ -36,6 +36,9 @@ chmod +x "$WORK/bin/entire"
 OUT=$(printf '{"session_id":"s1"}' | PATH="$WORK/bin:$PATH" "$SH" "$SCRIPT")
 check 'runs entire graph statusline with stdin unchanged' 'graph|statusline|{"session_id":"s1"}' "$OUT"
 
+OUT=$(printf '{"session_id":"s2"}' | ENTIRE_GRAPH_BIN="$WORK/bin/entire" "$SH" "$SCRIPT")
+check 'ENTIRE_GRAPH_BIN runs as <bin> statusline' 'statusline|{"session_id":"s2"}' "$OUT"
+
 OUT=$(printf '{}' | PATH="$WORK/empty" "$SH" "$SCRIPT" 2>&1)
 STATUS=$?
 check 'no entire on PATH prints nothing' '' "$OUT"

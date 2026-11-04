@@ -114,3 +114,24 @@ func TestStatusLineInstallPreservesOtherSettings(t *testing.T) {
 		t.Errorf("no statusLine written:\n%s", content)
 	}
 }
+
+// The shared .claude/settings.json comes with the checkout, so a committed symlink there must not
+// be followed: the outside file is not read and the scope counts as uninspectable.
+func TestForeignStatusLineDoesNotFollowASharedSettingsSymlink(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	writeSettingsFile(t, outside, `{"statusLine":{"type":"command","command":"node graft-statusline.cjs"}}`)
+	shared := filepath.Join(root, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(shared), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, shared); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+
+	got, err := ForeignStatusLine(root, "")
+	if err == nil || got != shared {
+		t.Fatalf("ForeignStatusLine = %q, %v; want the shared scope refused as unreadable", got, err)
+	}
+}

@@ -47,8 +47,13 @@ settings file:
   `.claude/settings.json` or `~/.claude/settings.json` already defines another,
   `setup` keeps it, writes nothing, and says so. `--statusline` installs ours
   anyway, overriding a shared or user status line in this repository only; a
-  status line already in `settings.local.json` is never replaced.
-  `--no-statusline` skips this step. To remove it, delete the `statusLine` key.
+  status line already in `settings.local.json` is never replaced. If
+  `.claude/settings.json` or `~/.claude/settings.json` cannot be read (not
+  JSON, or in the repository a symlink, hard link or other non-regular file,
+  which is never followed), `setup` skips only the status line and says why;
+  `--statusline` installs it anyway. A leading UTF-8 BOM in those two files is
+  accepted. `--no-statusline` skips this step. To remove it, delete the
+  `statusLine` key.
 
 The installer preserves your ignore policy; it does not automatically ignore
 `.claude/settings.local.json`. Add `/.claude/settings.local.json` to your root

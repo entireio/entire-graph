@@ -23,8 +23,11 @@ auto-generated notes on
   setup keeps it, writes nothing and says so. `--statusline` installs ours
   anyway, overriding a shared or user line in that repository; one already in
   `settings.local.json` is never replaced. `--no-statusline` skips the step,
-  and `--no-claude-hook` no longer skips it. A malformed settings file now names
-  both opt-outs.
+  and `--no-claude-hook` no longer skips it. A malformed `settings.local.json`
+  stops setup and names both opt-outs. A `.claude/settings.json` or
+  `~/.claude/settings.json` that cannot be read (malformed, or a symlink or
+  other non-regular file in the repository) skips only the status line, and
+  says so; `--statusline` installs it anyway.
 - `graph context --allow-ancestor N` (opt-in, N at most 5) answers an exact store
   miss after a new commit from the newest of the N nearest first-parent ancestors
   that has a store under the same provider version and ignore policy, when the
@@ -40,8 +43,9 @@ auto-generated notes on
 
 - The plugin's status line now runs `entire graph statusline` instead of
   `scripts/entire-graph-statusline.sh`. The script remains as a shim that runs
-  the subcommand, so settings that name it keep working; its environment
-  variables (`ENTIRE_GRAPH_BIN`, `ENTIRE_GRAPH_STATUSLINE_*`) no longer apply.
+  the subcommand, so settings that name it keep working. `ENTIRE_GRAPH_BIN`
+  still selects the binary; the `ENTIRE_GRAPH_STATUSLINE_*` variables no longer
+  apply.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being
   assigned to a variable, passed as an argument, or stored in a struct field or
