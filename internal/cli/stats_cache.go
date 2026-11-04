@@ -34,7 +34,9 @@ import (
 // mean something else and must never be served alongside v3 ones.
 // v4: named paths come from result rows only (a zero-result answer is ineligible), and a read
 // span-attributed to a sibling result is a shared read ("s"), not skipped. v3 "n" over-credits.
-const statsCacheSchema = "v4"
+// v5: a successful locate call carries its named paths ("p") and resolved root ("o") for the
+// gross estimate. A v4 memo has neither and would price every cached result at 0.
+const statsCacheSchema = "v5"
 
 // Small scopes skip memo overhead only when both their file count and total size are small.
 const statsCacheMinTranscripts = 8

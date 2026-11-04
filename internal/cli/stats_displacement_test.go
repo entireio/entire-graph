@@ -693,14 +693,14 @@ func TestStatsJSONFollowUpKeysAreAdditive(t *testing.T) {
 // the poisoned class would have been visible.
 func TestFollowUpCacheNeverMixesClassifierVersions(t *testing.T) {
 	t.Parallel()
-	if statsCacheSchema != "v4" {
+	if statsCacheSchema != "v5" {
 		t.Fatalf("statsCacheSchema = %q: a classifier change needs a schema bump and this test updated", statsCacheSchema)
 	}
 	ts := statsTime(0)
 	const count = 10
 	body := searchBody(t, "src/a.go", 1, 3)
 	for run := range 2 {
-		schema := []string{"v3", statsCacheSchema}[run]
+		schema := []string{"v4", statsCacheSchema}[run]
 		t.Run(schema, func(t *testing.T) {
 			t.Parallel()
 			sessions, cacheDir := t.TempDir(), t.TempDir()

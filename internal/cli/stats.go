@@ -265,6 +265,12 @@ type statsResponse struct {
 	ModeledBalanceCreditedResults int    `json:"modeled_balance_credited_results"`
 	ComparableGraphLocateResults  int    `json:"comparable_graph_locate_results"`
 	FollowUpModel                 string `json:"follow_up_model"`
+
+	// GrossCoveredBytes is the sum over successful graph locate results of max(0, size of the
+	// distinct existing files the result names - the result's own bytes). Never negative per
+	// result. It is a gross figure: it assumes nothing about what the agent would have read.
+	GrossCoveredBytes     int64 `json:"gross_covered_bytes"`
+	GrossCoveredEstTokens int64 `json:"gross_covered_est_tokens"` // bytes / 4
 }
 
 func runStats(ctx context.Context, opts Options, args []string) error {
@@ -480,7 +486,9 @@ func sessionSlugCandidates(repo string) []string {
 type transcriptRecord struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
-	Message   struct {
+	// Cwd is the directory the agent ran the record's tool calls in.
+	Cwd     string `json:"cwd"`
+	Message struct {
 		ID      string          `json:"id"`
 		Content json.RawMessage `json:"content"`
 		Usage   *struct {
@@ -518,6 +526,12 @@ type summaryCall struct {
 	// Disp is the observed follow-up class (followUp* codes) of a graph locate call with a
 	// result; empty otherwise.
 	Disp string `json:"d,omitempty"`
+	// Paths are the normalized files a successful (non-error) locate result names, and Root is
+	// the directory that call resolved them against: its own --repo (absolute against the
+	// record's cwd), else that cwd, else empty for the report's --repo. Only names are kept: file
+	// sizes depend on the repository at report time, never on the transcript this memo keys on.
+	Paths []string `json:"p,omitempty"`
+	Root  string   `json:"o,omitempty"`
 }
 
 // summaryUsage is one assistant message's billed usage, kept per message.id so the same message
@@ -560,14 +574,17 @@ type fileScanner struct {
 	timeline   []timelineEntry
 	locateAt   map[int]int
 	deliveries int
+	// locateRoot maps a locate call's summary.Calls index to the root it resolved against.
+	locateRoot map[int]string
 }
 
 func newFileScanner() *fileScanner {
 	return &fileScanner{
-		pending:  map[string]int{},
-		seenUse:  map[string]bool{},
-		usageIdx: map[string]int{},
-		locateAt: map[int]int{},
+		pending:    map[string]int{},
+		seenUse:    map[string]bool{},
+		usageIdx:   map[string]int{},
+		locateAt:   map[int]int{},
+		locateRoot: map[int]string{},
 	}
 }
 
@@ -592,7 +609,7 @@ func (s *fileScanner) consume(record transcriptRecord) {
 	for _, block := range decodeContentBlocks(record.Message.Content) {
 		switch block.Type {
 		case "tool_use":
-			s.consumeToolUse(block)
+			s.consumeToolUse(block, record.Cwd)
 		case "tool_result":
 			s.consumeToolResult(block)
 		}
@@ -628,7 +645,7 @@ func (s *fileScanner) consumeUsage(id string, tokens statsTokens) {
 	s.summary.Usage = append(s.summary.Usage, summaryUsage{ID: id, Tokens: tokens})
 }
 
-func (s *fileScanner) consumeToolUse(block contentBlock) {
+func (s *fileScanner) consumeToolUse(block contentBlock, cwd string) {
 	// One tool_use id is one API call. A re-serialised turn repeats the block, and counting
 	// every occurrence would bill the same call twice; first occurrence wins.
 	if block.ID != "" {
@@ -652,6 +669,8 @@ func (s *fileScanner) consumeToolUse(block contentBlock) {
 	if entry.kind == timelineLocate {
 		entry.callIndex = index
 		s.locateAt[index] = len(s.timeline)
+		command, _ := block.Input["command"].(string)
+		s.locateRoot[index] = graphCallRoot(graphRepoFromCommand(command), cwd)
 	}
 	s.timeline = append(s.timeline, entry)
 }
@@ -686,6 +705,10 @@ func (s *fileScanner) consumeToolResult(block contentBlock) {
 		s.deliveries++
 		entry.paths = graphOutputPaths(text)
 		entry.delivered = graphDeliveredSpans(text)
+		if !block.IsError && len(entry.paths) > 0 {
+			s.summary.Calls[index].Paths = entry.paths
+			s.summary.Calls[index].Root = s.locateRoot[index]
+		}
 	}
 }
 
@@ -736,6 +759,8 @@ type sessionAcc struct {
 	unkeyed             statsTokens
 	// displacement counts observed follow-up classes of locate calls with results.
 	displacement map[string]int
+	// covered is every counted locate result that names a file, for the gross estimate.
+	covered []summaryCall
 }
 
 func newSessionAcc() *sessionAcc {
@@ -769,11 +794,13 @@ func (a *sessionAcc) merge(summary fileSummary) {
 				// Keep its original classification and count the result only once.
 				if !previous.HasResult && call.HasResult {
 					previous.HasResult, previous.Bytes, previous.Disp = true, call.Bytes, call.Disp
+					previous.Paths, previous.Root = call.Paths, call.Root
 					a.seenCalls[call.ID] = previous
 					if previous.Verb != "" {
 						a.verbResults[previous.Verb]++
 						a.verbBytes[previous.Verb] += call.Bytes
 						a.countDisplacement(previous)
+						a.countCovered(previous)
 					} else {
 						a.kindResults[previous.Kind]++
 						a.kindBytes[previous.Kind] += call.Bytes
@@ -789,6 +816,7 @@ func (a *sessionAcc) merge(summary fileSummary) {
 				a.verbResults[call.Verb]++
 				a.verbBytes[call.Verb] += call.Bytes
 				a.countDisplacement(call)
+				a.countCovered(call)
 			}
 			if a.firstLocate == "" {
 				a.firstLocate = "graph"
@@ -826,6 +854,14 @@ func (a *sessionAcc) merge(summary fileSummary) {
 func (a *sessionAcc) countDisplacement(call summaryCall) {
 	if graphLocateVerbs[call.Verb] && call.HasResult && call.Disp != "" {
 		a.displacement[call.Disp]++
+	}
+}
+
+// countCovered keeps a locate result naming files for the gross estimate, which is priced at
+// report time from the files on disk.
+func (a *sessionAcc) countCovered(call summaryCall) {
+	if graphLocateVerbs[call.Verb] && call.HasResult && len(call.Paths) > 0 {
+		a.covered = append(a.covered, call)
 	}
 }
 
@@ -1204,6 +1240,55 @@ func graphVerbFromSegments(command string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// graphRepoFromCommand returns the --repo argument of the graph call in command, or "" when that
+// call passes none. It finds the call exactly where graphVerbFromCommandDepth does: top-level
+// segments first, then command substitution bodies.
+func graphRepoFromCommand(command string) string {
+	return graphRepoFromCommandDepth(command, 0)
+}
+
+func graphRepoFromCommandDepth(command string, depth int) string {
+	for _, segment := range splitShellSegments(command) {
+		if _, ok := graphVerbFromSegments(segment); !ok {
+			continue
+		}
+		fields := strings.Fields(segment)
+		for index, field := range fields {
+			word := shellWord(field)
+			if word == "--repo" && index+1 < len(fields) {
+				return shellWord(fields[index+1])
+			}
+			if value, ok := strings.CutPrefix(word, "--repo="); ok {
+				return value
+			}
+		}
+		return ""
+	}
+	if depth >= maxSubstitutionDepth {
+		return ""
+	}
+	for _, body := range shellSubstitutionBodies(command) {
+		if repo := graphRepoFromCommandDepth(body, depth+1); repo != "" {
+			return repo
+		}
+	}
+	return ""
+}
+
+// graphCallRoot is the directory a graph call resolved its paths against: its own --repo made
+// absolute against the record's cwd, else that cwd. A relative --repo with no cwd stays relative
+// and is resolved against the report's --repo; "" means the report's --repo.
+func graphCallRoot(repo, cwd string) string {
+	switch {
+	case repo == "":
+		return cwd
+	case filepath.IsAbs(repo) || cwd == "":
+		return repo
+	default:
+		return filepath.Join(cwd, repo)
+	}
 }
 
 // graphWrapperValueFlags are wrapper options whose value is the NEXT word (`nice -n 15`,
@@ -1920,6 +2005,8 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 
 	var windowStart, windowEnd int64
 	var exploreResults int
+	sizer := newCoveredFileSizer(report.RepoRoot)
+	defer sizer.close()
 	for _, key := range keys {
 		acc := c.sessions[key]
 		if cutoffNano != 0 && acc.lastNano != 0 && acc.lastNano < cutoffNano {
@@ -1986,6 +2073,9 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 			report.EstimatedSavingsBytes += saved
 			report.SessionsWithPositiveSavings++
 		}
+		for _, call := range acc.covered {
+			report.GrossCoveredBytes += max(0, sizer.size(call.Root, call.Paths)-call.Bytes)
+		}
 	}
 
 	report.SessionTokens.Total = report.SessionTokens.Input + report.SessionTokens.CacheWrite +
@@ -2004,6 +2094,7 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 	report.EstimatedSavingsTokens = report.EstimatedSavingsBytes / bytesPerToken
 	report.EstimatedSavingsTokensUnfloored = report.EstimatedSavingsBytesUnfloored / bytesPerToken
 	report.ObservedNetTokens = report.ObservedNetBytes / bytesPerToken
+	report.GrossCoveredEstTokens = report.GrossCoveredBytes / bytesPerToken
 	report.GraphLocateReadAnyway = report.GraphLocateReadOverlapping + report.GraphLocateReadDifferentRegion +
 		report.GraphLocateReadUnknownSpan + report.GraphLocateReadShared
 	if classified := followUpClassified(*report); classified > 0 {
@@ -2034,6 +2125,79 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 	}
 	if windowEnd != 0 {
 		report.WindowEnd = time.Unix(0, windowEnd).UTC().Format(time.RFC3339)
+	}
+}
+
+// coveredFileSizer prices the gross estimate from the files on disk at report time. Each root is
+// opened once, and each distinct (root, path) is statted once. Reads go through os.Root, so an
+// absolute, `..`-escaping, symlink-escaping or UNC path is refused rather than followed; that
+// refusal is the no-egress guard on Windows. A refused, missing or non-regular path is size 0.
+type coveredFileSizer struct {
+	reportRepo string
+	roots      map[string]*os.Root // nil when the root cannot be opened
+	sizes      map[string]map[string]int64
+}
+
+func newCoveredFileSizer(reportRepo string) *coveredFileSizer {
+	return &coveredFileSizer{
+		reportRepo: reportRepo,
+		roots:      map[string]*os.Root{},
+		sizes:      map[string]map[string]int64{},
+	}
+}
+
+// size sums the on-disk bytes of the distinct paths under the call's root.
+func (z *coveredFileSizer) size(root string, paths []string) int64 {
+	switch {
+	case root == "":
+		root = z.reportRepo
+	case !filepath.IsAbs(root) && z.reportRepo != "":
+		root = filepath.Join(z.reportRepo, root)
+	}
+	if root == "" {
+		return 0
+	}
+	opened, ok := z.roots[root]
+	if !ok {
+		var err error
+		// A root on a UNC or device volume (anything but a drive letter) is never opened:
+		// opening `\\host\share` is itself network I/O, before os.Root can refuse anything.
+		if len(filepath.VolumeName(root)) > 2 {
+			opened = nil
+		} else if opened, err = os.OpenRoot(root); err != nil {
+			opened = nil
+		}
+		z.roots[root] = opened
+		z.sizes[root] = map[string]int64{}
+	}
+	if opened == nil {
+		return 0
+	}
+	known := z.sizes[root]
+	seen := map[string]bool{}
+	var total int64
+	for _, path := range paths {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		size, ok := known[path]
+		if !ok {
+			if info, err := opened.Stat(filepath.FromSlash(path)); err == nil && info.Mode().IsRegular() {
+				size = info.Size()
+			}
+			known[path] = size
+		}
+		total += size
+	}
+	return total
+}
+
+func (z *coveredFileSizer) close() {
+	for _, root := range z.roots {
+		if root != nil {
+			_ = root.Close()
+		}
 	}
 }
 
