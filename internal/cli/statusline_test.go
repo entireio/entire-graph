@@ -196,3 +196,136 @@ func TestStatuslineDropsWholeSegmentsToFit(t *testing.T) {
 		}
 	}
 }
+
+// statuslineIndex runs `entire graph index` for repo's HEAD into cacheDir.
+func statuslineIndex(t *testing.T, repo, cacheDir string) {
+	t.Helper()
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out},
+		[]string{"index", "--repo", repo, "--profile", "fast", "--cache-dir", cacheDir, "--format", "json"}); err != nil {
+		t.Fatalf("index: %v\n%s", err, out.String())
+	}
+}
+
+// statuslineIndexedState renders and returns "✓ indexed" or "not indexed", failing on neither.
+func statuslineIndexedState(t *testing.T, cacheDir, stdin string) string {
+	t.Helper()
+	out := runStatuslineForTest(t, 120, cacheDir, stdin)
+	lines := statuslineLines(out)
+	for _, state := range []string{"✓ indexed", "not indexed"} {
+		if len(lines) > 0 && strings.Contains(lines[0], state) {
+			return state
+		}
+	}
+	t.Fatalf("line 1 shows no indexed state: %q", out)
+	return ""
+}
+
+// statuslineCommit commits a new a.go, which changes HEAD's tree.
+func statuslineCommit(t *testing.T, checkout, content string) {
+	t.Helper()
+	write(t, checkout, "a.go", "package main\n\nfunc A() {}\n// "+content+"\n")
+	git(t, checkout, "add", "a.go")
+	git(t, checkout, "commit", "-m", content)
+}
+
+// TestStatuslineWarmRenderRunsNoGit catches a warm render that still needs git: after two renders
+// of an indexed HEAD, a render with no git anywhere on PATH must still report the indexed state. An
+// empty PATH directory is used because Git for Windows ships git.exe in several directories.
+func TestStatuslineWarmRenderRunsNoGit(t *testing.T) {
+	repo := statuslineRepo(t)
+	cacheDir := t.TempDir()
+	statuslineIndex(t, repo, cacheDir)
+	stdin := statuslineStdin(t, statuslineTranscript(t, repo), repo, "")
+	statuslineIndexedState(t, cacheDir, stdin)
+	statuslineIndexedState(t, cacheDir, stdin)
+
+	t.Setenv("PATH", t.TempDir())
+	if got := statuslineIndexedState(t, cacheDir, stdin); got != "✓ indexed" {
+		t.Fatalf("a warm render without git shows %q, want %q", got, "✓ indexed")
+	}
+}
+
+// TestStatuslineNoticesKeyInputChanges catches a warm render that serves a stale "✓ indexed" after
+// a change to something the indexed state depends on: the branch ref a commit moves, the GitHub
+// origin URL in the repository key, the .graphignore policy, a ref reached through a symbolic-ref
+// chain, and a commit inside a linked worktree.
+func TestStatuslineNoticesKeyInputChanges(t *testing.T) {
+	cases := []struct {
+		name string
+		// setup prepares the repository before it is indexed and returns the checkout to anchor on.
+		setup  func(t *testing.T, repo string) string
+		mutate func(t *testing.T, checkout string)
+	}{
+		{
+			name:   "new commit",
+			setup:  func(t *testing.T, repo string) string { return repo },
+			mutate: func(t *testing.T, checkout string) { statuslineCommit(t, checkout, "two") },
+		},
+		{
+			name: "github origin url",
+			setup: func(t *testing.T, repo string) string {
+				git(t, repo, "remote", "add", "origin", "https://github.com/example/one.git")
+				return repo
+			},
+			mutate: func(t *testing.T, checkout string) {
+				git(t, checkout, "remote", "set-url", "origin", "https://github.com/example/two.git")
+			},
+		},
+		{
+			name:   "graphignore",
+			setup:  func(t *testing.T, repo string) string { return repo },
+			mutate: func(t *testing.T, checkout string) { write(t, checkout, ".graphignore", "a.go\n") },
+		},
+		{
+			name: "symbolic-ref chain",
+			setup: func(t *testing.T, repo string) string {
+				git(t, repo, "symbolic-ref", "refs/heads/alias", "refs/heads/statusline-trunk")
+				git(t, repo, "symbolic-ref", "HEAD", "refs/heads/alias")
+				return repo
+			},
+			mutate: func(t *testing.T, checkout string) { statuslineCommit(t, checkout, "two") },
+		},
+		{
+			name: "linked worktree",
+			setup: func(t *testing.T, repo string) string {
+				worktree := filepath.Join(t.TempDir(), "linked")
+				git(t, repo, "worktree", "add", "-b", "linked-branch", worktree)
+				return worktree
+			},
+			mutate: func(t *testing.T, checkout string) { statuslineCommit(t, checkout, "two") },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			checkout := tc.setup(t, statuslineRepo(t))
+			cacheDir := t.TempDir()
+			statuslineIndex(t, checkout, cacheDir)
+			stdin := statuslineStdin(t, statuslineTranscript(t, checkout), checkout, "")
+			statuslineIndexedState(t, cacheDir, stdin)
+			if got := statuslineIndexedState(t, cacheDir, stdin); got != "✓ indexed" {
+				t.Fatalf("before the change the render shows %q, want %q", got, "✓ indexed")
+			}
+			tc.mutate(t, checkout)
+			if got := statuslineIndexedState(t, cacheDir, stdin); got != "not indexed" {
+				t.Fatalf("after the change the render shows %q, want %q", got, "not indexed")
+			}
+		})
+	}
+}
+
+// TestStatuslineNoticesALaterIndex catches a cached "not indexed": an `index` at an unchanged HEAD
+// must show on the next render.
+func TestStatuslineNoticesALaterIndex(t *testing.T) {
+	repo := statuslineRepo(t)
+	cacheDir := t.TempDir()
+	stdin := statuslineStdin(t, statuslineTranscript(t, repo), repo, "")
+	statuslineIndexedState(t, cacheDir, stdin)
+	if got := statuslineIndexedState(t, cacheDir, stdin); got != "not indexed" {
+		t.Fatalf("before index the render shows %q, want %q", got, "not indexed")
+	}
+	statuslineIndex(t, repo, cacheDir)
+	if got := statuslineIndexedState(t, cacheDir, stdin); got != "✓ indexed" {
+		t.Fatalf("after index the render shows %q, want %q", got, "✓ indexed")
+	}
+}

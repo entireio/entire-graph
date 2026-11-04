@@ -26,9 +26,10 @@ import (
 //
 // Every figure is an estimated token count from the stats collector (run in-process, never as a
 // subprocess) over this session's transcript and its subagent transcripts. Nothing is priced:
-// the line never shows money. The indexed state is sem.HeadIndexed, a few stats after resolving
-// HEAD. A status line must never surface an error, so every failure past argument parsing prints
-// nothing and returns nil.
+// the line never shows money. The indexed state is a stat of each sem.HeadIndexEntries entry; the
+// entries and HEAD's tree are kept under a key read from .git without running git, so a warm render
+// spawns no git at all. A status line must never surface an error, so every failure past argument
+// parsing prints nothing and returns nil.
 
 const (
 	statuslineDefaultColumns = 120
@@ -36,6 +37,8 @@ const (
 	statuslineMaxStdin = 1 << 20
 	// statuslineCacheSchema salts the figures key, so a change to what is cached misses.
 	statuslineCacheSchema = "statusline-v1"
+	// statuslineGitCacheSchema salts the git key the same way.
+	statuslineGitCacheSchema = "statusline-git-v1"
 
 	statuslineSeparator = " · "
 	statuslineIndigo    = "\x1b[38;2;84;111;255m"
@@ -137,21 +140,11 @@ func renderStatusline(ctx context.Context, opts Options, cacheDir string) (lines
 		return nil
 	}
 
-	// One metadata validation receipt serves the HEAD read below and every git call HeadIndexed makes.
-	// The tree keys the figures cache; an unresolvable HEAD is the "not indexed" state.
-	gitCtx, validationErr := sem.WithGitMetadataValidationForSetup(ctx, repo)
-	tree := ""
-	if validationErr == nil {
-		if _, headTree, err := gitutil.HeadCommitAndTree(gitCtx, repo); err == nil {
-			tree = headTree
-		}
+	tree, entries, ok := statuslineHeadState(ctx, repo, cacheDir, opts.Version)
+	if !ok {
+		return nil
 	}
-	indexed := false
-	if tree != "" {
-		if indexed, err = sem.HeadIndexed(gitCtx, repo, opts.Version, cacheDir); err != nil {
-			return nil
-		}
-	}
+	indexed := sem.AnyIndexEntryExists(entries)
 	figures, ok := statuslineFiguresFor(input.TranscriptPath, repo, tree, cacheDir, opts.Version)
 	if !ok || ctx.Err() != nil {
 		return nil
@@ -195,6 +188,59 @@ func statuslineAnchorRepo(input statuslineInput) string {
 	return abs
 }
 
+// statuslineGitRecord is what a full-path render learnt from git, kept under the git key: HEAD's
+// tree and the entries whose presence means it is indexed. It holds no figures or rendered text,
+// and no indexed answer: the entries are stat'ed on every render, so a later `index` shows at once.
+type statuslineGitRecord struct {
+	Key     string           `json:"key"`
+	Tree    string           `json:"tree"`
+	Entries []sem.IndexEntry `json:"entries"`
+}
+
+// statuslineHeadState returns HEAD's tree ("" when unborn or unresolvable) and its index entries.
+// When the git key (sem.HeadKeyWithoutGit plus the repo, the cache dir and this binary) matches the
+// stored record, it runs no git and skips the metadata validation, which guards git subprocesses
+// and has none to guard. Otherwise it takes the full path and stores a record, but only when the
+// validation passed, HEAD resolved (or is unborn) and ctx was not cancelled, so a transient failure
+// never pins "not indexed" under an unchanged key. ok is false when the render must print nothing.
+func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (tree string, entries []sem.IndexEntry, ok bool) {
+	key, unborn, keyed := "", false, false
+	path := ""
+	if cacheDir != "" {
+		var headKey string
+		if headKey, unborn, keyed = sem.HeadKeyWithoutGit(repo); keyed {
+			key = statsCacheKey(statuslineGitCacheSchema, statsCacheSalt(version), repo, cacheDir, headKey)
+			path = filepath.Join(cacheDir, "statusline", "git-"+statsCacheKey(repo)+".json")
+			var record statuslineGitRecord
+			if loadStatuslineJSON(path, &record) && record.Key == key {
+				return record.Tree, record.Entries, true
+			}
+		}
+	}
+
+	// One metadata validation receipt serves the HEAD read below and every git call
+	// HeadIndexEntries makes. The tree keys the figures cache; an unresolvable HEAD is "not indexed".
+	gitCtx, validationErr := sem.WithGitMetadataValidationForSetup(ctx, repo)
+	resolved := false
+	if validationErr == nil {
+		if _, headTree, err := gitutil.HeadCommitAndTree(gitCtx, repo); err == nil {
+			tree, resolved = headTree, true
+		} else {
+			resolved = unborn
+		}
+	}
+	if tree != "" {
+		var err error
+		if entries, err = sem.HeadIndexEntries(gitCtx, repo, version, cacheDir); err != nil {
+			return "", nil, false
+		}
+	}
+	if path != "" && resolved && ctx.Err() == nil {
+		saveStatuslineJSON(path, statuslineGitRecord{Key: key, Tree: tree, Entries: entries})
+	}
+	return tree, entries, true
+}
+
 // statuslineFiguresFor serves the figures from the cache when every in-scope transcript file, HEAD's
 // tree and this binary are unchanged, and otherwise runs the stats collector and caches the result.
 func statuslineFiguresFor(transcript, repo, tree, cacheDir, version string) (statuslineFigures, bool) {
@@ -215,7 +261,8 @@ func statuslineFiguresFor(transcript, repo, tree, cacheDir, version string) (sta
 	path := ""
 	if cacheDir != "" {
 		path = filepath.Join(cacheDir, "statusline", statsCacheKey(transcript)+".json")
-		if cached, ok := loadStatuslineFigures(path); ok && cached.Key == key {
+		var cached statuslineFigures
+		if loadStatuslineJSON(path, &cached) && cached.Key == key {
 			return cached, true
 		}
 	}
@@ -233,28 +280,25 @@ func statuslineFiguresFor(transcript, repo, tree, cacheDir, version string) (sta
 		NetAvailable: report.SessionsWithSavingsComparison > 0,
 	}
 	if path != "" {
-		saveStatuslineFigures(path, figures)
+		saveStatuslineJSON(path, figures)
 	}
 	return figures, true
 }
 
-// loadStatuslineFigures treats every read or decode failure as a miss.
-func loadStatuslineFigures(path string) (statuslineFigures, bool) {
+// loadStatuslineJSON decodes a status line cache file into value. Every read or decode failure is
+// a miss.
+func loadStatuslineJSON(path string, value any) bool {
 	data, err := os.ReadFile(path) //nolint:gosec // path is derived from the resolved cache directory
 	if err != nil {
-		return statuslineFigures{}, false
+		return false
 	}
-	var figures statuslineFigures
-	if json.Unmarshal(data, &figures) != nil {
-		return statuslineFigures{}, false
-	}
-	return figures, true
+	return json.Unmarshal(data, value) == nil
 }
 
-// saveStatuslineFigures writes atomically and best effort: Claude Code cancels an in-flight render
+// saveStatuslineJSON writes atomically and best effort: Claude Code cancels an in-flight render
 // when a newer update arrives, so a killed write must never leave a torn file in place.
-func saveStatuslineFigures(path string, figures statuslineFigures) {
-	data, err := json.Marshal(figures)
+func saveStatuslineJSON(path string, value any) {
+	data, err := json.Marshal(value)
 	if err != nil {
 		return
 	}

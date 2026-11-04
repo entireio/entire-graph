@@ -1,9 +1,16 @@
 package sem
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 // headIndexedProfiles are the profiles whose committed-tree entry counts as "HEAD is indexed".
@@ -11,56 +18,69 @@ import (
 // later lookup at this HEAD is served from the cache rather than built.
 var headIndexedProfiles = []Profile{ProfileFull, ProfileFast}
 
-// HeadIndexed reports whether a committed-tree search cache entry exists for HEAD under any of
+// IndexEntry is an opaque, JSON-serialisable handle on one file whose presence means
+// "HEAD is indexed". Only HeadIndexEntries builds it; M3 changes only that function's body.
+type IndexEntry struct{ Root, Relative string }
+
+// HeadIndexEntries returns the committed-tree search cache entries for HEAD under each of
 // headIndexedProfiles, with the repository's default policy inputs (its .graphignore, no explicit
-// ignore or include files). It is the status line's indexed check, so it must stay cheap: it
-// resolves HEAD and the entry keys, then only stats each entry's path. It never opens or hashes an
-// entry or its sidecar, which is why DescribeSearchStore (a SHA-256 of the whole entry) is not used.
+// ignore or include files). Any one of them existing means HEAD is indexed. Deriving them resolves
+// HEAD, the remote URLs and the checkout scope through git; checking them (AnyIndexEntryExists)
+// runs no git, which is what lets the status line keep the entries and re-check them every render.
 //
-// An unborn or unresolvable HEAD, or metadata git may not be run on, is the "not indexed" state
-// rather than an error: there is nothing at HEAD to have indexed. An error is returned only when the
-// policy inputs or the key cannot be derived.
+// An empty cacheDir has no entries. An unresolvable HEAD, or metadata git may not be run on, is an
+// error: the caller decides whether that is "not indexed", and must not keep the answer.
 //
 // Entry paths come from newCacheEntry, the helper every search cache reader and writer addresses
 // entries through, so a change to the on-disk layout changes this check with it.
-func HeadIndexed(ctx context.Context, repo, providerVersion, cacheDir string) (bool, error) {
+func HeadIndexEntries(ctx context.Context, repo, providerVersion, cacheDir string) ([]IndexEntry, error) {
 	if cacheDir == "" {
-		return false, nil
+		return nil, nil
 	}
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	_, tree, err := resolveCommittedHEAD(ctx, absRepo)
 	if err != nil {
-		return false, nil //nolint:nilerr // an unresolvable HEAD is a state, not a failure
+		return nil, err
 	}
 	policy, err := CaptureProviderCachePolicy(absRepo, ProviderSnapshotOptions{})
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	repositoryKey := repoKey(ctx, absRepo)
+	entries := make([]IndexEntry, 0, len(headIndexedProfiles))
 	for _, profile := range headIndexedProfiles {
 		options := policy
 		options.Profile = profile
 		key, err := searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree, options, ctx)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		entry, err := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, key)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
-		if entry.exists() {
-			return true, nil
-		}
+		entries = append(entries, IndexEntry{Root: entry.root, Relative: entry.relative})
 	}
-	return false, nil
+	return entries, nil
 }
 
-// exists stats the entry through the same confined root its readers open it through. Anything that
-// stops the stat (a missing cache directory or entry, a component that escapes the root) is
-// absence: a reader would miss on the same entry, so it is not indexed.
+// AnyIndexEntryExists stats each entry through os.OpenRoot(Root), the way every cache reader opens
+// it. It never opens or hashes an entry or its sidecar, which is why DescribeSearchStore (a SHA-256
+// of the whole entry) is not used. Anything that stops the stat (a missing cache directory or
+// entry, a component that escapes the root) is absence: a reader would miss on the same entry.
+func AnyIndexEntryExists(entries []IndexEntry) bool {
+	for _, entry := range entries {
+		if (cacheEntry{root: entry.Root, relative: entry.Relative}).exists() {
+			return true
+		}
+	}
+	return false
+}
+
+// exists stats the entry through the same confined root its readers open it through.
 func (entry cacheEntry) exists() bool {
 	root, err := os.OpenRoot(entry.root)
 	if err != nil {
@@ -69,4 +89,217 @@ func (entry cacheEntry) exists() bool {
 	defer root.Close()
 	info, err := root.Stat(entry.relative)
 	return err == nil && info.Mode().IsRegular()
+}
+
+const (
+	// headKeyMaxFileBytes bounds every head key input except packed-refs.
+	headKeyMaxFileBytes = 1 << 20
+	// headKeyMaxPackedRefsBytes bounds the streaming packed-refs scan.
+	headKeyMaxPackedRefsBytes = 256 << 20
+)
+
+// HeadKeyWithoutGit digests, without running git, the on-disk inputs that decide HEAD's tree and
+// the HeadIndexEntries of repo: .git/HEAD, the loose ref it names (or, when that is absent, the
+// packed-refs header, the ref's line and its peeled line), .git/config (remote URLs and the
+// checkout scope), the repo's .graphignore, and the resolved max-files cap. The caller adds what
+// else keys its answer (the repo and cache paths, the binary). Contents are hashed rather than
+// statted, so a same-size rewrite within one mtime tick still changes the key. Git's user and
+// system config are not inputs: gitutil runs git with both set to /dev/null.
+//
+// unborn reports that HEAD names a ref with no loose file and no packed-refs line.
+//
+// ok is false when the layout needs git to interpret, and the caller must take its full path:
+// .git that is not a plain directory (a linked worktree, a submodule, a link) or that has a
+// commondir; a HEAD that is neither `ref: refs/...` nor a 40- or 64-hex id; a loose ref that is
+// itself symbolic; a config that uses include, includeIf, worktreeConfig or refStorage; and any
+// input that is a link, is not a regular file, or exceeds its read bound. Every read goes through
+// an os.Root of repo with Lstat. A missing input hashes as a stable "absent".
+func HeadKeyWithoutGit(repo string) (key string, unborn, ok bool) {
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return "", false, false
+	}
+	defer root.Close()
+	// A missing .git falls back too: git may discover a repository above repo, which none of the
+	// inputs below would see change.
+	if info, err := root.Lstat(".git"); err != nil || !info.IsDir() {
+		return "", false, false
+	}
+	if _, err := root.Lstat(filepath.Join(".git", "commondir")); !isMissingPathError(err) {
+		return "", false, false
+	}
+
+	hash := sha256.New()
+	writeCacheKeyString(hash, "max-files", strconv.Itoa(resolveMaxSourceFiles(0)))
+	head, present, ok := readHeadKeyInput(root, filepath.Join(".git", "HEAD"))
+	if !ok {
+		return "", false, false
+	}
+	writeHeadKeyInput(hash, "head", head, present)
+	if present {
+		value := strings.TrimRight(string(head), " \t\r\n")
+		if target, symbolic := strings.CutPrefix(value, "ref:"); symbolic {
+			target = strings.TrimLeft(target, " \t")
+			if !validHeadKeyRefName(target) {
+				return "", false, false
+			}
+			if unborn, ok = writeHeadKeyRef(hash, root, target); !ok {
+				return "", false, false
+			}
+		} else if !validHeadKeyObjectID(value) {
+			return "", false, false
+		}
+	}
+	config, present, ok := readHeadKeyInput(root, filepath.Join(".git", "config"))
+	if !ok {
+		return "", false, false
+	}
+	lowered := bytes.ToLower(config)
+	for _, unsupported := range []string{"include", "worktreeconfig", "refstorage"} {
+		if bytes.Contains(lowered, []byte(unsupported)) {
+			return "", false, false
+		}
+	}
+	writeHeadKeyInput(hash, "config", config, present)
+	graphIgnore, present, ok := readHeadKeyInput(root, graphIgnoreFileName)
+	if !ok {
+		return "", false, false
+	}
+	writeHeadKeyInput(hash, "graphignore", graphIgnore, present)
+	return hex.EncodeToString(hash.Sum(nil)), unborn, true
+}
+
+// writeHeadKeyRef hashes the loose ref, or when it is absent the packed-refs lines that can name
+// its value. unborn is true when neither names it.
+func writeHeadKeyRef(hash io.Writer, root *os.Root, ref string) (unborn, ok bool) {
+	loose, present, ok := readHeadKeyInput(root, filepath.Join(".git", filepath.FromSlash(ref)))
+	if !ok {
+		return false, false
+	}
+	writeHeadKeyInput(hash, "loose-ref", loose, present)
+	if present {
+		return false, !bytes.HasPrefix(bytes.TrimLeft(loose, " \t"), []byte("ref:"))
+	}
+	lines, found, ok := scanPackedRefs(root, ref)
+	if !ok {
+		return false, false
+	}
+	writeCacheKeyString(hash, "packed-refs", strings.Join(lines, "\n"))
+	return !found, true
+}
+
+// scanPackedRefs streams .git/packed-refs and returns its header, ref's line and the `^` peeled
+// line that directly follows it. An absent file has no lines.
+func scanPackedRefs(root *os.Root, ref string) (lines []string, found, ok bool) {
+	file, ok := openHeadKeyInput(root, filepath.Join(".git", "packed-refs"), headKeyMaxPackedRefsBytes)
+	if !ok {
+		return nil, false, false
+	}
+	if file == nil {
+		return []string{"absent"}, false, true
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(io.LimitReader(file, headKeyMaxPackedRefsBytes+1))
+	scanner.Buffer(make([]byte, 0, 64<<10), headKeyMaxFileBytes)
+	read, first, previousMatched := int64(0), true, false
+	for scanner.Scan() {
+		line := scanner.Text()
+		read += int64(len(line)) + 1
+		matched := false
+		switch {
+		case first && strings.HasPrefix(line, "#"):
+			lines = append(lines, line)
+		case strings.HasPrefix(line, "^"):
+			if previousMatched {
+				lines = append(lines, line)
+			}
+		default:
+			if _, name, cut := strings.Cut(line, " "); cut && strings.TrimRight(name, "\r") == ref {
+				lines = append(lines, line)
+				found, matched = true, true
+			}
+		}
+		first, previousMatched = false, matched
+	}
+	if scanner.Err() != nil || read > headKeyMaxPackedRefsBytes {
+		return nil, false, false
+	}
+	return lines, found, true
+}
+
+// readHeadKeyInput reads one key input through root. present is false for a missing input.
+func readHeadKeyInput(root *os.Root, name string) (content []byte, present, ok bool) {
+	file, ok := openHeadKeyInput(root, name, headKeyMaxFileBytes)
+	if !ok || file == nil {
+		return nil, false, ok
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, headKeyMaxFileBytes+1))
+	if err != nil || len(content) > headKeyMaxFileBytes {
+		return nil, false, false
+	}
+	return content, true, true
+}
+
+// openHeadKeyInput opens name through root after an Lstat, and only when it is a regular file with
+// one name, no larger than limit, and the same file the Lstat saw. A missing input is (nil, true).
+func openHeadKeyInput(root *os.Root, name string, limit int64) (*os.File, bool) {
+	info, err := root.Lstat(name)
+	if isMissingPathError(err) {
+		return nil, true
+	}
+	if err != nil || !info.Mode().IsRegular() || info.Size() > limit {
+		return nil, false
+	}
+	file, err := openRootBoundedRegularFile(root, name)
+	if err != nil {
+		return nil, false
+	}
+	opened, err := file.Stat()
+	if err == nil && os.SameFile(info, opened) && opened.Size() <= limit {
+		if regular, err := openedFileIsRegular(file, opened); err == nil && regular {
+			if links, known := openedFileLinkCount(file); known && links == 1 {
+				return file, true
+			}
+		}
+	}
+	_ = file.Close()
+	return nil, false
+}
+
+func writeHeadKeyInput(hash io.Writer, label string, content []byte, present bool) {
+	if !present {
+		writeCacheKeyString(hash, label, "absent")
+		return
+	}
+	writeCacheKeyString(hash, label, "present:"+string(content))
+}
+
+// validHeadKeyRefName accepts a ref name that git's check-ref-format would, under refs/, so it is
+// safe to address as a path below .git.
+func validHeadKeyRefName(ref string) bool {
+	if !strings.HasPrefix(ref, "refs/") || strings.HasSuffix(ref, "/") || strings.HasSuffix(ref, ".") ||
+		strings.Contains(ref, "..") || strings.Contains(ref, "@{") {
+		return false
+	}
+	for _, character := range ref {
+		if character < 0x20 || character == 0x7f || strings.ContainsRune(" ~^:?*[\\", character) {
+			return false
+		}
+	}
+	for _, component := range strings.Split(ref, "/") {
+		if component == "" || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return false
+		}
+	}
+	return true
+}
+
+// validHeadKeyObjectID accepts a SHA-1 or SHA-256 object id.
+func validHeadKeyObjectID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
