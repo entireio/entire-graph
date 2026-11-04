@@ -1,6 +1,6 @@
 # Kernel-scale performance pass and status line — Implementation Plan
 
-> **Status (2026-11-04):** Tasks 1–5 done. Tasks 6–7 (W2, W3) are superseded by the [store-native index design](../specs/2026-11-04-store-native-index-design.md). Tasks 8–10 proceed; Task 11 runs after its M3.
+> **Status (2026-11-04):** Tasks 1–5 done. Tasks 6–7 (W2, W3) are superseded by the [store-native index design](../specs/2026-11-04-store-native-index-design.md). Tasks 8–10 done. Task 9b (added after Task 10 landed) proceeds next, independent of Task 11. Task 11 runs after the redesign's M3.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -426,6 +426,65 @@ Render, with ANSI colours unless `NO_COLOR` is set (indigo `38;2;84;111;255` for
 - [ ] Step 4: Run it plus the full `./internal/cli`. Expected: PASS.
 - [ ] Step 5: Measure render latency (cold cache and miss-after-append) on the largest real transcript under `~/.claude/projects/O---web-omnith/`. Record it in the ledger.
 - [ ] Step 6: Commit: `feat(cli): add a Claude Code status line subcommand`.
+
+### Task 9b: Status line warm render without git
+
+Task 9 measured a cache-hit render at 409 ms p50, above Claude Code's 300 ms debounce (see Task 9, Caching). Most of a hit is spent on git work whose answer has not changed: `WithGitMetadataValidationForSetup`, plus the git calls for HEAD and, inside `HeadIndexed`, for HEAD again, the remote URLs and the scope prefix. The transcript listing is also on the hit path, and it stays there because the figures key needs it. Step 1 re-measures this breakdown, since Task 9's per-item numbers overlap and sum to more than 409 ms.
+
+**Files:**
+- Modify: `internal/cli/statusline.go`, `internal/sem/head_indexed.go`, `docs/perf-ledger.md`
+- Test: `internal/cli/statusline_test.go`
+
+**Interface:** replace `HeadIndexed` with
+```go
+// IndexEntry is an opaque, JSON-serialisable handle on one file whose presence means
+// "HEAD is indexed". Only HeadIndexEntries builds it; M3 changes only that function's body.
+type IndexEntry struct{ Root, Relative string }
+func HeadIndexEntries(ctx context.Context, repo, providerVersion, cacheDir string) ([]IndexEntry, error)
+// AnyIndexEntryExists stats each entry through os.OpenRoot(Root), the way HeadIndexed's
+// exists() does today. It never opens or hashes an entry.
+func AnyIndexEntryExists(entries []IndexEntry) bool
+```
+Delete `HeadIndexed`; the status line is its only caller.
+
+**Git key:** a key built without running git, from:
+- the repo path, the cache dir path (the path, not its stat), `statsCacheSalt(version)`, and the resolved max-files value (`resolveMaxSourceFiles`, which reads `ENTIRE_GRAPH_MAX_FILES`);
+- the contents of `.git/HEAD`, of the loose ref HEAD names, and of `.git/config` (all small);
+- when the loose ref is absent, the contents of `.git/packed-refs`;
+- the contents of `<repo>/.graphignore`, or "absent".
+
+Contents are hashed rather than statted, so a same-size ref rewrite within one mtime tick still changes the key. Every read goes through the repo `os.Root` with `Lstat`, and must find a regular, non-link file under 1 MiB. Git's user and system config are not inputs: `gitutil` runs git with both set to `/dev/null`.
+
+**Fallback:** the render takes today's full path, validation included, when:
+- `.git` is not a plain directory (a linked worktree, a submodule, or a link);
+- HEAD is neither `ref: refs/...` nor a 40- or 64-hex id;
+- the loose ref is itself `ref: ...` (a symbolic-ref chain);
+- `.git/config` contains `include`, `includeIf`, `worktreeConfig` or `refStorage`;
+- any key input is a link, is not a regular file, or is over 1 MiB.
+
+**Hit and miss:**
+- A full-path render writes `<cacheDir>/statusline/git-<sha256(repo)>.json`. It holds the git key, the HEAD tree and the `[]IndexEntry`, and no figures or rendered text.
+- On a key hit the render runs no git and skips `WithGitMetadataValidationForSetup`. The validation guards git subprocesses, and a hit spawns none.
+- `AnyIndexEntryExists` runs on every render, so a later `index` at the same HEAD shows `✓ indexed` on the next render.
+- The figures cache (Task 9) is unchanged, except that its key takes the stored tree.
+
+- [ ] Step 1: Re-measure the Task 9 breakdown (validation, each git call, listing, collector) with `ENTIRE_GRAPH_PPROF` or timers in a scratch build, and correct the statusline row in `docs/perf-ledger.md`.
+- [ ] Step 2: Write the tests. Use the Task 9 harness: real `runStatusline`, a real repo and transcript, `NO_COLOR=1`, explicit `COLUMNS` and a temp cache dir. Each test renders twice before it mutates anything, so the render under test is a warm one.
+  - `TestStatuslineWarmRenderRunsNoGit`: index, render twice, then render with `PATH` holding no `git`. Expect `✓ indexed`. This catches a hit path that still runs git. It FAILS on Task 9's code.
+  - `TestStatuslineNoticesKeyInputChanges`, a table with one subtest per input: a new commit; a change from one `https://github.com/...` origin URL to another (a non-GitHub remote leaves the repo key unchanged); an edited `.graphignore`; a commit through a symbolic-ref chain (HEAD → `alias` → `main`); and a commit inside a linked worktree. Each subtest indexes, renders, mutates and renders again, and expects `not indexed`. This catches a key that misses a ref, config, policy or fallback case. It must PASS on Task 9's code.
+  - `TestStatuslineNoticesALaterIndex`: render (`not indexed`), run `index` at the same HEAD, render again. Expect `✓ indexed`. This catches a cached indexed state. It must PASS on Task 9's code.
+- [ ] Step 3: Implement `HeadIndexEntries`/`AnyIndexEntryExists`, the git key, the fallback and the hit path. Run the new tests. Then check the table test bites:
+  - drop `.git/config` from the key, and expect the remote subtest to fail;
+  - drop the loose ref, and expect the commit subtest to fail;
+  - restore both.
+- [ ] Step 4: Run `go test -short -timeout 40m ./internal/cli`, `go test -short ./internal/sem` and `go vet ./...`.
+- [ ] Step 5: Measure on the Task 9 transcript, 20 runs each. Keep the change if and only if:
+  - warm-hit p50 ≤ 150 ms;
+  - append-miss p50 ≤ 300 ms;
+  - git-key-miss p50 is no worse than Task 9's 409 ms hit plus the noise between runs.
+
+  Record p95 and cold for information. Write baseline → result → verdict in `docs/perf-ledger.md`. If the change fails, revert the code and keep the ledger entry.
+- [ ] Step 6: Commit: `perf(cli): render a warm status line without running git`.
 
 ### Task 10: `setup` installs the status line
 
