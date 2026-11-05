@@ -180,7 +180,8 @@ func analyzeImpact(ctx context.Context, opts Options, flags impactFlags, report 
 	if report != nil {
 		snapshotOptions.Progress = report.snapshot
 	}
-	snapshot, cacheHit, err := loadLookupSnapshot(ctx, repo, opts.Version, snapshotOptions, cacheDir, flags.DisableCache, impactLookupFocus(flags))
+	snapshot, cacheHit, err := loadLookupSnapshot(ctx, repo, opts.Version, snapshotOptions, cacheDir, flags.DisableCache,
+		impactLookupFocus(flags, repo), opts.Env.TraceLoad, opts.Stderr)
 	if err != nil {
 		return impactResponse{}, err
 	}

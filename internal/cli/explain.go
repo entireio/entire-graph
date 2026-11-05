@@ -304,7 +304,7 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 		IgnoreFiles:  flags.IgnoreFile,
 		IncludeFiles: flags.IncludeFile,
 		Profile:      profile,
-	}, cacheDir, flags.DisableCache, explainLookupFocus(candidates))
+	}, cacheDir, flags.DisableCache, explainLookupFocus(candidates), opts.Env.TraceLoad, opts.Stderr)
 	if err != nil {
 		return err
 	}

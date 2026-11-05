@@ -2,6 +2,10 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"path/filepath"
+	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
 )
@@ -32,15 +36,54 @@ type lookupFocus struct {
 // slices are partial and it carries no unmerged data-flow edges, so it must
 // never reach a cache write, a preloaded full snapshot, or the selective
 // derivation `query` builds from one. The verb reads it, answers, and drops it.
+//
+// With traceLoad (EntireEnv.TraceLoad) it writes one line to stderr naming the
+// load that served the verb, focused or full (traceLookupLoad).
 func loadLookupSnapshot(ctx context.Context, repo, version string, options sem.ProviderSnapshotOptions,
-	cacheDir string, disableCache bool, lookup lookupFocus) (sem.ProviderSnapshot, bool, error) {
+	cacheDir string, disableCache bool, lookup lookupFocus, traceLoad bool, stderr io.Writer) (sem.ProviderSnapshot, bool, error) {
 	// One hash of the gz entry serves the focused attempt and the fallback.
 	ctx = sem.WithLookupDigestMemo(ctx)
 	snapshot, focused, cacheHit, err := sem.LoadFocusedProviderSnapshot(ctx, repo, version, options, cacheDir, disableCache, lookup.focus)
 	if err != nil || !focused || lookup.resolvesExactly == nil || lookup.resolvesExactly(snapshot) {
+		if err == nil && traceLoad {
+			traceLookupLoad(stderr, focused)
+		}
 		return snapshot, cacheHit, err
 	}
-	return sem.LoadOrBuildProviderSnapshot(ctx, repo, version, options, cacheDir, disableCache)
+	snapshot, cacheHit, err = sem.LoadOrBuildProviderSnapshot(ctx, repo, version, options, cacheDir, disableCache)
+	if err == nil && traceLoad {
+		traceLookupLoad(stderr, false)
+	}
+	return snapshot, cacheHit, err
+}
+
+// traceLookupLoad writes the ENTIRE_GRAPH_TRACE_LOAD line. It is a test hook at
+// the process boundary: tests read it to tell which load served a lookup, so a
+// focused read that fails quietly cannot hide behind the full load's identical
+// answer. It goes to stderr only, never into verb output.
+func traceLookupLoad(stderr io.Writer, focused bool) {
+	if stderr == nil {
+		return
+	}
+	load := "full"
+	if focused {
+		load = "focused"
+	}
+	fmt.Fprintf(stderr, "entire-graph: index load %s\n", load)
+}
+
+// focusSelectors are the --file and --kind filters a focus narrows its starting
+// set by, spelled as exact resolution compares them (parseSymbolRef): --file
+// normalised against the root the snapshot will carry as Header.RepoRoot,
+// which is filepath.Abs of the repo the verb loads, and --kind trimmed. A root
+// that cannot be resolved drops the --file filter, which only widens the set.
+func focusSelectors(repo, file, kind string) (string, string) {
+	kind = strings.TrimSpace(kind)
+	root, err := filepath.Abs(repo)
+	if err != nil {
+		return "", kind
+	}
+	return normalizeSymbolRefFile(file, root), kind
 }
 
 // symbolResolvesExactly is the exact half of neighbors' and impact's name
@@ -59,17 +102,21 @@ var (
 )
 
 // neighborLookupFocus reads one hop of the requested relation, in the
-// requested directions. --depth 2 pairs the focus's own incoming and outgoing
-// edges, so it needs no second hop.
-func neighborLookupFocus(flags neighborFlags) lookupFocus {
+// requested directions, from the symbols --file and --kind select. --depth 2
+// pairs the focus's own incoming and outgoing edges, so it needs no second hop.
+// repo is the repository the verb loads.
+func neighborLookupFocus(flags neighborFlags, repo string) lookupFocus {
 	types := []string{flags.Relation}
 	if flags.Relation == "CALLS" {
 		types = append(types, "CONSTRUCTS")
 	}
+	file, kind := focusSelectors(repo, flags.File, flags.Kind)
 	return lookupFocus{
 		focus: sem.SnapshotFocus{
 			Names: []string{flags.Symbol},
 			Hops:  []sem.FocusHop{{Types: types, In: flags.Direction != "out", Out: flags.Direction != "in"}},
+			File:  file,
+			Kind:  kind,
 		},
 		resolvesExactly: func(snapshot sem.ProviderSnapshot) bool {
 			return symbolResolvesExactly(snapshot, flags.Symbol, flags.File, flags.Line, flags.Kind)
@@ -82,8 +129,10 @@ func neighborLookupFocus(flags neighborFlags) lookupFocus {
 // the focus's container, siblings and members. Only callers are walked further:
 // the callee and type hops are terminal, so a focus that calls a function with
 // ten thousand callers, or a type ten thousand functions use, does not load
-// their callers too.
-func impactLookupFocus(flags impactFlags) lookupFocus {
+// their callers too. The focus is the symbols --file and --kind select, so
+// `--symbol init --file x.c` does not walk every other init. repo is the
+// repository the verb loads.
+func impactLookupFocus(flags impactFlags, repo string) lookupFocus {
 	hops := []sem.FocusHop{
 		{Types: impactTouchTypes, In: true, Out: true, Terminal: true},
 		{Types: impactCallTypes, Out: true, Terminal: true},
@@ -92,8 +141,9 @@ func impactLookupFocus(flags impactFlags) lookupFocus {
 	for depth := 2; depth <= flags.Depth; depth++ {
 		hops = append(hops, sem.FocusHop{Types: impactCallTypes, In: true})
 	}
+	file, kind := focusSelectors(repo, flags.File, flags.Kind)
 	return lookupFocus{
-		focus: sem.SnapshotFocus{Names: []string{flags.Symbol}, Hops: hops, Kinship: true},
+		focus: sem.SnapshotFocus{Names: []string{flags.Symbol}, Hops: hops, Kinship: true, File: file, Kind: kind},
 		resolvesExactly: func(snapshot sem.ProviderSnapshot) bool {
 			return symbolResolvesExactly(snapshot, flags.Symbol, flags.File, flags.Line, flags.Kind)
 		},

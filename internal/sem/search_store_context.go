@@ -625,10 +625,13 @@ func openExactSearchStore(ctx context.Context, cacheDir, key, tree string) (exac
 // gz entry's digest and is called only once a sidecar exists; the prebuild's
 // repair passes one that reuses the digest its cache hit already hashed.
 //
-// trustStamp lets an entry whose size and modification time are the ones the
-// sidecar recorded stand for the recorded digest without being hashed (see
-// searchStoreEntryStamp). Only the lookup verbs' focused load passes it; the
-// store descriptor, `graph context` and the prebuild hash the entry.
+// trustStamp takes the digest from entryDigestForStore instead of entryDigest,
+// which is then not called: an entry whose size and modification time are the
+// ones the sidecar recorded stands for the recorded digest without being
+// hashed, and any other is hashed through the context's digest memo (see
+// searchStoreEntryStamp). The lookup verbs' focused load passes it, as the
+// full-sidecar read (loadSearchStoreForEntry) does the same; the store
+// descriptor, `graph context` and the prebuild's repair hash the entry.
 func openExactSearchStoreForEntry(ctx context.Context, entry cacheEntry, tree string, entryDigest func(cacheEntry) (cacheDigest, error), trustStamp bool) (exactSearchStore, *sql.DB, error) {
 	store := searchStoreEntryFor(entry)
 	path := filepath.Join(store.root, store.relative)
@@ -664,14 +667,12 @@ func openExactSearchStoreForEntry(ctx context.Context, entry cacheEntry, tree st
 	if version != searchStoreVersion {
 		return fail(ErrSearchStoreMissing)
 	}
-	// A matching stamp stands for the recorded digest (searchStoreEntryStamp).
-	stamped := trustStamp && searchEntryStampMatches(ctx, db, entry)
-	if trustStamp && !stamped {
-		if digest, err = entryDigest(entry); err != nil {
+	if trustStamp {
+		if digest, err = entryDigestForStore(ctx, db, entry); err != nil {
 			return fail(ErrSearchStoreMissing)
 		}
 	}
-	if !stamped && storedDigest != digest.String() {
+	if storedDigest != digest.String() {
 		return fail(ErrSearchStoreMissing)
 	}
 	var meta searchStoreMeta

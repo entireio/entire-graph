@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -407,12 +408,21 @@ func sqliteURLPath(path string) string {
 // nature, and the parallel row decode is where the load-time win comes from
 // until consumers stop materializing the whole snapshot.
 func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedSearchSnapshot, error) {
-	db, err := sql.Open("sqlite", "file:"+sqliteURLPath(path)+"?immutable=1&mode=ro")
+	db, err := openSearchStoreReadOnly(path)
 	if err != nil {
 		return cachedSearchSnapshot{}, err
 	}
 	defer db.Close()
+	return loadSearchStoreFrom(ctx, db, wantEntryDigest)
+}
 
+// openSearchStoreReadOnly opens the sidecar at path for reading only.
+func openSearchStoreReadOnly(path string) (*sql.DB, error) {
+	return sql.Open("sqlite", "file:"+sqliteURLPath(path)+"?immutable=1&mode=ro")
+}
+
+// loadSearchStoreFrom is loadSearchStore on a sidecar already open on db.
+func loadSearchStoreFrom(ctx context.Context, db *sql.DB, wantEntryDigest string) (cachedSearchSnapshot, error) {
 	var cache cachedSearchSnapshot
 	var storeVersion string
 	if err := readSearchStoreMetaKey(ctx, db, "store_version", &storeVersion); err != nil {
@@ -816,9 +826,13 @@ func writeSearchStoreSidecar(ctx context.Context, entry cacheEntry, entryDigest 
 // digest and tree, the check openExactSearchStore makes), never by loading it:
 // on a no-op index the hit has already decoded the store once, and a second
 // full decode just to learn it exists made the kernel no-op 104s with the
-// store against 51s without. The entry digest is the one that hit already hashed, reused
-// through the run's digest memo; a rebuild hashes the entry afresh because it
-// stamps the digest into the new sidecar.
+// store against 51s without. The check hashes the entry, unlike the hit's
+// sidecar read, which takes the recorded digest when the entry's stamp still
+// matches (entryDigestForStore): a no-op index on an unchanged tree hashes the
+// entry once, here. When the hit did hash it (a gz read, or a stamp that no
+// longer matched), the digest is reused through the run's digest memo. A
+// rebuild hashes the entry afresh because it stamps the digest into the new
+// sidecar.
 func repairSearchStoreSidecarForEntry(ctx context.Context, entry cacheEntry, tree string) error {
 	if !searchStoreEnabled() {
 		return nil
@@ -919,10 +933,11 @@ func memoizedEntryDigest(ctx context.Context, entry cacheEntry) (cacheDigest, er
 
 // searchStoreEntryStamp is the gz entry's size and modification time as they
 // were when its sidecar was written, recorded beside the digest (meta key
-// entry_stamp). A lookup that finds the entry with the same stamp takes the
-// recorded digest instead of hashing the entry (openExactSearchStoreForEntry,
-// trustStamp): on the Linux kernel the entry is 400 MB and its hash a fifth of
-// a focused lookup.
+// entry_stamp). A lookup's focused read (openExactSearchStoreForEntry,
+// trustStamp) and the full-sidecar read (loadSearchStoreForEntry) that find
+// the entry with the same stamp take the recorded digest instead of hashing
+// the entry (entryDigestForStore): on the Linux kernel the entry is 400 MB and
+// its hash a fifth of a focused lookup.
 //
 // This is an integrity cache, not a security boundary. The digest check it
 // stands in for catches an entry and a sidecar left by different writes, not
@@ -992,10 +1007,41 @@ func searchEntryStampMatches(ctx context.Context, db *sql.DB, entry cacheEntry) 
 	return err == nil && current == recorded
 }
 
+// entryDigestForStore is the gz entry's digest, to check the sidecar open on
+// db against: the digest the sidecar recorded when the entry still has the
+// stamp recorded beside it (searchStoreEntryStamp), and otherwise the entry
+// hashed, through the context's digest memo when it carries one.
+func entryDigestForStore(ctx context.Context, db *sql.DB, entry cacheEntry) (cacheDigest, error) {
+	if searchEntryStampMatches(ctx, db, entry) {
+		var recorded string
+		if err := readSearchStoreMetaKey(ctx, db, "entry_digest", &recorded); err == nil {
+			if digest, ok := parseCacheDigest(recorded); ok {
+				return digest, nil
+			}
+		}
+	}
+	return memoizedEntryDigest(ctx, entry)
+}
+
+// parseCacheDigest reads a digest in its one spelling (cacheDigest.String).
+func parseCacheDigest(value string) (cacheDigest, bool) {
+	var digest cacheDigest
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != len(digest) || hex.EncodeToString(decoded) != value {
+		return cacheDigest{}, false
+	}
+	copy(digest[:], decoded)
+	return digest, true
+}
+
 // loadSearchStoreForEntry serves the entry's snapshot from the sqlite sidecar
 // when the store is enabled and the sidecar matches the entry on disk. The
 // bool reports whether the store answered; every failure is a quiet miss so
 // the gz entry stays authoritative.
+//
+// An entry whose stamp is the one the sidecar recorded is not hashed
+// (entryDigestForStore): this is the warm `query --head` read and a lookup's
+// fallback, and on the Linux kernel the hash is seconds of every one.
 func loadSearchStoreForEntry(ctx context.Context, entry cacheEntry) (cachedSearchSnapshot, bool) {
 	if !searchStoreEnabled() {
 		return cachedSearchSnapshot{}, false
@@ -1005,11 +1051,16 @@ func loadSearchStoreForEntry(ctx context.Context, entry cacheEntry) (cachedSearc
 	if _, err := os.Stat(path); err != nil {
 		return cachedSearchSnapshot{}, false
 	}
-	digest, err := memoizedEntryDigest(ctx, entry)
+	db, err := openSearchStoreReadOnly(path)
 	if err != nil {
 		return cachedSearchSnapshot{}, false
 	}
-	cache, err := loadSearchStore(ctx, path, digest.String())
+	defer db.Close()
+	digest, err := entryDigestForStore(ctx, db, entry)
+	if err != nil {
+		return cachedSearchSnapshot{}, false
+	}
+	cache, err := loadSearchStoreFrom(ctx, db, digest.String())
 	if err != nil {
 		return cachedSearchSnapshot{}, false
 	}

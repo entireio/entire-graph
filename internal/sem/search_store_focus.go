@@ -27,6 +27,15 @@ import (
 type SnapshotFocus struct {
 	Names []string   // every candidate spelling the verb may resolve: as typed, plus def's rewritten forms
 	Hops  []FocusHop // hop i expands the frontier through these relation types and directions
+	// File and Kind, when set, narrow the starting set as exact resolution
+	// narrows its matches (resolveFocusSymbols in internal/cli): a symbol
+	// matched by name or qualified name stays only when its file path equals
+	// File, and its kind equals Kind, under strings.EqualFold. File is the
+	// caller's --file already normalised against the repository root, Kind its
+	// --kind trimmed; empty means no filter. A symbol matched by ID always
+	// stays, as an ID wins ahead of every filter in exact resolution.
+	File string
+	Kind string
 	// Kinship also loads containers (by container_id), their container_id
 	// children, and the members of supertypes reached through
 	// EXTENDS/INHERITS/IMPLEMENTS/OVERRIDES. Precisely:
@@ -84,8 +93,9 @@ var kinshipSupertypeRelations = map[string]bool{
 //   - the header, through the same post-load chain as a full load
 //     (bindCachedSearchSnapshot), with Stats and Completeness of the whole;
 //   - every file;
-//   - the starting set: symbols whose id is one of focus.Names, or whose name
-//     or qualified name equals one of them under strings.EqualFold;
+//   - the starting set: symbols whose id is one of focus.Names, and symbols
+//     whose name or qualified name equals one of them under strings.EqualFold
+//     and that meet focus.File and focus.Kind;
 //   - for each hop, every relation of the hop's types with the frontier on the
 //     requested side, uncapped and with every field; the symbols among their
 //     endpoints are the next frontier unless the hop is Terminal, and files
@@ -95,10 +105,13 @@ var kinshipSupertypeRelations = map[string]bool{
 //
 // A verb that resolves exactly (ID, then EqualFold name or qualified name,
 // then --file/--kind/--line filters) gets the same matches from it as from the
-// full snapshot, because the starting set is a superset of what exact
-// resolution can return and filters only narrow. The fuzzy ladder ranks over
-// every symbol, so a verb whose exact resolution comes back empty must reload
-// with LoadOrBuildProviderSnapshot before running it.
+// full snapshot, because the starting set holds every symbol exact resolution
+// can return: File and Kind repeat its own comparisons, and --line only
+// narrows further. A symbol the filters drop is removed from the read too
+// (a later hop may load it again), so if the filters ever disagree with exact
+// resolution, resolution finds nothing and the caller takes the full load. The
+// fuzzy ladder ranks over every symbol, so a verb whose exact resolution comes
+// back empty must reload with LoadOrBuildProviderSnapshot before running it.
 func LoadFocusedProviderSnapshot(ctx context.Context, repo, providerVersion string,
 	options ProviderSnapshotOptions, cacheDir string, disableCache bool,
 	focus SnapshotFocus) (ProviderSnapshot, bool, bool, error) {
@@ -159,11 +172,9 @@ func loadFocusedSearchSnapshot(ctx context.Context, repo, providerVersion string
 		return ProviderSnapshot{}, false
 	}
 	// A lookup trusts the entry's recorded stamp instead of hashing it
-	// (searchStoreEntryStamp); a stamp that does not match is hashed, through
+	// (entryDigestForStore); a stamp that does not match is hashed, through
 	// the caller's digest memo when it installed one (WithLookupDigestMemo).
-	store, db, err := openExactSearchStoreForEntry(ctx, entry, tree, func(entry cacheEntry) (cacheDigest, error) {
-		return memoizedEntryDigest(ctx, entry)
-	}, true)
+	store, db, err := openExactSearchStoreForEntry(ctx, entry, tree, nil, true)
 	if err != nil {
 		return ProviderSnapshot{}, false
 	}
@@ -268,7 +279,16 @@ type focusedSymbolRow struct {
 	rowid       int64
 	id          string
 	containerID string
+	filePath    string
+	kind        string
 	row         searchStoreSymbolRow
+}
+
+// meets reports whether the symbol passes focus.File and focus.Kind, with the
+// comparisons exact resolution makes.
+func (row *focusedSymbolRow) meets(focus SnapshotFocus) bool {
+	return (focus.File == "" || strings.EqualFold(row.filePath, focus.File)) &&
+		(focus.Kind == "" || strings.EqualFold(row.kind, focus.Kind))
 }
 
 type focusedExternalRow struct {
@@ -383,12 +403,25 @@ func (read *focusedStoreRead) walk(names []string, focus SnapshotFocus) error {
 	if err != nil {
 		return err
 	}
+	byID := make(map[string]bool, len(start))
+	for _, id := range start {
+		byID[id] = true
+	}
 	for _, column := range []string{"name_fold", "qname_fold"} {
 		matched, err := read.symbolsWhere(column, folds)
 		if err != nil {
 			return err
 		}
-		start = append(start, matched...)
+		for _, id := range matched {
+			switch {
+			case byID[id] || read.symbols[id].meets(focus):
+				start = append(start, id)
+			default:
+				// Not merely left out of the frontier: a dropped symbol must
+				// not reach the snapshot unless a hop loads it again.
+				delete(read.symbols, id)
+			}
+		}
 	}
 	start = dedupeStrings(start)
 
@@ -501,7 +534,7 @@ func (read *focusedStoreRead) containersOf(ids []string) []string {
 	return dedupeStrings(containers)
 }
 
-const focusedSymbolColumns = `rowid, id, container_id, ` + searchStoreSymbolColumns
+const focusedSymbolColumns = `rowid, id, container_id, file_path, kind, ` + searchStoreSymbolColumns
 
 // symbolsByID loads the symbols among ids and returns the ids that are
 // symbols. Ids already known either way are not queried again, and an empty
@@ -568,15 +601,16 @@ func (read *focusedStoreRead) symbolsWhere(column string, values []string) ([]st
 	var ids []string
 	err := read.scanIn(`SELECT `+focusedSymbolColumns+` FROM symbols WHERE `+column+` IN (%s)`, values, nil, func(scan rowScanner) error {
 		var rowid int64
-		var id, containerID string
+		var id, containerID, filePath, kind string
 		row, err := scanSearchStoreSymbolRow(func(dest ...any) error {
-			return scan(append([]any{&rowid, &id, &containerID}, dest...)...)
+			return scan(append([]any{&rowid, &id, &containerID, &filePath, &kind}, dest...)...)
 		})
 		if err != nil {
 			return err
 		}
 		if read.symbols[id] == nil {
-			read.symbols[id] = &focusedSymbolRow{rowid: rowid, id: id, containerID: containerID, row: row}
+			read.symbols[id] = &focusedSymbolRow{rowid: rowid, id: id, containerID: containerID,
+				filePath: filePath, kind: kind, row: row}
 		}
 		ids = append(ids, id)
 		return nil

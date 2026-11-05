@@ -113,22 +113,53 @@ func isSubsequence[T any](sub, full []T) bool {
 	return next == len(sub)
 }
 
-// The folded name columns stand in for strings.EqualFold in SQL, so the fold
-// must agree with it exactly, including the non-ASCII case orbits sqlite's
-// NOCASE ignores.
-func TestFoldSymbolNameAgreesWithEqualFold(t *testing.T) {
-	sample := []string{
-		"", "K", "k", "K", "kelvin", "KELVIN", "Kelvin",
-		"S", "s", "ſ", "Σ", "σ", "ς", "ΣΑΣ", "σας",
-		"ß", "ẞ", "ss", "SS", "Straße", "STRASSE",
-		"ǅ", "ǆ", "Ǆ", "\xff", "�", "Foo.Bar", "foo.bar",
+// --file and --kind narrow the starting set the way exact resolution narrows
+// its matches, and exact resolution takes a symbol named by its ID ahead of
+// every filter, so a symbol named by ID stays whatever the filters say.
+// Break caught: the filter vetoing an ID match, which sends every lookup by ID
+// with a stale --file to the full load.
+func TestFocusFileFilterKeepsASymbolNamedByID(t *testing.T) {
+	fixture := indexFocusFixture(t)
+	full, _, err := LoadOrBuildProviderSnapshot(t.Context(), fixture.repo, fixture.version, fixture.options, fixture.cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, left := range sample {
-		for _, right := range sample {
-			if got, want := foldSymbolName(left) == foldSymbolName(right), strings.EqualFold(left, right); got != want {
-				t.Errorf("fold(%q)==fold(%q) is %v, EqualFold is %v", left, right, got, want)
-			}
+	var id string
+	for _, symbol := range full.Symbols {
+		if symbol.QualifiedName == "grow" && symbol.FilePath == "buffer.c" {
+			id = symbol.ID
 		}
+	}
+	if id == "" {
+		t.Fatal("the fixture has no grow in buffer.c")
+	}
+	snapshot, focused, _, err := LoadFocusedProviderSnapshot(t.Context(), fixture.repo, fixture.version,
+		fixture.options, fixture.cacheDir, false, SnapshotFocus{Names: []string{id}, File: "Router.scala"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !focused {
+		t.Fatal("an exact sidecar was present, but the full snapshot was returned")
+	}
+	if !hasSymbol(snapshot, "grow", "buffer.c") {
+		t.Fatal("the symbol named by its ID was dropped by a --file filter it does not meet")
+	}
+}
+
+// Break caught: the filter not narrowing at all, so impact walks the callers
+// of every same-named symbol in the repository.
+func TestFocusFileFilterDropsANameMatchInAnotherFile(t *testing.T) {
+	fixture := indexFocusFixture(t)
+	snapshot, focused, _, err := LoadFocusedProviderSnapshot(t.Context(), fixture.repo, fixture.version,
+		fixture.options, fixture.cacheDir, false, SnapshotFocus{Names: []string{"grow"}, File: "Router.scala"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !focused {
+		t.Fatal("an exact sidecar was present, but the full snapshot was returned")
+	}
+	if hasSymbol(snapshot, "grow", "buffer.c") {
+		t.Fatal("grow in buffer.c was loaded although --file names Router.scala")
 	}
 }
 

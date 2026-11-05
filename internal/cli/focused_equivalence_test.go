@@ -55,6 +55,7 @@ import (
 //     every direction, depth and format, plus neighbors --depth 2 in both
 //     directions and every extra variant in json; every other form runs every
 //     verb once, in rotation.
+//   - both: focus-edge-cases also runs its pinned lookups (pinned).
 //
 // A fixture that runs --profile fast lookups is indexed under both profiles,
 // so those lookups read a fast sidecar too.
@@ -80,7 +81,15 @@ import (
 //     neighbors agent form (compactAgentNeighbors). def and explain text print
 //     no telemetry.
 //
-// The returned error is compared too; stderr carries progress only and is not.
+// The returned error is compared too. stderr is not compared: it carries
+// progress, and the load trace (ENTIRE_GRAPH_TRACE_LOAD, set through
+// EntireEnv.TraceLoad) that says which load served the lookup. The guard
+// searches each lookup's own stderr for that line: with the store off every
+// lookup must take the full load, and with it on every lookup that names an
+// existing symbol in a form exact resolution selects (wantFocused) must be
+// served by the focused load. Without that, a focused read that failed quietly
+// and fell back to the full load would print identical output and pass.
+//
 // -short skips the guard.
 func TestLookupsAnswerIdenticallyFromSidecarAndFullLoad(t *testing.T) {
 	if testing.Short() {
@@ -139,6 +148,17 @@ func TestLookupsAnswerIdenticallyFromSidecarAndFullLoad(t *testing.T) {
 				answered = answered || (lookup.plain && lookup.answered())
 				if !lookup.equal() {
 					t.Errorf("%s: entire graph %s\n%s", fixture.name, strings.Join(lookup.displayArgs(), " "), lookup.diff())
+				}
+				if lookup.loadedNothing() {
+					continue
+				}
+				if lookup.full.load != "full" {
+					t.Errorf("%s: entire graph %s: with the store off the load was %q, want full",
+						fixture.name, strings.Join(lookup.displayArgs(), " "), lookup.full.load)
+				}
+				if lookup.wantFocused && lookup.sidecar.load != "focused" {
+					t.Errorf("%s: entire graph %s: the name resolves exactly, yet with the store on the load was %q, want focused",
+						fixture.name, strings.Join(lookup.displayArgs(), " "), lookup.sidecar.load)
 				}
 			}
 			// Two sides that fail, or print nothing, in the same way are equal,
@@ -326,15 +346,36 @@ func (f *focusGuardFixture) storeAvailable() bool {
 // cli runs one command in-process. ENTIRE_PLUGIN_DATA_DIR is the fixture's
 // cache, so a command without --cache-dir cannot touch the user's cache.
 func (f *focusGuardFixture) cli(stdin string, args ...string) (string, error) {
-	var stdout bytes.Buffer
+	stdout, _, err := f.cliTraced(stdin, args...)
+	return stdout, err
+}
+
+// cliTraced is cli with the load trace on, also returning the command's own
+// stderr: lookups run concurrently, so each captures its own.
+func (f *focusGuardFixture) cliTraced(stdin string, args ...string) (string, string, error) {
+	var stdout, stderr bytes.Buffer
 	err := Run(context.Background(), Options{
 		Version: focusGuardVersion,
-		Env:     EntireEnv{PluginDataDir: f.cache},
+		Env:     EntireEnv{PluginDataDir: f.cache, TraceLoad: true},
 		Stdout:  &stdout,
-		Stderr:  io.Discard,
+		Stderr:  &stderr,
 		Stdin:   strings.NewReader(stdin),
 	}, args)
-	return stdout.String(), err
+	return stdout.String(), stderr.String(), err
+}
+
+// focusGuardLoad is the load a lookup's stderr trace names: "focused", "full",
+// or "" when it printed no trace line.
+func focusGuardLoad(stderr string) string {
+	for _, line := range strings.Split(stderr, "\n") {
+		switch strings.TrimSuffix(line, "\r") {
+		case "entire-graph: index load focused":
+			return "focused"
+		case "entire-graph: index load full":
+			return "full"
+		}
+	}
+	return ""
 }
 
 // sample is a fixed-seed choice of n symbols, or all of them when there are
@@ -397,33 +438,39 @@ func (f *focusGuardFixture) representatives() []focusGuardSymbol {
 type focusGuardNameForm struct {
 	symbol string
 	flags  []string
+	// exact is a name of the symbol with selectors that the symbol itself
+	// meets, so every verb resolves it exactly and the store pass must be
+	// served by the focused load.
+	exact bool
 }
 
 // focusGuardNameFormKinds are the ways of naming a symbol, plain name first.
 // A kind reports false where it would only repeat the plain name.
 var focusGuardNameFormKinds = []func(focusGuardSymbol) (focusGuardNameForm, bool){
-	func(s focusGuardSymbol) (focusGuardNameForm, bool) { return focusGuardNameForm{symbol: s.Name}, true },
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
-		return focusGuardNameForm{symbol: strings.ToUpper(s.Name)}, strings.ToUpper(s.Name) != s.Name
+		return focusGuardNameForm{symbol: s.Name, exact: true}, true
+	},
+	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
+		return focusGuardNameForm{symbol: strings.ToUpper(s.Name), exact: true}, strings.ToUpper(s.Name) != s.Name
 	},
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
 		return focusGuardNameForm{symbol: s.QualifiedName}, s.QualifiedName != "" && s.QualifiedName != s.Name
 	},
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) { return focusGuardNameForm{symbol: s.ID}, true },
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
-		return focusGuardNameForm{symbol: s.Name, flags: []string{"--file", s.FilePath}}, true
+		return focusGuardNameForm{symbol: s.Name, flags: []string{"--file", s.FilePath}, exact: true}, true
 	},
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
 		return focusGuardNameForm{symbol: s.Name, flags: []string{"--file", "wrong.go"}}, true
 	},
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
-		return focusGuardNameForm{symbol: s.Name, flags: []string{"--kind", s.Kind}}, true
+		return focusGuardNameForm{symbol: s.Name, flags: []string{"--kind", s.Kind}, exact: true}, true
 	},
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
 		return focusGuardNameForm{symbol: s.Name, flags: []string{"--kind", "class"}}, s.Kind != "class"
 	},
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
-		return focusGuardNameForm{symbol: s.Name, flags: []string{"--line", strconv.Itoa(s.StartLine)}}, true
+		return focusGuardNameForm{symbol: s.Name, flags: []string{"--line", strconv.Itoa(s.StartLine)}, exact: true}, true
 	},
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
 		return focusGuardNameForm{symbol: s.Name, flags: []string{"--line", "1"}}, true
@@ -492,22 +539,36 @@ func (b *focusGuardBuilder) add(verb, format, stdin string, args ...string) {
 }
 
 // plain marks the lookups added by add as plain-name lookups of a symbol that
-// exists, which the guard requires at least one of to answer.
+// exists, which the guard requires at least one of to answer, and which the
+// focused load must serve.
 func (b *focusGuardBuilder) plain(add func()) {
 	start := len(b.lookups)
-	add()
+	b.focused(add)
 	for _, lookup := range b.lookups[start:] {
 		lookup.plain = true
 	}
 }
 
+// focused marks the lookups added by add as ones the focused load must serve
+// when the store is on.
+func (b *focusGuardBuilder) focused(add func()) {
+	start := len(b.lookups)
+	add()
+	for _, lookup := range b.lookups[start:] {
+		lookup.wantFocused = true
+	}
+}
+
 // rotated runs verb once for form, in the verb's next variant and format.
 func (b *focusGuardBuilder) rotated(verb string, symbol focusGuardSymbol, form focusGuardNameForm) {
-	if symbol.ID != "" && form.symbol == symbol.Name && len(form.flags) == 0 {
+	switch {
+	case symbol.ID != "" && form.symbol == symbol.Name && len(form.flags) == 0:
 		b.plain(func() { b.rotatedForm(verb, symbol, form) })
-		return
+	case symbol.ID != "" && form.exact:
+		b.focused(func() { b.rotatedForm(verb, symbol, form) })
+	default:
+		b.rotatedForm(verb, symbol, form)
 	}
-	b.rotatedForm(verb, symbol, form)
 }
 
 func (b *focusGuardBuilder) rotatedForm(verb string, symbol focusGuardSymbol, form focusGuardNameForm) {
@@ -629,7 +690,33 @@ func (f *focusGuardFixture) lookups(exhaustive bool, ordinal int) []*focusGuardL
 		b.turns[verb] = ordinal / len(focusGuardVerbs)
 		b.rotated(verb, symbol, plain)
 	}
+	if f.name == "focus-edge-cases" {
+		b.pinned()
+	}
 	return b.lookups
+}
+
+// pinned are the focus-edge-cases lookups of particular symbols, each served
+// by the focused load.
+//   - Shared is defined in left/shared.go and right/shared.go, and --file picks
+//     one: as stored, in another letter case (exact resolution compares paths
+//     under EqualFold), and absolute (normalised against the repository root).
+//     The focused starting set is narrowed by --file, so this catches a
+//     narrowing that disagrees with exact resolution.
+//   - KelvinTemp starts with the Kelvin sign (U+212A), which folds to an ASCII
+//     k, so kelvintemp finds it only through a full Unicode case fold. This
+//     catches a stored name fold that is narrower than strings.EqualFold.
+func (b *focusGuardBuilder) pinned() {
+	b.focused(func() {
+		for _, file := range []string{
+			"left/shared.go",
+			"LEFT/Shared.GO",
+			filepath.Join(b.fixture.repo, "left", "shared.go"),
+		} {
+			b.impact(focusGuardNameForm{symbol: "Shared", flags: []string{"--file", file}}, nil, focusGuardTwoFormats...)
+		}
+		b.def([]string{"--symbol", "kelvintemp"}, focusGuardThreeFormats...)
+	})
 }
 
 // everyFormKind looks up every chosen symbol by its plain name with def, by
@@ -778,6 +865,9 @@ type focusGuardLookup struct {
 	json    bool
 	// plain is a lookup of an existing symbol by its plain name.
 	plain bool
+	// wantFocused is a lookup of an existing symbol in a form its verb
+	// resolves exactly, which the focused load must serve when the store is on.
+	wantFocused bool
 	// sidecar is the answer with the store enabled, full the one without.
 	sidecar, full focusGuardAnswer
 }
@@ -785,15 +875,28 @@ type focusGuardLookup struct {
 type focusGuardAnswer struct {
 	stdout string
 	err    string
+	// load is the load the lookup's trace named (focusGuardLoad).
+	load string
 }
 
 func (l *focusGuardLookup) run() focusGuardAnswer {
-	stdout, err := l.fixture.cli(l.stdin, l.args...)
-	answer := focusGuardAnswer{stdout: stdout}
+	stdout, stderr, err := l.fixture.cliTraced(l.stdin, l.args...)
+	answer := focusGuardAnswer{stdout: stdout, load: focusGuardLoad(stderr)}
 	if err != nil {
 		answer.err = err.Error()
 	}
 	return answer
+}
+
+// loadedNothing reports an explain that loaded no graph on either side: it
+// returns before loading when the build output names nothing its parser takes
+// for a symbol (such as an identifier starting with the Kelvin sign), so it
+// prints neither a trace nor an answer.
+func (l *focusGuardLookup) loadedNothing() bool {
+	none := func(answer focusGuardAnswer) bool {
+		return answer.load == "" && answer.stdout == "" && answer.err == ""
+	}
+	return len(l.args) > 0 && l.args[0] == "explain" && none(l.sidecar) && none(l.full)
 }
 
 // answered reports that both sides succeeded and printed something.

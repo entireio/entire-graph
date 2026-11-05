@@ -158,7 +158,7 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 		IgnoreFiles:  flags.IgnoreFile,
 		IncludeFiles: flags.IncludeFile,
 		Profile:      profile,
-	}, cacheDir, flags.DisableCache, neighborLookupFocus(flags))
+	}, cacheDir, flags.DisableCache, neighborLookupFocus(flags, repo), opts.Env.TraceLoad, opts.Stderr)
 	if err != nil {
 		return err
 	}

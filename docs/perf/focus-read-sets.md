@@ -116,7 +116,7 @@ its symbols.
 
 | Need | Closure element |
 | --- | --- |
-| Every exact resolution | starting set over `id`, `name_fold`, `qname_fold` |
+| Every exact resolution | starting set over `id`, `name_fold`, `qname_fold`; for neighbors and impact the name and qualified-name matches are narrowed by `--file` and `--kind` with exact resolution's own comparisons (Task 9g), ID matches never are, and a dropped match is removed from the read so a disagreement falls back to the full load |
 | Positional `path:line` | full snapshot (`focused=false`) |
 | Header, `Stats`, `Completeness` | meta header through the shared post-load chain, which takes the stored relation counts rather than `len(Relations)` |
 | `Files` scans | all file rows |

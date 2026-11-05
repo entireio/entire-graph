@@ -2,8 +2,10 @@ package sem
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,7 +17,39 @@ import (
 // is answered from the sidecar as though it were unchanged.
 func TestFocusedLookupHashesAnEntryWhoseStampChanged(t *testing.T) {
 	fixture := indexFocusFixture(t)
-	path := focusFixtureEntryPath(t, fixture)
+	rewriteEntryChangingItsStamp(t, focusFixtureEntryPath(t, fixture))
+	_, focused, _, err := LoadFocusedProviderSnapshot(t.Context(), fixture.repo, fixture.version,
+		fixture.options, fixture.cacheDir, false, leafCallsFocus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if focused {
+		t.Fatal("the entry's stamp changed, yet the sidecar answered without the hash that would catch its new bytes")
+	}
+}
+
+// The warm full load (query --head, and a lookup's fallback) trusts the stamp
+// the same way. Break caught: the full read taking the recorded digest for an
+// entry whose stamp no longer matches, and serving the rewritten entry's
+// sidecar as a cache hit.
+func TestFullLoadHashesAnEntryWhoseStampChanged(t *testing.T) {
+	fixture := indexFocusFixture(t)
+	rewriteEntryChangingItsStamp(t, focusFixtureEntryPath(t, fixture))
+	_, cacheHit, err := LoadOrBuildProviderSnapshot(t.Context(), fixture.repo, fixture.version,
+		fixture.options, fixture.cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cacheHit {
+		t.Fatal("the entry's stamp changed, yet the sidecar answered as a cache hit without the hash that would catch its new bytes")
+	}
+}
+
+// rewriteEntryChangingItsStamp replaces the entry's bytes with as many bytes of
+// garbage and moves its modification time a second on, so its stamp no longer
+// matches the one its sidecar recorded.
+func rewriteEntryChangingItsStamp(t *testing.T, path string) {
+	t.Helper()
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -27,38 +61,23 @@ func TestFocusedLookupHashesAnEntryWhoseStampChanged(t *testing.T) {
 	if err := os.Chtimes(path, later, later); err != nil {
 		t.Fatal(err)
 	}
-	_, focused, _, err := LoadFocusedProviderSnapshot(t.Context(), fixture.repo, fixture.version,
-		fixture.options, fixture.cacheDir, false, leafCallsFocus)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if focused {
-		t.Fatal("the entry's stamp changed, yet the sidecar answered without the hash that would catch its new bytes")
-	}
 }
 
-// focusFixtureEntryPath is the gz entry the fixture's index wrote.
+// focusFixtureEntryPath is the gz entry the fixture's index wrote: the one
+// *.json.gz file under its cache directory.
 func focusFixtureEntryPath(t *testing.T, fixture focusFixture) string {
 	t.Helper()
-	absRepo, err := filepath.Abs(fixture.repo)
-	if err != nil {
+	var entries []string
+	if err := filepath.WalkDir(fixture.cacheDir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(path, ".json.gz") {
+			entries = append(entries, path)
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	options, err := CaptureProviderCachePolicy(absRepo, fixture.options)
-	if err != nil {
-		t.Fatal(err)
+	if len(entries) != 1 {
+		t.Fatalf("want one complete entry, got %q", entries)
 	}
-	_, tree, err := resolveCommittedHEAD(t.Context(), absRepo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := searchSnapshotKey(absRepo, repoKey(t.Context(), absRepo), fixture.version, tree, options, t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry, err := newCacheEntry(fixture.cacheDir, "search", searchSnapshotCacheVersion, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return filepath.Join(entry.root, entry.relative)
+	return entries[0]
 }

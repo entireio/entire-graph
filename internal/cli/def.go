@@ -175,7 +175,7 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 		IgnoreFiles:  flags.IgnoreFile,
 		IncludeFiles: flags.IncludeFile,
 		Profile:      profile,
-	}, cacheDir, flags.DisableCache, defLookupFocus(flags, symbols))
+	}, cacheDir, flags.DisableCache, defLookupFocus(flags, symbols), opts.Env.TraceLoad, opts.Stderr)
 	if err != nil {
 		return err
 	}
