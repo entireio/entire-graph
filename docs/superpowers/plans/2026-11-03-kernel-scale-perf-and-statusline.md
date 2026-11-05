@@ -718,6 +718,70 @@ Closes the remaining in-scope `entire review` findings. #3 and #6 (repeated hash
 - [ ] Step 3: Run `go test -short -timeout 40m ./internal/cli`, `go test -short ./internal/sem -run 'Store|Focus|Stamp|Lookup'`, the Task 2 equivalence guard and `go vet ./...`.
 - [ ] Step 4: Commit: `fix(cli): show the store warning in def, and drop internals-coupled tests`.
 
+### Task 9e: The status line shows the graph's size
+
+Added at the user's request after Task 9c: the indexed graph's size is a relevant stat, shown as node and edge counts, numbers written in full. It amends Task 9c's segment list and two of its tests.
+
+**Render:**
+```
+◤ entire graph · 17,271 nodes | 86,038 edges · ~184K tok gross · ~12.4K net
+```
+- **Segment:** `<symbols> nodes | <relations> edges`.
+  - The numbers are what `entire graph index` reports for that entry as `counts.symbols` and `counts.relations`. Nodes are symbol nodes only, not file or external-endpoint nodes; the docs say so once.
+  - Numbers are written in full, with comma thousands separators (`17,271`, never `17.3K`).
+  - The numbers are coloured as figures. ` | ` is coloured as a separator, like ` · `.
+- **Position:** this becomes item 3 of Task 9c's line 1 list. It goes after `◤ entire graph` and before the token segments. It appears only when HEAD's own index exists, so it never sits beside a state segment. A size beside `index N commits behind` would read as the current code's size.
+- **Which entry:** the first existing HEAD entry in `headIndexedProfiles` order (full before fast). Its counts are the ones reported.
+- **Absent:** the segment is absent when HEAD is behind or not indexed, or when that entry has no readable counts file.
+
+**Source:**
+- **The counts file:** `<key>.counts.json`, holding `{"symbols":N,"relations":M}` as raw JSON (not gzip). It sits beside the entry `<key>.json.gz`, the way `.sqlite` and `.generation.json.gz` do. Its name does not end in `.json.gz`, so the tests that count `*.json.gz` artifacts are unaffected.
+- **Who writes it:** a helper `writeSearchSnapshotCounts(entry, cache)`, fed from `cache.Snapshot.Header.Stats`.
+  - It writes through the confined entry directory (`openCacheEntryDirectory`, `createRootTemp`, then `Rename`), per ADR 0004.
+  - Every **complete** entry writer calls it before the entry's own rename: `writeSearchSnapshotAndStore` (cold complete builds) and `persistVerifiedSearchSnapshot` (`index`).
+  - Check upstream `main`'s write sites too (`search_cache.go:478`, `:538`, `:703` there), because the status line PR is cut from `main`.
+  - Selective views (`OnlyFiles`, or `DerivedFrom != ""`) are skipped; their stats count a subset of the graph.
+  - Writing it first means a render never sees the entry without its counts. Equal keys give equal counts, so an orphan left by a failed entry write is harmless.
+- **Backfill:** on an `index` hit, write the counts file when it is missing, beside `repairSearchStoreSidecarForEntry`. Entries from earlier builds gain a size the next time `index` runs, even when HEAD is unchanged.
+- **Who reads it:** `sem.IndexEntryCounts(entry IndexEntry) (symbols, relations int, ok bool)`. It reads the entry's counts file with a 4 KiB bound, and any failure is `ok=false`.
+  - The status line calls it on **every** render, warm hits included, for the reported entry. That is one small file read beside the entry stats that a hit already does, and still no git.
+  - Nothing goes into the git record. So nothing can go stale: a backfill, a `--force` rebuild or a fast-to-full change shows on the next render.
+- **Cleanup:** none is needed. Retention evicts only `*.sqlite` (`search_store_retention.go`), and removing a group directory removes the file with it. Add no per-file cleanup.
+
+**Files:**
+- Modify:
+  - `internal/sem/search_cache.go`: the helper, its two callers and the hit-path backfill.
+  - `internal/sem/head_indexed.go`: `IndexEntryCounts`.
+  - `internal/cli/statusline.go`: the segment, and the header comment at `:24`.
+  - `internal/cli/help.go`: the statusline entry.
+  - Docs that show or describe the line: `skills/stats/SKILL.md:103`, `README.md:96`, `AGENTS.md` (stats section), `docs/agents.md:43-56` and `:70`, `docs/operations.md:217-221`. Also `docs/trust-and-security.md`, which gains the new cache file written and read, and `CHANGELOG.md`.
+- Test: `internal/cli/statusline_test.go`.
+
+- [ ] Step 1: Write the failing tests. Use the Task 9 harness, and pin `--profile full` in every `index` call these tests make.
+  - **Fixture:** the temp repo holds one generated Go file with 1,000 one-line functions, so the node count crosses 1,000 and exercises the separator.
+  - `TestStatuslineShowsTheGraphSize`:
+    - Index the fixture, then read `counts.symbols` and `counts.relations` from `entire graph index --profile full --format json` on it.
+    - Line 1 contains `<symbols> nodes | <relations> edges`, with comma separators.
+    - This catches a missing or abbreviated size, and counts that disagree with `index`.
+  - Amend Task 9c's tests:
+    - `TestStatuslineIsBareWhenIndexedWithNoLookups` becomes `TestStatuslineShowsOnlyTheSizeWithNoLookups`: stdout is exactly `◤ entire graph · <symbols> nodes | <relations> edges\n`.
+    - `TestStatuslineShowsGrossNetAndContext`'s exact line 1 gains the size segment after the brand.
+  - `TestStatuslineShowsTheSizeOnlyForTheCurrentIndex`:
+    - Index, commit, render: the state is `behind 1` and no `nodes` segment appears.
+    - Index again and render: the size is back.
+  - `TestIndexBackfillsTheSizeOnAHit`:
+    - Index, delete every `*.counts.json` under the cache dir, then render: no `nodes` segment.
+    - Run `index` again (a hit) and render: the size appears.
+    - This catches both a hit that never writes counts and a render that keeps a stale "no size".
+- [ ] Step 2: Run them. Expected: FAIL.
+- [ ] Step 3: Implement it.
+- [ ] Step 4: Run `go test -short -timeout 40m ./internal/cli`, `go test -short ./internal/sem -run 'Cache|Index|Store'` (including the `*.json.gz` artifact-count tests) and `go vet ./...`.
+- [ ] Step 5: Measure as in Task 9b Step 5, 20 runs each.
+  - The warm-hit p50 must stay within Task 9c's result plus noise; a hit adds one small read.
+  - Record it in `docs/perf-ledger.md`.
+  - If the gate fails, revert the task and keep the ledger entry.
+- [ ] Step 6: Commit: `feat(cli): show the indexed graph's size in the status line`.
+
 ### Task 11: Re-run the eval and report (W5)
 
 - [ ] Step 1: Build the final binary to `graph-eval/tools/eg-final.exe`. Run `perf_run.py` for `final` on both repos, with the sidecar default (no `store` arg needed after Task 3).
