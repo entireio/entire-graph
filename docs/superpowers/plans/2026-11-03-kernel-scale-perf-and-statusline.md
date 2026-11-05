@@ -578,10 +578,11 @@ It also closes `entire review` findings #2 (`setup --no-claude-hook` aborts on a
   - `internal/cli/root.go`: an `Options.interactive func() bool` seam beside `homeDir`. Its default is "stdin and stdout are both terminals". `isTerminal` (`progressbar.go:16`) takes an `io.Writer`; add the same character-device check for stdin.
   - `internal/agentsetup/claude_statusline.go`: add `OurStatusLineInstalled(root string) bool`. It is true only when `settings.local.json` is a readable, regular, non-link JSON object whose `statusLine.command` contains `entire graph statusline`. Every read or parse failure is false, never an error.
   - `internal/agentsetup/claude_hook.go`: `claudeSettingsHint` names only the opt-out that applies. The hook step's refusal names `--no-claude-hook`; the status line step's refusal names `--no-statusline`.
-  - `internal/sem/head_indexed.go`: add `AncestorIndexEntries` (below).
+  - `internal/sem/head_indexed.go`: `HeadIndexEntries` also returns the ancestors' entries (below), and `HeadKeyWithoutGit` hashes `.git/shallow`.
+  - `internal/cli/root.go` and `internal/cli/agents.go`: thread `ctx` into `graphAgentCommand` and `runSetup` (`agents.go:179`, `root.go:371`), which the prompt read needs.
   - `internal/cli/statusline.go`: the segments below, the stale state, and no anchor outside a checkout. The git record gains the ancestor entries; bump `statuslineGitCacheSchema`.
-  - `.claude-plugin/plugin.json`: remove `settings.statusLine`.
-  - `scripts/entire-graph-statusline.sh`: the fallback becomes `exec entire graph statusline "$@"`.
+  - `.claude-plugin/plugin.json`: remove the whole `settings` object, not just its `statusLine` key.
+  - `scripts/entire-graph-statusline.sh`: the fallback becomes `exec entire graph statusline "$@"`. Its header (line 5, "the plugin manifest runs it directly") stops being true; reword it.
   - `internal/cli/help.go`: the setup and statusline entries.
   - Docs that state default install, the plugin's status line, `lookups` or `net n/a`. Amend these passages in place; do not add a contradicting entry:
     - `README.md:95-99`;
@@ -596,7 +597,10 @@ It also closes `entire review` findings #2 (`setup --no-claude-hook` aborts on a
 **Setup decision** for the status line step, first match wins:
 1. `--no-statusline`: skip without reading any settings. Row: `skipped (--no-statusline)`.
 2. `--statusline`: install exactly as Task 10 does. That means the preflight, overriding a shared or user line in this repo, and never replacing a foreign line inside `settings.local.json`.
-3. No flag, not interactive: skip without reading any settings. Row: `skipped (pass --statusline to install it)`. A line installed earlier stays, because a skip never writes.
+3. No flag, not interactive:
+   - `OurStatusLineInstalled` (it never errors) gives row `unchanged`.
+   - Otherwise skip without reading any other settings. Row: `skipped (pass --statusline to install it)`.
+   - A skip never writes, so a line installed earlier always stays.
 4. No flag, interactive:
    1. `OurStatusLineInstalled`: row `unchanged`, no prompt.
    2. `ForeignStatusLine` fails: Task 10's `skipped (could not read <path>)` row, no prompt. It finds a line in any scope: Task 10's `kept your status line (<path>) — rerun with --statusline …` row, no prompt.
@@ -624,18 +628,22 @@ Line 1 holds these segments in order. Each appears only when its condition holds
 
 The line never shows `✓ indexed`, `N lookups` or `net n/a`. With no checkout at the anchor it prints nothing (finding #7): `statuslineAnchorRepo` returns "" when `discoverImplicitCheckoutRoot` fails, instead of the absolute path. Width fitting, colours, the figures cache and line 2 are unchanged.
 
-**Stale state:**
+**Stale state:** `HeadIndexEntries` returns the ancestors' entries too, so HEAD, the strict repo key, the scope and the policy inputs are each derived once per render:
 ```go
-// AncestorIndexEntries returns, for each of HEAD's first-parent ancestors up to max
-// commits back, nearest first, the entries whose presence means that commit is indexed.
-// It derives them as HeadIndexEntries derives HEAD's (the same strict repo key, scope
-// and policy inputs, with the ancestor's tree), from one gitutil.FirstParentCommitTrees
-// walk. A shorter history returns fewer.
-func AncestorIndexEntries(ctx context.Context, repo, providerVersion, cacheDir string, max int) ([][]IndexEntry, error)
+// HeadIndexEntries returns the entries whose presence means HEAD is indexed, and, for each
+// of HEAD's first-parent ancestors up to maxBehind commits back, nearest first, the same
+// for that ancestor's tree (same repo key, scope and policy inputs). The ancestors come
+// from one gitutil.FirstParentCommitTrees(ctx, repo, head, maxBehind+1) walk, whose first
+// element must be HEAD itself (as search_store_ancestor.go:179 checks). A shorter or
+// shallow history returns fewer. walkErr reports a failed walk separately from err.
+func HeadIndexEntries(ctx context.Context, repo, providerVersion, cacheDir string, maxBehind int) (head []IndexEntry, behind [][]IndexEntry, walkErr, err error)
 ```
-- **When it runs:** only on the full (git-key miss) path, and only when HEAD resolved to a tree.
-- **Errors:** an error is handled like a `HeadIndexEntries` error. The render prints nothing and saves no record.
+- **When it runs:** only on the full (git-key miss) path. The walk runs only when HEAD resolved to a tree.
+- **Errors:**
+  - `err` is handled as today: the render prints nothing and saves no record.
+  - A `walkErr` is not fatal, because the walk is an extra. The render shows HEAD's own state (current or `not indexed`) and saves no record.
 - **Record:** the git record stores the ancestor entries beside HEAD's.
+- **Key input:** the git key also hashes `.git/shallow`, or "absent" when it is missing. A `git fetch --deepen` or `--unshallow` at the same HEAD then refreshes the ancestor list.
 - **Every render**, warm hits included, stats HEAD's entries and then each ancestor's in order. It runs no git. A later `index` at HEAD therefore shows as current on the next render.
 
 - [ ] Step 1: Write or amend the tests. Render tests use the Task 9 harness. Setup tests use real temp repos and a temp home.
@@ -653,7 +661,13 @@ func AncestorIndexEntries(ctx context.Context, repo, providerVersion, cacheDir s
     - Index, make two commits, render. Line 1 contains `index 2 commits behind · run entire graph index`.
     - Index again and render: the state is current.
     - This catches stale falling back to `not indexed`, and a cached stale state.
-  - `TestStatuslineSaysNotIndexedBeyondTheAncestorBound`: index, make 6 commits, render. The state is `not indexed`.
+  - `TestStatuslineSaysNotIndexedBeyondTheAncestorBound`, a table test. Index, make N commits, render.
+    - N = 5 gives `index 5 commits behind`.
+    - N = 6 gives `not indexed`.
+    - This catches a walk that passes `maxBehind` instead of `maxBehind+1`.
+  - `TestSetupHintNamesOnlyTheApplicableOptOut`: `settings.local.json` holds `[]`.
+    - A plain `setup` fails at the hook step, and its error names `--no-claude-hook` and not `--no-statusline`.
+    - `setup --statusline --no-claude-hook` fails at the status line step, and its error names `--no-statusline` and not `--no-claude-hook`.
   - `TestStatuslinePrintsNothingOutsideARepo`: anchor a plain temp dir, with `GIT_CEILING_DIRECTORIES` set to its parent so a git-tracked home cannot interfere. Stdout is empty.
   - Amend Task 9b's `TestStatuslineNoticesKeyInputChanges`: each subtest expects the state not to be current. A commit now reads `behind 1`, and an origin or `.graphignore` change reads `not indexed`.
   - `TestStatuslineWarmRenderRunsNoGit` and `TestStatuslineNoticesALaterIndex` expect the state current where they expected `✓ indexed`.
@@ -679,6 +693,7 @@ func AncestorIndexEntries(ctx context.Context, repo, providerVersion, cacheDir s
   - The warm-hit p50 stays within Task 9b's result plus noise, since a hit adds only stats.
   - The git-key-miss p50, which now includes one first-parent walk, must be no more than 10% above Task 9b's.
   - Record both in `docs/perf-ledger.md`.
+  - If the miss gate fails, revert only the stale state: the walk, the ancestor entries and their tests. Keep the rest of the task, and record the attempt in the ledger.
 - [ ] Step 6: Commit: `feat(setup): ask before installing a lean, stale-aware status line`.
 
 ### Task 9d: `entire review` cleanups
@@ -693,6 +708,7 @@ Closes the remaining in-scope `entire review` findings. #3 and #6 (repeated hash
   - Reuse `explainWarnings` and explain's line format and placement.
   - Print it once per invocation, not once per name, outside the `--max-context-bytes` budget.
   - Output without the warning is byte-identical.
+  - The warning line counts as cache telemetry under the Global Constraints' byte-identity rule, as it already does for `explain`.
 - **#4:** delete the assertion in `search_store_stamp_test.go` that a corrupted entry behind an unchanged stamp is served undetected. Delete the test too if nothing else remains in it. Add no replacement: an output-equality check cannot see a skipped hash, because the sidecar and the entry mirror the same tree. The Task 2 equivalence guard covers the focused load's correctness.
 - **#5:** delete `TestLookupVerbsReadTheWholeGraphOnlyForAnExactMiss`. The Task 2 equivalence guard covers correctness and the perf ledger covers speed; say so in the commit body.
 - **#9:** replace `distinctIDs` with `dedupeStrings` plus an empty-string filter at the call site. `dedupeStrings` compacts in place, which is safe because every caller (`search_store_focus.go:393-590`) owns its slice.
