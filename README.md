@@ -94,7 +94,8 @@ The command creates or updates these files:
 - `.claude/settings.local.json` (per-user, keep it untracked): a Claude Code
   `SubagentStart` hook (`--no-claude-hook` skips it) and, only if you choose
   it, the status line `entire graph statusline`, which shows this session's
-  estimated graph tokens and how far behind HEAD the index is. At a terminal
+  estimated graph tokens, the indexed graph's size in nodes and edges, and how
+  far behind HEAD the index is. At a terminal
   setup asks (default no); otherwise pass `--statusline`. When a settings scope
   already sets a status line, setup keeps yours unless you pass `--statusline`;
   `--no-statusline` skips the step. See [agent activation](docs/agents.md).

@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -92,12 +94,13 @@ func assertSegmentsInOrder(t *testing.T, line string, want ...string) {
 
 // TestStatuslineShowsGrossNetAndContext pins the figures of an indexed HEAD to what `stats` computes
 // for the same transcript: (4,000 - 400) / 4 = 900 gross tokens and stats' own modeled balance, with
-// no net segment when stats has no comparison. It catches a filler segment returning (an indexed
-// mark, the lookup count, "net n/a").
+// no net segment when stats has no comparison, after the graph's size as `index` reported it. It
+// catches a filler segment returning (an indexed mark, the lookup count, "net n/a") and a size out
+// of place.
 func TestStatuslineShowsGrossNetAndContext(t *testing.T) {
 	repo := statuslineRepo(t)
 	cacheDir := t.TempDir()
-	statuslineIndex(t, repo, cacheDir)
+	counts := statuslineIndexAs(t, repo, cacheDir, "full")
 	transcript := statuslineTranscript(t, repo)
 	out := runStatuslineForTest(t, 120, cacheDir,
 		statuslineStdin(t, transcript, repo, `{"used_percentage":41.6}`))
@@ -111,7 +114,7 @@ func TestStatuslineShowsGrossNetAndContext(t *testing.T) {
 	}
 	report := runStatsRawJSON(t, "--repo", repo, "--transcript", transcript, "--format", "json",
 		"--cache-dir", t.TempDir())
-	want := "◤ entire graph · ~900 tok gross"
+	want := "◤ entire graph · " + counts.segment() + " · ~900 tok gross"
 	if rawInt(t, report, "sessions_with_savings_comparison") != 0 {
 		want += " · " + formatStatuslineTokens(rawInt(t, report, "modeled_balance_est_tokens")) + " net"
 	}
@@ -120,16 +123,178 @@ func TestStatuslineShowsGrossNetAndContext(t *testing.T) {
 	}
 }
 
-// TestStatuslineIsBareWhenIndexedWithNoLookups catches a segment shown with nothing to act on: an
-// indexed HEAD and a session with no graph lookups render the product mark alone.
-func TestStatuslineIsBareWhenIndexedWithNoLookups(t *testing.T) {
+// TestStatuslineShowsOnlyTheSizeWithNoLookups catches a segment shown with nothing to act on: an
+// indexed HEAD and a session with no graph lookups render the product mark and the graph's size
+// alone.
+func TestStatuslineShowsOnlyTheSizeWithNoLookups(t *testing.T) {
 	repo := statuslineRepo(t)
 	cacheDir := t.TempDir()
-	statuslineIndex(t, repo, cacheDir)
+	counts := statuslineIndexAs(t, repo, cacheDir, "full")
 	transcript := writeGrossCommandTranscript(t, repo, "ls", "a.go")
-	if out := runStatuslineForTest(t, 120, cacheDir, statuslineStdin(t, transcript, repo, "")); out != "◤ entire graph\n" {
-		t.Fatalf("stdout = %q, want %q", out, "◤ entire graph\n")
+	want := "◤ entire graph · " + counts.segment() + "\n"
+	if out := runStatuslineForTest(t, 120, cacheDir, statuslineStdin(t, transcript, repo, "")); out != want {
+		t.Fatalf("stdout = %q, want %q", out, want)
 	}
+}
+
+// statuslineSizedRepo is a committed git repository holding one generated Go file, funcs.go: a type
+// and 1,000 one-line functions, each but the last calling the next with that type, so the node
+// count crosses 1,000 and the full profile records type relations the fast one does not.
+func statuslineSizedRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	git(t, repo, "init", "-b", "statusline-trunk")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+	var source strings.Builder
+	source.WriteString("package main\n\ntype T struct{}\n\n")
+	for index := range 1000 {
+		if index == 999 {
+			source.WriteString("func F0999(t T) T { return t }\n")
+			continue
+		}
+		source.WriteString("func F" + statuslineFourDigits(index) + "(t T) T { return F" + statuslineFourDigits(index+1) + "(t) }\n")
+	}
+	write(t, repo, "funcs.go", source.String())
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "one")
+	return repo
+}
+
+func statuslineFourDigits(value int) string {
+	text := strconv.Itoa(value)
+	return strings.Repeat("0", 4-len(text)) + text
+}
+
+// statuslineCounts is what `entire graph index --format json` reported as counts.
+type statuslineCounts struct {
+	Symbols   int `json:"symbols"`
+	Relations int `json:"relations"`
+}
+
+// segment is the size segment the status line must show for these counts, written out here with
+// its own thousands separators rather than through the code under test.
+func (c statuslineCounts) segment() string {
+	return statuslineThousands(c.Symbols) + " nodes | " + statuslineThousands(c.Relations) + " edges"
+}
+
+func statuslineThousands(value int) string {
+	digits := strconv.Itoa(value)
+	for cut := len(digits) - 3; cut > 0; cut -= 3 {
+		digits = digits[:cut] + "," + digits[cut:]
+	}
+	return digits
+}
+
+// statuslineLine1 renders with a lookup transcript and returns line 1.
+func statuslineLine1(t *testing.T, repo, cacheDir string) string {
+	t.Helper()
+	out := runStatuslineForTest(t, 120, cacheDir, statuslineStdin(t, statuslineTranscript(t, repo), repo, ""))
+	lines := statuslineLines(out)
+	if len(lines) == 0 || lines[0] == "" {
+		t.Fatalf("the render printed no line 1: %q", out)
+	}
+	return lines[0]
+}
+
+// assertNoSizeSegment fails when any segment of line is a graph size.
+func assertNoSizeSegment(t *testing.T, line string) {
+	t.Helper()
+	for _, segment := range statuslineSegments(line) {
+		if strings.Contains(segment, " nodes | ") {
+			t.Fatalf("line %q shows a size segment %q, want none", line, segment)
+		}
+	}
+}
+
+// TestStatuslineShowsTheGraphSize catches a missing or abbreviated size, and counts that disagree
+// with what `index` reported: the segment after the mark is the symbol and relation counts of
+// `index --format json`, written in full with comma separators.
+func TestStatuslineShowsTheGraphSize(t *testing.T) {
+	repo := statuslineSizedRepo(t)
+	cacheDir := t.TempDir()
+	counts := statuslineIndexAs(t, repo, cacheDir, "full")
+	if counts.Symbols < 1000 {
+		t.Fatalf("the fixture indexed %d symbols, want at least 1,000 to exercise the separator", counts.Symbols)
+	}
+	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", counts.segment())
+}
+
+// TestStatuslinePrefersTheFullIndexSize catches a fast entry winning over full: with only a fast
+// index the size is the fast entry's, and once a full index exists it is the full entry's.
+func TestStatuslinePrefersTheFullIndexSize(t *testing.T) {
+	repo := statuslineSizedRepo(t)
+	cacheDir := t.TempDir()
+	fast := statuslineIndexAs(t, repo, cacheDir, "fast")
+	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", fast.segment())
+	full := statuslineIndexAs(t, repo, cacheDir, "full")
+	if full.Relations == fast.Relations {
+		t.Fatalf("the fixture has %d relations under both profiles, want them to differ", full.Relations)
+	}
+	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", full.segment())
+}
+
+// TestHeadQueryWritesTheSize catches a complete-entry writer without the counts helper: a cold
+// `query --head --profile fast` builds the complete fast entry, and the next render shows the size
+// that `index --profile fast` then reports for that entry.
+func TestHeadQueryWritesTheSize(t *testing.T) {
+	repo := statuslineSizedRepo(t)
+	cacheDir := t.TempDir()
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out},
+		[]string{"query", "--repo", repo, "--head", "--profile", "fast", "--cache-dir", cacheDir,
+			"--format", "json", "--query", "F0500 calls F0501"}); err != nil {
+		t.Fatalf("query: %v\n%s", err, out.String())
+	}
+	line := statuslineLine1(t, repo, cacheDir)
+	fast := statuslineIndexAs(t, repo, cacheDir, "fast")
+	assertSegmentsInOrder(t, line, "◤ entire graph", fast.segment())
+}
+
+// TestStatuslineShowsTheSizeOnlyForTheCurrentIndex catches a size shown beside a stale state, where
+// it would read as the current code's size: one commit after the index there is no size, and an
+// index at the new HEAD brings it back.
+func TestStatuslineShowsTheSizeOnlyForTheCurrentIndex(t *testing.T) {
+	repo := statuslineSizedRepo(t)
+	cacheDir := t.TempDir()
+	statuslineIndexAs(t, repo, cacheDir, "full")
+	statuslineCommit(t, repo, "two")
+	stdin := statuslineStdin(t, statuslineTranscript(t, repo), repo, "")
+	if got := statuslineIndexedState(t, cacheDir, stdin); got != "behind 1" {
+		t.Fatalf("one commit after the index the render shows %q, want behind 1", got)
+	}
+	assertNoSizeSegment(t, statuslineLine1(t, repo, cacheDir))
+	counts := statuslineIndexAs(t, repo, cacheDir, "full")
+	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", counts.segment())
+}
+
+// TestIndexBackfillsTheSizeOnAHit catches an `index` hit that never writes the counts file, and a
+// render that keeps a stale "no size": with the counts files deleted the render shows no size, and
+// after a second `index` (a hit) it shows that run's counts.
+func TestIndexBackfillsTheSizeOnAHit(t *testing.T) {
+	repo := statuslineSizedRepo(t)
+	cacheDir := t.TempDir()
+	statuslineIndexAs(t, repo, cacheDir, "full")
+	removed := 0
+	if err := filepath.WalkDir(cacheDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".counts.json") {
+			removed++
+			return os.Remove(path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("remove the counts files: %v", err)
+	}
+	if removed == 0 {
+		t.Fatal("index wrote no *.counts.json file to remove")
+	}
+	assertNoSizeSegment(t, statuslineLine1(t, repo, cacheDir))
+	counts := statuslineIndexAs(t, repo, cacheDir, "full")
+	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", counts.segment())
 }
 
 // TestStatuslineShowsHowFarBehindTheIndexIs catches a stale index falling back to "not indexed", and
@@ -256,14 +421,28 @@ func TestStatuslineDropsWholeSegmentsToFit(t *testing.T) {
 	}
 }
 
-// statuslineIndex runs `entire graph index` for repo's HEAD into cacheDir.
+// statuslineIndex runs `entire graph index --profile fast` for repo's HEAD into cacheDir.
 func statuslineIndex(t *testing.T, repo, cacheDir string) {
 	t.Helper()
-	var out bytes.Buffer
-	if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out},
-		[]string{"index", "--repo", repo, "--profile", "fast", "--cache-dir", cacheDir, "--format", "json"}); err != nil {
-		t.Fatalf("index: %v\n%s", err, out.String())
+	statuslineIndexAs(t, repo, cacheDir, "fast")
+}
+
+// statuslineIndexAs runs `entire graph index --profile <profile> --format json` for repo's HEAD into
+// cacheDir and returns the counts it reported.
+func statuslineIndexAs(t *testing.T, repo, cacheDir, profile string) statuslineCounts {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &errOut},
+		[]string{"index", "--repo", repo, "--profile", profile, "--cache-dir", cacheDir, "--format", "json"}); err != nil {
+		t.Fatalf("index: %v\n%s%s", err, out.String(), errOut.String())
 	}
+	var response struct {
+		Counts *statuslineCounts `json:"counts"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil || response.Counts == nil {
+		t.Fatalf("index --format json printed no counts (%v): %s", err, out.String())
+	}
+	return *response.Counts
 }
 
 // statuslineIndexedState renders and classifies line 1: "not indexed", "behind N" for an

@@ -20,8 +20,12 @@ auto-generated notes on
   At a terminal setup asks (default no); otherwise it installs only with
   `--statusline`. It does not ask when ours is installed or another status
   line is set. The line shows this session's estimated graph tokens, never
-  prices, and, when HEAD has no index, how many commits behind (at most 5) the
-  nearest indexed first-parent ancestor is, else `not indexed`. Outside a
+  prices; when HEAD is indexed, the graph's size as `N nodes | M edges`, the
+  counts `entire graph index` reported, in full; and, when HEAD has no index,
+  how many commits behind (at most 5) the nearest indexed first-parent
+  ancestor is, else `not indexed`. Each complete committed-tree cache entry
+  gains a small `<key>.counts.json` beside it, which the status line reads;
+  entries built earlier gain theirs the next time `index` runs. Outside a
   checkout it prints nothing. A project-local status line overrides the shared
   and user ones, so when `.claude/settings.local.json`,
   `.claude/settings.json` or `~/.claude/settings.json` already defines another,

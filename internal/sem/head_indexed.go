@@ -127,6 +127,15 @@ func AnyIndexEntryExists(entries []IndexEntry) bool {
 	return false
 }
 
+// IndexEntryCounts reads the size recorded beside entry: the symbol and relation counts that
+// `index` reports for it as counts.symbols and counts.relations, from the counts file every
+// complete entry writer leaves next to the entry and every `index` brings up to date. The read is
+// one bounded (4 KiB) file read through the cache root, with no git and no decode of the entry.
+// Any failure, a missing file included, is ok=false.
+func IndexEntryCounts(entry IndexEntry) (symbols, relations int, ok bool) {
+	return readSearchSnapshotCounts(cacheEntry{root: entry.Root, relative: entry.Relative})
+}
+
 // exists stats the entry through the same confined root its readers open it through.
 func (entry cacheEntry) exists() bool {
 	root, err := os.OpenRoot(entry.root)

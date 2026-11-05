@@ -21,17 +21,20 @@ import (
 // `entire graph statusline` is the command Claude Code runs as its status line. It reads the
 // status JSON on stdin and prints at most two lines:
 //
-//	◤ entire graph · ~184K tok gross · ~12.4K net
+//	◤ entire graph · 17,271 nodes | 86,038 edges · ~184K tok gross · ~12.4K net
 //	▸ ctx 42%
 //
-// Line 1 shows only what the user acts on: an index state segment and its remedy only when HEAD
-// has no index ("index N commits behind" when a recent first-parent ancestor has one, else "not
-// indexed"), then the gross and net figures once the session has made a graph lookup. Every figure
-// is an estimated token count from the stats collector (run in-process, never as a subprocess) over
-// this session's transcript and its subagent transcripts. Nothing is priced: the line never shows
-// money. The index state is a stat of each sem.HeadIndexEntries entry, HEAD's and then each
-// ancestor's; the entries and HEAD's tree are kept under a key read from .git without running git,
-// so a warm render spawns no git at all. A status line must never surface an error, so every
+// Line 1 shows only what the user acts on: the indexed graph's size (symbol nodes and relations,
+// as `index` reported them for HEAD's entry, written in full) only when HEAD itself is indexed; an
+// index state segment and its remedy only when HEAD has no index ("index N commits behind" when a
+// recent first-parent ancestor has one, else "not indexed"); then the gross and net figures once
+// the session has made a graph lookup. Every token figure is an estimated count from the stats
+// collector (run in-process, never as a subprocess) over this session's transcript and its
+// subagent transcripts. Nothing is priced: the line never shows money. The index state is a stat
+// of each sem.HeadIndexEntries entry, HEAD's and then each ancestor's, and the size one small read
+// of the counts file beside HEAD's entry (sem.IndexEntryCounts); the entries and HEAD's tree are
+// kept under a key read from .git without running git, so a warm render spawns no git at all. A
+// status line must never surface an error, so every
 // failure past argument parsing prints nothing and returns nil, and so does an anchor outside any
 // checkout.
 
@@ -72,10 +75,12 @@ type statuslineFigures struct {
 	NetAvailable bool   `json:"net_available"`
 }
 
-// statuslinePart is a run of segment text; figure parts are coloured.
+// statuslinePart is a run of segment text; figure parts are coloured as figures and separator
+// parts as the separator between segments.
 type statuslinePart struct {
-	text   string
-	figure bool
+	text      string
+	figure    bool
+	separator bool
 }
 
 type statuslineSegment []statuslinePart
@@ -148,7 +153,13 @@ func renderStatusline(ctx context.Context, opts Options, cacheDir string) (lines
 	if !ok {
 		return nil
 	}
-	distance := statuslineIndexDistance(head, behind)
+	distance, current := statuslineIndexDistance(head, behind)
+	// The size is read on every render, hits included, and only for HEAD's own entry: beside a
+	// stale state it would read as the current code's size.
+	var size statuslineGraphSize
+	if distance == 0 {
+		size.symbols, size.relations, size.ok = sem.IndexEntryCounts(current)
+	}
 	figures, ok := statuslineFiguresFor(input.TranscriptPath, repo, tree, cacheDir, opts.Version)
 	if !ok || ctx.Err() != nil {
 		return nil
@@ -156,7 +167,7 @@ func renderStatusline(ctx context.Context, opts Options, cacheDir string) (lines
 
 	columns := statuslineColumns()
 	color := os.Getenv("NO_COLOR") == ""
-	if line := renderStatuslineLine(fitStatuslineSegments(statuslineMainSegments(distance, figures), columns), color); line != "" {
+	if line := renderStatuslineLine(fitStatuslineSegments(statuslineMainSegments(distance, size, figures), columns), color); line != "" {
 		lines = append(lines, line)
 	}
 	if input.ContextWindow != nil && input.ContextWindow.UsedPercentage != nil {
@@ -256,18 +267,29 @@ func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (t
 }
 
 // statuslineIndexDistance stats HEAD's entries, then each ancestor's in order, and returns 0 when
-// HEAD is indexed, n when the nearest indexed ancestor is n commits back, and -1 when none is. It
-// runs no git, so an `index` since the last render shows at once.
-func statuslineIndexDistance(head []sem.IndexEntry, behind [][]sem.IndexEntry) int {
-	if sem.AnyIndexEntryExists(head) {
-		return 0
+// HEAD is indexed, n when the nearest indexed ancestor is n commits back, and -1 when none is. When
+// HEAD is indexed, current is its first existing entry in sem.HeadIndexEntries order (full before
+// fast), the one whose size is shown. It runs no git, so an `index` since the last render shows at
+// once.
+func statuslineIndexDistance(head []sem.IndexEntry, behind [][]sem.IndexEntry) (distance int, current sem.IndexEntry) {
+	for _, entry := range head {
+		if sem.AnyIndexEntryExists([]sem.IndexEntry{entry}) {
+			return 0, entry
+		}
 	}
 	for index, entries := range behind {
 		if sem.AnyIndexEntryExists(entries) {
-			return index + 1
+			return index + 1, sem.IndexEntry{}
 		}
 	}
-	return -1
+	return -1, sem.IndexEntry{}
+}
+
+// statuslineGraphSize is the indexed graph's size as `index` reported it: symbol nodes and
+// relations. ok is false when there is no size to show.
+type statuslineGraphSize struct {
+	symbols, relations int
+	ok                 bool
 }
 
 // statuslineFiguresFor serves the figures from the cache when every in-scope transcript file, HEAD's
@@ -350,10 +372,18 @@ func saveStatuslineJSON(path string, value any) {
 	}
 }
 
-// statuslineMainSegments builds line 1. distance is statuslineIndexDistance's answer: the index
-// state and its remedy appear only when HEAD has no index, and the figures only after a lookup.
-func statuslineMainSegments(distance int, figures statuslineFigures) []statuslineSegment {
+// statuslineMainSegments builds line 1. distance is statuslineIndexDistance's answer: the graph's
+// size appears only when HEAD is indexed and its counts were read, the index state and its remedy
+// only when HEAD has no index, and the figures only after a lookup.
+func statuslineMainSegments(distance int, size statuslineGraphSize, figures statuslineFigures) []statuslineSegment {
 	segments := []statuslineSegment{{{text: "◤", figure: true}, {text: " entire graph"}}}
+	if distance == 0 && size.ok {
+		segments = append(segments, statuslineSegment{
+			{text: formatStatuslineCount(size.symbols), figure: true}, {text: " nodes"},
+			{text: " | ", separator: true},
+			{text: formatStatuslineCount(size.relations), figure: true}, {text: " edges"},
+		})
+	}
 	switch {
 	case distance == 1:
 		segments = append(segments, statuslineSegment{{text: "index 1 commit behind"}})
@@ -401,9 +431,12 @@ func renderStatuslineLine(segments []statuslineSegment, color bool) string {
 			}
 		}
 		for _, part := range segment {
-			if color && part.figure {
+			switch {
+			case color && part.figure:
 				line.WriteString(statuslineIndigo + part.text + statuslineReset)
-			} else {
+			case color && part.separator:
+				line.WriteString(statuslineMuted + part.text + statuslineReset)
+			default:
 				line.WriteString(part.text)
 			}
 		}
@@ -427,6 +460,16 @@ func formatStatuslineTokens(value int64) string {
 		return "−" + statuslineMagnitude(uint64(-(value+1))+1)
 	}
 	return "~" + statuslineMagnitude(uint64(value))
+}
+
+// formatStatuslineCount writes a count in full with comma thousands separators: 17,271. Counts are
+// never negative (sem.IndexEntryCounts refuses one).
+func formatStatuslineCount(value int) string {
+	digits := strconv.Itoa(value)
+	for cut := len(digits) - 3; cut > 0; cut -= 3 {
+		digits = digits[:cut] + "," + digits[cut:]
+	}
+	return digits
 }
 
 func statuslineMagnitude(value uint64) string {

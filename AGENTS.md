@@ -200,7 +200,8 @@ they are not human-facing evidence of savings or behavior. No network; local par
 can be disabled with `--no-cache`.
 `--transcript <path>` narrows
 the whole report to one session (that transcript plus its `<session>/subagents/*.jsonl`), which is
-the scope `entire graph statusline` renders as a live Claude Code status line, in tokens only.
+the scope `entire graph statusline` renders as a live Claude Code status line, in tokens only,
+after the indexed graph's size (`N nodes | M edges`, shown only when HEAD itself is indexed).
 The status line is opt-in: `entire graph setup` asks at a terminal (default no) before installing
 it in `.claude/settings.local.json`, and never when another settings scope already defines one;
 `entire graph setup --statusline` installs it without asking, overriding a shared or user line,

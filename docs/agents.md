@@ -42,7 +42,9 @@ settings file:
 
   If you choose it, the same file also gets the Claude Code status line, a
   `statusLine` whose command is `entire graph statusline`: this session's
-  estimated graph tokens, never prices, and how far behind HEAD the index is.
+  estimated graph tokens, never prices, the indexed graph's size when HEAD is
+  indexed (`N nodes | M edges`, as `entire graph index` reported them), and
+  how far behind HEAD the index is.
   It is opt-in. When stdin and stdout are both terminals, `setup` asks
   `[y/N]` and installs only on `y` or `yes`; otherwise it installs only with
   `--statusline`. It does not ask when ours is already installed (the row says

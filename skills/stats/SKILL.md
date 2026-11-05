@@ -97,16 +97,19 @@ Two consequences worth stating to the user:
 
 ## Status line
 
-The same numbers render as a live Claude Code status line, in estimated tokens only:
+The same numbers render as a live Claude Code status line, in estimated tokens only, after the
+indexed graph's size:
 
 ```text
-◤ entire graph · ~184K tok gross · ~12.4K net
+◤ entire graph · 17,271 nodes | 86,038 edges · ~184K tok gross · ~12.4K net
 ```
 
-It shows only what the user acts on: the gross figure once the session has made a graph lookup,
-the net figure when stats has a comparison, and, when HEAD has no index, `index N commits behind`
-(a first-parent ancestor at most 5 commits back has one) or `not indexed`, each followed by
-`run entire graph index`.
+It shows only what the user acts on: the graph's size when HEAD itself is indexed (the
+`counts.symbols` and `counts.relations` that `entire graph index` reported, numbers in full), the
+gross figure once the session has made a graph lookup, the net figure when stats has a comparison,
+and, when HEAD has no index, `index N commits behind` (a first-parent ancestor at most 5 commits
+back has one) or `not indexed`, each followed by `run entire graph index`. The size is never shown
+beside those two.
 
 The status line is opt-in. `entire graph setup` asks at a terminal (default no) before installing
 it in the repository's `.claude/settings.local.json`; `entire graph setup --statusline` installs it

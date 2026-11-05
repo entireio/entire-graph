@@ -191,7 +191,11 @@ these rules existed misses instead of re-emitting the paths it named.
 - Derivative caches, under `--cache-dir`, else `ENTIRE_PLUGIN_DATA_DIR`, else
   (for most query commands) the per-user cache directory. Cache entries are
   compressed snapshots rebuilt from repository state; deleting them costs a
-  rebuild, nothing else. Queries never modify repository source files. The
+  rebuild, nothing else. Each complete committed-tree snapshot entry also gets
+  a small uncompressed `<key>.counts.json` beside it, holding only its symbol
+  and relation counts; it is written through the same confined directory walk
+  as the entry, and `entire graph statusline` reads it through `os.Root`,
+  bounded at 4 KiB, to show the graph's size. Queries never modify repository source files. The
   cache directory you name is the trust boundary: it is resolved as given and
   may itself be a symlink. Everything below it is named by Entire Graph — a
   family, a version, and a SHA-256 digest. Writes open each family and version
