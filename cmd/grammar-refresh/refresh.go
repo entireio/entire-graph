@@ -80,15 +80,30 @@ func vendor(repoRoot, subdir, destDir string) ([]string, int, error) {
 			sources[dir+filepath.Base(h)] = h
 		}
 	}
-	license := findLicense(grammarRoot)
-	if license == "" {
-		license = findLicense(repoRoot)
+	licenses := findLicenses(grammarRoot)
+	if len(licenses) == 0 {
+		licenses = findLicenses(repoRoot)
 	}
-	if license == "" {
+	switch len(licenses) {
+	case 0:
 		return nil, 0, fmt.Errorf("no LICENSE or COPYING file in %s or the repository root", grammarRoot)
+	case 1:
+	default:
+		// Refuse rather than pick. scripts/gen-notices.sh finds vendored
+		// licences by the name LICENSE alone and prints one SPDX label per
+		// file, taking the first its grep recognises, so a dual-licensed
+		// upstream has no faithful single-file form: keeping one under-
+		// attributes, and concatenating gets labelled as whichever text
+		// classify_license matches first. Which grant we ship is a decision
+		// for a person.
+		names := make([]string, 0, len(licenses))
+		for _, l := range licenses {
+			names = append(names, filepath.Base(l))
+		}
+		return nil, 0, fmt.Errorf("%s carries %d licence files (%s); pick the grant to vendor, record the choice in the grammar's note, and vendor it by hand", filepath.ToSlash(subdir), len(licenses), strings.Join(names, ", "))
 	}
 	// Always LICENSE: scripts/gen-notices.sh only attributes files by that name.
-	sources["LICENSE"] = license
+	sources["LICENSE"] = licenses[0]
 
 	stale, err := vendoredFiles(destDir)
 	if err != nil {
@@ -125,18 +140,27 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-func findLicense(dir string) string {
+// findLicenses returns every licence file directly in dir, sorted by name.
+//
+// It returns all of them rather than the first, because the first is only the
+// right answer when there is exactly one: an upstream offering a choice of
+// grants ships LICENSE-MIT beside LICENSE-APACHE, and returning either one
+// alone silently drops half of what the vendored bytes are licensed under.
+// The caller decides what to do with more than one.
+func findLicenses(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return ""
+		return nil
 	}
+	var out []string
 	for _, e := range entries {
 		name := strings.ToUpper(e.Name())
 		if !e.IsDir() && (strings.HasPrefix(name, "LICENSE") || strings.HasPrefix(name, "COPYING")) {
-			return filepath.Join(dir, e.Name())
+			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}
-	return ""
+	sort.Strings(out)
+	return out
 }
 
 // vendoredFiles lists the files in destDir that vendor manages.

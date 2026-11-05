@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -230,6 +232,52 @@ func TestVendorWritesLicenseAsLICENSE(t *testing.T) {
 	}
 }
 
+func TestVendorRefusesSeveralLicenses(t *testing.T) {
+	src := t.TempDir()
+	writeTestFile(t, filepath.Join(src, "src", "parser.c"), "#define LANGUAGE_VERSION 14\n")
+	writeTestFile(t, filepath.Join(src, "LICENSE-APACHE"), "Apache License\nVersion 2.0\n")
+	writeTestFile(t, filepath.Join(src, "LICENSE-MIT"), "Permission is hereby granted, free of charge\nwithout restriction\n")
+	dest := t.TempDir()
+	writeTestFile(t, filepath.Join(dest, "parser.c"), "old\n")
+	_, _, err := vendor(src, "", dest)
+	if err == nil {
+		t.Fatal("want a refusal: vendoring either grant alone under-attributes the other")
+	}
+	// Both names, so the maintainer can see what the choice is between.
+	for _, want := range []string{"LICENSE-APACHE", "LICENSE-MIT", "2 licence files"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+	// The refusal has to come before any write, like the ABI gate.
+	got, _ := os.ReadFile(filepath.Join(dest, "parser.c"))
+	if string(got) != "old\n" {
+		t.Fatalf("destination changed on refusal: %q", got)
+	}
+}
+
+func TestFindLicensesReturnsEveryGrant(t *testing.T) {
+	dir := t.TempDir()
+	// Deliberately written in an order that is not sorted, and with a
+	// non-licence file and a directory that must not be picked up.
+	writeTestFile(t, filepath.Join(dir, "LICENSE-MIT"), "mit\n")
+	writeTestFile(t, filepath.Join(dir, "COPYING"), "copying\n")
+	writeTestFile(t, filepath.Join(dir, "LICENSE-APACHE"), "apache\n")
+	writeTestFile(t, filepath.Join(dir, "README.md"), "readme\n")
+	if err := os.Mkdir(filepath.Join(dir, "LICENSES"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := findLicenses(dir)
+	var names []string
+	for _, g := range got {
+		names = append(names, filepath.Base(g))
+	}
+	want := []string{"COPYING", "LICENSE-APACHE", "LICENSE-MIT"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("findLicenses = %v, want %v", names, want)
+	}
+}
+
 func gitRepo(t *testing.T, files map[string]string) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -421,5 +469,120 @@ func TestRefreshKeepsNoteAcrossRevisions(t *testing.T) {
 				t.Fatalf("entry = %+v", got)
 			}
 		})
+	}
+}
+
+// captureStdout runs fn with os.Stdout redirected and returns what it printed.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+	fn()
+	os.Stdout = saved
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out := <-done
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestRefreshSaysWhenAReferenceMoved(t *testing.T) {
+	repo, first := generatedGrammarRepo(t)
+	// A branch, not a tag: the shape perl's "release" reference has.
+	if err := git(repo, "checkout", "-q", "-b", "release"); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(repo, "src", "parser.c"), "#define LANGUAGE_VERSION 14\n// moved\n")
+	for _, args := range [][]string{
+		{"add", "."},
+		{"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "second"},
+	} {
+		if err := git(repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	second, err := gitOutput(repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("fixture did not advance the branch")
+	}
+
+	newManifest := func(recorded string) (string, string) {
+		root := t.TempDir()
+		manifest := filepath.Join(root, "grammars.json")
+		if err := saveManifest(manifest, []Grammar{{
+			Language:  "demo",
+			URL:       repo,
+			Reference: "release",
+			Revision:  recorded,
+			Files:     []string{"LICENSE", "parser.c"},
+			ABI:       14,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		return manifest, root
+	}
+
+	t.Run("moved", func(t *testing.T) {
+		manifest, root := newManifest(first)
+		var refreshErr error
+		out := captureStdout(t, func() {
+			refreshErr = refresh("demo", "release", "", "", manifest, root, false)
+		})
+		if refreshErr != nil {
+			t.Fatal(refreshErr)
+		}
+		// Both commits, so a reviewer can look up what actually changed.
+		for _, want := range []string{"moved from", first[:7], second[:7], "not a fixed reference"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output %q does not mention %q", out, want)
+			}
+		}
+	})
+
+	t.Run("did not move", func(t *testing.T) {
+		manifest, root := newManifest(second)
+		var refreshErr error
+		out := captureStdout(t, func() {
+			refreshErr = refresh("demo", "release", "", "", manifest, root, false)
+		})
+		if refreshErr != nil {
+			t.Fatal(refreshErr)
+		}
+		// Re-vendoring the recorded commit is the ordinary case and must stay
+		// quiet, or the warning means nothing.
+		if strings.Contains(out, "moved from") {
+			t.Errorf("warned although the reference still points at the recorded commit: %q", out)
+		}
+	})
+}
+
+func TestShortRevisionToleratesAShortValue(t *testing.T) {
+	// dart's manifest entry records an empty revision, and a hand-edited one
+	// can be any length; slicing [:7] unconditionally would panic.
+	for in, want := range map[string]string{
+		"":                 "",
+		"abc":              "abc",
+		"0123456":          "0123456",
+		"0123456789abcdef": "0123456",
+	} {
+		if got := shortRevision(in); got != want {
+			t.Errorf("shortRevision(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

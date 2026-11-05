@@ -106,6 +106,17 @@ func refresh(lang, ref, url, subdir, manifestPath, grammarsDir string, allowLoca
 		return err
 	}
 
+	// A reference that is neither a tag nor a commit can move under us: perl's
+	// is the "release" branch, so running the same command a month apart
+	// vendors different bytes. The manifest records which commit the committed
+	// files came from, and this is the only place the two can be compared, so
+	// an unannounced move would otherwise reach a review as "refreshed perl"
+	// with no commit to look up.
+	if existing.Revision != "" && existing.Reference == ref && revision != existing.Revision {
+		fmt.Printf("warning: %s %q moved from %s to %s since it was last vendored; it is not a fixed reference\n",
+			lang, ref, shortRevision(existing.Revision), shortRevision(revision))
+	}
+
 	files, abi, err := vendor(tmp, subdir, filepath.Join(grammarsDir, lang))
 	if err != nil {
 		return fmt.Errorf("%s at %s: %w", url, ref, err)
@@ -126,7 +137,7 @@ func refresh(lang, ref, url, subdir, manifestPath, grammarsDir string, allowLoca
 	if err := saveManifest(manifestPath, grammars); err != nil {
 		return err
 	}
-	fmt.Printf("vendored %s %s (%s, ABI %d) into %s\n", lang, ref, revision[:7], abi, filepath.Join(grammarsDir, lang))
+	fmt.Printf("vendored %s %s (%s, ABI %d) into %s\n", lang, ref, shortRevision(revision), abi, filepath.Join(grammarsDir, lang))
 	if existing.LocalChanges {
 		fmt.Printf("warning: %s now lacks its local changes; reapply them before committing\n", lang)
 	}
@@ -135,6 +146,16 @@ func refresh(lang, ref, url, subdir, manifestPath, grammarsDir string, allowLoca
 	}
 	fmt.Println("next: bump IdentityRevision in internal/sem/provider.go if parse results change, and run scripts/gen-notices.sh")
 	return nil
+}
+
+// shortRevision abbreviates a commit for a message. It is length-safe because
+// the manifest's recorded revision is data read off disk, not always the
+// 40 characters `git rev-parse` returns.
+func shortRevision(rev string) string {
+	if len(rev) > 7 {
+		return rev[:7]
+	}
+	return rev
 }
 
 func git(dir string, args ...string) error {
