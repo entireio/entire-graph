@@ -855,23 +855,29 @@ Added after the user saw 3–4 console windows flash and steal focus. It fixes c
   - A starting row stays when its `file_path` equals the normalised `--file` under `strings.EqualFold`. It is normalised the way `normalizeSymbolRefFile` normalises it (`symbolref.go:91`).
   - It stays when its `kind` equals `strings.TrimSpace(--kind)` under `strings.EqualFold`.
   - An empty field means no filter.
-- **ID matches are never filtered.** An ID wins ahead of every filter in `resolveFocusSymbols` (`symbolref.go:199`).
-- **When the filter applies:** `impactLookupFocus` and `neighborLookupFocus` set `File` and `Kind` only when `--symbol` is a plain name. Not when it is a symbol ID, and not in the `path:line` form, which `focusLookupNames` already sends to the full load.
+  - **Normalisation root:** normalise `--file` against `filepath.Abs` of the same `repo` passed to `loadLookupSnapshot`, which is what `snapshot.Header.RepoRoot` holds. Not `flags.Repo` as typed.
+- **Remove dropped rows.** Every row the filter drops is also deleted from the focused read's symbols (`read.symbols`, filled by `symbolsWhere` at `search_store_focus.go:567-581`). A later hop may add it back through `symbolsByID`, and that is fine. So if the filter ever disagrees with exact resolution, resolution finds nothing and the full load answers; the focus is never printed without its hops.
+- **ID matches are never filtered.** An ID wins ahead of every filter in `resolveFocusSymbols` (`symbolref.go:199`). The sem filter skips rows matched by ID, so callers need no "plain name" gate.
+- **When the filter applies:** `impactLookupFocus` and `neighborLookupFocus` set `File` and `Kind` whenever `--file` or `--kind` is given. The `path:line` form already goes to the full load (`focusLookupNames`).
 - **Why this is safe:** the filter repeats exact resolution's own comparison, so the focused starting set holds exactly the symbols exact resolution can pick. Hops and kinship start from that set. The SQL and the sidecar schema are unchanged.
 - `def` and `explain` are unchanged. `--line` is not a filter.
 
 **#4: trust the stamp on the full-sidecar read.**
 - Extract `entryDigestForStore(ctx context.Context, db *sql.DB, entry cacheEntry) (cacheDigest, error)` from `openExactSearchStoreForEntry`. It returns the recorded digest when `searchEntryStampMatches` holds, and otherwise `memoizedEntryDigest`.
 - Use it in both `openExactSearchStoreForEntry` and `loadSearchStoreForEntry` (`search_store.go:999`).
+  - `loadSearchStore` (`:409`) opens its own connection today. Restructure so that `loadSearchStoreForEntry` opens the sidecar once and hands that `db` to both `entryDigestForStore` and the load, rather than opening it twice.
 - Update the doc comments that say the full read always hashes (`search_store_context.go:628-631`, `search_store.go:815-821`).
 - Note in the ledger: `index --head` on an unchanged tree still hashes once in the repair step, so it does not speed up.
 
 **#6: tests can see which load served a lookup.**
-- When `ENTIRE_GRAPH_TRACE_LOAD=1`, `loadLookupSnapshot` writes one line to stderr, `entire-graph: index load focused` or `entire-graph: index load full`. Without the variable it writes nothing.
+- When `ENTIRE_GRAPH_TRACE_LOAD=1`, `loadLookupSnapshot` writes one line to the command's stderr, `entire-graph: index load focused` or `entire-graph: index load full`. Without the variable it writes nothing.
+  - It is read through an `EntireEnv` field, like the other knobs (`env.go:75-107`), and the guard sets that field.
+  - `loadLookupSnapshot` gains a stderr `io.Writer` parameter. The four call sites pass `opts.Stderr`: `impact.go:183`, `neighbors.go:161`, `def.go:178`, `explain.go:307`.
 - This is a test hook at the process boundary. It is not verb output, not a JSON field and not documented for users. It cannot change any verb's bytes or interact with `--max-context-bytes`.
 - **The equivalence guard** (`focused_equivalence_test.go`) sets the variable.
   - Store on: every lookup whose `--symbol` is a plain name that the full load resolves exactly must print `index load focused`. Store off, every lookup prints `index load full`.
-  - The `path:line` cases are excluded, because they are always full. Strip the trace line from stderr before the byte comparison.
+  - The `path:line` cases are excluded, because they are always full.
+  - The guard's `cli()` helper captures each lookup's stderr separately, since lookups run concurrently, and searches it for the exact trace line. The guard does not byte-compare stderr.
   - It catches a focused read that fails quietly and takes the full load.
 
 **#7:** delete `TestFoldSymbolNameAgreesWithEqualFold`. Add to the guard's fixture a Go function named with the Kelvin sign (`KelvinTemp`, starting with U+212A). Look it up through `def --head --symbol kelvintemp`. The output must be identical with the store on and off, and the trace must read `focused`.
@@ -886,8 +892,9 @@ Added after the user saw 3–4 console windows flash and steal focus. It fixes c
   - **#6:** the guard's trace assertion. It FAILS today, because nothing prints the trace.
   - **#2:** a guard fixture where one name is defined in two files, with `impact --head --symbol <name> --file <one of them>`. The output is identical with the store on and off, and the trace reads `focused`.
     - A case variant names the file with different letter case. It must match the store-off output, which `EqualFold` resolves.
-    - A case passes the symbol's ID together with a `--file` that names the other file. It must match the store-off output, because the ID wins.
-  - **#4:** mirror `TestFocusedLookupHashesAnEntryWhoseStampChanged` through `LoadOrBuildProviderSnapshot`, with the store on. After the entry is rewritten so its stamp changes and its bytes differ, the warm load must not serve the stale sidecar. `cacheHit` and the snapshot show this.
+    - A guard case passes an absolute `--file`. It must match the store-off output, with the trace reading `focused`.
+    - A sem-level test: `SnapshotFocus{Names: [<the symbol's ID>], File: <the other file>}` still loads that symbol. It catches the ID exemption being dropped.
+  - **#4, a regression guard:** mirror `TestFocusedLookupHashesAnEntryWhoseStampChanged` through `LoadOrBuildProviderSnapshot`, with the store on. It passes today, because the full read always hashes; it keeps the stamp from being trusted after a change. Rewrite the entry's bytes so its stamp changes; the warm load must report `cacheHit=false`.
   - **#7:** the Kelvin case.
 - [ ] Step 2: Implement #2, #4, #6, #7 and #8.
 - [ ] Step 3: Run `go test -short -timeout 40m ./internal/cli`, `go test -short ./internal/sem -run 'Store|Focus|Stamp|Lookup'` and `go vet ./...`. Do not run `./internal/gitutil`'s console test.
