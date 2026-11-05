@@ -5,22 +5,24 @@ package gitutil
 import (
 	"os/exec"
 	"syscall"
+	"unsafe"
 )
 
-var procGetConsoleWindow = syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow")
+var procGetConsoleProcessList = syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleProcessList")
 
 // HideConsoleWindow keeps cmd from opening a visible console window when
-// entire-graph itself has none. Windows gives a console program a new, visible
-// console when its parent has no console, so a status line render started
-// without one would flash a window, and steal focus, for every subprocess.
+// entire-graph itself has no console attached. Windows gives a console program
+// a new, visible console when its parent has none, so a status line render
+// started without one would flash a window, and steal focus, for every
+// subprocess.
 //
-// When the current process has a console window, cmd is left alone: a
-// terminal user keeps one console shared with every child, so Ctrl-C still
-// reaches the whole tree and no extra conhost.exe starts per call. Otherwise
-// CREATE_NO_WINDOW is ORed into the creation flags and HideWindow is set; every
-// other SysProcAttr field is kept.
+// When the current process has any console attached (visible, windowless or a
+// pseudoconsole), cmd is left alone: the child shares that console, so Ctrl-C
+// still reaches the whole tree and no extra conhost.exe starts per call.
+// Otherwise CREATE_NO_WINDOW is ORed into the creation flags and HideWindow is
+// set; every other SysProcAttr field is kept.
 func HideConsoleWindow(cmd *exec.Cmd) {
-	if window, _, _ := procGetConsoleWindow.Call(); window != 0 {
+	if consoleAttached() {
 		return
 	}
 	if cmd.SysProcAttr == nil {
@@ -28,4 +30,15 @@ func HideConsoleWindow(cmd *exec.Cmd) {
 	}
 	cmd.SysProcAttr.CreationFlags |= createNoWindow
 	cmd.SysProcAttr.HideWindow = true
+}
+
+// consoleAttached reports whether this process is attached to a console.
+// GetConsoleProcessList counts the processes attached to the caller's console,
+// which includes the caller, and returns 0 only when there is no console. A
+// windowless console has no window but still answers here, so it is not
+// mistaken for "no console" the way GetConsoleWindow() == 0 would be.
+func consoleAttached() bool {
+	var processes [1]uint32
+	count, _, _ := procGetConsoleProcessList.Call(uintptr(unsafe.Pointer(&processes[0])), uintptr(len(processes)))
+	return count != 0
 }
