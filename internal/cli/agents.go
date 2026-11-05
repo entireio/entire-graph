@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"bufio"
+	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,7 +17,7 @@ import (
 
 const agentGuide = agentsetup.GraphGuide
 
-func graphAgentCommand(opts Options, args []string, install bool) error {
+func graphAgentCommand(ctx context.Context, opts Options, args []string, install bool) error {
 	fs := flag.NewFlagSet("agent instructions", flag.ContinueOnError)
 	fs.SetOutput(opts.Stderr)
 	repo := fs.String("repo", "", "Project root (default: host repository or nearest repository)")
@@ -76,21 +80,16 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 				return err
 			}
 		}
-		// settings.local.json is rewritten, so a malformed one is refused here. The shared and user
-		// files are only inspected; one that cannot be read skips the status line, never the guides.
-		foreignStatusLine := ""
-		var statusLineScopeErr error
-		if !*noStatusline {
-			if err := agentsetup.CheckClaudeStatusLine(root); err != nil {
-				return err
-			}
-			foreignStatusLine, statusLineScopeErr = agentsetup.ForeignStatusLine(root, opts.userHome())
-		}
 		// InstallChanged rather than Install: the installer's own line-per-write
 		// output is replaced by one settled row per phase, composed here the way
 		// brain's setup composes its rows.
 		ui := newSetupUI(opts.Stdout)
 		ui.Intro("Entire Graph creates a map of your code that your coding agents query instead of grepping.")
+		// The status line is decided, and asked about, before anything is written.
+		statusLine, err := planStatusLine(ctx, opts, root, *statusline, *noStatusline)
+		if err != nil {
+			return err
+		}
 		changed, err := agentsetup.InstallChanged(root, render)
 		if err != nil {
 			return err
@@ -117,9 +116,9 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 				ui.Row(setupMarkDone, "Claude hook", "updated "+path+" (Claude Code SubagentStart hook; per-user, keep it untracked)")
 			}
 		}
-		if *noStatusline {
-			ui.Row(setupMarkSkipped, "status line", "skipped (--no-statusline)")
-		} else if err := installStatusLine(ui, root, foreignStatusLine, statusLineScopeErr, *statusline); err != nil {
+		if !statusLine.install {
+			ui.Row(statusLine.mark, "status line", statusLine.row)
+		} else if err := installStatusLine(ui, root, statusLine.foreign, statusLine.scopeErr, statusLine.force); err != nil {
 			return err
 		}
 		ui.End()
@@ -131,6 +130,101 @@ func graphAgentCommand(opts Options, args []string, install bool) error {
 	}
 	_, err = fmt.Fprint(opts.Stdout, guide)
 	return err
+}
+
+// statusLinePlan is setup's status line decision, made before anything is written. Without install
+// the row is settled as is; with it installStatusLine settles it from foreign, scopeErr and force.
+type statusLinePlan struct {
+	install  bool
+	mark     setupMark
+	row      string
+	foreign  string
+	scopeErr error
+	force    bool
+}
+
+// statusLinePrompt is the question an interactive setup asks. Only y or yes installs.
+const statusLinePrompt = "Install the Claude Code status line (graph token savings)? [y/N] "
+
+// planStatusLine decides the status line step; the first match wins:
+//
+//  1. --no-statusline skips without reading any settings.
+//  2. --statusline installs as before: the preflight, overriding a shared or user line in this
+//     repo, never replacing a foreign line inside settings.local.json.
+//  3. Otherwise ours already in settings.local.json is "unchanged".
+//  4. Not interactive: skip without reading any other settings.
+//  5. Interactive: an unreadable scope or a status line in any scope settles the row without asking;
+//     else ask, and only a yes runs the preflight and installs.
+//
+// So settings.local.json is refused only when the status line is chosen, and a skip never writes:
+// a line installed earlier stays.
+func planStatusLine(ctx context.Context, opts Options, root string, force, skip bool) (statusLinePlan, error) {
+	switch {
+	case skip:
+		return statusLinePlan{mark: setupMarkSkipped, row: "skipped (--no-statusline)"}, nil
+	case force:
+		// settings.local.json is rewritten, so a malformed one is refused here. The shared and user
+		// files are only inspected.
+		if err := agentsetup.CheckClaudeStatusLine(root); err != nil {
+			return statusLinePlan{}, err
+		}
+		foreign, scopeErr := agentsetup.ForeignStatusLine(root, opts.userHome())
+		return statusLinePlan{install: true, foreign: foreign, scopeErr: scopeErr, force: true}, nil
+	case agentsetup.OurStatusLineInstalled(root):
+		local := filepath.Join(root, filepath.FromSlash(agentsetup.ClaudeLocalSettings))
+		return statusLinePlan{mark: setupMarkDone, row: "unchanged " + local + " (Claude Code status line already present)"}, nil
+	case !opts.isInteractive():
+		return statusLinePlan{mark: setupMarkSkipped, row: "skipped (pass --statusline to install it)"}, nil
+	}
+	// One that cannot be read, or a line in any scope, is settled by installStatusLine without force,
+	// which writes nothing.
+	if foreign, scopeErr := agentsetup.ForeignStatusLine(root, opts.userHome()); foreign != "" || scopeErr != nil {
+		return statusLinePlan{install: true, foreign: foreign, scopeErr: scopeErr}, nil
+	}
+	if _, err := io.WriteString(opts.Stdout, statusLinePrompt); err != nil {
+		return statusLinePlan{}, err
+	}
+	yes, err := readYes(ctx, opts.Stdin)
+	if err != nil {
+		return statusLinePlan{}, err
+	}
+	if !yes {
+		return statusLinePlan{mark: setupMarkSkipped, row: "skipped (not chosen)"}, nil
+	}
+	if err := agentsetup.CheckClaudeStatusLine(root); err != nil {
+		return statusLinePlan{}, err
+	}
+	return statusLinePlan{install: true}, nil
+}
+
+// readYes reads one answer from in: the text up to the first newline or EOF, trimmed. y or yes in
+// any case is yes; anything else is no, including EOF, a read error and a nil reader. The read runs
+// in a goroutine so a cancelled ctx returns its error at once, before setup writes anything.
+func readYes(ctx context.Context, in io.Reader) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if in == nil {
+		return false, nil
+	}
+	answer := make(chan string, 1)
+	go func() {
+		line, err := bufio.NewReader(io.LimitReader(in, 4096)).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			line = ""
+		}
+		answer <- line
+	}()
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case line := <-answer:
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes":
+			return true, nil
+		}
+		return false, nil
+	}
 }
 
 // installStatusLine settles setup's status line row. A project-local statusLine overrides the
@@ -175,8 +269,13 @@ func installStatusLine(ui *setupUI, root, foreign string, scopeErr error, force 
 	return nil
 }
 
-func runAgentGuide(opts Options, args []string) error { return graphAgentCommand(opts, args, false) }
-func runSetup(opts Options, args []string) error      { return graphAgentCommand(opts, args, true) }
+func runAgentGuide(ctx context.Context, opts Options, args []string) error {
+	return graphAgentCommand(ctx, opts, args, false)
+}
+
+func runSetup(ctx context.Context, opts Options, args []string) error {
+	return graphAgentCommand(ctx, opts, args, true)
+}
 
 // isHomeDir reports whether dir is the user's home directory. Compared as
 // cleaned absolute paths: OuterRepo already returns an absolute path, and the

@@ -82,9 +82,31 @@ func CheckClaudeStatusLine(root string) error {
 	}
 	defer repo.Close()
 	if _, _, _, _, err := planClaudeStatusLine(repo); err != nil {
-		return fmt.Errorf("setup: %w %s", err, claudeSettingsHint)
+		return fmt.Errorf("setup: %w %s", err, claudeStatusLineSettingsHint)
 	}
 	return nil
+}
+
+// OurStatusLineInstalled reports whether <root>/.claude/settings.local.json already holds our
+// statusLine: a readable, regular, non-link JSON object whose statusLine.command contains
+// StatusLineCommand. Every read or parse failure is false, never an error, so setup can ask it
+// before the user has chosen the status line without refusing a file it would not rewrite.
+func OurStatusLineInstalled(root string) bool {
+	repo, err := os.OpenRoot(root)
+	if err != nil {
+		return false
+	}
+	defer repo.Close()
+	state, err := readClaudeSettings(repo)
+	if err != nil || state.file == nil {
+		return false
+	}
+	settings, err := parseSettingsObject(ClaudeLocalSettings, state.content)
+	if err != nil {
+		return false
+	}
+	line := statusLineOf(settings)
+	return line != nil && isOurStatusLine(line)
 }
 
 // InstallClaudeStatusLineChanged merges statusLine into <root>/.claude/settings.local.json.
@@ -97,7 +119,7 @@ func InstallClaudeStatusLineChanged(root string) (path string, created, changed,
 	defer repo.Close()
 	state, rendered, changed, foreign, err := planClaudeStatusLine(repo)
 	if err != nil {
-		return "", false, false, false, fmt.Errorf("setup: %w %s", err, claudeSettingsHint)
+		return "", false, false, false, fmt.Errorf("setup: %w %s", err, claudeStatusLineSettingsHint)
 	}
 	path = filepath.Join(root, filepath.FromSlash(ClaudeLocalSettings))
 	if !changed {

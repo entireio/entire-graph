@@ -6,11 +6,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 // headIndexedProfiles are the profiles whose committed-tree entry counts as "HEAD is indexed".
@@ -22,61 +25,93 @@ var headIndexedProfiles = []Profile{ProfileFull, ProfileFast}
 // "HEAD is indexed". Only HeadIndexEntries builds it; M3 changes only that function's body.
 type IndexEntry struct{ Root, Relative string }
 
-// HeadIndexEntries returns the committed-tree search cache entries for HEAD under each of
-// headIndexedProfiles, with the repository's default policy inputs (its .graphignore, no explicit
-// ignore or include files). Any one of them existing means HEAD is indexed. Deriving them resolves
-// HEAD, the remote URLs and the checkout scope through git, and any failure among them is an
-// error rather than a fallback key term; checking them (AnyIndexEntryExists)
-// runs no git, which is what lets the status line keep the entries and re-check them every render.
+// HeadIndexEntries returns the entries whose presence means HEAD is indexed, and, for each
+// of HEAD's first-parent ancestors up to maxBehind commits back, nearest first, the same
+// for that ancestor's tree (same repo key, scope and policy inputs). The ancestors come
+// from one gitutil.FirstParentCommitTrees(ctx, repo, head, maxBehind+1) walk, whose first
+// element must be HEAD itself (as search_store_ancestor.go:179 checks). A shorter or
+// shallow history returns fewer. walkErr reports a failed walk separately from err.
+//
+// HEAD's entries are the committed-tree search cache entries under each of headIndexedProfiles,
+// with the repository's default policy inputs (its .graphignore, no explicit ignore or include
+// files). Any one of them existing means HEAD is indexed. Deriving them resolves HEAD, the remote
+// URLs and the checkout scope through git, and any failure among them is an error rather than a
+// fallback key term; checking them (AnyIndexEntryExists) runs no git, which is what lets the status
+// line keep the entries and re-check them every render.
 //
 // An empty cacheDir has no entries. An unresolvable HEAD, or metadata git may not be run on, is an
-// error: the caller decides whether that is "not indexed", and must not keep the answer.
+// error: the caller decides whether that is "not indexed", and must not keep the answer. A failed
+// walk leaves HEAD's entries valid and behind nil; the caller must not keep that answer either.
 //
 // Entry paths come from newCacheEntry, the helper every search cache reader and writer addresses
 // entries through, so a change to the on-disk layout changes this check with it.
-func HeadIndexEntries(ctx context.Context, repo, providerVersion, cacheDir string) ([]IndexEntry, error) {
+func HeadIndexEntries(ctx context.Context, repo, providerVersion, cacheDir string, maxBehind int) (head []IndexEntry, behind [][]IndexEntry, walkErr, err error) {
 	if cacheDir == "" {
-		return nil, nil
+		return nil, nil, nil, nil
 	}
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	_, tree, err := resolveCommittedHEAD(ctx, absRepo)
+	commit, tree, err := resolveCommittedHEAD(ctx, absRepo)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	policy, err := CaptureProviderCachePolicy(absRepo, ProviderSnapshotOptions{})
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	// Strictly derived: repoKey and cacheCheckoutScope turn a failed git call into a fallback term,
 	// which would address other entries and be kept as "not indexed" under an unchanged key.
 	repositoryKey, err := repoKeyStrict(ctx, absRepo)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	scope, err := cacheCheckoutScopeStrict(ctx, absRepo)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	entries := make([]IndexEntry, 0, len(headIndexedProfiles))
-	for _, profile := range headIndexedProfiles {
-		options := policy
-		options.Profile = profile
-		// searchSnapshotKey's terms, with the strict scope in place of cacheCheckoutScope.
-		key, err := searchSnapshotKeyForScope(searchSnapshotCacheVersion, SchemaVersion, absRepo, repositoryKey,
-			providerVersion, tree, options, func() string { return scope })
-		if err != nil {
-			return nil, err
+	entriesFor := func(tree string) ([]IndexEntry, error) {
+		entries := make([]IndexEntry, 0, len(headIndexedProfiles))
+		for _, profile := range headIndexedProfiles {
+			options := policy
+			options.Profile = profile
+			// searchSnapshotKey's terms, with the strict scope in place of cacheCheckoutScope.
+			key, err := searchSnapshotKeyForScope(searchSnapshotCacheVersion, SchemaVersion, absRepo, repositoryKey,
+				providerVersion, tree, options, func() string { return scope })
+			if err != nil {
+				return nil, err
+			}
+			entry, err := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, key)
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, IndexEntry{Root: entry.root, Relative: entry.relative})
 		}
-		entry, err := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, key)
-		if err != nil {
-			return nil, err
-		}
-		entries = append(entries, IndexEntry{Root: entry.root, Relative: entry.relative})
+		return entries, nil
 	}
-	return entries, nil
+	if head, err = entriesFor(tree); err != nil {
+		return nil, nil, nil, err
+	}
+	if maxBehind <= 0 {
+		return head, nil, nil, nil
+	}
+	chain, walkErr := gitutil.FirstParentCommitTrees(ctx, absRepo, commit, maxBehind+1)
+	if walkErr == nil && (len(chain) == 0 || chain[0].Tree != tree) {
+		walkErr = errors.New("first-parent walk does not start at HEAD's tree")
+	}
+	if walkErr != nil {
+		return head, nil, walkErr, nil
+	}
+	for _, ancestor := range chain[1:] {
+		entries, err := entriesFor(ancestor.Tree)
+		if err != nil {
+			// HEAD's entries were derived the same way, so this is the walk's failure alone.
+			return head, nil, err, nil
+		}
+		behind = append(behind, entries)
+	}
+	return head, behind, nil, nil
 }
 
 // AnyIndexEntryExists stats each entry through os.OpenRoot(Root), the way every cache reader opens
@@ -113,7 +148,8 @@ const (
 // HeadKeyWithoutGit digests, without running git, the on-disk inputs that decide HEAD's tree and
 // the HeadIndexEntries of repo: .git/HEAD, the loose ref it names (or, when that is absent, the
 // packed-refs header, the ref's line and its peeled line), .git/config (remote URLs and the
-// checkout scope), the repo's .graphignore, and the resolved max-files cap. The caller adds what
+// checkout scope), the repo's .graphignore, .git/shallow (which bounds the ancestor walk), and the
+// resolved max-files cap. The caller adds what
 // else keys its answer (the repo and cache paths, the binary). Contents are hashed rather than
 // statted, so a same-size rewrite within one mtime tick still changes the key. Git's user and
 // system config are not inputs: gitutil runs git with both set to /dev/null.
@@ -183,6 +219,13 @@ func HeadKeyWithoutGit(repo string) (key string, unborn, ok bool) {
 		return "", false, false
 	}
 	writeHeadKeyInput(hash, "graphignore", graphIgnore, present)
+	// .git/shallow bounds the first-parent walk HeadIndexEntries makes, so a deepen or unshallow at
+	// the same HEAD changes which ancestors it returns.
+	shallow, present, ok := readHeadKeyInput(root, filepath.Join(".git", "shallow"))
+	if !ok {
+		return "", false, false
+	}
+	writeHeadKeyInput(hash, "shallow", shallow, present)
 	return hex.EncodeToString(hash.Sum(nil)), unborn, true
 }
 

@@ -58,9 +58,13 @@ const ClaudeLocalSettings = ".claude/settings.local.json"
 // maxClaudeSettingsBytes bounds the settings read. A settings file is a few KiB.
 const maxClaudeSettingsBytes = 1 << 20
 
-// claudeSettingsHint ends every refusal of settings.local.json. The hook and the status line both
-// rewrite that file, so skipping it takes both opt-outs.
-const claudeSettingsHint = "(fix it, or pass --no-claude-hook and --no-statusline)"
+// claudeHookSettingsHint ends the hook step's refusals of settings.local.json, and
+// claudeStatusLineSettingsHint the status line step's. Each names only the opt-out that gets past
+// its own step: setup reads that file for the status line only when the line is chosen.
+const (
+	claudeHookSettingsHint       = "(fix it, or pass --no-claude-hook)"
+	claudeStatusLineSettingsHint = "(fix it, or pass --no-statusline)"
+)
 
 // SubagentDirective is the additionalContext the hook injects. It is SHIPPED text and carries the
 // same obligation and the same command lines as graphObligation (graphCommands, unindented),
@@ -269,7 +273,7 @@ func CheckClaudeSubagentHook(root string) error {
 	defer repo.Close()
 	_, _, _, err = planClaudeSubagentHook(repo)
 	if err != nil {
-		return fmt.Errorf("setup: %w %s", err, claudeSettingsHint)
+		return fmt.Errorf("setup: %w %s", err, claudeHookSettingsHint)
 	}
 	return nil
 }
@@ -288,7 +292,7 @@ func InstallClaudeSubagentHookChanged(root string) (path string, created, change
 	defer repo.Close()
 	state, rendered, changed, err := planClaudeSubagentHook(repo)
 	if err != nil {
-		return "", false, false, fmt.Errorf("setup: %w %s", err, claudeSettingsHint)
+		return "", false, false, fmt.Errorf("setup: %w %s", err, claudeHookSettingsHint)
 	}
 	path = filepath.Join(root, filepath.FromSlash(ClaudeLocalSettings))
 	if !changed {

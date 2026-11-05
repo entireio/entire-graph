@@ -21,15 +21,19 @@ import (
 // `entire graph statusline` is the command Claude Code runs as its status line. It reads the
 // status JSON on stdin and prints at most two lines:
 //
-//	◤ entire graph · ✓ indexed · 23 lookups · ~184K tok gross · ~12.4K net
+//	◤ entire graph · ~184K tok gross · ~12.4K net
 //	▸ ctx 42%
 //
-// Every figure is an estimated token count from the stats collector (run in-process, never as a
-// subprocess) over this session's transcript and its subagent transcripts. Nothing is priced:
-// the line never shows money. The indexed state is a stat of each sem.HeadIndexEntries entry; the
-// entries and HEAD's tree are kept under a key read from .git without running git, so a warm render
-// spawns no git at all. A status line must never surface an error, so every failure past argument
-// parsing prints nothing and returns nil.
+// Line 1 shows only what the user acts on: an index state segment and its remedy only when HEAD
+// has no index ("index N commits behind" when a recent first-parent ancestor has one, else "not
+// indexed"), then the gross and net figures once the session has made a graph lookup. Every figure
+// is an estimated token count from the stats collector (run in-process, never as a subprocess) over
+// this session's transcript and its subagent transcripts. Nothing is priced: the line never shows
+// money. The index state is a stat of each sem.HeadIndexEntries entry, HEAD's and then each
+// ancestor's; the entries and HEAD's tree are kept under a key read from .git without running git,
+// so a warm render spawns no git at all. A status line must never surface an error, so every
+// failure past argument parsing prints nothing and returns nil, and so does an anchor outside any
+// checkout.
 
 const (
 	statuslineDefaultColumns = 120
@@ -38,7 +42,7 @@ const (
 	// statuslineCacheSchema salts the figures key, so a change to what is cached misses.
 	statuslineCacheSchema = "statusline-v1"
 	// statuslineGitCacheSchema salts the git key the same way.
-	statuslineGitCacheSchema = "statusline-git-v1"
+	statuslineGitCacheSchema = "statusline-git-v2"
 
 	statuslineSeparator = " · "
 	statuslineIndigo    = "\x1b[38;2;84;111;255m"
@@ -140,11 +144,11 @@ func renderStatusline(ctx context.Context, opts Options, cacheDir string) (lines
 		return nil
 	}
 
-	tree, entries, ok := statuslineHeadState(ctx, repo, cacheDir, opts.Version)
+	tree, head, behind, ok := statuslineHeadState(ctx, repo, cacheDir, opts.Version)
 	if !ok {
 		return nil
 	}
-	indexed := sem.AnyIndexEntryExists(entries)
+	distance := statuslineIndexDistance(head, behind)
 	figures, ok := statuslineFiguresFor(input.TranscriptPath, repo, tree, cacheDir, opts.Version)
 	if !ok || ctx.Err() != nil {
 		return nil
@@ -152,7 +156,7 @@ func renderStatusline(ctx context.Context, opts Options, cacheDir string) (lines
 
 	columns := statuslineColumns()
 	color := os.Getenv("NO_COLOR") == ""
-	if line := renderStatuslineLine(fitStatuslineSegments(statuslineMainSegments(indexed, figures), columns), color); line != "" {
+	if line := renderStatuslineLine(fitStatuslineSegments(statuslineMainSegments(distance, figures), columns), color); line != "" {
 		lines = append(lines, line)
 	}
 	if input.ContextWindow != nil && input.ContextWindow.UsedPercentage != nil {
@@ -166,7 +170,8 @@ func renderStatusline(ctx context.Context, opts Options, cacheDir string) (lines
 }
 
 // statuslineAnchorRepo is the session's repository: the project dir, else the current dir, else the cwd,
-// walked up to its checkout root the same way stats resolves a call's cwd.
+// walked up to its checkout root the same way stats resolves a call's cwd. "" when there is no anchor
+// or it is in no checkout: the status line then prints nothing rather than "not indexed".
 func statuslineAnchorRepo(input statuslineInput) string {
 	anchor := input.Workspace.ProjectDir
 	if anchor == "" {
@@ -181,29 +186,28 @@ func statuslineAnchorRepo(input statuslineInput) string {
 	if top, ok := discoverImplicitCheckoutRoot(anchor); ok {
 		return top
 	}
-	abs, err := filepath.Abs(anchor)
-	if err != nil {
-		return ""
-	}
-	return abs
+	return ""
 }
 
 // statuslineGitRecord is what a full-path render learnt from git, kept under the git key: HEAD's
-// tree and the entries whose presence means it is indexed. It holds no figures or rendered text,
+// tree, the entries whose presence means it is indexed, and the same for each first-parent ancestor
+// within sem.MaxStoreContextAncestorDistance, nearest first. It holds no figures or rendered text,
 // and no indexed answer: the entries are stat'ed on every render, so a later `index` shows at once.
 type statuslineGitRecord struct {
-	Key     string           `json:"key"`
-	Tree    string           `json:"tree"`
-	Entries []sem.IndexEntry `json:"entries"`
+	Key     string             `json:"key"`
+	Tree    string             `json:"tree"`
+	Entries []sem.IndexEntry   `json:"entries"`
+	Behind  [][]sem.IndexEntry `json:"behind"`
 }
 
-// statuslineHeadState returns HEAD's tree ("" when unborn or unresolvable) and its index entries.
-// When the git key (sem.HeadKeyWithoutGit plus the repo, the cache dir and this binary) matches the
-// stored record, it runs no git and skips the metadata validation, which guards git subprocesses
-// and has none to guard. Otherwise it takes the full path and stores a record, but only when the
-// validation passed, HEAD resolved (or is unborn) and ctx was not cancelled, so a transient failure
-// never pins "not indexed" under an unchanged key. ok is false when the render must print nothing.
-func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (tree string, entries []sem.IndexEntry, ok bool) {
+// statuslineHeadState returns HEAD's tree ("" when unborn or unresolvable), its index entries and
+// its ancestors' (nearest first). When the git key (sem.HeadKeyWithoutGit plus the repo, the cache
+// dir and this binary) matches the stored record, it runs no git and skips the metadata validation,
+// which guards git subprocesses and has none to guard. Otherwise it takes the full path and stores a
+// record, but only when the validation passed, HEAD resolved (or is unborn), the ancestor walk
+// succeeded and ctx was not cancelled, so a transient failure never pins an answer under an
+// unchanged key. ok is false when the render must print nothing.
+func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (tree string, head []sem.IndexEntry, behind [][]sem.IndexEntry, ok bool) {
 	key, headKey, unborn, keyed := "", "", false, false
 	path := ""
 	if cacheDir != "" {
@@ -212,7 +216,7 @@ func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (t
 			path = filepath.Join(cacheDir, "statusline", "git-"+statsCacheKey(repo)+".json")
 			var record statuslineGitRecord
 			if loadStatuslineJSON(path, &record) && record.Key == key {
-				return record.Tree, record.Entries, true
+				return record.Tree, record.Entries, record.Behind, true
 			}
 		}
 	}
@@ -229,9 +233,14 @@ func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (t
 		}
 	}
 	if tree != "" {
-		var err error
-		if entries, err = sem.HeadIndexEntries(gitCtx, repo, version, cacheDir); err != nil {
-			return "", nil, false
+		// The walk is an extra: when it fails the render still shows HEAD's own state, unkept.
+		var walkErr, err error
+		head, behind, walkErr, err = sem.HeadIndexEntries(gitCtx, repo, version, cacheDir, sem.MaxStoreContextAncestorDistance)
+		if err != nil {
+			return "", nil, nil, false
+		}
+		if walkErr != nil {
+			resolved = false
 		}
 	}
 	// The key was read before the git calls. A checkout landing in between would store the new HEAD's
@@ -240,10 +249,25 @@ func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (t
 	// still shows its answer, it just does not keep it.
 	if path != "" && resolved && ctx.Err() == nil {
 		if again, _, stable := sem.HeadKeyWithoutGit(repo); stable && again == headKey {
-			saveStatuslineJSON(path, statuslineGitRecord{Key: key, Tree: tree, Entries: entries})
+			saveStatuslineJSON(path, statuslineGitRecord{Key: key, Tree: tree, Entries: head, Behind: behind})
 		}
 	}
-	return tree, entries, true
+	return tree, head, behind, true
+}
+
+// statuslineIndexDistance stats HEAD's entries, then each ancestor's in order, and returns 0 when
+// HEAD is indexed, n when the nearest indexed ancestor is n commits back, and -1 when none is. It
+// runs no git, so an `index` since the last render shows at once.
+func statuslineIndexDistance(head []sem.IndexEntry, behind [][]sem.IndexEntry) int {
+	if sem.AnyIndexEntryExists(head) {
+		return 0
+	}
+	for index, entries := range behind {
+		if sem.AnyIndexEntryExists(entries) {
+			return index + 1
+		}
+	}
+	return -1
 }
 
 // statuslineFiguresFor serves the figures from the cache when every in-scope transcript file, HEAD's
@@ -326,24 +350,27 @@ func saveStatuslineJSON(path string, value any) {
 	}
 }
 
-func statuslineMainSegments(indexed bool, figures statuslineFigures) []statuslineSegment {
+// statuslineMainSegments builds line 1. distance is statuslineIndexDistance's answer: the index
+// state and its remedy appear only when HEAD has no index, and the figures only after a lookup.
+func statuslineMainSegments(distance int, figures statuslineFigures) []statuslineSegment {
 	segments := []statuslineSegment{{{text: "◤", figure: true}, {text: " entire graph"}}}
-	if indexed {
-		segments = append(segments, statuslineSegment{{text: "✓ indexed"}})
-	} else {
-		segments = append(segments, statuslineSegment{{text: "not indexed"}}, statuslineSegment{{text: "run entire graph index"}})
+	switch {
+	case distance == 1:
+		segments = append(segments, statuslineSegment{{text: "index 1 commit behind"}})
+	case distance > 1:
+		segments = append(segments, statuslineSegment{{text: "index " + strconv.Itoa(distance) + " commits behind"}})
+	case distance < 0:
+		segments = append(segments, statuslineSegment{{text: "not indexed"}})
+	}
+	if distance != 0 {
+		segments = append(segments, statuslineSegment{{text: "run entire graph index"}})
 	}
 	if figures.Lookups == 0 {
 		return segments
 	}
-	segments = append(segments,
-		statuslineSegment{{text: strconv.Itoa(figures.Lookups), figure: true}, {text: " lookups"}},
-		statuslineSegment{{text: formatStatuslineTokens(figures.GrossTokens), figure: true}, {text: " tok gross"}},
-	)
+	segments = append(segments, statuslineSegment{{text: formatStatuslineTokens(figures.GrossTokens), figure: true}, {text: " tok gross"}})
 	if figures.NetAvailable {
 		segments = append(segments, statuslineSegment{{text: formatStatuslineTokens(figures.NetTokens), figure: true}, {text: " net"}})
-	} else {
-		segments = append(segments, statuslineSegment{{text: "net n/a"}})
 	}
 	return segments
 }

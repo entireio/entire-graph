@@ -92,11 +92,12 @@ The command creates or updates these files:
   between `<!-- entire-agent:begin -->` and `<!-- entire-agent:end -->` markers
   is added or replaced. Text outside the markers is preserved.
 - `.claude/settings.local.json` (per-user, keep it untracked): a Claude Code
-  `SubagentStart` hook (`--no-claude-hook` skips it) and the status line
-  `entire graph statusline`, which shows this session's graph lookups and
-  estimated tokens. When `.claude/settings.json` or `~/.claude/settings.json`
+  `SubagentStart` hook (`--no-claude-hook` skips it) and, only if you choose
+  it, the status line `entire graph statusline`, which shows this session's
+  estimated graph tokens and how far behind HEAD the index is. At a terminal
+  setup asks (default no); otherwise pass `--statusline`. When a settings scope
   already sets a status line, setup keeps yours unless you pass `--statusline`;
-  `--no-statusline` skips it. See [agent activation](docs/agents.md).
+  `--no-statusline` skips the step. See [agent activation](docs/agents.md).
 
 Review the three instruction files, then commit them together when the instructions should
 apply to your team.

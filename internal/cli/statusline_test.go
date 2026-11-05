@@ -90,12 +90,16 @@ func assertSegmentsInOrder(t *testing.T, line string, want ...string) {
 	}
 }
 
-// TestStatuslineShowsLookupsGrossNetAndContext pins the figures to what `stats` computes for the
-// same transcript: 1 lookup, (4,000 - 400) / 4 = 900 gross tokens, and stats' own modeled balance.
-func TestStatuslineShowsLookupsGrossNetAndContext(t *testing.T) {
+// TestStatuslineShowsGrossNetAndContext pins the figures of an indexed HEAD to what `stats` computes
+// for the same transcript: (4,000 - 400) / 4 = 900 gross tokens and stats' own modeled balance, with
+// no net segment when stats has no comparison. It catches a filler segment returning (an indexed
+// mark, the lookup count, "net n/a").
+func TestStatuslineShowsGrossNetAndContext(t *testing.T) {
 	repo := statuslineRepo(t)
+	cacheDir := t.TempDir()
+	statuslineIndex(t, repo, cacheDir)
 	transcript := statuslineTranscript(t, repo)
-	out := runStatuslineForTest(t, 120, t.TempDir(),
+	out := runStatuslineForTest(t, 120, cacheDir,
 		statuslineStdin(t, transcript, repo, `{"used_percentage":41.6}`))
 
 	lines := statuslineLines(out)
@@ -107,25 +111,80 @@ func TestStatuslineShowsLookupsGrossNetAndContext(t *testing.T) {
 	}
 	report := runStatsRawJSON(t, "--repo", repo, "--transcript", transcript, "--format", "json",
 		"--cache-dir", t.TempDir())
-	wantNet := "net n/a"
+	want := "◤ entire graph · ~900 tok gross"
 	if rawInt(t, report, "sessions_with_savings_comparison") != 0 {
-		wantNet = formatStatuslineTokens(rawInt(t, report, "modeled_balance_est_tokens")) + " net"
+		want += " · " + formatStatuslineTokens(rawInt(t, report, "modeled_balance_est_tokens")) + " net"
 	}
-	assertSegmentsInOrder(t, lines[0], "1 lookups", "~900 tok gross", wantNet)
+	if lines[0] != want {
+		t.Fatalf("line 1 = %q, want %q", lines[0], want)
+	}
 }
 
-func TestStatuslineShowsIndexedAfterIndex(t *testing.T) {
+// TestStatuslineIsBareWhenIndexedWithNoLookups catches a segment shown with nothing to act on: an
+// indexed HEAD and a session with no graph lookups render the product mark alone.
+func TestStatuslineIsBareWhenIndexedWithNoLookups(t *testing.T) {
 	repo := statuslineRepo(t)
 	cacheDir := t.TempDir()
-	var indexOut bytes.Buffer
-	if err := Run(t.Context(), Options{Version: "test", Stdout: &indexOut, Stderr: &indexOut},
-		[]string{"index", "--repo", repo, "--profile", "fast", "--cache-dir", cacheDir, "--format", "json"}); err != nil {
-		t.Fatalf("index: %v\n%s", err, indexOut.String())
+	statuslineIndex(t, repo, cacheDir)
+	transcript := writeGrossCommandTranscript(t, repo, "ls", "a.go")
+	if out := runStatuslineForTest(t, 120, cacheDir, statuslineStdin(t, transcript, repo, "")); out != "◤ entire graph\n" {
+		t.Fatalf("stdout = %q, want %q", out, "◤ entire graph\n")
 	}
-	out := runStatuslineForTest(t, 120, cacheDir, statuslineStdin(t, statuslineTranscript(t, repo), repo, ""))
-	lines := statuslineLines(out)
-	if len(lines) == 0 || !strings.Contains(lines[0], "✓ indexed") {
-		t.Fatalf("want line 1 to contain %q, got %q", "✓ indexed", out)
+}
+
+// TestStatuslineShowsHowFarBehindTheIndexIs catches a stale index falling back to "not indexed", and
+// a stale state that stays cached after `index` catches up.
+func TestStatuslineShowsHowFarBehindTheIndexIs(t *testing.T) {
+	repo := statuslineRepo(t)
+	cacheDir := t.TempDir()
+	statuslineIndex(t, repo, cacheDir)
+	statuslineCommit(t, repo, "two")
+	statuslineCommit(t, repo, "three")
+	stdin := statuslineStdin(t, statuslineTranscript(t, repo), repo, "")
+	lines := statuslineLines(runStatuslineForTest(t, 120, cacheDir, stdin))
+	if want := "index 2 commits behind · run entire graph index"; len(lines) == 0 || !strings.Contains(lines[0], want) {
+		t.Fatalf("line 1 = %q, want it to contain %q", lines, want)
+	}
+	statuslineIndex(t, repo, cacheDir)
+	if got := statuslineIndexedState(t, cacheDir, stdin); got != "current" {
+		t.Fatalf("after index the render shows %q, want current", got)
+	}
+}
+
+// TestStatuslineSaysNotIndexedBeyondTheAncestorBound catches a walk one commit short: an index five
+// commits back (sem.MaxStoreContextAncestorDistance) is found, one six back is not.
+func TestStatuslineSaysNotIndexedBeyondTheAncestorBound(t *testing.T) {
+	for _, tc := range []struct {
+		commits int
+		want    string
+	}{
+		{commits: 5, want: "behind 5"},
+		{commits: 6, want: "not indexed"},
+	} {
+		t.Run(strconv.Itoa(tc.commits), func(t *testing.T) {
+			repo := statuslineRepo(t)
+			cacheDir := t.TempDir()
+			statuslineIndex(t, repo, cacheDir)
+			for index := range tc.commits {
+				statuslineCommit(t, repo, "commit-"+strconv.Itoa(index))
+			}
+			stdin := statuslineStdin(t, statuslineTranscript(t, repo), repo, "")
+			if got := statuslineIndexedState(t, cacheDir, stdin); got != tc.want {
+				t.Fatalf("%d commits after the index the render shows %q, want %q", tc.commits, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStatuslinePrintsNothingOutsideARepo catches a status line that claims "not indexed" for a
+// directory that is not a checkout at all.
+func TestStatuslinePrintsNothingOutsideARepo(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "plain")
+	write(t, dir, "a.go", "package main\n")
+	t.Setenv("GIT_CEILING_DIRECTORIES", parent)
+	if out := runStatuslineForTest(t, 120, t.TempDir(), statuslineStdin(t, statuslineTranscript(t, dir), dir, "")); out != "" {
+		t.Fatalf("stdout = %q, want empty", out)
 	}
 }
 
@@ -207,18 +266,33 @@ func statuslineIndex(t *testing.T, repo, cacheDir string) {
 	}
 }
 
-// statuslineIndexedState renders and returns "✓ indexed" or "not indexed", failing on neither.
+// statuslineIndexedState renders and classifies line 1: "not indexed", "behind N" for an
+// `index N commit(s) behind` segment, or "current" for a line with neither. Empty output fails.
 func statuslineIndexedState(t *testing.T, cacheDir, stdin string) string {
 	t.Helper()
 	out := runStatuslineForTest(t, 120, cacheDir, stdin)
 	lines := statuslineLines(out)
-	for _, state := range []string{"✓ indexed", "not indexed"} {
-		if len(lines) > 0 && strings.Contains(lines[0], state) {
-			return state
+	if len(lines) == 0 || lines[0] == "" {
+		t.Fatalf("the render printed no line 1: %q", out)
+	}
+	for _, segment := range statuslineSegments(lines[0]) {
+		if segment == "not indexed" {
+			return segment
+		}
+		count, ok := strings.CutPrefix(segment, "index ")
+		if !ok {
+			continue
+		}
+		for _, suffix := range []string{" commits behind", " commit behind"} {
+			if number, cut := strings.CutSuffix(count, suffix); cut {
+				if (number == "1") != (suffix == " commit behind") {
+					t.Fatalf("segment %q pluralises wrongly", segment)
+				}
+				return "behind " + number
+			}
 		}
 	}
-	t.Fatalf("line 1 shows no indexed state: %q", out)
-	return ""
+	return "current"
 }
 
 // statuslineCommit commits a new a.go, which changes HEAD's tree.
@@ -230,7 +304,7 @@ func statuslineCommit(t *testing.T, checkout, content string) {
 }
 
 // TestStatuslineWarmRenderRunsNoGit catches a warm render that still needs git: after two renders
-// of an indexed HEAD, a render with no git anywhere on PATH must still report the indexed state. An
+// of an indexed HEAD, a render with no git anywhere on PATH must still report the current state. An
 // empty PATH directory is used because Git for Windows ships git.exe in several directories.
 func TestStatuslineWarmRenderRunsNoGit(t *testing.T) {
 	repo := statuslineRepo(t)
@@ -241,26 +315,29 @@ func TestStatuslineWarmRenderRunsNoGit(t *testing.T) {
 	statuslineIndexedState(t, cacheDir, stdin)
 
 	t.Setenv("PATH", t.TempDir())
-	if got := statuslineIndexedState(t, cacheDir, stdin); got != "✓ indexed" {
-		t.Fatalf("a warm render without git shows %q, want %q", got, "✓ indexed")
+	if got := statuslineIndexedState(t, cacheDir, stdin); got != "current" {
+		t.Fatalf("a warm render without git shows %q, want current", got)
 	}
 }
 
-// TestStatuslineNoticesKeyInputChanges catches a warm render that serves a stale "✓ indexed" after
+// TestStatuslineNoticesKeyInputChanges catches a warm render that serves a stale current state after
 // a change to something the indexed state depends on: the branch ref a commit moves, the GitHub
 // origin URL in the repository key, the .graphignore policy, a ref reached through a symbolic-ref
-// chain, and a commit inside a linked worktree.
+// chain, and a commit inside a linked worktree. A commit leaves the index one commit behind; an
+// origin or .graphignore change addresses other entries, so nothing is indexed.
 func TestStatuslineNoticesKeyInputChanges(t *testing.T) {
 	cases := []struct {
 		name string
 		// setup prepares the repository before it is indexed and returns the checkout to anchor on.
 		setup  func(t *testing.T, repo string) string
 		mutate func(t *testing.T, checkout string)
+		want   string
 	}{
 		{
 			name:   "new commit",
 			setup:  func(t *testing.T, repo string) string { return repo },
 			mutate: func(t *testing.T, checkout string) { statuslineCommit(t, checkout, "two") },
+			want:   "behind 1",
 		},
 		{
 			name: "github origin url",
@@ -271,11 +348,13 @@ func TestStatuslineNoticesKeyInputChanges(t *testing.T) {
 			mutate: func(t *testing.T, checkout string) {
 				git(t, checkout, "remote", "set-url", "origin", "https://github.com/example/two.git")
 			},
+			want: "not indexed",
 		},
 		{
 			name:   "graphignore",
 			setup:  func(t *testing.T, repo string) string { return repo },
 			mutate: func(t *testing.T, checkout string) { write(t, checkout, ".graphignore", "a.go\n") },
+			want:   "not indexed",
 		},
 		{
 			name: "symbolic-ref chain",
@@ -285,6 +364,7 @@ func TestStatuslineNoticesKeyInputChanges(t *testing.T) {
 				return repo
 			},
 			mutate: func(t *testing.T, checkout string) { statuslineCommit(t, checkout, "two") },
+			want:   "behind 1",
 		},
 		{
 			name: "linked worktree",
@@ -294,6 +374,7 @@ func TestStatuslineNoticesKeyInputChanges(t *testing.T) {
 				return worktree
 			},
 			mutate: func(t *testing.T, checkout string) { statuslineCommit(t, checkout, "two") },
+			want:   "behind 1",
 		},
 	}
 	for _, tc := range cases {
@@ -303,12 +384,12 @@ func TestStatuslineNoticesKeyInputChanges(t *testing.T) {
 			statuslineIndex(t, checkout, cacheDir)
 			stdin := statuslineStdin(t, statuslineTranscript(t, checkout), checkout, "")
 			statuslineIndexedState(t, cacheDir, stdin)
-			if got := statuslineIndexedState(t, cacheDir, stdin); got != "✓ indexed" {
-				t.Fatalf("before the change the render shows %q, want %q", got, "✓ indexed")
+			if got := statuslineIndexedState(t, cacheDir, stdin); got != "current" {
+				t.Fatalf("before the change the render shows %q, want current", got)
 			}
 			tc.mutate(t, checkout)
-			if got := statuslineIndexedState(t, cacheDir, stdin); got != "not indexed" {
-				t.Fatalf("after the change the render shows %q, want %q", got, "not indexed")
+			if got := statuslineIndexedState(t, cacheDir, stdin); got != tc.want {
+				t.Fatalf("after the change the render shows %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -325,7 +406,7 @@ func TestStatuslineNoticesALaterIndex(t *testing.T) {
 		t.Fatalf("before index the render shows %q, want %q", got, "not indexed")
 	}
 	statuslineIndex(t, repo, cacheDir)
-	if got := statuslineIndexedState(t, cacheDir, stdin); got != "✓ indexed" {
-		t.Fatalf("after index the render shows %q, want %q", got, "✓ indexed")
+	if got := statuslineIndexedState(t, cacheDir, stdin); got != "current" {
+		t.Fatalf("after index the render shows %q, want current", got)
 	}
 }

@@ -41,6 +41,9 @@ type Options struct {
 	// homeDir stands in for os.UserHomeDir when non-nil: the home whose ~/.claude/settings.json setup
 	// inspects for an existing status line. Tests set it so they never read the real one.
 	homeDir func() string
+	// interactive stands in for "stdin and stdout are both terminals" when non-nil: whether setup
+	// may ask before installing the status line. Tests set it to answer the prompt through Stdin.
+	interactive func() bool
 }
 
 // userHome is the home setup inspects for the user's own status line; "" when it cannot be
@@ -54,6 +57,14 @@ func (o Options) userHome() string {
 		return ""
 	}
 	return home
+}
+
+// isInteractive reports whether setup may ask a question: stdin and stdout are both terminals.
+func (o Options) isInteractive() bool {
+	if o.interactive != nil {
+		return o.interactive()
+	}
+	return isTerminalReader(o.Stdin) && isTerminal(o.Stdout)
 }
 
 // SignalError reports that Execute stopped because it received a signal
@@ -366,9 +377,9 @@ func Run(ctx context.Context, opts Options, args []string) error {
 	case "statusline":
 		return runStatusline(ctx, opts, args[1:])
 	case "agent-guide":
-		return runAgentGuide(opts, args[1:])
+		return runAgentGuide(ctx, opts, args[1:])
 	case "setup":
-		return runSetup(opts, args[1:])
+		return runSetup(ctx, opts, args[1:])
 	case "hook":
 		return runHook(opts, args[1:])
 	case "version", "--version", "-v":

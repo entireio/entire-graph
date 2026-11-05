@@ -100,12 +100,19 @@ Two consequences worth stating to the user:
 The same numbers render as a live Claude Code status line, in estimated tokens only:
 
 ```text
-◤ entire graph · ✓ indexed · 23 lookups · ~184K tok gross · ~12.4K net
+◤ entire graph · ~184K tok gross · ~12.4K net
 ```
 
-`entire graph setup` installs it in the repository's `.claude/settings.local.json`. If the user
-already has a status line in `.claude/settings.json` or `~/.claude/settings.json`, setup keeps
-theirs; `entire graph setup --statusline` replaces it in this repository only. To set it by hand:
+It shows only what the user acts on: the gross figure once the session has made a graph lookup,
+the net figure when stats has a comparison, and, when HEAD has no index, `index N commits behind`
+(a first-parent ancestor at most 5 commits back has one) or `not indexed`, each followed by
+`run entire graph index`.
+
+The status line is opt-in. `entire graph setup` asks at a terminal (default no) before installing
+it in the repository's `.claude/settings.local.json`; `entire graph setup --statusline` installs it
+without asking. If the user already has a status line in `.claude/settings.json` or
+`~/.claude/settings.json`, setup keeps theirs and does not ask; `--statusline` replaces it in this
+repository only. To set it by hand:
 
 ```json
 {
@@ -116,10 +123,9 @@ theirs; `entire graph setup --statusline` replaces it in this repository only. T
 }
 ```
 
-The plugin manifest declares the same block, but Claude Code drops non-allowlisted
-plugin-provided settings (`statusLine` is not on the list as of 2.1.219), so the settings entry
-is what actually enables it. A settings file that still runs `scripts/entire-graph-statusline.sh`
-keeps working: that script is now a shim that runs the subcommand.
+Installing the Claude Code plugin does not turn it on: the settings entry is the only switch. A
+settings file that still runs `scripts/entire-graph-statusline.sh` keeps working: that script is
+now a shim that runs the subcommand.
 
 The line is scoped to the CURRENT session (its transcript and subagent transcripts) and caches
 its figures until a transcript, HEAD's tree or the binary changes, so a render does not re-scan

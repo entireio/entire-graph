@@ -201,9 +201,10 @@ can be disabled with `--no-cache`.
 `--transcript <path>` narrows
 the whole report to one session (that transcript plus its `<session>/subagents/*.jsonl`), which is
 the scope `entire graph statusline` renders as a live Claude Code status line, in tokens only.
-`entire graph setup` installs that status line in `.claude/settings.local.json` unless another
-settings scope already defines one; `entire graph setup --statusline` overrides it and
-`entire graph setup --no-statusline` skips it.
+The status line is opt-in: `entire graph setup` asks at a terminal (default no) before installing
+it in `.claude/settings.local.json`, and never when another settings scope already defines one;
+`entire graph setup --statusline` installs it without asking, overriding a shared or user line,
+and `entire graph setup --no-statusline` skips it.
 
 **When:** a human asks what the graph is buying them. Agents should not run it as part of a coding task.
 

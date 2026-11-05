@@ -215,11 +215,15 @@ the binary's own identity, so repeat runs do not re-parse gigabytes of session
 log. `--no-cache` forces a full re-parse; `--cache-dir` relocates the memo.
 
 `entire graph statusline` renders the single-session variant as a Claude Code
-status line: graph lookups, gross covered tokens (`gross_covered_est_tokens`) and
-the signed modeled balance (`modeled_balance_est_tokens`), in estimated tokens
-only. `entire graph setup` installs it in `.claude/settings.local.json`; see
-[agent activation](agents.md). `scripts/entire-graph-statusline.sh` remains only
-as a shim that runs the subcommand, for settings that still name it.
+status line: gross covered tokens (`gross_covered_est_tokens`) once the session
+has made a graph lookup, and the signed modeled balance
+(`modeled_balance_est_tokens`) when stats has a comparison, in estimated tokens
+only. When HEAD has no index it says how many commits behind the nearest indexed
+first-parent ancestor is (at most 5), else `not indexed`. It is opt-in:
+`entire graph setup` asks at a terminal, or installs it with `--statusline`, in
+`.claude/settings.local.json`; see [agent activation](agents.md).
+`scripts/entire-graph-statusline.sh` remains only as a shim that runs the
+subcommand, for settings that still name it.
 
 ## Release archives
 

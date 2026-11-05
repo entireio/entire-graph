@@ -14,20 +14,25 @@ auto-generated notes on
 
 ### Added
 
-- `setup` now installs the Claude Code status line: a `statusLine` running
-  `entire graph statusline` in the per-user `.claude/settings.local.json`,
-  merged into existing settings and added once. It shows this session's graph
-  lookups and estimated tokens, never prices. A project-local status line
-  overrides the shared and user ones, so when `.claude/settings.local.json`,
+- `setup` can install the Claude Code status line, opt-in: a `statusLine`
+  running `entire graph statusline` in the per-user
+  `.claude/settings.local.json`, merged into existing settings and added once.
+  At a terminal setup asks (default no); otherwise it installs only with
+  `--statusline`. It does not ask when ours is installed or another status
+  line is set. The line shows this session's estimated graph tokens, never
+  prices, and, when HEAD has no index, how many commits behind (at most 5) the
+  nearest indexed first-parent ancestor is, else `not indexed`. Outside a
+  checkout it prints nothing. A project-local status line overrides the shared
+  and user ones, so when `.claude/settings.local.json`,
   `.claude/settings.json` or `~/.claude/settings.json` already defines another,
   setup keeps it, writes nothing and says so. `--statusline` installs ours
   anyway, overriding a shared or user line in that repository; one already in
-  `settings.local.json` is never replaced. `--no-statusline` skips the step,
-  and `--no-claude-hook` no longer skips it. A malformed `settings.local.json`
-  stops setup and names both opt-outs. A `.claude/settings.json` or
-  `~/.claude/settings.json` that cannot be read (malformed, or a symlink or
-  other non-regular file in the repository) skips only the status line, and
-  says so; `--statusline` installs it anyway.
+  `settings.local.json` is never replaced. `--no-statusline` skips the step
+  without reading any settings, and `--no-claude-hook` does not skip it. A
+  malformed `settings.local.json` stops setup only at a step that rewrites it,
+  and the error names that step's opt-out. A settings file that cannot be read
+  (malformed, or a symlink or other non-regular file in the repository) skips
+  only the status line, and says so; `--statusline` installs it anyway.
 - `graph context --allow-ancestor N` (opt-in, N at most 5) answers an exact store
   miss after a new commit from the newest of the N nearest first-parent ancestors
   that has a store under the same provider version and ignore policy, when the
@@ -41,11 +46,11 @@ auto-generated notes on
 
 ### Changed
 
-- The plugin's status line now runs `entire graph statusline` instead of
-  `scripts/entire-graph-statusline.sh`. The script remains as a shim that runs
-  the subcommand, so settings that name it keep working. `ENTIRE_GRAPH_BIN`
-  still selects the binary; the `ENTIRE_GRAPH_STATUSLINE_*` variables no longer
-  apply.
+- The Claude Code plugin no longer declares a status line; installing it does
+  not turn one on. `scripts/entire-graph-statusline.sh` remains as a shim that
+  runs `entire graph statusline` with its arguments, so settings that name it
+  keep working. `ENTIRE_GRAPH_BIN` still selects the binary; the
+  `ENTIRE_GRAPH_STATUSLINE_*` variables no longer apply.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being
   assigned to a variable, passed as an argument, or stored in a struct field or

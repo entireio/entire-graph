@@ -36,6 +36,10 @@ chmod +x "$WORK/bin/entire"
 OUT=$(printf '{"session_id":"s1"}' | PATH="$WORK/bin:$PATH" "$SH" "$SCRIPT")
 check 'runs entire graph statusline with stdin unchanged' 'graph|statusline|{"session_id":"s1"}' "$OUT"
 
+# Finding #8: the PATH fallback dropped the shim's own arguments.
+OUT=$(printf '{"session_id":"s3"}' | ENTIRE_GRAPH_BIN= PATH="$WORK/bin:$PATH" "$SH" "$SCRIPT" --cache-dir /tmp/c)
+check 'the PATH fallback passes the arguments through' 'graph|statusline|--cache-dir|/tmp/c|{"session_id":"s3"}' "$OUT"
+
 OUT=$(printf '{"session_id":"s2"}' | ENTIRE_GRAPH_BIN="$WORK/bin/entire" "$SH" "$SCRIPT")
 check 'ENTIRE_GRAPH_BIN runs as <bin> statusline' 'statusline|{"session_id":"s2"}' "$OUT"
 
