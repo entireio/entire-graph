@@ -1,6 +1,6 @@
 # Kernel-scale performance pass and status line — Implementation Plan
 
-> **Status (2026-11-04):** Tasks 1–5 done. Tasks 6–7 (W2, W3) are superseded by the [store-native index design](../specs/2026-11-04-store-native-index-design.md). Tasks 8–10 and 9b done. Tasks 9c and 9d (added after the branch's first `entire review`) proceed next, independent of Task 11. Task 11 runs after the redesign's M3.
+> **Status (2026-11-04):** Tasks 1–5 done. Tasks 6–7 (W2, W3) are superseded by the [store-native index design](../specs/2026-11-04-store-native-index-design.md). Tasks 8–10 and 9b–9f done. Task 9g (from the second `entire review`) proceeds next, independent of Task 11. PR split: perf (Tasks 1–5, 8b fixes, 9d, 9g), status line (8, 9, 9b, 9c, 9e, 10), and Windows subprocess consoles (9f, its own PR). Task 11 runs after the redesign's M3.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -841,6 +841,58 @@ Added after the user saw 3–4 console windows flash and steal focus. It fixes c
 - [ ] Step 5: Commit: `fix(gitutil): never give a subprocess a visible console window on Windows`.
 
 **PR note:** `main`'s constructors sit about 22 lines earlier in `git.go` than on this branch, which edits `RemoteURLs`. Cherry-picking onto `main` may need a trivial context resolution.
+
+### Task 9g: Second `entire review` fixes
+
+**Scope.** The branch's second `entire review` (2026-11-05, `entire-review-68798e85.txt` in the SDD workspace) found no correctness bug. Of its nine findings, this task fixes #2, #4, #6, #7 and #8, all in the perf PR.
+- #1 is an uncommitted file the branch excludes.
+- #3 and #5 stay parked for M1 and M3.
+- #9 is parked as a recorded Minor. A redirected stdin fails safe to "no", and a public-boundary test of a real terminal check is not practical on Windows.
+- **Interim.** #4 patches stamp trust that M3 retires along with the gz entry. #2 and #6 touch the focused loader that M3 reworks, so M3's plan must carry the behaviour forward.
+
+**#2: narrow the focused starting set to the selected symbol.**
+- **Where:** after the focused load reads the name and qualified-name matches (`search_store_focus.go`, around `:382-393`), filter them **in Go**. Two new fields carry the filters: `SnapshotFocus.File string` and `SnapshotFocus.Kind string`.
+  - A starting row stays when its `file_path` equals the normalised `--file` under `strings.EqualFold`. It is normalised the way `normalizeSymbolRefFile` normalises it (`symbolref.go:91`).
+  - It stays when its `kind` equals `strings.TrimSpace(--kind)` under `strings.EqualFold`.
+  - An empty field means no filter.
+- **ID matches are never filtered.** An ID wins ahead of every filter in `resolveFocusSymbols` (`symbolref.go:199`).
+- **When the filter applies:** `impactLookupFocus` and `neighborLookupFocus` set `File` and `Kind` only when `--symbol` is a plain name. Not when it is a symbol ID, and not in the `path:line` form, which `focusLookupNames` already sends to the full load.
+- **Why this is safe:** the filter repeats exact resolution's own comparison, so the focused starting set holds exactly the symbols exact resolution can pick. Hops and kinship start from that set. The SQL and the sidecar schema are unchanged.
+- `def` and `explain` are unchanged. `--line` is not a filter.
+
+**#4: trust the stamp on the full-sidecar read.**
+- Extract `entryDigestForStore(ctx context.Context, db *sql.DB, entry cacheEntry) (cacheDigest, error)` from `openExactSearchStoreForEntry`. It returns the recorded digest when `searchEntryStampMatches` holds, and otherwise `memoizedEntryDigest`.
+- Use it in both `openExactSearchStoreForEntry` and `loadSearchStoreForEntry` (`search_store.go:999`).
+- Update the doc comments that say the full read always hashes (`search_store_context.go:628-631`, `search_store.go:815-821`).
+- Note in the ledger: `index --head` on an unchanged tree still hashes once in the repair step, so it does not speed up.
+
+**#6: tests can see which load served a lookup.**
+- When `ENTIRE_GRAPH_TRACE_LOAD=1`, `loadLookupSnapshot` writes one line to stderr, `entire-graph: index load focused` or `entire-graph: index load full`. Without the variable it writes nothing.
+- This is a test hook at the process boundary. It is not verb output, not a JSON field and not documented for users. It cannot change any verb's bytes or interact with `--max-context-bytes`.
+- **The equivalence guard** (`focused_equivalence_test.go`) sets the variable.
+  - Store on: every lookup whose `--symbol` is a plain name that the full load resolves exactly must print `index load focused`. Store off, every lookup prints `index load full`.
+  - The `path:line` cases are excluded, because they are always full. Strip the trace line from stderr before the byte comparison.
+  - It catches a focused read that fails quietly and takes the full load.
+
+**#7:** delete `TestFoldSymbolNameAgreesWithEqualFold`. Add to the guard's fixture a Go function named with the Kelvin sign (`KelvinTemp`, starting with U+212A). Look it up through `def --head --symbol kelvintemp`. The output must be identical with the store on and off, and the trace must read `focused`.
+
+**#8:** `search_store_stamp_test.go` finds the entry the way `search_store_default_test.go:34` does: a `WalkDir` for the single `*.json.gz` under the cache dir. It does not use `CaptureProviderCachePolicy`, `searchSnapshotKey`, `repoKey` or `newCacheEntry`.
+
+**Files:**
+- Modify: `internal/sem/search_store_focus.go`, `internal/sem/search_store.go`, `internal/sem/search_store_context.go`, `internal/cli/lookup_snapshot.go`, `internal/cli/impact.go` and `internal/cli/neighbors.go` (where they build the focus), `docs/perf-ledger.md`.
+- Test: `internal/cli/focused_equivalence_test.go`, `internal/sem/search_store_focus_test.go`, `internal/sem/search_store_stamp_test.go`.
+
+- [ ] Step 1: Write the failing tests.
+  - **#6:** the guard's trace assertion. It FAILS today, because nothing prints the trace.
+  - **#2:** a guard fixture where one name is defined in two files, with `impact --head --symbol <name> --file <one of them>`. The output is identical with the store on and off, and the trace reads `focused`.
+    - A case variant names the file with different letter case. It must match the store-off output, which `EqualFold` resolves.
+    - A case passes the symbol's ID together with a `--file` that names the other file. It must match the store-off output, because the ID wins.
+  - **#4:** mirror `TestFocusedLookupHashesAnEntryWhoseStampChanged` through `LoadOrBuildProviderSnapshot`, with the store on. After the entry is rewritten so its stamp changes and its bytes differ, the warm load must not serve the stale sidecar. `cacheHit` and the snapshot show this.
+  - **#7:** the Kelvin case.
+- [ ] Step 2: Implement #2, #4, #6, #7 and #8.
+- [ ] Step 3: Run `go test -short -timeout 40m ./internal/cli`, `go test -short ./internal/sem -run 'Store|Focus|Stamp|Lookup'` and `go vet ./...`. Do not run `./internal/gitutil`'s console test.
+- [ ] Step 4: Measure #4 with `perf_run.py <binary> <tag> orbweaver store`. The `store` mode matters: the default mode is `nostore`. Run `index-cold` once per tag, then `PERF_STEPS=query`, for a before and an after build. Record the result in `docs/perf-ledger.md`.
+- [ ] Step 5: Commit: `perf(store): narrow focused lookups, trust the stamp for warm queries, and trace the load`.
 
 ### Task 11: Re-run the eval and report (W5)
 
