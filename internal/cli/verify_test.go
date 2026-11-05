@@ -565,3 +565,23 @@ func TestVerifyShellForSelectsAPlatformShell(t *testing.T) {
 		t.Fatalf("error %q does not say a POSIX shell is what is missing", err)
 	}
 }
+
+func TestVerifyRefusesBaselineWithDifferentSetup(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "run.sh", "#!/bin/sh\necho \"tests/test_a.py::test_x PASSED\"\n")
+	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+		[]string{"verify", "--repo", repo, "--setup", "printf one > setup-one", "--test", "sh run.sh", "--record-baseline", baselinePath}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+		[]string{"verify", "--repo", repo, "--setup", "printf two > setup-two", "--test", "sh run.sh", "--pre-edit-baseline", baselinePath})
+	if err == nil {
+		t.Fatal("a baseline recorded with a different setup was accepted")
+	}
+	if !strings.Contains(err.Error(), "setup command") {
+		t.Fatalf("error does not name the mismatched setup command: %v", err)
+	}
+}
