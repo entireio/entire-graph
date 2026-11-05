@@ -558,6 +558,7 @@ func scanProcessLaunches(t *testing.T, root string, report func(string, ...any))
 		"internal/cli/verify.go:runVerifyShell":                               "runs the user's own test command through their shell",
 		"internal/bench/worker.go:":                                           "benchmark harness, not shipped provider code",
 		"cmd/graph-bench/main.go:":                                            "benchmark harness that clones its corpus by design",
+		"cmd/grammar-refresh/main.go:":                                        "maintainer tool that fetches an upstream grammar into a scratch repository; never shipped and never run against a user repository",
 	}
 	gitProgramWrappers := map[string]bool{"newCmd": true, "run": true, "runWithStderr": true}
 	passThroughWrappers := map[string]bool{"run": true, "runWithStderr": true}
