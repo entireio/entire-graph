@@ -713,8 +713,14 @@ Closes the remaining in-scope `entire review` findings. #3 and #6 (repeated hash
 - **#5:** delete `TestLookupVerbsReadTheWholeGraphOnlyForAnExactMiss`. The Task 2 equivalence guard covers correctness and the perf ledger covers speed; say so in the commit body.
 - **#9:** replace `distinctIDs` with `dedupeStrings` plus an empty-string filter at the call site. `dedupeStrings` compacts in place, which is safe because every caller (`search_store_focus.go:393-590`) owns its slice.
 
+- **From the Task 9c and 9e reviews:**
+  - `internal/cli/hook_test.go:217`: the comment "leaving .claude alone takes both opt-outs" is stale. Non-interactively, `--no-claude-hook` alone is enough.
+  - `statusline_test.go`: drop the `statuslineThousands` helper, which copies the production formatter line for line. `TestStatuslineShowsTheGraphSize` asserts the hand-derived literal for its deterministic fixture instead (`1,001 nodes`, plus its edge count, derived by hand).
+  - `sem.IndexEntryCounts`: `Lstat` through the root and require a regular file before opening, as `exists()` does. A FIFO at the counts path must never block a render.
+  - `writeSearchSnapshotCounts` calls `refuseTruncatedSnapshot` itself and writes nothing on a refusal, so every caller is guarded. That includes `main`'s `writeSearchSnapshot` site when the status line PR is cut.
+
 - [ ] Step 1: Add a subtest to `TestColdIndexSurfacesStoreWriteFailureAsWarning` for `def --head` in text and in agent format: the warning line appears. It FAILS today.
-- [ ] Step 2: Implement #1, #4, #5 and #9.
+- [ ] Step 2: Implement #1, #4, #5 and #9, and the review items above.
 - [ ] Step 3: Run `go test -short -timeout 40m ./internal/cli`, `go test -short ./internal/sem -run 'Store|Focus|Stamp|Lookup'`, the Task 2 equivalence guard and `go vet ./...`.
 - [ ] Step 4: Commit: `fix(cli): show the store warning in def, and drop internals-coupled tests`.
 
