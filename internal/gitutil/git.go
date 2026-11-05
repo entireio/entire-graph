@@ -2682,6 +2682,28 @@ func RemoteURLs(ctx context.Context, repo string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseRemoteURLs(out), nil
+}
+
+// RemoteURLsStrict is RemoteURLs that tells "no remote is configured" apart from a failure: git
+// config exits 1 with no output when nothing matches, and that is (nil, nil). Every other failure,
+// including a cancelled ctx, is an error. RemoteURLs reports both as an error.
+func RemoteURLsStrict(ctx context.Context, repo string) ([]string, error) {
+	args := []string{"config", "--get-regexp", `^remote\..*\.url$`}
+	stdout, stderr, err := runWithStderr(ctx, repo, "git", args...)
+	if err != nil {
+		var exitError *exec.ExitError
+		if ctx.Err() == nil && errors.As(err, &exitError) && exitError.ExitCode() == 1 && stdout == "" && stderr == "" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+	return parseRemoteURLs(stdout), nil
+}
+
+// parseRemoteURLs reads `git config --get-regexp` output: origin's URL first, then the rest in
+// config order.
+func parseRemoteURLs(out string) []string {
 	origin := ""
 	var urls []string
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -2700,7 +2722,7 @@ func RemoteURLs(ctx context.Context, repo string) ([]string, error) {
 	if origin != "" {
 		urls = append([]string{origin}, urls...)
 	}
-	return urls, nil
+	return urls
 }
 
 func run(ctx context.Context, dir, name string, args ...string) (string, error) {

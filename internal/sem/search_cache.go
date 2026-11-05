@@ -1260,6 +1260,15 @@ func searchSnapshotKeyForSchema(schemaVersion, absRepo, repositoryKey, providerV
 // searchSnapshotKeyForVersions also takes the cache version explicitly, so a test
 // can address the entry an earlier build wrote for the same tree.
 func searchSnapshotKeyForVersions(cacheVersion, schemaVersion, absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions, contexts ...context.Context) (string, error) {
+	return searchSnapshotKeyForScope(cacheVersion, schemaVersion, absRepo, repositoryKey, providerVersion, tree, options, func() string {
+		return cacheCheckoutScope(absRepo, contexts...)
+	})
+}
+
+// searchSnapshotKeyForScope is the key itself. scope supplies the repository-scope term at the
+// point the key hashes it: cacheCheckoutScope for every reader and writer, and an already strictly
+// derived term for HeadIndexEntries, which must not key on cacheCheckoutScope's path: fallback.
+func searchSnapshotKeyForScope(cacheVersion, schemaVersion, absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions, scope func() string) (string, error) {
 	if options.Worktree {
 		return "", errors.New("working-tree snapshots cannot have persistent cache keys")
 	}
@@ -1286,7 +1295,7 @@ func searchSnapshotKeyForVersions(cacheVersion, schemaVersion, absRepo, reposito
 	// each is served as the other: a root query after a subdir one reported a hit
 	// with none of the root's symbols. Two worktrees or clones at the same tree and
 	// the same prefix still share; that is what the path-free key is for.
-	writeCacheKeyString(hash, "repository-scope", cacheCheckoutScope(absRepo, contexts...))
+	writeCacheKeyString(hash, "repository-scope", scope())
 	writeCacheKeyString(hash, "provider-version", providerVersion)
 	writeCacheKeyString(hash, "tree", tree)
 	writeCacheKeyString(hash, "profile", string(options.Profile))
@@ -1396,6 +1405,20 @@ func cacheCheckoutScope(absRepo string, contexts ...context.Context) string {
 		}
 	}
 	return "path:" + filepath.Clean(absRepo)
+}
+
+// cacheCheckoutScopeStrict is cacheCheckoutScope for a caller that keeps the answer it keys: metadata
+// git may not run on, or a failed `--show-prefix`, is an error rather than the path: fallback, so a
+// transient failure cannot be recorded as a different entry key.
+func cacheCheckoutScopeStrict(ctx context.Context, absRepo string) (string, error) {
+	if !gitMetadataSafeForSubprocessContext(ctx, absRepo) {
+		return "", gitMetadataRefusalError(absRepo)
+	}
+	prefix, err := gitutil.RepoPrefix(ctx, absRepo)
+	if err != nil {
+		return "", err
+	}
+	return "prefix:" + filepath.ToSlash(prefix), nil
 }
 
 // searchCacheRepositoryKeyTerm is the repository-identity term of a search

@@ -7,12 +7,9 @@ import (
 	"syscall"
 )
 
-// openedFileLinkCount is the number of names the open file has.
-func openedFileLinkCount(file *os.File) (uint64, bool) {
-	info, err := file.Stat()
-	if err != nil {
-		return 0, false
-	}
+// openedFileLinkCount is the number of names the open file has, from the FileInfo the caller already
+// took of it.
+func openedFileLinkCount(_ *os.File, info os.FileInfo) (uint64, bool) {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return 0, false

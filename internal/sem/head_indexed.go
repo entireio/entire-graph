@@ -25,7 +25,8 @@ type IndexEntry struct{ Root, Relative string }
 // HeadIndexEntries returns the committed-tree search cache entries for HEAD under each of
 // headIndexedProfiles, with the repository's default policy inputs (its .graphignore, no explicit
 // ignore or include files). Any one of them existing means HEAD is indexed. Deriving them resolves
-// HEAD, the remote URLs and the checkout scope through git; checking them (AnyIndexEntryExists)
+// HEAD, the remote URLs and the checkout scope through git, and any failure among them is an
+// error rather than a fallback key term; checking them (AnyIndexEntryExists)
 // runs no git, which is what lets the status line keep the entries and re-check them every render.
 //
 // An empty cacheDir has no entries. An unresolvable HEAD, or metadata git may not be run on, is an
@@ -49,12 +50,23 @@ func HeadIndexEntries(ctx context.Context, repo, providerVersion, cacheDir strin
 	if err != nil {
 		return nil, err
 	}
-	repositoryKey := repoKey(ctx, absRepo)
+	// Strictly derived: repoKey and cacheCheckoutScope turn a failed git call into a fallback term,
+	// which would address other entries and be kept as "not indexed" under an unchanged key.
+	repositoryKey, err := repoKeyStrict(ctx, absRepo)
+	if err != nil {
+		return nil, err
+	}
+	scope, err := cacheCheckoutScopeStrict(ctx, absRepo)
+	if err != nil {
+		return nil, err
+	}
 	entries := make([]IndexEntry, 0, len(headIndexedProfiles))
 	for _, profile := range headIndexedProfiles {
 		options := policy
 		options.Profile = profile
-		key, err := searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree, options, ctx)
+		// searchSnapshotKey's terms, with the strict scope in place of cacheCheckoutScope.
+		key, err := searchSnapshotKeyForScope(searchSnapshotCacheVersion, SchemaVersion, absRepo, repositoryKey,
+			providerVersion, tree, options, func() string { return scope })
 		if err != nil {
 			return nil, err
 		}
@@ -109,8 +121,8 @@ const (
 // unborn reports that HEAD names a ref with no loose file and no packed-refs line.
 //
 // ok is false when the layout needs git to interpret, and the caller must take its full path:
-// .git that is not a plain directory (a linked worktree, a submodule, a link) or that has a
-// commondir; a HEAD that is neither `ref: refs/...` nor a 40- or 64-hex id; a loose ref that is
+// .git that is not a plain directory (a linked worktree, a submodule, a link), that has a
+// commondir, or that lacks a HEAD file or plain refs and objects directories; a HEAD that is neither `ref: refs/...` nor a 40- or 64-hex id; a loose ref that is
 // itself symbolic; a config that uses include, includeIf, worktreeConfig or refStorage; and any
 // input that is a link, is not a regular file, or exceeds its read bound. Every read goes through
 // an os.Root of repo with Lstat. A missing input hashes as a stable "absent".
@@ -128,27 +140,32 @@ func HeadKeyWithoutGit(repo string) (key string, unborn, ok bool) {
 	if _, err := root.Lstat(filepath.Join(".git", "commondir")); !isMissingPathError(err) {
 		return "", false, false
 	}
+	// A directory git would not take for a repository falls back too: git may then discover one
+	// above repo. refs and objects must be plain directories, and HEAD must be present (below).
+	for _, directory := range []string{"refs", "objects"} {
+		if info, err := root.Lstat(filepath.Join(".git", directory)); err != nil || !info.IsDir() {
+			return "", false, false
+		}
+	}
 
 	hash := sha256.New()
 	writeCacheKeyString(hash, "max-files", strconv.Itoa(resolveMaxSourceFiles(0)))
 	head, present, ok := readHeadKeyInput(root, filepath.Join(".git", "HEAD"))
-	if !ok {
+	if !ok || !present {
 		return "", false, false
 	}
 	writeHeadKeyInput(hash, "head", head, present)
-	if present {
-		value := strings.TrimRight(string(head), " \t\r\n")
-		if target, symbolic := strings.CutPrefix(value, "ref:"); symbolic {
-			target = strings.TrimLeft(target, " \t")
-			if !validHeadKeyRefName(target) {
-				return "", false, false
-			}
-			if unborn, ok = writeHeadKeyRef(hash, root, target); !ok {
-				return "", false, false
-			}
-		} else if !validHeadKeyObjectID(value) {
+	value := strings.TrimRight(string(head), " \t\r\n")
+	if target, symbolic := strings.CutPrefix(value, "ref:"); symbolic {
+		target = strings.TrimLeft(target, " \t")
+		if !validHeadKeyRefName(target) {
 			return "", false, false
 		}
+		if unborn, ok = writeHeadKeyRef(hash, root, target); !ok {
+			return "", false, false
+		}
+	} else if !validHeadKeyObjectID(value) {
+		return "", false, false
 	}
 	config, present, ok := readHeadKeyInput(root, filepath.Join(".git", "config"))
 	if !ok {
@@ -258,7 +275,7 @@ func openHeadKeyInput(root *os.Root, name string, limit int64) (*os.File, bool) 
 	opened, err := file.Stat()
 	if err == nil && os.SameFile(info, opened) && opened.Size() <= limit {
 		if regular, err := openedFileIsRegular(file, opened); err == nil && regular {
-			if links, known := openedFileLinkCount(file); known && links == 1 {
+			if links, known := openedFileLinkCount(file, opened); known && links == 1 {
 				return file, true
 			}
 		}

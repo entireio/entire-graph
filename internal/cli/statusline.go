@@ -204,10 +204,9 @@ type statuslineGitRecord struct {
 // validation passed, HEAD resolved (or is unborn) and ctx was not cancelled, so a transient failure
 // never pins "not indexed" under an unchanged key. ok is false when the render must print nothing.
 func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (tree string, entries []sem.IndexEntry, ok bool) {
-	key, unborn, keyed := "", false, false
+	key, headKey, unborn, keyed := "", "", false, false
 	path := ""
 	if cacheDir != "" {
-		var headKey string
 		if headKey, unborn, keyed = sem.HeadKeyWithoutGit(repo); keyed {
 			key = statsCacheKey(statuslineGitCacheSchema, statsCacheSalt(version), repo, cacheDir, headKey)
 			path = filepath.Join(cacheDir, "statusline", "git-"+statsCacheKey(repo)+".json")
@@ -235,8 +234,14 @@ func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (t
 			return "", nil, false
 		}
 	}
+	// The key was read before the git calls. A checkout landing in between would store the new HEAD's
+	// answer under the old HEAD's key, served again once the old bytes return, and could pair a tree
+	// and entries from two HEADs. So save only when a second read finds the same key: a racy render
+	// still shows its answer, it just does not keep it.
 	if path != "" && resolved && ctx.Err() == nil {
-		saveStatuslineJSON(path, statuslineGitRecord{Key: key, Tree: tree, Entries: entries})
+		if again, _, stable := sem.HeadKeyWithoutGit(repo); stable && again == headKey {
+			saveStatuslineJSON(path, statuslineGitRecord{Key: key, Tree: tree, Entries: entries})
+		}
 	}
 	return tree, entries, true
 }
