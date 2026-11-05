@@ -316,6 +316,22 @@ func TestParseVerifyFlagsRequiresABaseline(t *testing.T) {
 	}
 }
 
+func TestParseVerifyFlagsRejectsConflictingBaselineModes(t *testing.T) {
+	_, err := parseVerifyFlags([]string{
+		"--test", "go test ./...",
+		"--record-baseline", "new.json",
+		"--pre-edit-baseline", "old.json",
+	})
+	if err == nil {
+		t.Fatal("verify accepted both baseline modes")
+	}
+	for _, want := range []string{"--record-baseline", "--pre-edit-baseline"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error does not name %q: %v", want, err)
+		}
+	}
+}
+
 // TestVerifySetupFailureStopsTheRun pins the exit code of the SETUP command. runVerifyShell reports a
 // command that ran and failed as (nonzero, nil error), so a caller that keeps only the error learns
 // nothing about a failed install or build. The regression this guards is not cosmetic: the test
