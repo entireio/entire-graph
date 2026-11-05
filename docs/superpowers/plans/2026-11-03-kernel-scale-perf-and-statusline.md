@@ -799,9 +799,10 @@ Added at the user's request after Task 9c: the indexed graph's size is a relevan
 
 Added after the user saw 3–4 console windows flash and steal focus. It fixes code already on upstream `main` and ships as its own PR (`fix/windows-hidden-subprocess`), independent of the perf and status line PRs.
 
-**Cause.** A console program gets a new, visible console window when its parent has no console. Two launches hit that:
-- **Path-output commands** (`process_job_windows.go`) start git under a surrogate parent, which is created suspended with `CREATE_NO_WINDOW` and never connects a console.
-- **Any subprocess** started while entire-graph itself runs without a console, for example a status line render that Claude Code starts that way.
+**Cause** (confirmed by the first implementation attempt's probe). When entire-graph itself runs **without a console**, every console subprocess it starts gets a new, visible console window. A status line render that Claude Code starts that way is one example.
+- The probe showed this for path-output commands: `hwnd` non-zero, visible, and the child the only console process.
+- With a windowless console, as in an agent shell, children got no window.
+- The surrogate parent alone is not the cause.
 
 **Fix:** `HideConsoleWindow(cmd *exec.Cmd)` in `gitutil`. It is the only name; there is no lowercase twin.
 - **Files:**
@@ -809,7 +810,7 @@ Added after the user saw 3–4 console windows flash and steal focus. It fixes c
   - `internal/gitutil/console_other.go` (`//go:build !windows`): a no-op.
 - **Why conditional:** a terminal user keeps a console shared with git and with VERIFY's `sh`. Ctrl-C still reaches the whole tree, and no extra `conhost.exe` starts per call.
 - **Called from:** `newCmd` and `newGitCmdWithCallerLocale` in `git.go` (every production git command), and `runVerifyShell` in `internal/cli/verify.go` (VERIFY's `sh`).
-- **Path-output children:** they always get `CREATE_NO_WINDOW` and `HideWindow`, whatever the current process has, because their surrogate parent never has a console. Set this in `pathOutputChildSysProcAttr` (`process_job_windows.go`). Amend `TestPathOutputChildSysProcAttrPreservesEveryCallerField` so it expects the caller's fields plus these two flags.
+- **Path-output children:** they always get `CREATE_NO_WINDOW` and `HideWindow`, whatever the current process has. Their surrogate parent never has a console, so they cannot share the caller's console anyway. Set this in `pathOutputChildSysProcAttr` (`process_job_windows.go`). Amend `TestPathOutputChildSysProcAttrPreservesEveryCallerField` so it expects the caller's fields plus these two flags.
 - **Out of scope:** `internal/bench` is dev tooling.
 - **Docs:** add one `### Fixed` line under `[Unreleased]` in `CHANGELOG.md`, creating the heading if it is absent. No other doc describes the Windows launcher.
 
@@ -823,13 +824,14 @@ Added after the user saw 3–4 console windows flash and steal focus. It fixes c
     - Otherwise it ends with `os.Exit(m.Run())`.
     - The verdict goes to a file, not stdout, so the path-output NUL parser never sees it.
   - **Shim:** copy the test binary into a temp dir as `git.exe`, put that dir first on `PATH`, and set the variable. `gitSubprocessEnvironment` strips only `GIT_*`, so the variable reaches the child.
-  - `TestPathOutputGitHasNoVisibleConsole`:
-    - Build the command with `newCmd(ctx, dir, "git", "ls-files", "-z")`, run it through the path-output launcher (`visitBoundedNULPaths`), and expect `hidden` in the verdict file.
-    - It catches a path-output child that opens its own console window.
-- [ ] Step 2: Run it on this Windows 10 machine. Expected: FAIL (`visible`). That is the evidence for the cause.
-  - If it prints `hidden`, the surrogate hypothesis is wrong. Stop and report what the probe printed.
+  - `TestSubprocessesStartedWithoutAConsoleHaveNoVisibleWindow`:
+    - **Setup:** re-run the test binary with `-test.run=^<helper>$` and `DETACHED_PROCESS`, so the helper process has no console. Use the existing env-var helper pattern for the helper process.
+    - **Inside the helper:** it builds `newCmd(ctx, dir, "git", "ls-files", "-z")` twice, sending one through plain `run` and one through the path-output launcher (`visitBoundedNULPaths`).
+    - **Assertion:** each shim must write `hidden` to its own verdict file.
+    - It catches any subprocess that opens its own console window when entire-graph has none, which is the user's flash.
+- [ ] Step 2: Run it on this Windows 10 machine. Expected: FAIL, with `visible` from both cases.
+  - The RED run briefly opens console windows on the desktop. That is the bug being reproduced; say so in the report.
   - On Windows 11 with Windows Terminal, `GetConsoleWindow` can return a hidden pseudo-window, so the RED proof holds on Windows 10. The post-fix assertion holds everywhere.
-  - A plain-`run` case is not a test: under an interactive `go test` the child correctly inherits the terminal's visible console.
 - [ ] Step 3: Implement the helper, the three call sites and the path-output flags. Update the amended test.
 - [ ] Step 4: Run these:
   - `go test ./internal/gitutil` and `go vet ./...` on Windows.
