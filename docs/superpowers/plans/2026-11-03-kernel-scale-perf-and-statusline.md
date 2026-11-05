@@ -1,10 +1,10 @@
 # Kernel-scale performance pass and status line — Implementation Plan
 
-> **Status (2026-11-04):** Tasks 1–5 done. Tasks 6–7 (W2, W3) are superseded by the [store-native index design](../specs/2026-11-04-store-native-index-design.md). Tasks 8–10 done. Task 9b (added after Task 10 landed) proceeds next, independent of Task 11. Task 11 runs after the redesign's M3.
+> **Status (2026-11-04):** Tasks 1–5 done. Tasks 6–7 (W2, W3) are superseded by the [store-native index design](../specs/2026-11-04-store-native-index-design.md). Tasks 8–10 and 9b done. Tasks 9c and 9d (added after the branch's first `entire review`) proceed next, independent of Task 11. Task 11 runs after the redesign's M3.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `entire graph` lookups and indexing affordable on kernel-scale repos without changing a byte of verb output, and add a graft-style Claude Code status line installed by `setup`.
+**Goal:** Make `entire graph` lookups and indexing affordable on kernel-scale repos without changing a byte of verb output, and add a graft-style Claude Code status line that `setup` installs when the user opts in (Task 9c).
 
 **Architecture:**
 - Lookups (`neighbors`, `def`, `impact`, `explain`) read a focused subgraph out of the existing sqlite sidecar instead of decoding the whole gz-JSON entry. The sidecar becomes default-on.
@@ -366,6 +366,8 @@ GrossCoveredEstTokens int64 `json:"gross_covered_est_tokens"` // bytes / 4
 
 ### Task 9: `entire graph statusline` subcommand
 
+> Amended by Task 9c: the rendered segments (no `✓ indexed`, lookup count or `net n/a`; a stale state), and nothing outside a checkout.
+
 **Files:**
 - Create: `internal/cli/statusline.go`, `internal/cli/statusline_test.go`, `internal/sem/head_indexed.go`
 - Modify:
@@ -428,6 +430,8 @@ Render, with ANSI colours unless `NO_COLOR` is set (indigo `38;2;84;111;255` for
 - [ ] Step 6: Commit: `feat(cli): add a Claude Code status line subcommand`.
 
 ### Task 9b: Status line warm render without git
+
+> Amended by Task 9c: tests that expect `✓ indexed` or `not indexed` now classify the state as current, behind or not indexed; the git record also holds ancestor entries.
 
 Task 9 measured a cache-hit render at 409 ms p50, above Claude Code's 300 ms debounce (see Task 9, Caching). Most of a hit is spent on git work whose answer has not changed: `WithGitMetadataValidationForSetup`, plus the git calls for HEAD and, inside `HeadIndexed`, for HEAD again, the remote URLs and the scope prefix. The transcript listing is also on the hit path, and it stays there because the figures key needs it. Step 1 re-measures this breakdown, since Task 9's per-item numbers overlap and sum to more than 409 ms.
 
@@ -502,6 +506,8 @@ Contents are hashed rather than statted, so a same-size ref rewrite within one m
 
 ### Task 10: `setup` installs the status line
 
+> Amended by Task 9c: setup installs it only with `--statusline` or a "yes" at an interactive prompt, never by default; the plugin manifest no longer sets it; the preflight hint names only the applicable opt-out.
+
 **Files:**
 - Modify:
   - `internal/agentsetup/claude_hook.go`: reuse its settings read/merge/refuse-malformed/atomic-write.
@@ -556,6 +562,145 @@ func InstallClaudeStatusLineChanged(root string) (path string, created, changed,
 - [ ] Step 3b: Manually check on this Windows machine. With Git Bash present, Claude Code shows the line. Confirm piped stdin reaches the binary when the command runs under PowerShell 5.1 (run `'{}' | powershell -NoProfile -Command "entire graph statusline"`). Record the result in the commit body.
 - [ ] Step 4: Run the full suite and `go vet`. Update the README/AGENTS.md `setup` descriptions and the statusline-script header to point at the subcommand.
 - [ ] Step 5: Commit: `feat(setup): install the Claude Code status line`.
+
+### Task 9c: The status line is opt-in, lean and stale-aware
+
+Added after the branch's first `entire review` (2026-11-04) and the first live render in Claude Code. It amends Tasks 9, 9b and 10. Three product decisions drive it:
+- **Opt-in.** A status line takes a screen line the user owns, so installing it is the user's choice, made at setup, in every harness `setup` configures that runs a command status line. Today that is Claude Code only. Installing the Claude Code plugin no longer turns it on.
+- **Lean.** The line shows only what the user acts on. `✓ indexed`, the lookup count and `net n/a` go.
+- **Stale-aware.** When HEAD has no index but a recent first-parent ancestor does, the line says how far behind the index is instead of `not indexed`. Automatic refresh is an M4 requirement (see the ledger), not this task.
+
+It also closes `entire review` findings #2 (`setup --no-claude-hook` aborts on a malformed `settings.local.json`), #7 (a non-git directory shows `not indexed`) and #8 (the script's fallback drops `"$@"`).
+
+**Files:**
+- Modify:
+  - `internal/cli/agents.go`: the status line step of the setup install branch (decision below). It runs after `ui.Intro` and before `InstallChanged`, so nothing is written before the user answers.
+  - `internal/cli/root.go`: an `Options.interactive func() bool` seam beside `homeDir`. Its default is "stdin and stdout are both terminals". `isTerminal` (`progressbar.go:16`) takes an `io.Writer`; add the same character-device check for stdin.
+  - `internal/agentsetup/claude_statusline.go`: add `OurStatusLineInstalled(root string) bool`. It is true only when `settings.local.json` is a readable, regular, non-link JSON object whose `statusLine.command` contains `entire graph statusline`. Every read or parse failure is false, never an error.
+  - `internal/agentsetup/claude_hook.go`: `claudeSettingsHint` names only the opt-out that applies. The hook step's refusal names `--no-claude-hook`; the status line step's refusal names `--no-statusline`.
+  - `internal/sem/head_indexed.go`: add `AncestorIndexEntries` (below).
+  - `internal/cli/statusline.go`: the segments below, the stale state, and no anchor outside a checkout. The git record gains the ancestor entries; bump `statuslineGitCacheSchema`.
+  - `.claude-plugin/plugin.json`: remove `settings.statusLine`.
+  - `scripts/entire-graph-statusline.sh`: the fallback becomes `exec entire graph statusline "$@"`.
+  - `internal/cli/help.go`: the setup and statusline entries.
+  - Docs that state default install, the plugin's status line, `lookups` or `net n/a`. Amend these passages in place; do not add a contradicting entry:
+    - `README.md:95-99`;
+    - `AGENTS.md:207-210` (stats section);
+    - `docs/agents.md:43-56`, `:70` and `:182`;
+    - `docs/operations.md:217-221`;
+    - `docs/trust-and-security.md:215-218`;
+    - `skills/stats/SKILL.md:98-121`;
+    - `CHANGELOG.md:17-30` and `:44`.
+- Test: `internal/cli/statusline_test.go`, `internal/cli/setup_statusline_test.go`, `scripts/entire-graph-statusline_test.sh`.
+
+**Setup decision** for the status line step, first match wins:
+1. `--no-statusline`: skip without reading any settings. Row: `skipped (--no-statusline)`.
+2. `--statusline`: install exactly as Task 10 does. That means the preflight, overriding a shared or user line in this repo, and never replacing a foreign line inside `settings.local.json`.
+3. No flag, not interactive: skip without reading any settings. Row: `skipped (pass --statusline to install it)`. A line installed earlier stays, because a skip never writes.
+4. No flag, interactive:
+   1. `OurStatusLineInstalled`: row `unchanged`, no prompt.
+   2. `ForeignStatusLine` fails: Task 10's `skipped (could not read <path>)` row, no prompt. It finds a line in any scope: Task 10's `kept your status line (<path>) — rerun with --statusline …` row, no prompt.
+   3. Otherwise print `Install the Claude Code status line (graph token savings)? [y/N] ` to stdout.
+      - Read the answer in a goroutine and select on `ctx.Done()`. A cancelled context returns its error before anything is written.
+      - The answer is the text up to the first newline or EOF, trimmed. `y` or `yes`, in any case, means yes.
+      - Anything else means no, including EOF, a read error and a nil `Stdin`. Row: `skipped (not chosen)`.
+   4. On yes: run `CheckClaudeStatusLine`, then install as in 2. A preflight error fails setup before any write, with a hint naming `--no-statusline`.
+
+So an unchosen line never fails setup on `settings.local.json`. That covers steps 1 and 3, step 4.2, and a "no" at 4.3. A malformed file fails only where the Claude hook step already refuses it, as on `main` (finding #2).
+
+**Render**, amending Task 9's spec:
+```
+◤ entire graph · ~184K tok gross · ~12.4K net
+▸ ctx 42%
+```
+Line 1 holds these segments in order. Each appears only when its condition holds:
+1. `◤ entire graph`: always.
+2. The index state, only when HEAD has no index entry:
+   - `index N commits behind` when the nearest first-parent ancestor with an entry, within `sem.MaxStoreContextAncestorDistance` (5), is N commits back. Use `1 commit behind` for N = 1.
+   - `not indexed` otherwise. That covers no such ancestor, and HEAD unborn or unresolvable inside a checkout.
+3. `run entire graph index`: whenever segment 2 is present.
+4. `~X tok gross`: when lookups > 0.
+5. `~Y net`, signed with U+2212: when lookups > 0 and `sessions_with_savings_comparison > 0`.
+
+The line never shows `✓ indexed`, `N lookups` or `net n/a`. With no checkout at the anchor it prints nothing (finding #7): `statuslineAnchorRepo` returns "" when `discoverImplicitCheckoutRoot` fails, instead of the absolute path. Width fitting, colours, the figures cache and line 2 are unchanged.
+
+**Stale state:**
+```go
+// AncestorIndexEntries returns, for each of HEAD's first-parent ancestors up to max
+// commits back, nearest first, the entries whose presence means that commit is indexed.
+// It derives them as HeadIndexEntries derives HEAD's (the same strict repo key, scope
+// and policy inputs, with the ancestor's tree), from one gitutil.FirstParentCommitTrees
+// walk. A shorter history returns fewer.
+func AncestorIndexEntries(ctx context.Context, repo, providerVersion, cacheDir string, max int) ([][]IndexEntry, error)
+```
+- **When it runs:** only on the full (git-key miss) path, and only when HEAD resolved to a tree.
+- **Errors:** an error is handled like a `HeadIndexEntries` error. The render prints nothing and saves no record.
+- **Record:** the git record stores the ancestor entries beside HEAD's.
+- **Every render**, warm hits included, stats HEAD's entries and then each ancestor's in order. It runs no git. A later `index` at HEAD therefore shows as current on the next render.
+
+- [ ] Step 1: Write or amend the tests. Render tests use the Task 9 harness. Setup tests use real temp repos and a temp home.
+  - **Test helper:** `statuslineIndexedState` (`statusline_test.go:211-222`) classifies line 1 into one of three states:
+    - current: a non-empty line with no state segment;
+    - `behind N`;
+    - `not indexed`.
+    Empty output is a failure, never "current".
+  - `TestStatuslineShowsGrossNetAndContext`, renamed from `TestStatuslineShowsLookupsGrossNetAndContext`. It indexes the repo first (`statuslineIndex`).
+    - Line 1 is exactly `◤ entire graph · ~900 tok gross · <net>`, with no net segment when `stats` reports no comparison.
+    - Line 2 is `▸ ctx 42%`.
+    - This catches a filler segment returning.
+  - `TestStatuslineIsBareWhenIndexedWithNoLookups` replaces `TestStatuslineShowsIndexedAfterIndex`. Index, then render with a transcript that has no lookups. Stdout is exactly `◤ entire graph\n`.
+  - `TestStatuslineShowsHowFarBehindTheIndexIs`:
+    - Index, make two commits, render. Line 1 contains `index 2 commits behind · run entire graph index`.
+    - Index again and render: the state is current.
+    - This catches stale falling back to `not indexed`, and a cached stale state.
+  - `TestStatuslineSaysNotIndexedBeyondTheAncestorBound`: index, make 6 commits, render. The state is `not indexed`.
+  - `TestStatuslinePrintsNothingOutsideARepo`: anchor a plain temp dir, with `GIT_CEILING_DIRECTORIES` set to its parent so a git-tracked home cannot interfere. Stdout is empty.
+  - Amend Task 9b's `TestStatuslineNoticesKeyInputChanges`: each subtest expects the state not to be current. A commit now reads `behind 1`, and an origin or `.graphignore` change reads `not indexed`.
+  - `TestStatuslineWarmRenderRunsNoGit` and `TestStatuslineNoticesALaterIndex` expect the state current where they expected `✓ indexed`.
+  - Replace `TestSetupInstallsStatusLineByDefault` with `TestSetupLeavesTheStatusLineOffUnlessChosen`. A non-interactive `setup --repo <tmp>` writes no `statusLine`; with `--statusline` it writes ours.
+  - `TestSetupAsksBeforeInstallingTheStatusLine` (interactive seam on):
+    - Stdin `y\n` writes ours.
+    - Stdin `\n` writes none, and empty stdin writes none.
+    - Stdout contains `[y/N]`; do not assert the prompt's wording.
+    - This catches a prompt that defaults to yes.
+  - `TestSetupDoesNotAskWhenAStatusLineExists` (interactive seam on, stdin `y\n`):
+    - With ours already in `settings.local.json`, it is still ours afterwards and no `[y/N]` is printed.
+    - With a foreign line in the user scope, no `statusLine` is written, no `[y/N]` is printed, and the row says `kept your status line`.
+  - `TestSetupNoClaudeHookIgnoresStatusLineSettingsUnlessChosen`:
+    - `settings.local.json` holds `[]`, then a BOM-prefixed object.
+    - Run it non-interactively, and interactively with stdin `\n`.
+    - `setup --no-claude-hook` succeeds and writes the guides (finding #2).
+  - Amend `TestSetupKeepsUserStatusLineUnlessAsked` and `TestSetupSkipsStatusLineWhenAScopeIsUnreadable`. Their default cases run with the interactive seam on and expect the same rows as today. `TestSetupNoStatuslineFlagWritesNone` is unchanged.
+  - `scripts/entire-graph-statusline_test.sh`: with `ENTIRE_GRAPH_BIN` unset and the test's stub `entire` first on PATH, an argument reaches the stub's recorded argv (finding #8).
+- [ ] Step 2: Run them. New and amended tests FAIL; unchanged ones pass.
+- [ ] Step 3: Implement it. Remove `settings.statusLine` from the plugin manifest and amend the help text and docs listed above.
+- [ ] Step 4: Run `go test -short -timeout 40m ./internal/cli`, `go test ./internal/agentsetup`, `go test -short ./internal/sem -run 'Index|Ancestor'`, the script test and `go vet ./...`.
+- [ ] Step 5: Measure as in Task 9b Step 5, 20 runs each.
+  - The warm-hit p50 stays within Task 9b's result plus noise, since a hit adds only stats.
+  - The git-key-miss p50, which now includes one first-parent walk, must be no more than 10% above Task 9b's.
+  - Record both in `docs/perf-ledger.md`.
+- [ ] Step 6: Commit: `feat(setup): ask before installing a lean, stale-aware status line`.
+
+### Task 9d: `entire review` cleanups
+
+Closes the remaining in-scope `entire review` findings. #3 and #6 (repeated hashing and git work) are parked for M1, which replaces those code paths.
+
+**Files:**
+- Modify: `internal/cli/def.go` (the text and agent renderers), `internal/sem/search_store_focus.go` (`distinctIDs`).
+- Test: `internal/cli/store_test.go` (`TestColdIndexSurfacesStoreWriteFailureAsWarning`, `:185`), `internal/sem/search_store_stamp_test.go`, `internal/cli/lookup_snapshot_test.go`.
+
+- **#1:** `def` in text and agent format prints `W_SEARCH_STORE_UNAVAILABLE` the way `explain` does since cb21b953.
+  - Reuse `explainWarnings` and explain's line format and placement.
+  - Print it once per invocation, not once per name, outside the `--max-context-bytes` budget.
+  - Output without the warning is byte-identical.
+- **#4:** delete the assertion in `search_store_stamp_test.go` that a corrupted entry behind an unchanged stamp is served undetected. Delete the test too if nothing else remains in it. Add no replacement: an output-equality check cannot see a skipped hash, because the sidecar and the entry mirror the same tree. The Task 2 equivalence guard covers the focused load's correctness.
+- **#5:** delete `TestLookupVerbsReadTheWholeGraphOnlyForAnExactMiss`. The Task 2 equivalence guard covers correctness and the perf ledger covers speed; say so in the commit body.
+- **#9:** replace `distinctIDs` with `dedupeStrings` plus an empty-string filter at the call site. `dedupeStrings` compacts in place, which is safe because every caller (`search_store_focus.go:393-590`) owns its slice.
+
+- [ ] Step 1: Add a subtest to `TestColdIndexSurfacesStoreWriteFailureAsWarning` for `def --head` in text and in agent format: the warning line appears. It FAILS today.
+- [ ] Step 2: Implement #1, #4, #5 and #9.
+- [ ] Step 3: Run `go test -short -timeout 40m ./internal/cli`, `go test -short ./internal/sem -run 'Store|Focus|Stamp|Lookup'`, the Task 2 equivalence guard and `go vet ./...`.
+- [ ] Step 4: Commit: `fix(cli): show the store warning in def, and drop internals-coupled tests`.
 
 ### Task 11: Re-run the eval and report (W5)
 
