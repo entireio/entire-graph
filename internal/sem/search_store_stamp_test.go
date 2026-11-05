@@ -28,11 +28,11 @@ func TestFocusedLookupHashesAnEntryWhoseStampChanged(t *testing.T) {
 	}
 }
 
-// The warm full load (query --head, and a lookup's fallback) trusts the stamp
-// the same way. Break caught: the full read taking the recorded digest for an
-// entry whose stamp no longer matches, and serving the rewritten entry's
-// sidecar as a cache hit.
-func TestFullLoadHashesAnEntryWhoseStampChanged(t *testing.T) {
+// The warm full load (query --head, and a lookup's fallback) checks the
+// sidecar against the entry before answering from it. Break caught: the full
+// read serving a rewritten entry's sidecar as a cache hit, by skipping that
+// check or trusting a recorded stamp or digest the entry no longer has.
+func TestFullLoadNeverServesTheSidecarOfAChangedEntry(t *testing.T) {
 	fixture := indexFocusFixture(t)
 	rewriteEntryChangingItsStamp(t, focusFixtureEntryPath(t, fixture))
 	_, cacheHit, err := LoadOrBuildProviderSnapshot(t.Context(), fixture.repo, fixture.version,
