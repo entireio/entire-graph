@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 // `entire graph verify` — an ADJUDICATED verdict, not test output
@@ -234,6 +236,9 @@ func runVerifyShell(ctx context.Context, repo, command string) (string, int, err
 	}
 	cmd := exec.CommandContext(ctx, shell, "-c", command)
 	cmd.Dir = repo
+	// Started without a console (a status line render, say), sh would otherwise open a visible
+	// console window on Windows.
+	gitutil.HideConsoleWindow(cmd)
 	// The verb MUST NOT mutate the tree beyond what the command itself does, so nothing is written, no
 	// files are staged and no environment is injected beyond the caller's own.
 	out, err := cmd.CombinedOutput()

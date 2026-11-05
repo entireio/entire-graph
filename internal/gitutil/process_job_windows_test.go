@@ -38,7 +38,6 @@ func TestPathOutputChildSysProcAttrPreservesEveryCallerField(t *testing.T) {
 	processSecurity := &syscall.SecurityAttributes{Length: 11, InheritHandle: 1}
 	threadSecurity := &syscall.SecurityAttributes{Length: 22, InheritHandle: 1}
 	original := &syscall.SysProcAttr{
-		HideWindow:                 true,
 		CmdLine:                    `custom command line`,
 		CreationFlags:              0x12345678,
 		Token:                      syscall.Token(41),
@@ -50,10 +49,14 @@ func TestPathOutputChildSysProcAttrPreservesEveryCallerField(t *testing.T) {
 	parent := syscall.Handle(61)
 	want := *original
 	want.ParentProcess = parent
+	// The surrogate parent never has a console, so the child always runs
+	// without a console window, whatever the caller asked for.
+	want.CreationFlags |= createNoWindow
+	want.HideWindow = true
 	if got := pathOutputChildSysProcAttr(original, parent); !reflect.DeepEqual(got, want) {
-		t.Fatalf("child SysProcAttr = %#v, want exact caller copy plus parent %#v", got, want)
+		t.Fatalf("child SysProcAttr = %#v, want exact caller copy plus parent and hidden console %#v", got, want)
 	}
-	if original.ParentProcess != 0 {
+	if original.ParentProcess != 0 || original.HideWindow || original.CreationFlags != 0x12345678 {
 		t.Fatalf("caller SysProcAttr was mutated: %#v", original)
 	}
 }

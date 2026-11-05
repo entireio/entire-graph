@@ -143,12 +143,18 @@ func (launch *pathOutputLaunch) close() {
 	launch.job = pathOutputJob{}
 }
 
+// pathOutputChildSysProcAttr copies the caller's attributes, names the
+// creation parent, and always hides the child's console window. The surrogate
+// parent never has a console, so the child cannot share the caller's console
+// anyway; without CREATE_NO_WINDOW Windows could give it a visible one.
 func pathOutputChildSysProcAttr(original *syscall.SysProcAttr, parent syscall.Handle) syscall.SysProcAttr {
 	attributes := syscall.SysProcAttr{}
 	if original != nil {
 		attributes = *original
 	}
 	attributes.ParentProcess = parent
+	attributes.CreationFlags |= createNoWindow
+	attributes.HideWindow = true
 	return attributes
 }
 
