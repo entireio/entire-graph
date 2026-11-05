@@ -738,15 +738,20 @@ Added at the user's request after Task 9c: the indexed graph's size is a relevan
 - **The counts file:** `<key>.counts.json`, holding `{"symbols":N,"relations":M}` as raw JSON (not gzip). It sits beside the entry `<key>.json.gz`, the way `.sqlite` and `.generation.json.gz` do. Its name does not end in `.json.gz`, so the tests that count `*.json.gz` artifacts are unaffected.
 - **Who writes it:** a helper `writeSearchSnapshotCounts(entry, cache)`, fed from `cache.Snapshot.Header.Stats`.
   - It writes through the confined entry directory (`openCacheEntryDirectory`, `createRootTemp`, then `Rename`), per ADR 0004.
-  - Every **complete** entry writer calls it before the entry's own rename: `writeSearchSnapshotAndStore` (cold complete builds) and `persistVerifiedSearchSnapshot` (`index`).
-  - Check upstream `main`'s write sites too (`search_cache.go:478`, `:538`, `:703` there), because the status line PR is cut from `main`.
-  - Selective views (`OnlyFiles`, or `DerivedFrom != ""`) are skipped; their stats count a subset of the graph.
-  - Writing it first means a render never sees the entry without its counts. Equal keys give equal counts, so an orphan left by a failed entry write is harmless.
-- **Backfill:** on an `index` hit, write the counts file when it is missing, beside `repairSearchStoreSidecarForEntry`. Entries from earlier builds gain a size the next time `index` runs, even when HEAD is unchanged.
+  - **Callers:** every complete entry writer calls it, after `refuseTruncatedSnapshot` and before the entry's own rename.
+    - On this branch: `writeSearchSnapshotAndStore` (cold complete builds, `:486`, `:555`) and `persistVerifiedSearchSnapshot` (`index`, `:755`). All of them are complete-only.
+    - On upstream `main`, which the status line PR is cut from: the same writers (`:478`, `:703`), plus `writeSearchSnapshot` at `:538`. That call writes both complete and selective entries, so it gets the helper guarded by `len(options.OnlyFiles) == 0`.
+    - The guard sits at the caller. `cachedSearchSnapshot` cannot tell a selective view from a complete one: its stats count a subset, and `DerivedFrom` is often "".
+  - **Best effort:** a failed counts write never fails `index` or a lookup, and never blocks the entry rename. The segment is just absent. This covers Windows, where a render holding the file open can make the replacing rename fail.
+  - Writing it first means a render rarely sees an entry without its counts.
+- **Rewrite on an `index` hit:** write the counts file when it is missing **or its numbers differ from the hit's stats**, beside `repairSearchStoreSidecarForEntry`.
+  - The key covers the tree, but a full-profile hit recomputes `Stats.Relations` from the current commit's history (`bindCachedSearchSnapshot`). The same tree at another commit can therefore report a different edge count.
+  - So the file holds the counts of the latest build or `index` for that entry, which is also what `index` printed last. Entries from earlier builds gain a size the next time `index` runs.
 - **Who reads it:** `sem.IndexEntryCounts(entry IndexEntry) (symbols, relations int, ok bool)`. It reads the entry's counts file with a 4 KiB bound, and any failure is `ok=false`.
   - The status line calls it on **every** render, warm hits included, for the reported entry. That is one small file read beside the entry stats that a hit already does, and still no git.
-  - Nothing goes into the git record. So nothing can go stale: a backfill, a `--force` rebuild or a fast-to-full change shows on the next render.
-- **Cleanup:** none is needed. Retention evicts only `*.sqlite` (`search_store_retention.go`), and removing a group directory removes the file with it. Add no per-file cleanup.
+  - Nothing goes into the git record, so the status line never holds its own copy: a rewrite, a `--force` rebuild or a fast-to-full change shows on the next render.
+  - The path comes from `IndexEntry.Relative`: trim `.json.gz` and add `.counts.json`, as `searchStoreEntryFor` derives `.sqlite` (`search_store.go:724`).
+- **Cleanup:** none is needed. Complete entries, and their counts files, live directly in `search/<ver>/`, and nothing evicts top-level entries. Retention lists only `*.sqlite` (`search_store_retention.go:262`), and no digest covers the file. Add no per-file cleanup.
 
 **Files:**
 - Modify:
@@ -765,7 +770,9 @@ Added at the user's request after Task 9c: the indexed graph's size is a relevan
     - This catches a missing or abbreviated size, and counts that disagree with `index`.
   - Amend Task 9c's tests:
     - `TestStatuslineIsBareWhenIndexedWithNoLookups` becomes `TestStatuslineShowsOnlyTheSizeWithNoLookups`: stdout is exactly `◤ entire graph · <symbols> nodes | <relations> edges\n`.
-    - `TestStatuslineShowsGrossNetAndContext`'s exact line 1 gains the size segment after the brand.
+    - `TestStatuslineShowsGrossNetAndContext`'s exact line 1 gains the size segment after the brand. Its numbers come from the `--format json` output of the test's own `statuslineIndex` call.
+  - `TestStatuslinePrefersTheFullIndexSize`: index the fixture `--profile fast`, render, then index `--profile full` and render. Each render shows that profile's `index --format json` counts. The fixture must have calls, so the relation counts differ between the profiles. This catches a fast entry winning over full.
+  - `TestHeadQueryWritesTheSize`: run `query --head --profile fast` on an un-indexed fixture, then render. The size segment shows the fast entry's counts. This catches a complete-entry writer without the helper.
   - `TestStatuslineShowsTheSizeOnlyForTheCurrentIndex`:
     - Index, commit, render: the state is `behind 1` and no `nodes` segment appears.
     - Index again and render: the size is back.
@@ -775,7 +782,7 @@ Added at the user's request after Task 9c: the indexed graph's size is a relevan
     - This catches both a hit that never writes counts and a render that keeps a stale "no size".
 - [ ] Step 2: Run them. Expected: FAIL.
 - [ ] Step 3: Implement it.
-- [ ] Step 4: Run `go test -short -timeout 40m ./internal/cli`, `go test -short ./internal/sem -run 'Cache|Index|Store'` (including the `*.json.gz` artifact-count tests) and `go vet ./...`.
+- [ ] Step 4: Run `go test -short -timeout 40m ./internal/cli`, `go test -short ./internal/sem -run 'Cache|Index|Store|Truncat'` (including the `*.json.gz` artifact-count tests, and `TestEverySearchSnapshotWriterRefusesATruncatedSnapshot`, which must also find no counts file after a refusal) and `go vet ./...`.
 - [ ] Step 5: Measure as in Task 9b Step 5, 20 runs each.
   - The warm-hit p50 must stay within Task 9c's result plus noise; a hit adds one small read.
   - Record it in `docs/perf-ledger.md`.
