@@ -268,6 +268,23 @@ func TestHeadQueryWritesTheSize(t *testing.T) {
 	assertSizeAfterMark(t, line, fast)
 }
 
+// TestHeadLookupWritesTheSize catches the cold lookup writer without the counts helper: a cold
+// `def --head --profile fast` builds the complete fast entry, and the next render shows the size
+// that `index --profile fast` then reports for that entry.
+func TestHeadLookupWritesTheSize(t *testing.T) {
+	repo := statuslineSizedRepo(t)
+	cacheDir := t.TempDir()
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out},
+		[]string{"def", "--repo", repo, "--head", "--profile", "fast", "--cache-dir", cacheDir,
+			"--format", "json", "F0500"}); err != nil {
+		t.Fatalf("def: %v\n%s", err, out.String())
+	}
+	line := statuslineLine1(t, repo, cacheDir)
+	fast := statuslineIndexAs(t, repo, cacheDir, "fast")
+	assertSizeAfterMark(t, line, fast)
+}
+
 // TestStatuslineShowsTheSizeOnlyForTheCurrentIndex catches a size shown beside a stale state, where
 // it would read as the current code's size: one commit after the index there is no size, and an
 // index at the new HEAD brings it back.

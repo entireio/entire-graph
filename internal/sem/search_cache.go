@@ -538,7 +538,16 @@ func loadOrBuildSearchSnapshotPersisting(
 	// Cache persistence is best effort. Retrieval correctness never depends on
 	// a writable cache directory.
 	if generationKnown && persistBuilt {
-		_ = writeSearchSnapshot(entry, newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot, ctx))
+		cache := newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot, ctx)
+		if len(options.OnlyFiles) == 0 {
+			// A complete entry gets its counts here too: this is where a cold
+			// lookup (`def`, `neighbors`, `impact`, `explain` with --head)
+			// persists, and without them the status line shows no size until
+			// `index` runs. Best effort, and ahead of the entry's rename (see
+			// writeSearchSnapshotCounts, which refuses a truncated snapshot).
+			_ = writeSearchSnapshotCounts(entry, cache)
+		}
+		_ = writeSearchSnapshot(entry, cache)
 	}
 	return snapshot, false, nil
 }
