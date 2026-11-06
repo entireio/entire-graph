@@ -180,11 +180,13 @@ repositories; historical runtime-detection helpers are no longer used by activat
 Brain's `tools/integration` Go tests run both compiled products in both setup
 orders in isolated repositories. They check combined activation, preserved user
 text and repeatability, and compare the normal and strict guides each product
-renders. After changing `guide.go` or `strict.go` here, run them against a build
-of this tree with exact guide parity required:
+renders. After changing `guide.go` or `strict.go` here, run them from an
+entire-brain checkout with the matching guide change, pointing the Graph binary
+at a build of this tree and requiring exact guide parity:
 
 ```sh
+cd <entire-brain checkout>
 BRAIN_INTEGRATION_REQUIRED=1 BRAIN_INTEGRATION_REQUIRE_GUIDE_PARITY=1 \
-BRAIN_INTEGRATION_BRAIN_BINARY=<brain build> BRAIN_INTEGRATION_GRAPH_BINARY=<graph build> \
+BRAIN_INTEGRATION_BRAIN_BINARY=<brain build> BRAIN_INTEGRATION_GRAPH_BINARY=<graph build of this tree> \
 go test ./tools/integration -count=1
 ```
