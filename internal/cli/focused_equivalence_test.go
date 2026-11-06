@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -126,9 +128,9 @@ func TestLookupsAnswerIdenticallyFromSidecarAndFullLoad(t *testing.T) {
 		})
 	}
 	run(func(lookup *focusGuardLookup) *focusGuardAnswer { return &lookup.sidecar })
-	os.Setenv("ENTIRE_GRAPH_SEARCH_STORE", "0")
+	t.Setenv("ENTIRE_GRAPH_SEARCH_STORE", "0")
 	run(func(lookup *focusGuardLookup) *focusGuardAnswer { return &lookup.full })
-	os.Setenv("ENTIRE_GRAPH_SEARCH_STORE", "1")
+	t.Setenv("ENTIRE_GRAPH_SEARCH_STORE", "1")
 
 	for _, fixture := range fixtures {
 		t.Run(fixture.name, func(t *testing.T) {
@@ -141,11 +143,17 @@ func TestLookupsAnswerIdenticallyFromSidecarAndFullLoad(t *testing.T) {
 				t.Skip("no symbols to look up")
 			}
 			answered := false
+			// extras holds, per extra variant this fixture ran, whether any of
+			// its lookups answered on both sides.
+			extras := map[string]bool{}
 			for _, lookup := range lookups {
 				if lookup.fixture != fixture {
 					continue
 				}
 				answered = answered || (lookup.plain && lookup.answered())
+				if lookup.extra != "" {
+					extras[lookup.extra] = extras[lookup.extra] || lookup.answered()
+				}
 				if !lookup.equal() {
 					t.Errorf("%s: entire graph %s\n%s", fixture.name, strings.Join(lookup.displayArgs(), " "), lookup.diff())
 				}
@@ -166,12 +174,16 @@ func TestLookupsAnswerIdenticallyFromSidecarAndFullLoad(t *testing.T) {
 			if !answered {
 				t.Errorf("%s: no plain-name lookup succeeded with output on both sides", fixture.name)
 			}
+			// The same holds for each extra variant on its own: one that
+			// failed, or printed nothing, alike on both sides would pass.
+			for _, name := range slices.Sorted(maps.Keys(extras)) {
+				if !extras[name] {
+					t.Errorf("%s: no %s lookup succeeded with output on both sides", fixture.name, name)
+				}
+			}
 		})
 	}
 }
-
-// focusGuardSkipped have no semantic language, so no symbol to look up.
-var focusGuardSkipped = map[string]bool{"formats-config": true, "services-config": true, "terraform-basic": true}
 
 const (
 	focusGuardSeed    = 20261103
@@ -216,7 +228,7 @@ func focusGuardFixtureDirs(t *testing.T) []*focusGuardFixture {
 				t.Fatal(err)
 			}
 			name := filepath.Base(dir)
-			if !info.IsDir() || focusGuardSkipped[name] {
+			if !info.IsDir() {
 				continue
 			}
 			fixtures = append(fixtures, &focusGuardFixture{
@@ -228,6 +240,11 @@ func focusGuardFixtureDirs(t *testing.T) []*focusGuardFixture {
 	add(filepath.Join("testdata", "focus-guard", "*"), true)
 	if len(fixtures) == 0 {
 		t.Fatal("no fixtures found")
+	}
+	// The history commits and the pinned lookups are keyed on this fixture's
+	// name; without it they would be skipped without a word.
+	if !slices.ContainsFunc(fixtures, func(f *focusGuardFixture) bool { return f.history }) {
+		t.Fatal("no focus-edge-cases fixture under testdata/focus-guard")
 	}
 	return fixtures
 }
@@ -450,8 +467,12 @@ var focusGuardNameFormKinds = []func(focusGuardSymbol) (focusGuardNameForm, bool
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
 		return focusGuardNameForm{symbol: s.Name, exact: true}, true
 	},
+	// Exact only when the upper-cased name folds back to the name: ToUpper
+	// maps the dotless ı to I, which EqualFold does not fold to ı, so exact
+	// resolution misses and the full load answers.
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
-		return focusGuardNameForm{symbol: strings.ToUpper(s.Name), exact: true}, strings.ToUpper(s.Name) != s.Name
+		upper := strings.ToUpper(s.Name)
+		return focusGuardNameForm{symbol: upper, exact: strings.EqualFold(upper, s.Name)}, upper != s.Name
 	},
 	func(s focusGuardSymbol) (focusGuardNameForm, bool) {
 		return focusGuardNameForm{symbol: s.QualifiedName}, s.QualifiedName != "" && s.QualifiedName != s.Name
@@ -644,28 +665,50 @@ func (b *focusGuardBuilder) extraVariants(symbols []focusGuardSymbol, all bool) 
 	for index := range rounds {
 		symbol := symbols[index%len(symbols)]
 		plain, _ := focusGuardNameFormKinds[0](symbol)
-		fastDef := func(format string) { b.def(append([]string{plain.symbol}, focusGuardFastProfile...), format) }
+		fast := strings.Join(focusGuardFastProfile, " ")
+		neighbors := func(variant []string, format string) {
+			b.extra("neighbors "+strings.Join(variant, " "), func() { b.neighbors(plain, variant, format) })
+		}
+		impact := func(variant []string, format string) {
+			b.extra("impact "+strings.Join(variant, " "), func() { b.impact(plain, variant, format) })
+		}
+		fastDef := func(format string) {
+			b.extra("def "+fast, func() { b.def(append([]string{plain.symbol}, focusGuardFastProfile...), format) })
+		}
+		fastExplain := func(format string) {
+			b.extra("explain "+fast, func() { b.explainWith(symbol, plain, focusGuardFastProfile, format) })
+		}
 		if all {
 			for _, variant := range focusGuardNeighborExtraVariants {
-				b.neighbors(plain, variant, "json")
+				neighbors(variant, "json")
 			}
 			for _, variant := range focusGuardImpactExtraVariants {
-				b.impact(plain, variant, "json")
+				impact(variant, "json")
 			}
 			fastDef("json")
-			b.explainWith(symbol, plain, focusGuardFastProfile, "json")
+			fastExplain("json")
 			continue
 		}
 		if index < len(symbols) {
-			b.neighbors(plain, focusGuardNeighborExtraVariants[0], "json")
+			neighbors(focusGuardNeighborExtraVariants[0], "json")
 		}
-		b.neighbors(plain, neighborRest[index%len(neighborRest)], focusGuardThreeFormats[index%3])
-		b.impact(plain, focusGuardImpactExtraVariants[index%2], focusGuardTwoFormats[(index/2)%2])
+		neighbors(neighborRest[index%len(neighborRest)], focusGuardThreeFormats[index%3])
+		impact(focusGuardImpactExtraVariants[index%2], focusGuardTwoFormats[(index/2)%2])
 		if index%2 == 0 {
 			fastDef(focusGuardThreeFormats[(index/2)%3])
 		} else {
-			b.explainWith(symbol, plain, focusGuardFastProfile, focusGuardThreeFormats[(index/2)%3])
+			fastExplain(focusGuardThreeFormats[(index/2)%3])
 		}
+	}
+}
+
+// extra tags the lookups added by add with the extra variant they run, which
+// the guard requires to have answered at least once per fixture.
+func (b *focusGuardBuilder) extra(name string, add func()) {
+	start := len(b.lookups)
+	add()
+	for _, lookup := range b.lookups[start:] {
+		lookup.extra = name
 	}
 }
 
@@ -868,6 +911,8 @@ type focusGuardLookup struct {
 	// wantFocused is a lookup of an existing symbol in a form its verb
 	// resolves exactly, which the focused load must serve when the store is on.
 	wantFocused bool
+	// extra is the extra variant the lookup runs (extraVariants), or "".
+	extra string
 	// sidecar is the answer with the store enabled, full the one without.
 	sidecar, full focusGuardAnswer
 }
