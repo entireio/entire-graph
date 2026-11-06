@@ -144,7 +144,7 @@ type statusLinePlan struct {
 }
 
 // statusLinePrompt is the question an interactive setup asks. Only y or yes installs.
-const statusLinePrompt = "Install the Claude Code status line (graph token savings)? [y/N] "
+const statusLinePrompt = "Install the Claude Code status line (estimated graph tokens, graph size)? [y/N] "
 
 // planStatusLine decides the status line step; the first match wins:
 //
