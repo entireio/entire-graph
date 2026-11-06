@@ -18,7 +18,7 @@ import (
 // nobody has written yet. It is the only round-six test that compiles against
 // the pre-fix tree, so it is also the runtime-failing evidence for the class.
 
-// Unbudgeted parsing has one explicit entry point. Three legacy cache helpers
+// Unbudgeted parsing has one explicit entry point. Four legacy cache helpers
 // also accept omitted contexts; all production paths supply the caller context.
 // They never parse source. The allowlist is scoped to each function so another
 // background context in the same file cannot silently pass this guard.
@@ -28,10 +28,9 @@ var unbudgetedParseAllowlist = map[string]string{
 	"parser.go.ParseWithStatus":                "return TreeSitterParser{}.ParseWithStatusCtx(context.Background(), path, content)",
 	"search_cache.go.cacheCheckoutScope":       "ctx := context.Background()",
 	"search_cache.go.bindCachedSearchSnapshot": "ctx := context.Background()", // the post-load chain, shared by the full and focused loads
-
-	// Same entry point as the line above, after main factored the sidecar read
-	// out of loadCachedSearchSnapshot: both take `contexts ...context.Context`
-	// and fall back to Background only when the caller supplied none. A
+	// The sidecar read main factored out of loadCachedSearchSnapshot. Like
+	// bindCachedSearchSnapshot above, it takes `contexts ...context.Context`
+	// and falls back to Background only when the caller supplied none. A
 	// caller's context is forwarded through loadCachedSearchSnapshot and
 	// reaches loadSearchStoreForEntry intact, so the fallback is the
 	// no-context default, not a parse stage escaping the caller's context.

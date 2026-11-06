@@ -816,9 +816,9 @@ func writeSearchStoreSidecar(ctx context.Context, entry cacheEntry, entryDigest 
 // digest and tree, the check openExactSearchStore makes), never by loading it:
 // on a no-op index the hit has already decoded the store once, and a second
 // full decode just to learn it exists made the kernel no-op 104s with the
-// store against 51s without. The entry digest is the one that hit already hashed, reused
-// through the run's digest memo; a rebuild hashes the entry afresh because it
-// stamps the digest into the new sidecar.
+// store against 51s without. The entry digest is the one that hit already
+// hashed, reused through the run's digest memo; a rebuild hashes the entry
+// afresh because it stamps the digest into the new sidecar.
 func repairSearchStoreSidecarForEntry(ctx context.Context, entry cacheEntry, tree string) error {
 	if !searchStoreEnabled() {
 		return nil
@@ -888,8 +888,9 @@ func searchStoreUnavailableWarning(err error) ProviderWarning {
 }
 
 // entryDigestMemo holds the gz entry digests one run has already hashed, so
-// the run's later checks against the same entry do not hash it again. A
-// kernel-scale entry is about a gigabyte; each hash is seconds. It lives on
+// the run's later checks against the same entry do not hash it again. On the
+// Linux kernel the entry is about 400 MB and each hash 0.28-0.31 s
+// (docs/perf-ledger.md, stamp row). It lives on
 // the context of the run that installed it (withEntryDigestMemo) and nowhere
 // else, so a digest never outlives the command that computed it. Only callers
 // that do not write the entry in between may install one.
@@ -946,6 +947,11 @@ func memoizedEntryDigest(ctx context.Context, entry cacheEntry) (cacheDigest, er
 // difference brings the hash back. A sidecar written without a stamp (an
 // older one, or one whose entry changed while it was stamped) is always
 // checked by hash.
+//
+// "A new modification time" assumes the filesystem's timestamps are finer
+// than the gap between two writes of one entry. On a coarse one (FAT's 2 s,
+// HFS+'s or ext3's 1 s), two same-size writes within one tick keep the stamp,
+// and only the determinism of same-key bytes keeps the recorded digest right.
 type searchStoreEntryStamp struct {
 	Size      int64 `json:"size"`
 	ModTimeNS int64 `json:"mtime_ns"`

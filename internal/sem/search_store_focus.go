@@ -40,10 +40,11 @@ type SnapshotFocus struct {
 	// children, and the members of supertypes reached through
 	// EXTENDS/INHERITS/IMPLEMENTS/OVERRIDES. Precisely:
 	//   - the container_id children of the starting set (its members) are
-	//     loaded and, when hop 1 walks CONTAINS outward, join the hop-2
-	//     frontier, as if hop 1 had reached them through CONTAINS, so a
-	//     member known only by container_id still has its own relations
-	//     walked;
+	//     loaded and, when hop 1 walks CONTAINS outward and is not Terminal,
+	//     join the hop-2 frontier, as if hop 1 had reached them through
+	//     CONTAINS, so a member known only by container_id still has its own
+	//     relations walked (a Terminal hop 1 keeps the frontier it expanded,
+	//     so the members are loaded but not walked);
 	//   - the container_id children of the starting set's containers (its
 	//     siblings) are loaded, not expanded;
 	//   - every symbol a retained EXTENDS/INHERITS/IMPLEMENTS/OVERRIDES

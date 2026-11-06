@@ -606,7 +606,7 @@ It also closes `entire review` findings #2 (`setup --no-claude-hook` aborts on a
 4. No flag, interactive:
    1. `OurStatusLineInstalled`: row `unchanged`, no prompt.
    2. `ForeignStatusLine` fails: Task 10's `skipped (could not read <path>)` row, no prompt. It finds a line in any scope: Task 10's `kept your status line (<path>) — rerun with --statusline …` row, no prompt.
-   3. Otherwise print `Install the Claude Code status line (graph token savings)? [y/N] ` to stdout.
+   3. Otherwise print `Install the Claude Code status line (estimated graph tokens, graph size)? [y/N] ` to stdout.
       - Read the answer in a goroutine and select on `ctx.Done()`. A cancelled context returns its error before anything is written.
       - The answer is the text up to the first newline or EOF, trimmed. `y` or `yes`, in any case, means yes.
       - Anything else means no, including EOF, a read error and a nil `Stdin`. Row: `skipped (not chosen)`.
