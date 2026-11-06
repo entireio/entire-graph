@@ -6962,7 +6962,12 @@ var postgresCopyStatementPattern = regexp.MustCompile(`(?im)^[ \t]*copy\b[^;]*;`
 // files are not valid SQL scalars; replace each with a same-width identifier so
 // the surrounding statement parses (e.g. `AS @extschema:cube@.cube`).
 var postgresExtschemaPlaceholderPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_:]*@`)
-var postgresDoBlockPattern = regexp.MustCompile(`(?is)\bdo\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$;`)
+
+const postgresDoLanguageName = `(?:[a-z_][a-z0-9_$]*|'[^']+'|"[^"]+")`
+
+var postgresDoPrefixPattern = regexp.MustCompile(`(?i)\bdo\s+(language\s+` + postgresDoLanguageName + `\s+)?`)
+var postgresDoSuffixPattern = regexp.MustCompile(`(?i)^\s*(language\s+` + postgresDoLanguageName + `\s*)?;`)
+var postgresDoDDLPattern = regexp.MustCompile(`(?i)\bcreate\s+(?:or\s+replace\s+)?(?:(?:unlogged|temporary|temp|unique)\s+)?(?:table|index|view|materialized\s+view|type|schema|function|procedure|trigger|policy)\b`)
 var postgresDropTriggerPattern = regexp.MustCompile(`(?is)\bdrop\s+trigger\b[^;]*;`)
 var postgresDropPolicyPattern = regexp.MustCompile(`(?is)\bdrop\s+policy\b[^;]*;`)
 
@@ -7001,6 +7006,7 @@ func maskPostgresUnsupportedSyntax(content string) string {
 	// and `/* ... */` inside string or dollar-quoted literals remain ordinary
 	// literal content in the parse source.
 	masked := []byte(stripSQLComments(content))
+	maskPostgresDoBlocks(masked)
 	// Blank comments first and run every later pattern against the comment-free
 	// view: DDL-looking prose inside comments ("unique within a repo", "no
 	// partition of relation ...") otherwise matches the statement patterns and
@@ -7050,9 +7056,6 @@ func maskPostgresUnsupportedSyntax(content string) string {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresCreateExternalFunctionPattern.FindAllStringIndex(search, -1) {
-		maskBytesPreservingNewlines(masked, loc[0], loc[1])
-	}
-	for _, loc := range postgresDoBlockPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	// Re-snapshot after the function/DO-body masks and hide the contents of all
@@ -7174,6 +7177,47 @@ func maskPostgresUnsupportedSyntax(content string) string {
 		offset = end
 	}
 	return string(masked)
+}
+
+// maskPostgresDoBlocks projects static DDL out of dollar-quoted anonymous
+// blocks before the normal SQL compatibility passes. Procedural control flow
+// is not modelled, but its declarations must not disappear with the wrapper.
+// Match exact dollar tags and a complete LANGUAGE/semicolon suffix; malformed
+// wrappers remain in the parse source and retain their syntax diagnostics.
+func maskPostgresDoBlocks(masked []byte) {
+	content := string(masked)
+	search := maskSQLLiteralContentsForSearch(content)
+	for _, loc := range postgresDoPrefixPattern.FindAllStringSubmatchIndex(search, -1) {
+		if !postgresClauseKeywordStart(search, loc[0]) {
+			continue
+		}
+		tag, ok := dollarQuoteTag(content, loc[1])
+		if !ok {
+			continue
+		}
+		bodyStart := loc[1] + len(tag)
+		closeRel := strings.Index(content[bodyStart:], tag)
+		if closeRel < 0 {
+			continue
+		}
+		bodyEnd := bodyStart + closeRel
+		tail := bodyEnd + len(tag)
+		suffix := postgresDoSuffixPattern.FindStringSubmatchIndex(search[tail:])
+		if suffix == nil || (loc[2] >= 0 && suffix[2] >= 0) {
+			continue
+		}
+		body := stripSQLComments(content[bodyStart:bodyEnd])
+		bodySearch := maskSQLLiteralContentsForSearch(body)
+		maskBytesPreservingNewlines(masked, loc[0], tail+suffix[1])
+		end := 0
+		for _, ddl := range postgresDoDDLPattern.FindAllStringIndex(bodySearch, -1) {
+			if ddl[0] < end || !postgresClauseKeywordStart(bodySearch, ddl[0]) {
+				continue
+			}
+			end = sqlStatementEnd(bodySearch, ddl[0])
+			copy(masked[bodyStart+ddl[0]:bodyStart+end], body[ddl[0]:end])
+		}
+	}
 }
 
 // maskSQLLiteralContentsForSearch blanks the contents (but not delimiters) of
@@ -7397,6 +7441,14 @@ func maskPostgresTableConstraints(masked []byte, content string) {
 				break
 			}
 			start := offset + rel
+			after := start + len(keyword)
+			// Constraint keywords are whole SQL tokens, not prefixes of names
+			// such as unique_key, unique_states or constraint_name.
+			if !postgresClauseKeywordStart(content, start) ||
+				(after < len(content) && (isWordByte(content[after]) || content[after] == '$' || content[after] >= 0x80)) {
+				offset = after
+				continue
+			}
 			before := previousNonSpace(content, start)
 			if before >= 0 && content[before] != ',' && content[before] != '(' {
 				offset = start + len(keyword)
@@ -8104,11 +8156,17 @@ func stripSQLComments(content string) string {
 	n := len(b)
 	for i := 0; i < n; {
 		switch b[i] {
-		case '\'':
+		case '\'', '"':
+			quote := b[i]
+			backslashEscapes := quote == '\'' && postgresEscapeStringPrefix(content, i)
 			i++
 			for i < n {
-				if b[i] == '\'' {
-					if i+1 < n && b[i+1] == '\'' {
+				if backslashEscapes && b[i] == '\\' && i+1 < n {
+					i += 2
+					continue
+				}
+				if b[i] == quote {
+					if i+1 < n && b[i+1] == quote {
 						i += 2
 						continue
 					}

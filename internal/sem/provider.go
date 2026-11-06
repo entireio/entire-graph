@@ -47,6 +47,10 @@ const (
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
 	//
+	// Revision 9: recover DO blocks with LANGUAGE clauses without dropping their
+	// static declarations, and stop treating identifier prefixes as constraints.
+	// Previously incomplete SQL snapshots must be rebuilt for unchanged trees.
+	//
 	// Revision 8: recover PostgreSQL identity columns and named CHECK constraints.
 	// Invalidate cached partial snapshots so previously excluded migrations are
 	// indexed even when their source tree has not changed.
@@ -81,7 +85,7 @@ const (
 	// `C.helper` (kind "method"). This re-keys every Python nested-callable
 	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
 	// real same-named members.
-	IdentityRevision     = "8"
+	IdentityRevision     = "9"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
