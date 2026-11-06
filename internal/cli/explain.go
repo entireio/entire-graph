@@ -202,7 +202,8 @@ type ExplainResponse struct {
 // never printed the graph's own diagnostics, and a working-tree snapshot
 // always carries one, so passing them all through would change every answer.
 // A failed store write is different: it is this run's partial failure, and
-// it is never dropped silently.
+// it is never dropped silently. def's text and agent cards report the same
+// selection.
 func explainWarnings(warnings []sem.ProviderWarning) []sem.ProviderWarning {
 	var reported []sem.ProviderWarning
 	for _, warning := range warnings {
@@ -647,7 +648,13 @@ func RenderExplainWithProvenance(response ExplainResponse, maxBytes int, useHead
 	block := renderExplainBlock(response, maxBytes, useHead)
 	// The warning lines sit outside the byte budget, which bounds the
 	// declarations: a budget that dropped them would drop a failure silently.
-	for _, warning := range response.Warnings {
+	return appendWarningLines(block, response.Warnings)
+}
+
+// appendWarningLines appends one "- warning" line per warning, the form
+// explain and def print their explainWarnings in.
+func appendWarningLines(block []byte, warnings []sem.ProviderWarning) []byte {
+	for _, warning := range warnings {
 		if warning.FilePath == "" {
 			block = fmt.Appendf(block, "- warning %s\n", warning.Code)
 		} else {

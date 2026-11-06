@@ -278,6 +278,17 @@ func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 		cache := coldCacheWithBlockedSidecar(t)
 		requireWarning(t, run(t, runDef, "--repo", repo, "--head", "--cache-dir", cache, "--profile", "full", "--format", "json", "Render"))
 	})
+	// def's text and agent cards carry the warning on its own line after the
+	// answer, as explain's text does; a card without it reports a clean success.
+	for _, format := range []string{"text", "agent"} {
+		t.Run("cold def --head "+format, func(t *testing.T) {
+			cache := coldCacheWithBlockedSidecar(t)
+			output := string(run(t, runDef, "--repo", repo, "--head", "--cache-dir", cache, "--profile", "full", "--format", format, "Render"))
+			if !strings.Contains(output, "\n- warning W_SEARCH_STORE_UNAVAILABLE\n") {
+				t.Fatalf("def %s does not carry the store warning:\n%s", format, output)
+			}
+		})
+	}
 	// explain reads the build error from stdin and prints no other warnings,
 	// so its text form must carry this one too.
 	const buildError = "main.go:2:1: undefined: Render\n"

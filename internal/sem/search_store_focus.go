@@ -390,7 +390,7 @@ func (read *focusedStoreRead) walk(names []string, focus SnapshotFocus) error {
 		}
 		start = append(start, matched...)
 	}
-	start = distinctIDs(start)
+	start = dedupeStrings(start)
 
 	var members []string
 	if focus.Kinship {
@@ -430,7 +430,7 @@ func (read *focusedStoreRead) walk(names []string, focus SnapshotFocus) error {
 		if index == 0 && hop.Out && hop.walks("CONTAINS") {
 			next = append(next, members...)
 		}
-		frontier = distinctIDs(next)
+		frontier = dedupeStrings(next)
 	}
 
 	if focus.Kinship {
@@ -440,7 +440,7 @@ func (read *focusedStoreRead) walk(names []string, focus SnapshotFocus) error {
 				targets = append(targets, relation.ToID)
 			}
 		}
-		supertypes, err := read.symbolsByID(distinctIDs(targets))
+		supertypes, err := read.symbolsByID(dedupeStrings(targets))
 		if err != nil {
 			return err
 		}
@@ -476,26 +476,18 @@ func (read *focusedStoreRead) walk(names []string, focus SnapshotFocus) error {
 	return nil
 }
 
-// relationEndpoints lists both ends of every relation, deduplicated.
+// relationEndpoints lists both ends of every relation, deduplicated, without
+// the empty id of an end a relation does not name.
 func relationEndpoints(relations []RelationRecord) []string {
 	ids := make([]string, 0, 2*len(relations))
 	for _, relation := range relations {
-		ids = append(ids, relation.FromID, relation.ToID)
-	}
-	return distinctIDs(ids)
-}
-
-func distinctIDs(values []string) []string {
-	seen := make(map[string]bool, len(values))
-	out := values[:0:0]
-	for _, value := range values {
-		if value == "" || seen[value] {
-			continue
+		for _, id := range []string{relation.FromID, relation.ToID} {
+			if id != "" {
+				ids = append(ids, id)
+			}
 		}
-		seen[value] = true
-		out = append(out, value)
 	}
-	return out
+	return dedupeStrings(ids)
 }
 
 // containersOf lists the container_id of each loaded symbol among ids.
@@ -506,18 +498,20 @@ func (read *focusedStoreRead) containersOf(ids []string) []string {
 			containers = append(containers, row.containerID)
 		}
 	}
-	return distinctIDs(containers)
+	return dedupeStrings(containers)
 }
 
 const focusedSymbolColumns = `rowid, id, container_id, ` + searchStoreSymbolColumns
 
 // symbolsByID loads the symbols among ids and returns the ids that are
-// symbols. Ids already known either way are not queried again.
+// symbols. Ids already known either way are not queried again, and an empty
+// id names nothing.
 func (read *focusedStoreRead) symbolsByID(ids []string) ([]string, error) {
 	var unknown []string
 	var found []string
 	for _, id := range ids {
 		switch {
+		case id == "":
 		case read.symbols[id] != nil:
 			found = append(found, id)
 		case read.notSymbols[id] || read.fileIDs[id]:
@@ -525,7 +519,7 @@ func (read *focusedStoreRead) symbolsByID(ids []string) ([]string, error) {
 			unknown = append(unknown, id)
 		}
 	}
-	unknown = distinctIDs(unknown)
+	unknown = dedupeStrings(unknown)
 	loaded, err := read.symbolsWhere("id", unknown)
 	if err != nil {
 		return nil, err
@@ -539,7 +533,7 @@ func (read *focusedStoreRead) symbolsByID(ids []string) ([]string, error) {
 			read.notSymbols[id] = true
 		}
 	}
-	return distinctIDs(append(found, loaded...)), nil
+	return dedupeStrings(append(found, loaded...)), nil
 }
 
 // children loads the container_id children of each id, once per id, and
@@ -565,7 +559,7 @@ func (read *focusedStoreRead) children(ids []string) ([]string, error) {
 			children = append(children, row.id)
 		}
 	}
-	return distinctIDs(children), nil
+	return dedupeStrings(children), nil
 }
 
 // symbolsWhere loads every symbol whose column is one of values and returns
@@ -587,7 +581,7 @@ func (read *focusedStoreRead) symbolsWhere(column string, values []string) ([]st
 		ids = append(ids, id)
 		return nil
 	})
-	return distinctIDs(ids), err
+	return dedupeStrings(ids), err
 }
 
 // relationsWhere retains every relation whose column (from_id or to_id) is one

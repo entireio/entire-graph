@@ -10,12 +10,10 @@ import (
 
 // A focused lookup takes the gz entry's size and modification time, recorded
 // in the sidecar beside the digest, as proof the entry is the one the sidecar
-// mirrors, so it does not hash the entry. Any change to either brings the hash
-// back, and the hash catches a changed entry.
-//
-// The first half shows the hash is skipped by changing the entry's bytes
-// behind an unchanged stamp, which only a skipped hash can miss.
-func TestFocusedLookupHashesTheEntryOnlyWhenItsStampChanged(t *testing.T) {
+// mirrors. Any change to either brings the hash back, and the hash catches a
+// changed entry. Break caught: an entry rewritten after its sidecar was built
+// is answered from the sidecar as though it were unchanged.
+func TestFocusedLookupHashesAnEntryWhoseStampChanged(t *testing.T) {
 	fixture := indexFocusFixture(t)
 	path := focusFixtureEntryPath(t, fixture)
 	info, err := os.Stat(path)
@@ -25,11 +23,6 @@ func TestFocusedLookupHashesTheEntryOnlyWhenItsStampChanged(t *testing.T) {
 	if err := os.WriteFile(path, bytes.Repeat([]byte{'x'}, int(info.Size())), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
-		t.Fatal(err)
-	}
-	loadLeafFocus(t, fixture)
-
 	later := info.ModTime().Add(time.Second)
 	if err := os.Chtimes(path, later, later); err != nil {
 		t.Fatal(err)

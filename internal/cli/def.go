@@ -208,6 +208,9 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	// not need go to the names after it.
 	jsonRemaining := flags.MaxContextBytes
 	var jsonUnfit []string
+	// endsLine tracks whether the text written so far ends a line, so the warning lines after it start
+	// one even when a tiny budget cut the last answer mid-line.
+	endsLine := true
 	for position, symbol := range symbols {
 		query := flags
 		query.Symbol = symbol
@@ -251,17 +254,32 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 			}
 			if nameBudget > 0 && answerBudget <= 0 {
 				// The header alone spends this name's share; 0 would mean "unbounded" below.
-				if _, err := termsafe.NewWriter(opts.Stdout).Write(defCutAtLine(section.Bytes(), nameBudget)); err != nil {
+				written := defCutAtLine(section.Bytes(), nameBudget)
+				if _, err := termsafe.NewWriter(opts.Stdout).Write(written); err != nil {
 					return err
 				}
+				endsLine = defEndsLine(written, endsLine)
 				continue
 			}
 			section.Write(renderDefAnswerText(response, readSource, query.From, answerBudget, flags.MaxContextBytes, flags.Worktree))
 			if _, err := termsafe.NewWriter(opts.Stdout).Write(section.Bytes()); err != nil {
 				return err
 			}
+			endsLine = defEndsLine(section.Bytes(), endsLine)
 		default:
 			return fmt.Errorf("def --format must be json, text, or agent, got %q", flags.Format)
+		}
+	}
+	// The text and agent cards report a store this run could not write the way explain's text does: once
+	// per invocation, after every answer and outside --max-context-bytes, which bounds the answers. A
+	// budget that dropped the warning would drop a failure silently. JSON carries it in each answer.
+	if warnings := explainWarnings(snapshot.Header.Warnings); len(warnings) > 0 && (flags.Format == "text" || flags.Format == "agent") {
+		var lines []byte
+		if !endsLine {
+			lines = append(lines, '\n')
+		}
+		if _, err := opts.Stdout.Write(appendWarningLines(lines, warnings)); err != nil {
+			return err
 		}
 	}
 	if len(jsonUnfit) > 0 {
@@ -269,6 +287,15 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 			flags.MaxContextBytes, len(jsonUnfit), len(symbols), termsafe.Line(strings.Join(jsonUnfit, ", ")))
 	}
 	return nil
+}
+
+// defEndsLine reports whether output written after `written` starts a line; an empty write leaves
+// `before` unchanged.
+func defEndsLine(written []byte, before bool) bool {
+	if len(written) == 0 {
+		return before
+	}
+	return written[len(written)-1] == '\n'
 }
 
 // defNameBudget is one name's share of the invocation's byte budget; 0 stays unbounded.
