@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -209,4 +210,41 @@ func TestGrossReadsOnlyTheCallsOwnRepoFlag(t *testing.T) {
 			assertGross(t, runGrossStats(t, repoA, transcript, t.TempDir()), 3400, 850)
 		})
 	}
+}
+
+// TestGrossSizesACallAgainstTheDirectoryALeadingCdMovedTo catches a leading `cd` ignored. From the
+// record's cwd, `cd sub && entire graph query --repo .` prints paths relative to <cwd>/sub, where
+// a.go is 4,000 bytes, so a 600-byte result covers 3,400 bytes; on Windows the Git Bash spelling
+// of the same directory moves there too. A `cd` to a directory the command line does not spell out
+// leaves the call unpriced, though <cwd>/a.go exists. The report's --repo is an unrelated empty
+// directory, so no fallback can find the file.
+func TestGrossSizesACallAgainstTheDirectoryALeadingCdMovedTo(t *testing.T) {
+	t.Parallel()
+	const call = " && entire graph query --repo . --query 'where is A'"
+	result := grossResult(t, 600, "1. a.go:10 func A()")
+	cwd := grossRepo(t, nil)
+	sub := filepath.Join(cwd, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeGrossFile(t, sub, "a.go", 4000)
+	moves := map[string]string{"relative": "cd sub" + call}
+	if runtime.GOOS == "windows" {
+		volume := filepath.VolumeName(sub)
+		gitBash := "/" + strings.ToLower(strings.TrimSuffix(volume, ":")) + filepath.ToSlash(strings.TrimPrefix(sub, volume))
+		moves["git bash absolute"] = "cd '" + gitBash + "'" + call
+	}
+	for name, command := range moves {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			transcript := writeGrossCommandTranscript(t, cwd, command, result)
+			assertGross(t, runGrossStats(t, grossRepo(t, nil), transcript, t.TempDir()), 3400, 850)
+		})
+	}
+	t.Run("unknown target", func(t *testing.T) {
+		t.Parallel()
+		unmoved := grossRepo(t, map[string]int{"a.go": 4000})
+		transcript := writeGrossCommandTranscript(t, unmoved, `cd "$D"`+call, result)
+		assertGross(t, runGrossStats(t, grossRepo(t, nil), transcript, t.TempDir()), 0, 0)
+	})
 }

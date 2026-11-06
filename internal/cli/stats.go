@@ -11,6 +11,7 @@ import (
 	"math/bits"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -527,12 +528,14 @@ type summaryCall struct {
 	// Disp is the observed follow-up class (followUp* codes) of a graph locate call with a
 	// result; empty otherwise.
 	Disp string `json:"d,omitempty"`
-	// Paths are the normalized files a successful (non-error) locate result names, and Root is
-	// the directory that call resolved them against: its own --repo (absolute against the
-	// record's cwd), else that cwd, else empty for the report's --repo. Top is set when the call
-	// passed no --repo: the graph then resolved the checkout containing Root, so the sizer walks
-	// up to it. Only names are kept: the checkout root and file sizes are filesystem facts read
-	// at report time, never stored in this memo, which is keyed on the transcript alone.
+	// Paths are the normalized files a successful (non-error) locate result names, nil when the
+	// directory the call ran in is unknown (graphCallRootFromCommand), and Root is the directory
+	// that call resolved them against: its own --repo (absolute against the record's cwd, or the
+	// directory a leading cd moved to), else that directory, else empty for the report's --repo.
+	// Top is set when the call passed no --repo: the graph then resolved the checkout containing
+	// Root, so the sizer walks up to it. Only names are kept: the checkout root and file sizes are
+	// filesystem facts read at report time, never stored in this memo, which is keyed on the
+	// transcript alone.
 	Paths []string `json:"p,omitempty"`
 	Root  string   `json:"o,omitempty"`
 	Top   bool     `json:"t,omitempty"`
@@ -674,7 +677,7 @@ func (s *fileScanner) consumeToolUse(block contentBlock, cwd string) {
 		entry.callIndex = index
 		s.locateAt[index] = len(s.timeline)
 		command, _ := block.Input["command"].(string)
-		s.locateRoot[index] = graphCallRoot(graphRepoFromCommand(command), cwd)
+		s.locateRoot[index] = graphCallRootFromCommand(command, cwd)
 	}
 	s.timeline = append(s.timeline, entry)
 }
@@ -709,9 +712,10 @@ func (s *fileScanner) consumeToolResult(block contentBlock) {
 		s.deliveries++
 		entry.paths = graphOutputPaths(text)
 		entry.delivered = graphDeliveredSpans(text)
-		if !block.IsError && len(entry.paths) > 0 {
+		// A call whose directory is unknown keeps no Paths, so it drops out of the gross estimate;
+		// follow-up classification reads the timeline entry's own paths.
+		if root := s.locateRoot[index]; !block.IsError && len(entry.paths) > 0 && !root.unknown {
 			s.summary.Calls[index].Paths = entry.paths
-			root := s.locateRoot[index]
 			s.summary.Calls[index].Root, s.summary.Calls[index].Top = root.dir, root.top
 		}
 	}
@@ -1353,6 +1357,140 @@ type graphRoot struct {
 	dir string
 	// top: the call passed no --repo, so the graph resolved the checkout containing dir.
 	top bool
+	// unknown: the command line does not say which directory the call ran in.
+	unknown bool
+}
+
+// graphCallRootFromCommand is graphCallRoot for the graph call in command, run from the directory
+// the top-level segments before it moved to with `cd DIR`. It finds the call where
+// graphRepoFromCommand does. A cd moves only as `cd DIR` followed by `&&`, `;` or a newline, to a
+// DIR the command spells out (cdTarget); any other cd form, a `pushd`, or a segment starting with
+// `(` before the call leaves the root unknown. So does a call found only inside a command
+// substitution of a command that runs a cd anywhere. A command without cd resolves as
+// graphCallRoot always has.
+func graphCallRootFromCommand(command, cwd string) graphRoot {
+	segments := splitShellSeparated(command)
+	for at, segment := range segments {
+		if _, ok := graphVerbFromSegments(segment.text); !ok {
+			continue
+		}
+		dir := cwd
+		for _, before := range segments[:at] {
+			moved, ok := shellSegmentDir(before, dir)
+			if !ok {
+				return graphRoot{unknown: true}
+			}
+			dir = moved
+		}
+		return graphCallRoot(graphRepoFromWords(shellArgWords(segment.text)), dir)
+	}
+	if commandRunsCd(command, 0) {
+		return graphRoot{unknown: true}
+	}
+	return graphCallRoot(graphRepoFromCommand(command), cwd)
+}
+
+// shellSegment is one splitShellSegments segment and the separator run that follows it, "" for
+// the last.
+type shellSegment struct {
+	text, separator string
+}
+
+// splitShellSeparated is splitShellSegments keeping the separators: the same segments, each with
+// the run of `|`, `;`, `&` and newline characters after it.
+func splitShellSeparated(command string) []shellSegment {
+	runes := []rune(stripHeredocBodies(command))
+	literal := shellQuoteMask(runes)
+	var segments []shellSegment
+	var current []rune
+	for index, character := range runes {
+		if !literal[index] && strings.ContainsRune("|;&\n", character) {
+			if len(current) > 0 {
+				segments = append(segments, shellSegment{text: string(current)})
+				current = current[:0]
+			}
+			if len(segments) > 0 {
+				segments[len(segments)-1].separator += string(character)
+			}
+			continue
+		}
+		current = append(current, character)
+	}
+	if len(current) > 0 {
+		segments = append(segments, shellSegment{text: string(current)})
+	}
+	return segments
+}
+
+// shellSegmentDir is the working directory after segment runs in dir, or false when it cannot be
+// told: the segment starts a subshell with `(`, runs pushd, or is a cd other than `cd DIR`
+// followed by `&&`, `;` or a newline to a DIR cdTarget resolves. Any other segment leaves dir.
+func shellSegmentDir(segment shellSegment, dir string) (string, bool) {
+	if strings.HasPrefix(strings.TrimLeft(segment.text, " \t"), "(") {
+		return "", false
+	}
+	words := shellArgWords(segment.text)
+	if len(words) == 0 || (words[0] != "cd" && words[0] != "pushd") {
+		return dir, true
+	}
+	if words[0] == "pushd" || len(words) != 2 || !cdCarries(segment.separator) {
+		return "", false
+	}
+	return cdTarget(words[1], dir)
+}
+
+// cdCarries reports whether a cd followed by separator moves the next segment: `&&`, `;` or
+// newlines, possibly with newlines around them. After `|`, `||` or `&` the next segment may run
+// without the cd, or in another shell.
+func cdCarries(separator string) bool {
+	rest := strings.ReplaceAll(separator, "\n", "")
+	return separator != "" && (rest == "" || rest == "&&" || rest == ";")
+}
+
+// cdTarget is the directory `cd target` moves to from dir, or false when the command line does not
+// spell it out: a $ or backtick expands, ~ is the home, - the previous directory, and a flag or an
+// empty operand is not a plain DIR. On Windows the Git Bash form /x/rest is X:\rest, and any other
+// path rooted without a drive letter, or a drive-relative C:rest, has no directory to resolve.
+func cdTarget(target, dir string) (string, bool) {
+	if target == "" || strings.ContainsAny(target, "$`") || strings.HasPrefix(target, "~") || strings.HasPrefix(target, "-") {
+		return "", false
+	}
+	if runtime.GOOS == "windows" {
+		if len(target) >= 2 && target[0] == '/' && isASCIILetter(target[1]) && (len(target) == 2 || target[2] == '/') {
+			return filepath.Clean(strings.ToUpper(target[1:2]) + `:\` + filepath.FromSlash(target[min(3, len(target)):])), true
+		}
+		if strings.HasPrefix(target, "/") || strings.HasPrefix(target, `\`) ||
+			(filepath.VolumeName(target) != "" && !filepath.IsAbs(target)) {
+			return "", false
+		}
+	}
+	if filepath.IsAbs(target) {
+		return filepath.Clean(target), true
+	}
+	return filepath.Join(dir, target), true
+}
+
+func isASCIILetter(character byte) bool {
+	return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z')
+}
+
+// commandRunsCd reports whether any segment of command, or of a command substitution in it, runs
+// cd, including inside a `(` or `{` group.
+func commandRunsCd(command string, depth int) bool {
+	for _, segment := range splitShellSegments(command) {
+		if words := shellArgWords(strings.TrimLeft(segment, " \t({")); len(words) > 0 && words[0] == "cd" {
+			return true
+		}
+	}
+	if depth >= maxSubstitutionDepth {
+		return false
+	}
+	for _, body := range shellSubstitutionBodies(command) {
+		if commandRunsCd(body, depth+1) {
+			return true
+		}
+	}
+	return false
 }
 
 // graphCallRoot mirrors resolveRepo. An explicit --repo is used as given (the graph prints paths
