@@ -214,7 +214,8 @@ func TestInitAgentsInstallsClaudeSubagentHook(t *testing.T) {
 
 func TestInitAgentsClaudeHookOptOutAndPreflight(t *testing.T) {
 	t.Parallel()
-	// The status line also writes settings.local.json, so leaving .claude alone takes both opt-outs.
+	// A non-interactive setup skips the status line unasked, so --no-claude-hook alone leaves .claude
+	// alone here; --no-statusline is the opt-out an interactive run would also need.
 	t.Run("opting out of both writes nothing under .claude", func(t *testing.T) {
 		repo := gitRepoForTest(t, false)
 		var out bytes.Buffer

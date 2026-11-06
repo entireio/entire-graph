@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,7 +13,8 @@ import (
 	"unicode/utf8"
 )
 
-// statuslineRepo is a committed git repository holding one 4,000-byte Go file, a.go.
+// statuslineRepo is a committed git repository holding one 4,000-byte Go file, a.go. Its index is
+// statuslineRepoSize: one node, func A, and one edge, a.go DEFINES A.
 func statuslineRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -26,6 +28,9 @@ func statuslineRepo(t *testing.T) string {
 	git(t, repo, "commit", "-m", "one")
 	return repo
 }
+
+// statuslineRepoSize is the size segment statuslineRepo's index shows, derived by hand above.
+const statuslineRepoSize = "1 nodes | 1 edges"
 
 // statuslineTranscript is one session whose only call is a graph query against repo, answered by
 // a 400-byte result naming a.go.
@@ -94,13 +99,13 @@ func assertSegmentsInOrder(t *testing.T, line string, want ...string) {
 
 // TestStatuslineShowsGrossNetAndContext pins the figures of an indexed HEAD to what `stats` computes
 // for the same transcript: (4,000 - 400) / 4 = 900 gross tokens and stats' own modeled balance, with
-// no net segment when stats has no comparison, after the graph's size as `index` reported it. It
+// no net segment when stats has no comparison, after the fixture's graph size. It
 // catches a filler segment returning (an indexed mark, the lookup count, "net n/a") and a size out
 // of place.
 func TestStatuslineShowsGrossNetAndContext(t *testing.T) {
 	repo := statuslineRepo(t)
 	cacheDir := t.TempDir()
-	counts := statuslineIndexAs(t, repo, cacheDir, "full")
+	statuslineIndexAs(t, repo, cacheDir, "full")
 	transcript := statuslineTranscript(t, repo)
 	out := runStatuslineForTest(t, 120, cacheDir,
 		statuslineStdin(t, transcript, repo, `{"used_percentage":41.6}`))
@@ -114,7 +119,7 @@ func TestStatuslineShowsGrossNetAndContext(t *testing.T) {
 	}
 	report := runStatsRawJSON(t, "--repo", repo, "--transcript", transcript, "--format", "json",
 		"--cache-dir", t.TempDir())
-	want := "◤ entire graph · " + counts.segment() + " · ~900 tok gross"
+	want := "◤ entire graph · " + statuslineRepoSize + " · ~900 tok gross"
 	if rawInt(t, report, "sessions_with_savings_comparison") != 0 {
 		want += " · " + formatStatuslineTokens(rawInt(t, report, "modeled_balance_est_tokens")) + " net"
 	}
@@ -129,9 +134,9 @@ func TestStatuslineShowsGrossNetAndContext(t *testing.T) {
 func TestStatuslineShowsOnlyTheSizeWithNoLookups(t *testing.T) {
 	repo := statuslineRepo(t)
 	cacheDir := t.TempDir()
-	counts := statuslineIndexAs(t, repo, cacheDir, "full")
+	statuslineIndexAs(t, repo, cacheDir, "full")
 	transcript := writeGrossCommandTranscript(t, repo, "ls", "a.go")
-	want := "◤ entire graph · " + counts.segment() + "\n"
+	want := "◤ entire graph · " + statuslineRepoSize + "\n"
 	if out := runStatuslineForTest(t, 120, cacheDir, statuslineStdin(t, transcript, repo, "")); out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
 	}
@@ -173,18 +178,26 @@ type statuslineCounts struct {
 	Relations int `json:"relations"`
 }
 
-// segment is the size segment the status line must show for these counts, written out here with
-// its own thousands separators rather than through the code under test.
-func (c statuslineCounts) segment() string {
-	return statuslineThousands(c.Symbols) + " nodes | " + statuslineThousands(c.Relations) + " edges"
-}
-
-func statuslineThousands(value int) string {
-	digits := strconv.Itoa(value)
-	for cut := len(digits) - 3; cut > 0; cut -= 3 {
-		digits = digits[:cut] + "," + digits[cut:]
+// assertSizeAfterMark fails unless the segment right after the mark on line is a size whose numbers,
+// read back with their separators removed, are want. It compares numbers rather than re-spelling
+// them, so no copy of the formatter is needed here: TestStatuslineShowsTheGraphSize pins the
+// spelling to a literal.
+func assertSizeAfterMark(t *testing.T, line string, want statuslineCounts) {
+	t.Helper()
+	segments := statuslineSegments(line)
+	if len(segments) < 2 || segments[0] != "◤ entire graph" {
+		t.Fatalf("line %q has no size segment after the mark", line)
 	}
-	return digits
+	var got statuslineCounts
+	plain := strings.ReplaceAll(segments[1], ",", "")
+	if _, err := fmt.Sscanf(plain, "%d nodes | %d edges", &got.Symbols, &got.Relations); err != nil ||
+		plain != fmt.Sprintf("%d nodes | %d edges", got.Symbols, got.Relations) {
+		t.Fatalf("line %q: segment %q after the mark is not a size", line, segments[1])
+	}
+	if got != want {
+		t.Fatalf("line %q shows %d nodes and %d edges, want the %d and %d index reported",
+			line, got.Symbols, got.Relations, want.Symbols, want.Relations)
+	}
 }
 
 // statuslineLine1 renders with a lookup transcript and returns line 1.
@@ -208,17 +221,20 @@ func assertNoSizeSegment(t *testing.T, line string) {
 	}
 }
 
-// TestStatuslineShowsTheGraphSize catches a missing or abbreviated size, and counts that disagree
-// with what `index` reported: the segment after the mark is the symbol and relation counts of
-// `index --format json`, written in full with comma separators.
+// TestStatuslineShowsTheGraphSize catches a missing or abbreviated size, a misplaced or missing
+// thousands separator, and counts that disagree with the fixture: the segment after the mark is the
+// full index's symbol and relation counts, written in full with comma separators.
+//
+// The fixture's full index, derived by hand from statuslineSizedRepo: 1,001 nodes are T and the
+// 1,000 functions. 6,998 edges are 1,001 DEFINES (funcs.go defines each node), 999 CALLS
+// (F0000-F0998 each call the next), 1,000 PARAM_TYPE and 1,000 RETURNS_TYPE (every function takes
+// and returns T), 1,000 USES_TYPE (every function uses T), and 1,998 DATA_FLOWS (each of the 999
+// calls forwards t into the callee's argument and returns the callee's result).
 func TestStatuslineShowsTheGraphSize(t *testing.T) {
 	repo := statuslineSizedRepo(t)
 	cacheDir := t.TempDir()
-	counts := statuslineIndexAs(t, repo, cacheDir, "full")
-	if counts.Symbols < 1000 {
-		t.Fatalf("the fixture indexed %d symbols, want at least 1,000 to exercise the separator", counts.Symbols)
-	}
-	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", counts.segment())
+	statuslineIndexAs(t, repo, cacheDir, "full")
+	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", "1,001 nodes | 6,998 edges")
 }
 
 // TestStatuslinePrefersTheFullIndexSize catches a fast entry winning over full: with only a fast
@@ -227,12 +243,12 @@ func TestStatuslinePrefersTheFullIndexSize(t *testing.T) {
 	repo := statuslineSizedRepo(t)
 	cacheDir := t.TempDir()
 	fast := statuslineIndexAs(t, repo, cacheDir, "fast")
-	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", fast.segment())
+	assertSizeAfterMark(t, statuslineLine1(t, repo, cacheDir), fast)
 	full := statuslineIndexAs(t, repo, cacheDir, "full")
 	if full.Relations == fast.Relations {
 		t.Fatalf("the fixture has %d relations under both profiles, want them to differ", full.Relations)
 	}
-	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", full.segment())
+	assertSizeAfterMark(t, statuslineLine1(t, repo, cacheDir), full)
 }
 
 // TestHeadQueryWritesTheSize catches a complete-entry writer without the counts helper: a cold
@@ -249,7 +265,7 @@ func TestHeadQueryWritesTheSize(t *testing.T) {
 	}
 	line := statuslineLine1(t, repo, cacheDir)
 	fast := statuslineIndexAs(t, repo, cacheDir, "fast")
-	assertSegmentsInOrder(t, line, "◤ entire graph", fast.segment())
+	assertSizeAfterMark(t, line, fast)
 }
 
 // TestStatuslineShowsTheSizeOnlyForTheCurrentIndex catches a size shown beside a stale state, where
@@ -266,7 +282,7 @@ func TestStatuslineShowsTheSizeOnlyForTheCurrentIndex(t *testing.T) {
 	}
 	assertNoSizeSegment(t, statuslineLine1(t, repo, cacheDir))
 	counts := statuslineIndexAs(t, repo, cacheDir, "full")
-	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", counts.segment())
+	assertSizeAfterMark(t, statuslineLine1(t, repo, cacheDir), counts)
 }
 
 // TestIndexBackfillsTheSizeOnAHit catches an `index` hit that never writes the counts file, and a
@@ -294,7 +310,7 @@ func TestIndexBackfillsTheSizeOnAHit(t *testing.T) {
 	}
 	assertNoSizeSegment(t, statuslineLine1(t, repo, cacheDir))
 	counts := statuslineIndexAs(t, repo, cacheDir, "full")
-	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", counts.segment())
+	assertSizeAfterMark(t, statuslineLine1(t, repo, cacheDir), counts)
 }
 
 // TestStatuslineShowsHowFarBehindTheIndexIs catches a stale index falling back to "not indexed", and

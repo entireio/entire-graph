@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -1759,12 +1760,17 @@ func searchSnapshotCountsEntryFor(entry cacheEntry) cacheEntry {
 
 // writeSearchSnapshotCounts records cache.Snapshot.Header.Stats' symbol and relation counts beside
 // a COMPLETE entry, through the confined entry directory (ADR 0004). Every complete entry writer
-// calls it after refuseTruncatedSnapshot and before the entry's own rename, so a render rarely
-// sees an entry without its counts; a selective view must never reach it, since its stats count
-// a subset. It is best effort: its error never fails a write, an `index` or a lookup, and never
-// blocks the entry's rename. A failed write only leaves the status line without a size (on
-// Windows a render holding the old file open can make the replacing rename fail).
+// calls it before the entry's own rename, so a render rarely sees an entry without its counts; a
+// selective view must never reach it, since its stats count a subset. It calls
+// refuseTruncatedSnapshot itself and writes nothing on a refusal, so a caller that does not refuse
+// first (the index hit's backfill) is guarded too. It is best effort: its error never fails a
+// write, an `index` or a lookup, and never blocks the entry's rename. A failed write only leaves
+// the status line without a size (on Windows a render holding the old file open can make the
+// replacing rename fail).
 func writeSearchSnapshotCounts(entry cacheEntry, cache cachedSearchSnapshot) error {
+	if err := refuseTruncatedSnapshot(cache); err != nil {
+		return err
+	}
 	stats := cache.Snapshot.Header.Stats
 	data, err := json.Marshal(searchSnapshotCounts{Symbols: &stats.Symbols, Relations: &stats.Relations})
 	if err != nil {
@@ -1804,11 +1810,21 @@ func writeSearchSnapshotCounts(entry cacheEntry, cache cachedSearchSnapshot) err
 	return nil
 }
 
-// readSearchSnapshotCounts reads the counts file beside entry through the same confined open every
-// cache reader uses, bounded at searchSnapshotCountsMaxBytes. Anything but a regular file holding
-// both counts, neither negative, is ok=false.
+// readSearchSnapshotCounts reads the counts file beside entry through the cache root, bounded at
+// searchSnapshotCountsMaxBytes. Anything but a regular file holding both counts, neither negative,
+// is ok=false. The path is Lstat'ed through the root and opened only when it is a regular file, as
+// exists() checks an entry, because opening a FIFO there would block the render that reads it.
 func readSearchSnapshotCounts(entry cacheEntry) (symbols, relations int, ok bool) {
-	file, err := searchSnapshotCountsEntryFor(entry).open()
+	path := searchSnapshotCountsEntryFor(entry)
+	root, err := os.OpenRoot(path.root)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer root.Close()
+	if info, err := root.Lstat(path.relative); err != nil || !info.Mode().IsRegular() {
+		return 0, 0, false
+	}
+	file, err := openRootBoundedRegularFile(root, path.relative)
 	if err != nil {
 		return 0, 0, false
 	}

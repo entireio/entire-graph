@@ -65,6 +65,11 @@ func TestEverySearchSnapshotWriterRefusesATruncatedSnapshot(t *testing.T) {
 					return cacheDigest{}, nil
 				})
 		}},
+		// The counts writer refuses on its own, so a caller that skips the refusal (the index hit's
+		// backfill) still cannot record a truncated snapshot's size.
+		{"writeSearchSnapshotCounts", func(entry cacheEntry) error {
+			return writeSearchSnapshotCounts(entry, cache)
+		}},
 	}
 	for _, writer := range writers {
 		t.Run(writer.name, func(t *testing.T) {
