@@ -117,6 +117,24 @@ jobs:
       # Keep the named package budget consistent with the Windows shard policy.
       - run: go test -timeout 30m ./...
 
+  # The sidecar/full-load equivalence guard runs every lookup verb concurrently
+  # in one process, and no other job runs it under -race (-short skips it, and
+  # the test job has no -race). It runs alone here so its time is visible.
+  equivalence-guard-race:
+    name: equivalence guard (-race)
+    runs-on: depot-ubuntu-24.04-8
+    timeout-minutes: 30
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with: { go-version: "1.27.x" }
+      - run: go test -race -count=1 -timeout 25m -run '^TestLookupsAnswerIdenticallyFromSidecarAndFullLoad$' ./internal/cli
+
   windows-test-prepare:
     name: test (windows-latest) / compile and plan
     runs-on: depot-windows-2025-8
