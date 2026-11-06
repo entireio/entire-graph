@@ -6904,6 +6904,13 @@ func isWordByte(b byte) bool {
 }
 
 var postgresGeneratedColumnPattern = regexp.MustCompile(`(?is)\bgenerated\s+always\s+as\s*\([^;]*?\)\s+stored`)
+var postgresIdentityColumnPattern = regexp.MustCompile(`(?i)\bgenerated\s+(?:always|by\s+default)\s+as\s+identity\b`)
+
+// PostgreSQL's scanner accepts non-ASCII bytes in unquoted identifiers. For
+// UTF-8 source, match the corresponding non-ASCII runes, including combining
+// marks, so CONSTRAINT and its full name are masked together.
+// https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/parser/scan.l
+var postgresCheckConstraintPattern = regexp.MustCompile(`(?i)\b(?:constraint\s+(?:"(?:[^"]|"")*"|[a-z_\x{80}-\x{10ffff}][a-z0-9_$\x{80}-\x{10ffff}]*)\s+)?check\s*\(`)
 var postgresVectorTypePattern = regexp.MustCompile(`(?i)\bvector\s*\([^)]*\)`)
 var postgresTimestamptzTypePattern = regexp.MustCompile(`(?i)\btimestamptz\b`)
 var postgresBigserialTypePattern = regexp.MustCompile(`(?i)\bbigserial\b`)
@@ -6960,7 +6967,12 @@ var postgresCopyStatementPattern = regexp.MustCompile(`(?im)^[ \t]*copy\b[^;]*;`
 // files are not valid SQL scalars; replace each with a same-width identifier so
 // the surrounding statement parses (e.g. `AS @extschema:cube@.cube`).
 var postgresExtschemaPlaceholderPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_:]*@`)
-var postgresDoBlockPattern = regexp.MustCompile(`(?is)\bdo\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$;`)
+
+const postgresDoLanguageName = `(?:[a-z_][a-z0-9_$]*|'[^']+'|"[^"]+")`
+
+var postgresDoPrefixPattern = regexp.MustCompile(`(?i)\bdo\s+(language\s+` + postgresDoLanguageName + `\s+)?`)
+var postgresDoSuffixPattern = regexp.MustCompile(`(?i)^\s*(language\s+` + postgresDoLanguageName + `\s*)?;`)
+var postgresDoDDLPattern = regexp.MustCompile(`(?i)\bcreate\s+(?:or\s+replace\s+)?(?:(?:unlogged|temporary|temp|unique)\s+)?(?:table|index|view|materialized\s+view|type|schema|function|procedure|trigger|policy)\b`)
 var postgresDropTriggerPattern = regexp.MustCompile(`(?is)\bdrop\s+trigger\b[^;]*;`)
 var postgresDropPolicyPattern = regexp.MustCompile(`(?is)\bdrop\s+policy\b[^;]*;`)
 
@@ -6999,6 +7011,7 @@ func maskPostgresUnsupportedSyntax(content string) string {
 	// and `/* ... */` inside string or dollar-quoted literals remain ordinary
 	// literal content in the parse source.
 	masked := []byte(stripSQLComments(content))
+	maskPostgresDoBlocks(masked)
 	// Blank comments first and run every later pattern against the comment-free
 	// view: DDL-looking prose inside comments ("unique within a repo", "no
 	// partition of relation ...") otherwise matches the statement patterns and
@@ -7038,14 +7051,16 @@ func maskPostgresUnsupportedSyntax(content string) string {
 	for _, loc := range postgresGeneratedColumnPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	maskPostgresCheckConstraints(masked, search)
+	// Match clauses against a literal-safe view, keeping all byte offsets. In
+	// particular, CHECK text in defaults and parentheses in quoted values must
+	// not change the boundary of a real constraint.
+	clauseSearch := maskSQLLiteralContentsForSearch(search)
+	maskPostgresIdentityColumns(masked, clauseSearch)
+	maskPostgresCheckConstraints(masked, clauseSearch)
 	for _, loc := range postgresCreateFunctionPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresCreateExternalFunctionPattern.FindAllStringIndex(search, -1) {
-		maskBytesPreservingNewlines(masked, loc[0], loc[1])
-	}
-	for _, loc := range postgresDoBlockPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	// Re-snapshot after the function/DO-body masks and hide the contents of all
@@ -7169,17 +7184,60 @@ func maskPostgresUnsupportedSyntax(content string) string {
 	return string(masked)
 }
 
+// maskPostgresDoBlocks projects static DDL out of dollar-quoted anonymous
+// blocks before the normal SQL compatibility passes. Procedural control flow
+// is not modelled, but its declarations must not disappear with the wrapper.
+// Match exact dollar tags and a complete LANGUAGE/semicolon suffix; malformed
+// wrappers remain in the parse source and retain their syntax diagnostics.
+func maskPostgresDoBlocks(masked []byte) {
+	content := string(masked)
+	search := maskSQLLiteralContentsForSearch(content)
+	for _, loc := range postgresDoPrefixPattern.FindAllStringSubmatchIndex(search, -1) {
+		if !postgresClauseKeywordStart(search, loc[0]) {
+			continue
+		}
+		tag, ok := dollarQuoteTag(content, loc[1])
+		if !ok {
+			continue
+		}
+		bodyStart := loc[1] + len(tag)
+		closeRel := strings.Index(content[bodyStart:], tag)
+		if closeRel < 0 {
+			continue
+		}
+		bodyEnd := bodyStart + closeRel
+		tail := bodyEnd + len(tag)
+		suffix := postgresDoSuffixPattern.FindStringSubmatchIndex(search[tail:])
+		if suffix == nil || (loc[2] >= 0 && suffix[2] >= 0) {
+			continue
+		}
+		body := stripSQLComments(content[bodyStart:bodyEnd])
+		bodySearch := maskSQLLiteralContentsForSearch(body)
+		maskBytesPreservingNewlines(masked, loc[0], tail+suffix[1])
+		end := 0
+		for _, ddl := range postgresDoDDLPattern.FindAllStringIndex(bodySearch, -1) {
+			if ddl[0] < end || !postgresClauseKeywordStart(bodySearch, ddl[0]) {
+				continue
+			}
+			end = sqlStatementEnd(bodySearch, ddl[0])
+			copy(masked[bodyStart+ddl[0]:bodyStart+end], body[ddl[0]:end])
+		}
+	}
+}
+
 // maskSQLLiteralContentsForSearch blanks the contents (but not delimiters) of
-// single-quoted and dollar-quoted PostgreSQL literals. Length and newlines are
-// preserved so regex match offsets remain valid against the parse source. The
+// single-quoted and dollar-quoted PostgreSQL literals and quoted identifiers.
+// Length and newlines are preserved so regex match offsets remain valid against
+// the parse source. The
 // delimiters stay visible because a few statement masks intentionally recognize
 // quoted arguments, such as LOAD 'library'.
 func maskSQLLiteralContentsForSearch(content string) string {
 	masked := []byte(content)
 	for i := 0; i < len(content); {
 		switch content[i] {
-		case '\'':
-			backslashEscapes := postgresEscapeStringPrefix(content, i)
+		case '\'', '"':
+			quote := content[i]
+			backslashEscapes := quote == '\'' && postgresEscapeStringPrefix(content, i)
 			i++ // preserve the opening quote
 			for i < len(content) {
 				if backslashEscapes && content[i] == '\\' && i+1 < len(content) {
@@ -7190,8 +7248,8 @@ func maskSQLLiteralContentsForSearch(content string) string {
 					i += 2
 					continue
 				}
-				if content[i] == '\'' {
-					if i+1 < len(content) && content[i+1] == '\'' {
+				if content[i] == quote {
+					if i+1 < len(content) && content[i+1] == quote {
 						masked[i] = ' '
 						masked[i+1] = ' '
 						i += 2
@@ -7285,61 +7343,73 @@ func maskBytesPreservingNewlines(src []byte, start, end int) {
 	}
 }
 
-func maskPostgresCheckConstraints(masked []byte, content string) {
-	lower := asciiLowerString(content)
-	offset := 0
-	for {
-		rel := strings.Index(lower[offset:], "check")
-		if rel < 0 {
-			return
+// The search view has comments and literal/identifier contents blanked, so
+// parentheses here are structural. Never recover across a statement boundary
+// or an unclosed clause: those must still produce parse diagnostics.
+func postgresClauseParenEnd(search string, open int) int {
+	depth := 0
+	for i := open; i < len(search); i++ {
+		switch search[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		case ';':
+			return -1
 		}
-		start := offset + rel
-		beforeOK := start == 0 || !isSQLIdentifierByte(lower[start-1])
-		after := start + len("check")
-		afterOK := after >= len(lower) || !isSQLIdentifierByte(lower[after])
-		if !beforeOK || !afterOK {
-			offset = after
+	}
+	return -1
+}
+
+func postgresClauseKeywordStart(search string, start int) bool {
+	return start == 0 || (!isWordByte(search[start-1]) && search[start-1] != '$' && search[start-1] < 0x80)
+}
+
+func maskPostgresIdentityColumns(masked []byte, search string) {
+	for _, loc := range postgresIdentityColumnPattern.FindAllStringIndex(search, -1) {
+		if !postgresClauseKeywordStart(search, loc[0]) ||
+			(loc[1] < len(search) && (search[loc[1]] == '$' || search[loc[1]] >= 0x80)) {
 			continue
 		}
-		open := after
-		for open < len(content) && (content[open] == ' ' || content[open] == '\t' || content[open] == '\n' || content[open] == '\r') {
-			open++
+		end := loc[1]
+		next := end
+		for next < len(search) && strings.ContainsRune(" \t\r\n", rune(search[next])) {
+			next++
 		}
-		if open >= len(content) || content[open] != '(' {
-			offset = after
-			continue
-		}
-		depth := 0
-		inString := false
-		for i := open; i < len(content); i++ {
-			switch content[i] {
-			case '\'':
-				if inString && i+1 < len(content) && content[i+1] == '\'' {
-					i++
-					continue
-				}
-				inString = !inString
-			case '(':
-				if !inString {
-					depth++
-				}
-			case ')':
-				if !inString {
-					depth--
-					if depth == 0 {
-						if before := previousNonSpace(content, start); before >= 0 && (content[before] == ',' || content[before] == '(') {
-							replaceRangePreservingNewlines(masked, start, i+1, "check_dummy text")
-						} else {
-							maskBytesPreservingNewlines(masked, start, i+1)
-						}
-						offset = i + 1
-						goto next
-					}
-				}
+		if next < len(search) && search[next] == '(' {
+			end = postgresClauseParenEnd(search, next)
+			if end < 0 {
+				continue
 			}
 		}
-		return
-	next:
+		maskBytesPreservingNewlines(masked, loc[0], end)
+	}
+}
+
+func maskPostgresCheckConstraints(masked []byte, search string) {
+	end := 0
+	for _, loc := range postgresCheckConstraintPattern.FindAllStringIndex(search, -1) {
+		start := loc[0]
+		if start < end || !postgresClauseKeywordStart(search, start) {
+			continue
+		}
+		close := postgresClauseParenEnd(search, loc[1]-1)
+		if close < 0 {
+			continue
+		}
+		end = close
+		// Include CONSTRAINT name in the same mask. Leaving it behind makes
+		// the later table-constraint pass swallow separators or following DDL.
+		if before := previousNonSpace(search, start); before >= 0 && (search[before] == ',' || search[before] == '(') {
+			// Five bytes fit even CHECK(x), and cannot overwrite a newline in
+			// the leading CHECK / CONSTRAINT keyword.
+			replaceRangePreservingNewlines(masked, start, end, "_ int")
+		} else {
+			maskBytesPreservingNewlines(masked, start, end)
+		}
 	}
 }
 
@@ -7376,6 +7446,14 @@ func maskPostgresTableConstraints(masked []byte, content string) {
 				break
 			}
 			start := offset + rel
+			after := start + len(keyword)
+			// Constraint keywords are whole SQL tokens, not prefixes of names
+			// such as unique_key, unique_states or constraint_name.
+			if !postgresClauseKeywordStart(content, start) ||
+				(after < len(content) && (isWordByte(content[after]) || content[after] == '$' || content[after] >= 0x80)) {
+				offset = after
+				continue
+			}
 			before := previousNonSpace(content, start)
 			if before >= 0 && content[before] != ',' && content[before] != '(' {
 				offset = start + len(keyword)
@@ -8083,11 +8161,17 @@ func stripSQLComments(content string) string {
 	n := len(b)
 	for i := 0; i < n; {
 		switch b[i] {
-		case '\'':
+		case '\'', '"':
+			quote := b[i]
+			backslashEscapes := quote == '\'' && postgresEscapeStringPrefix(content, i)
 			i++
 			for i < n {
-				if b[i] == '\'' {
-					if i+1 < n && b[i+1] == '\'' {
+				if backslashEscapes && b[i] == '\\' && i+1 < n {
+					i += 2
+					continue
+				}
+				if b[i] == quote {
+					if i+1 < n && b[i+1] == quote {
 						i += 2
 						continue
 					}
