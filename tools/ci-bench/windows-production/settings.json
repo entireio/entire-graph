@@ -34,7 +34,12 @@
       "argument": "./internal/gitutil",
       "importPath": "github.com/entireio/entire-graph/internal/gitutil",
       "binaryName": "gitutil.test.exe",
-      "expectedTestMainDeclarations": []
+      "expectedTestMainDeclarations": [
+        {
+          "file": "console_windows_test.go",
+          "normalizedSourceSha256": "8c5849c3929fc245821a1cd79443f396b023c3c211d14435bcad0717b94ad156"
+        }
+      ]
     }
   ]
 }
