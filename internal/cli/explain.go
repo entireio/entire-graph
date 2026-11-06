@@ -207,7 +207,7 @@ type ExplainResponse struct {
 func explainWarnings(warnings []sem.ProviderWarning) []sem.ProviderWarning {
 	var reported []sem.ProviderWarning
 	for _, warning := range warnings {
-		if warning.Code == sem.SearchStoreUnavailableCode {
+		if sem.IsRunWarning(warning.Code) {
 			reported = append(reported, warning)
 		}
 	}

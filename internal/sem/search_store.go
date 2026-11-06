@@ -846,6 +846,17 @@ func repairSearchStoreSidecarForEntry(ctx context.Context, entry cacheEntry, tre
 // store_unavailable and why lookups on this tree take the full snapshot load.
 const SearchStoreUnavailableCode = "W_SEARCH_STORE_UNAVAILABLE"
 
+// IsRunWarning reports whether code names a warning about one run's own work
+// rather than a diagnostic of the graph: today only SearchStoreUnavailableCode,
+// a sqlite store this run could not write while the graph it built is
+// complete. Renderers keep such a warning out of every coverage and
+// completeness count and print it after the answer instead (def, explain,
+// neighbors, impact and query, through writeRunWarningLines). The prompt-context
+// hook's clean() (scripts/entire-graph-prompt-context.py) matches the same codes.
+func IsRunWarning(code string) bool {
+	return code == SearchStoreUnavailableCode
+}
+
 // withSearchStoreUnavailable is how every sidecar write site reports its
 // failure: snapshot with a SearchStoreUnavailableCode header warning appended,
 // or snapshot unchanged when err is nil. The slice is fresh because the

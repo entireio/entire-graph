@@ -117,7 +117,7 @@ func snapshotWarnings(warnings []sem.ProviderWarning) []sem.ProviderWarning {
 }
 
 func notSnapshotDiagnostic(code string) bool {
-	return code == valueReferenceDisclosureCode || code == sem.SearchStoreUnavailableCode
+	return code == valueReferenceDisclosureCode || sem.IsRunWarning(code)
 }
 
 // hasWarningCode reports whether warnings carry code.

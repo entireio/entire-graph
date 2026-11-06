@@ -397,14 +397,27 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		out = io.MultiWriter(opts.Stdout, &payload)
 	}
 	render := agentSearchRender{exactName: true, topK: sem.EffectiveSearchTopK(flags.TopK), sessionCapped: session != nil}
+	// answer remembers the answer's last byte, so the run-warning line below starts a line of its own.
+	answer := &explainEchoWriter{out: out}
 	var exactAnswer bool
 	if flags.Format == "agent" && !flags.MaxContextBytesSet {
-		exactAnswer, err = writeAgentSearchAdaptiveFor(out, response, contextBudget, render)
+		exactAnswer, err = writeAgentSearchAdaptiveFor(answer, response, contextBudget, render)
 	} else {
-		exactAnswer, err = writeSearchResponseFor(out, response, flags.Format, contextBudget, render)
+		exactAnswer, err = writeSearchResponseFor(answer, response, flags.Format, contextBudget, render)
 	}
 	if err != nil {
 		return err
+	}
+	if flags.Format == "agent" || flags.Format == "text" {
+		// Outside --max-context-bytes and the session's stored payload (opts.Stdout,
+		// not the tee). JSON and NDJSON carry the warnings in `warnings`.
+		var last []byte
+		if answer.wrote {
+			last = []byte{answer.lastByte}
+		}
+		if err := writeRunWarningLines(opts.Stdout, last, response.Warnings); err != nil {
+			return err
+		}
 	}
 	if session != nil {
 		payloadPaths := sem.SearchResponsePaths(response)
@@ -520,8 +533,10 @@ func searchResponseCanReplay(format string, response sem.SearchResponse) bool {
 		return false
 	}
 	// Agent diagnostics render corpus-wide language/file and warning/failure counts. Ordinary agent
-	// output and text output render only fields whose direct source provenance is retained.
-	return format != "agent" || (len(response.Warnings) == 0 && len(response.PartialFailures) == 0)
+	// output and text output render only fields whose direct source provenance is retained. A run
+	// warning (sem.IsRunWarning) is not among them: it is printed after the stored payload, never
+	// in it, and a replay is a later run that wrote no store.
+	return format != "agent" || (len(graphWarnings(response.Warnings)) == 0 && len(response.PartialFailures) == 0)
 }
 
 // echoPresearchPayload returns a payload that was computed before the agent started, verbatim.
@@ -2180,6 +2195,8 @@ func agentSearchTypeCard(card []sem.TypeCardEntry) []byte {
 }
 
 func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
+	// A run warning is not the graph's diagnostic: runSearch prints it after the answer.
+	response.Warnings = graphWarnings(response.Warnings)
 	if len(response.Warnings) == 0 && len(response.PartialFailures) == 0 &&
 		response.Stats.RepoIgnoredFiles == 0 {
 		return nil, nil

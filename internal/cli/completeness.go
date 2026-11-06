@@ -57,10 +57,19 @@ type completenessScope struct {
 // read, not that anything failed to parse, so it is presented as provenance.
 const worktreeProvenanceWarning = "W_WORKTREE_SNAPSHOT"
 
-// Neither scope below counts sem.SearchStoreUnavailableCode. That warning says
-// the graph is complete and only this run's sqlite store write failed, so it is
-// no completeness diagnostic: neighbors and impact print it after the answer
-// (writeRunWarningLines), the way def and explain do.
+// Neither scope below counts a run warning (sem.IsRunWarning).
+
+// graphWarnings is warnings without the run warnings (sem.IsRunWarning): the
+// graph's own diagnostics, which coverage and completeness lines count.
+func graphWarnings(warnings []sem.ProviderWarning) []sem.ProviderWarning {
+	var kept []sem.ProviderWarning
+	for _, warning := range warnings {
+		if !sem.IsRunWarning(warning.Code) {
+			kept = append(kept, warning)
+		}
+	}
+	return kept
+}
 
 // buildCompletenessScope partitions a snapshot's diagnostics by whether they can
 // affect a query about queryLanguage.
@@ -94,7 +103,7 @@ func buildCompletenessScope(snapshot sem.ProviderSnapshot, queryLanguage string)
 			scope.Worktree = true
 			continue
 		}
-		if warning.Code == sem.SearchStoreUnavailableCode {
+		if sem.IsRunWarning(warning.Code) {
 			continue
 		}
 		language := languageByPath[filepath.ToSlash(warning.FilePath)]
@@ -309,7 +318,7 @@ func completenessScopeOrAll(
 			rebuilt.Worktree = true
 			continue
 		}
-		if warning.Code == sem.SearchStoreUnavailableCode {
+		if sem.IsRunWarning(warning.Code) {
 			continue
 		}
 		if len(rebuilt.InScopeWarnings) < maxScopedDiagnostics {
