@@ -38,6 +38,15 @@ auto-generated notes on
   full snapshot load. `explain` gains a `warnings` array for this, present only
   when there is one, and its text form prints a `- warning` line after the
   declarations.
+- `--head` `def`, `neighbors`, `impact` and `explain` answer from a focused
+  subgraph read from the sqlite store instead of loading the full snapshot. On
+  the Linux kernel a lookup drops from about 55 s and 16-46 GB of memory to
+  about 1 s and under 200 MB. A name with no exact match still loads the full
+  snapshot for the fuzzy lookup. Output is unchanged.
+- When the search store cannot be written, text and agent `def`, `neighbors`
+  and `impact` print a `- warning W_SEARCH_STORE_UNAVAILABLE` line after the
+  answer, outside `--max-context-bytes`. The warning is no longer part of the
+  completeness banner or `completeness_scope.in_scope_warnings`.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being
   assigned to a variable, passed as an argument, or stored in a struct field or
