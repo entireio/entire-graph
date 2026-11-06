@@ -49,7 +49,9 @@ The file view exposes content_hash as git-blob:<blob> from the indexed file reco
 or an empty string when no blob is available. It never hashes the live working
 tree, which may differ from the committed source.
 
-The search-store cache format is v4 so older stores are rebuilt with the views.
+The search-store cache format is v5 so older stores are rebuilt. v4 added the views; v5
+adds the indexed symbol columns name_fold, qname_fold and container_id and the
+relation_type_counts meta key, for focused `--head` lookups.
 This does not change provider schema 1.x or symbol identity. Release this contract
 before the Brain consumer that retires its duplicate code graph.
 
