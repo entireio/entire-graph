@@ -735,9 +735,11 @@ func neighborResolutionTier(resolution string) int {
 }
 
 func writeAgentNeighbors(out io.Writer, response neighborResponse) error {
-	return writeAgentNeighborsFull(out, response)
+	return writeAgentNeighborsBounded(out, response, 0)
 }
 
+// writeAgentNeighborsBounded prints the answer within budget (0 is unbounded), then this run's own
+// warnings outside it (writeRunWarningLines).
 func writeAgentNeighborsBounded(out io.Writer, response neighborResponse, budget int) error {
 	var full bytes.Buffer
 	if err := writeAgentNeighborsFull(&full, response); err != nil {
@@ -746,15 +748,16 @@ func writeAgentNeighborsBounded(out io.Writer, response neighborResponse, budget
 	// Charged at the header's reserved width, not its printed one: whether the full answer fits must
 	// not depend on how many digits the measured latencies have. See agent_latency.go.
 	header := relationLatencyHeader(response.IndexCacheHit, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS)
-	if budget <= 0 || full.Len()+header.slack() <= budget {
-		_, err := out.Write(full.Bytes())
+	answer := full.Bytes()
+	if budget > 0 && full.Len()+header.slack() > budget {
+		// The compact payload is built independently of writeAgentNeighborsFull, so it
+		// does not inherit that function's wrapped writer and is escaped on its own.
+		answer = termsafe.Bytes(compactAgentNeighbors(response, budget))
+	}
+	if _, err := out.Write(answer); err != nil {
 		return err
 	}
-	// The compact payload is built independently of writeAgentNeighborsFull, so it
-	// does not inherit that function's wrapped writer and is escaped on its own.
-	payload := termsafe.Bytes(compactAgentNeighbors(response, budget))
-	_, err := out.Write(payload)
-	return err
+	return writeRunWarningLines(out, answer, response.Warnings)
 }
 
 func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {

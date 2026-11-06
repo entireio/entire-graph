@@ -728,11 +728,21 @@ func impactSectionOf(entries []impactEntry, limit int) impactSection {
 	return section
 }
 
-// writeImpactBounded keeps the text explanation inside the byte budget
+// writeImpactBounded prints the text explanation inside the byte budget, then
+// this run's own warnings outside it (writeRunWarningLines).
+func writeImpactBounded(out io.Writer, response impactResponse, budget int) error {
+	answer := boundedImpactText(response, budget)
+	if _, err := out.Write(answer); err != nil {
+		return err
+	}
+	return writeRunWarningLines(out, answer, response.Warnings)
+}
+
+// boundedImpactText keeps the text explanation inside the byte budget
 // (default ~4KB, agent-context-friendly). If the full render is over budget it
 // re-renders with progressively tighter per-section caps, then falls back to a
 // hard line-boundary truncation with an explicit marker.
-func writeImpactBounded(out io.Writer, response impactResponse, budget int) error {
+func boundedImpactText(response impactResponse, budget int) []byte {
 	var full bytes.Buffer
 	writeImpactText(&full, response)
 	// Every decision below is charged the header's reserved width, not its printed one: which
@@ -741,23 +751,20 @@ func writeImpactBounded(out io.Writer, response impactResponse, budget int) erro
 	slack := relationLatencyHeader(response.IndexCacheHit, response.IndexLatencyMS, response.QueryLatencyMS,
 		response.TotalLatencyMS).slack()
 	if budget <= 0 || full.Len()+slack <= budget {
-		_, err := out.Write(full.Bytes())
-		return err
+		return full.Bytes()
 	}
 	rendered := full.Bytes()
 	for _, sectionCap := range []int{8, 5, 3} {
 		var reduced bytes.Buffer
 		writeImpactText(&reduced, capImpactSections(response, sectionCap))
 		if reduced.Len()+slack <= budget {
-			_, err := out.Write(reduced.Bytes())
-			return err
+			return reduced.Bytes()
 		}
 		rendered = reduced.Bytes()
 	}
 	const marker = "!output-truncated; use --format json\n\n"
 	if len(marker) >= budget {
-		_, err := out.Write([]byte(marker[:budget]))
-		return err
+		return []byte(marker[:budget])
 	}
 	// Telemetry is last. Drop it before a hard cut so line selection cannot
 	// depend on the measured latency's width.
@@ -773,11 +780,7 @@ func writeImpactBounded(out io.Writer, response impactResponse, budget int) erro
 	} else {
 		cut++
 	}
-	if _, err := out.Write(rendered[:cut]); err != nil {
-		return err
-	}
-	_, err := io.WriteString(out, marker)
-	return err
+	return append(rendered[:cut:cut], marker...)
 }
 
 func capImpactSections(response impactResponse, limit int) impactResponse {

@@ -306,4 +306,41 @@ func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 			t.Fatalf("explain text does not carry the store warning:\n%s", output)
 		}
 	})
+	// neighbors and impact print the warning after the answer too, outside any
+	// byte budget. It says the graph is complete, so it is not a completeness
+	// diagnostic: with it the fixture's only one, nothing reads as a banner.
+	// The agent budget is over the 27-byte "!output-truncated/coverage" marker
+	// and under the full agent answer, so the compact path renders it, and its
+	// marker must not claim a coverage issue.
+	relationCases := []struct {
+		name    string
+		verb    func(context.Context, Options, []string) error
+		args    []string
+		compact bool
+	}{
+		{"neighbors text", runNeighbors, []string{"--symbol", "Render", "--format", "text"}, false},
+		{"neighbors agent", runNeighbors, []string{"--symbol", "Render", "--format", "agent", "--max-context-bytes", "80"}, true},
+		{"impact text", runImpact, []string{"--symbol", "Render", "--format", "text"}, false},
+	}
+	for _, relation := range relationCases {
+		t.Run("cold "+relation.name+" --head", func(t *testing.T) {
+			cache := coldCacheWithBlockedSidecar(t)
+			args := append([]string{"--repo", repo, "--head", "--cache-dir", cache, "--profile", "full"}, relation.args...)
+			output := string(run(t, relation.verb, args...))
+			const warningLine = "\n- warning W_SEARCH_STORE_UNAVAILABLE\n"
+			if !strings.HasSuffix(output, warningLine) {
+				t.Fatalf("%s does not end with the store warning:\n%s", relation.name, output)
+			}
+			if relation.compact && !strings.HasPrefix(output, "!output-truncated\n") {
+				t.Fatalf("%s did not take the compact path, or marked its coverage:\n%s", relation.name, output)
+			}
+			for _, line := range strings.Split(output, "\n") {
+				for _, banner := range []string{"Completeness:", "C:", "Diagnostics:"} {
+					if strings.HasPrefix(line, banner) {
+						t.Fatalf("%s reports the store warning as a completeness diagnostic (%q):\n%s", relation.name, line, output)
+					}
+				}
+			}
+		})
+	}
 }
