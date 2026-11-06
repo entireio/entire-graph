@@ -1,0 +1,17 @@
+Did you open a PR?
+
+---
+
+Push and open PR
+
+---
+
+Risk eval says: "Only the PostgreSQL masking code changes: identity columns, named CHECK constraints, DO blocks with a LANGUAGE clause, and keyword boundaries in parser.go. It also changes stripSQLComments and maskSQLLiteralContentsForSearch to handle double-quoted identifiers and backslash escapes, and those helpers feed every SQL mask pass, the regex entity fallback and sqlCallIdentifiers. The global IdentityRevision bump from 7 to 9 changes the wire header for every language (all 30 language goldens) and invalidates the search-snapshot and provider-records caches, so downstream Entire Brain has to rebuild. No egress, CLI or CGO surface is touched, and I could not run the tests because Go is not installed here."
+
+---
+
+Why did IdentityRevision bump from 7 to 9? What happened to 8?
+
+---
+
+Revert to 8. No need to inflate the revisions.
