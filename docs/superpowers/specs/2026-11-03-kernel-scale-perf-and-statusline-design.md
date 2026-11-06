@@ -1,6 +1,6 @@
 # Kernel-scale performance pass and Claude Code status line — design
 
-Date: 2026-11-03 · Status: approved (decisions below), pending spec review
+Date: 2026-11-03 · Status: approved; W2 and W3 superseded on 2026-11-04 by the [store-native index design](2026-11-04-store-native-index-design.md)
 
 ## Why
 

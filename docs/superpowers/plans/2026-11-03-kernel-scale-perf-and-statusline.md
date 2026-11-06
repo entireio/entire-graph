@@ -1,5 +1,7 @@
 # Kernel-scale performance pass and status line — Implementation Plan
 
+> **Status (2026-11-04):** Tasks 1–5 done. Tasks 6–7 (W2, W3) are superseded by the [store-native index design](../specs/2026-11-04-store-native-index-design.md). Tasks 8–10 proceed; Task 11 runs after its M3.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `entire graph` lookups and indexing affordable on kernel-scale repos without changing a byte of verb output, and add a graft-style Claude Code status line installed by `setup`.
