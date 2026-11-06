@@ -1,6 +1,6 @@
 # Kernel-scale performance pass and status line — Implementation Plan
 
-> **Status (2026-11-04):** Tasks 1–5 done. Tasks 6–7 (W2, W3) are superseded by the [store-native index design](../specs/2026-11-04-store-native-index-design.md). Tasks 8–10 and 9b–9f done. Task 9g (from the second `entire review`) proceeds next, independent of Task 11. PR split: perf (Tasks 1–5, 8b fixes, 9d, 9g), status line (8, 9, 9b, 9c, 9e, 10), and Windows subprocess consoles (9f, its own PR). Task 11 runs after the redesign's M3.
+> **Status (2026-11-06):** Tasks 1–5 done. Tasks 6–7 (W2, W3) are superseded by the [store-native index design](../specs/2026-11-04-store-native-index-design.md). Tasks 8–10 and 9b–9g done (9g's #4 reverted as neutral). Task 9h (from the third `entire review`) proceeds next, independent of Task 11. PR split: perf (Tasks 1–5, 8b fixes, 9d, 9g, 9h #2), status line (8, 9, 9b, 9c, 9e, 10, 9h #4 and #6), and Windows subprocess consoles (9f, its own PR). Task 11 runs after the redesign's M3.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -565,6 +565,8 @@ func InstallClaudeStatusLineChanged(root string) (path string, created, changed,
 
 ### Task 9c: The status line is opt-in, lean and stale-aware
 
+> **Amended by Task 9h:** steps 3, 4.1 and 4.2 name `OurStatusLineInstalled` and a skip that reads no other settings. Task 9h replaces both with `ActiveStatusLine`, which finds our line in any scope and reports it unchanged.
+
 Added after the branch's first `entire review` (2026-11-04) and the first live render in Claude Code. It amends Tasks 9, 9b and 10. Three product decisions drive it:
 - **Opt-in.** A status line takes a screen line the user owns, so installing it is the user's choice, made at setup, in every harness `setup` configures that runs a command status line. Today that is Claude Code only. Installing the Claude Code plugin no longer turns it on.
 - **Lean.** The line shows only what the user acts on. `✓ indexed`, the lookup count and `net n/a` go.
@@ -900,6 +902,94 @@ Added after the user saw 3–4 console windows flash and steal focus. It fixes c
 - [ ] Step 3: Run `go test -short -timeout 40m ./internal/cli`, `go test -short ./internal/sem -run 'Store|Focus|Stamp|Lookup'` and `go vet ./...`. Do not run `./internal/gitutil`'s console test.
 - [ ] Step 4: Measure #4 with `perf_run.py <binary> <tag> orbweaver store`. The `store` mode matters: the default mode is `nostore`. Run `index-cold` once per tag, then `PERF_STEPS=query`, for a before and an after build. Record the result in `docs/perf-ledger.md`.
 - [ ] Step 5: Commit: `perf(store): narrow focused lookups, trust the stamp for warm queries, and trace the load`.
+
+### Task 9h: Third `entire review` fixes
+
+**Scope.** The branch's third `entire review` (2026-11-06, `entire-review-011b61b0.txt` in the SDD workspace) found three new defects, checked against the source. #2 goes to the perf PR; #4 and #6 go to the status line PR. Its other four findings repeat items already excluded or parked.
+
+**#2: the store warning is not a completeness diagnostic.**
+- **Defect:** `W_SEARCH_STORE_UNAVAILABLE` has no `FilePath`, so `diagnosticInScope` puts it in scope (`completeness.go:114`).
+  - A cold `neighbors --head` whose sidecar write fails prints a `Completeness:` banner in text, and `C:ok ... W1` on the compact agent path.
+  - `impact` text lists it on its `Diagnostics:` footer, and counts it in the banner's total when files also failed.
+  - Agents read these lines as possibly missing facts, although the warning itself says the graph is complete.
+- **Rule:** the code leaves the completeness view entirely.
+  - `buildCompletenessScope` and `completenessScopeOrAll` skip `sem.SearchStoreUnavailableCode`, as they skip `W_WORKTREE_SNAPSHOT`. Both, or the fallback brings it back.
+  - The banner's total excludes it. Filter it where `writeScopedCompletenessBlock`'s `warnings` are built (`snapshotWarnings` at `value_refs.go:101`, or the writer itself), not from `response.Warnings`.
+- **How it is shown:** `impact` and `neighbors` print `- warning W_SEARCH_STORE_UNAVAILABLE` after the answer, in every text and agent output, the way `def` and `explain` do (`explainWarnings`, `appendWarningLines`, `explain.go:207,656`).
+  - It is appended after the byte-budgeted output, outside `--max-context-bytes`, as `RenderExplainWithProvenance` does (`explain.go:647-651`). So `writeImpactBounded`'s truncation and `compactAgentNeighbors` cannot drop it.
+  - It prints on every path that prints output, including no match, a fuzzy match and the ambiguous definition list.
+- **JSON:** the top-level `warnings` array is unchanged. `completeness_scope.in_scope_warnings` no longer lists the code; that is the intended change.
+- **`query` is unchanged.** Its `Coverage:` line counts the warning at level `notice`. The agent guide already says a Coverage line does not mean partial results.
+
+**#4: setup does not install a second copy of our status line.**
+- **Defect:** `ForeignStatusLine` (`agentsetup/claude_statusline.go:149`) returns `""` when the first scope that defines a status line holds ours, whether in `.claude/settings.json` or `~/.claude/settings.json`.
+  - Interactive `setup` then still asks, and on `y` it writes a duplicate into `settings.local.json`.
+  - A non-interactive run says "skipped (pass --statusline to install it)" although the line already shows.
+  - `AGENTS.md` says setup never asks "when another settings scope already defines one".
+- **Change:** rename it `ActiveStatusLine(root, home string) (path string, ours bool, err error)`.
+  - `path` is the first scope, in precedence order, that defines a status line, or `""` when none does. `ours` says whether that line is ours.
+  - The scan order, the read safety and the error rules stay as they are. Update its doc comment.
+- **`planStatusLine`** (`internal/cli/agents.go:161`), without `--statusline` or `--no-statusline`:
+  - If the active line is ours, report `unchanged <path> (Claude Code status line already present)`, marked done.
+  - Otherwise unchanged. A non-interactive run skips with the hint, including when a scope cannot be read.
+  - Delete `OurStatusLineInstalled`; its only caller is this branch.
+  - Rewrite the numbered steps in `planStatusLine`'s doc comment and the `scopeErr` comment on `installStatusLine` (`agents.go:235`). Step 3 no longer holds: it says "skip without reading any other settings".
+- **`--statusline` is unchanged.** It writes the local line even when ours is active in another scope, because the user asked for it. `foreign` is set only when the active line is not ours.
+- **Plan note:** this amends Task 9c steps 3, 4.1 and 4.2, which name `OurStatusLineInstalled` and the read-nothing-else skip. Add an "Amended by Task 9h" line under 9c's heading.
+
+**#6: stats sizes a graph call against the directory a leading `cd` moved to.**
+- **Defect:** `graphCallRoot` (`stats.go:1363`, called only at `:677`) resolves `--repo` against the record's `cwd` and ignores a `cd` earlier in the command.
+  - In `cd pkg && entire graph query --repo . ...`, the graph prints paths relative to `<cwd>/pkg`, but the gross estimate sizes `<cwd>/<path>`.
+  - The effect is that it prices nothing, or prices a different file.
+- **Rule:** before resolving, walk the top-level segments that come before the graph call's segment.
+  - The walk must know each separator. `splitShellSegments` drops them, so add a walk that keeps them; do not change `splitShellSegments`.
+  - A segment whose words (`shellArgWords`) are exactly `cd DIR` moves the working directory, if the separator after it is `&&`, `;` or a newline.
+    - An absolute `DIR` replaces the working directory. On Windows this includes the Git Bash form `/x/rest` with a single drive letter, which becomes `X:\rest`.
+    - A relative `DIR` joins the working directory.
+  - **The root is unknown when:**
+    - a `cd` is followed by any other separator;
+    - `DIR` contains `$` or a backtick, starts with `~`, is `-`, or (on Windows) starts with `/` or `\` without a drive letter;
+    - the segment is any other `cd` form: no operand, a flag, or more than one operand;
+    - an earlier segment runs `pushd` or starts with `(`;
+    - the graph call is found only inside a command substitution and the command contains a `cd`.
+  - Then resolve `--repo` as `graphCallRoot` does today. An absolute `--repo` ignores every `cd`. With no `--repo`, `top` stays true and the root is the moved directory. A command without `cd` resolves exactly as before.
+- **An unknown root** leaves `summaryCall.Paths` nil for that call. Do not set `Root` to `""`, which means "the report's --repo".
+  - Only `countCovered` and the sizer read `Paths`; follow-up classification uses the timeline entry's own paths. So the call drops out of the gross estimate and nothing else changes.
+  - The stats cache is keyed on the binary's identity, so no cache version changes.
+
+**Files:**
+- Modify:
+  - #2: `internal/cli/completeness.go`, `internal/cli/value_refs.go` (or the block writer), `internal/cli/impact.go`, `internal/cli/impact_text.go`, `internal/cli/neighbors.go`.
+  - #4: `internal/agentsetup/claude_statusline.go`, `internal/cli/agents.go`, and the plan's Task 9c note.
+  - #6: `internal/cli/stats.go`.
+- Test:
+  - #2: `internal/cli/store_test.go`.
+  - #4: `internal/agentsetup/claude_statusline_test.go` (`TestForeignStatusLineFindsUserScope`, `TestForeignStatusLineDoesNotFollowASharedSettingsSymlink`, renamed to the new function and returns), `internal/cli/setup_statusline_test.go`.
+  - #6: the stats gross-estimate tests.
+
+- [ ] Step 1: Write the failing tests.
+  - **#2:** extend `TestColdIndexSurfacesStoreWriteFailureAsWarning` on its blocked-sidecar cache, in a loop over three cases: `neighbors --head` text, `neighbors --head` agent with a `--max-context-bytes` small enough to reach the compact path, and `impact --head` text. `impact` has no agent format.
+    - Each output contains `\n- warning W_SEARCH_STORE_UNAVAILABLE\n`.
+    - No `Completeness:`, `C:` or `Diagnostics:` line mentions the code or counts it.
+  - **#4:** run setup through its command entry point with the temp-home seam. A table covers our line in the temp home's `settings.json` and in the project's `.claude/settings.json`.
+    - At a simulated terminal with stdin `y\n`: no prompt, no status line written to `settings.local.json`, and the `unchanged` row naming the file that holds it.
+    - Non-interactive: the same `unchanged` row.
+  - **#4, existing tests:** every test that runs setup must use the home seam, now that the non-interactive path reads the user scope. Audit callers such as `hook_test.go:221`.
+  - **#6:** a transcript whose record `cwd` is a temp dir.
+    - `cd sub && entire graph query --repo . ...`, with a result that names a file existing only under `sub/`: the gross estimate prices it.
+    - On Windows, the same with `cd /<drive>/<rest of the temp path>/sub`.
+    - `cd "$D" && entire graph query --repo . ...`, with the named file present at `<cwd>/<path>` with a known size: the gross estimate does not include it.
+- [ ] Step 2: Run them and see each fail for the stated reason.
+- [ ] Step 3: Implement.
+- [ ] Step 4: Keep all temp and cache work off `C:`: set TMP, TEMP, GOCACHE and the zig cache dirs to `O:` or `E:`. Then run:
+  - `go test -short -timeout 40m ./internal/cli`
+  - `go test ./internal/agentsetup`
+  - `go vet ./...`
+  - Do not run `./internal/gitutil`'s console test.
+- [ ] Step 5: Commit each fix on its own, so each can go to its PR:
+  - `fix(cli): keep the store warning out of the completeness banner`
+  - `fix(setup): do not install a second copy of the status line`
+  - `fix(stats): size a graph call against the directory a leading cd moved to`
 
 ### Task 11: Re-run the eval and report (W5)
 
