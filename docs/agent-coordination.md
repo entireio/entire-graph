@@ -177,10 +177,14 @@ repositories, migration, byte stability, invalid metadata, and filesystem
 protections. Activation and installer code and tests are mirrored in both
 repositories; historical runtime-detection helpers are no longer used by activation.
 
-`scripts/test-agent-coordination.py --graph-binary <build> --brain-binary <build>`
-in Brain exercises both compiled CLIs with isolated repositories and runtime
-stores. It checks single-product initialization despite both plugins being
-installed, both orders, read-only preview, migration, metadata errors, runtime
-state independence, context selection, and identical shared activation and
-installer sources. The host
-stub must receive no calls.
+Brain's `tools/integration` Go tests run both compiled products in both setup
+orders in isolated repositories. They check combined activation, preserved user
+text and repeatability, and compare the normal and strict guides each product
+renders. After changing `guide.go` or `strict.go` here, run them against a build
+of this tree with exact guide parity required:
+
+```sh
+BRAIN_INTEGRATION_REQUIRED=1 BRAIN_INTEGRATION_REQUIRE_GUIDE_PARITY=1 \
+BRAIN_INTEGRATION_BRAIN_BINARY=<brain build> BRAIN_INTEGRATION_GRAPH_BINARY=<graph build> \
+go test ./tools/integration -count=1
+```
