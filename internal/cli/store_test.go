@@ -117,16 +117,18 @@ func TestIndexWritesTheStoreWithoutOptIn(t *testing.T) {
 		Unavailable bool   `json:"store_unavailable"`
 		Path        string `json:"path"`
 	}
+	// describe parses stdout alone: anything the command prints to stderr is
+	// not part of the descriptor, and is shown only when the parse fails.
 	describe := func(t *testing.T, cache string) descriptor {
 		t.Helper()
-		var out bytes.Buffer
-		opts := Options{Stdout: &out, Stderr: &out, Version: "store-default-test"}
+		var out, stderr bytes.Buffer
+		opts := Options{Stdout: &out, Stderr: &stderr, Version: "store-default-test"}
 		if err := runStore(context.Background(), opts, []string{"--repo", repo, "--cache-dir", cache}); err != nil {
-			t.Fatal(err)
+			t.Fatalf("store: %v %s", err, stderr.String())
 		}
 		var d descriptor
 		if err := json.Unmarshal(out.Bytes(), &d); err != nil {
-			t.Fatalf("store output %q: %v", out.String(), err)
+			t.Fatalf("store output %q (stderr %q): %v", out.String(), stderr.String(), err)
 		}
 		return d
 	}
@@ -195,12 +197,19 @@ func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 	git("init", "-q")
 	git("config", "user.email", "fixture@example.test")
 	git("config", "user.name", "Fixture")
-	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package sample\nfunc Render() {}\n"), 0600); err != nil {
+	// Draw gives def a second name to answer.
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package sample\nfunc Render() {}\nfunc Draw() { Render() }\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	git("add", "main.go")
 	git("-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture")
 	const version = "store-write-failure-test"
+	// storeWarningLines counts the lines that start with the store warning. The
+	// leading "\n" lets it match as output's first line, and leaving the line's
+	// own newline out of the pattern counts two adjacent warnings as two.
+	storeWarningLines := func(output string) int {
+		return strings.Count("\n"+output, "\n- warning W_SEARCH_STORE_UNAVAILABLE")
+	}
 	runWithStdin := func(t *testing.T, stdin string, verb func(context.Context, Options, []string) error, args ...string) []byte {
 		t.Helper()
 		var out, stderr bytes.Buffer
@@ -280,12 +289,13 @@ func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 	})
 	// def's text and agent cards carry the warning on its own line after the
 	// answer, as explain's text does; a card without it reports a clean success.
+	// It is printed once per invocation, however many names def answers.
 	for _, format := range []string{"text", "agent"} {
 		t.Run("cold def --head "+format, func(t *testing.T) {
 			cache := coldCacheWithBlockedSidecar(t)
-			output := string(run(t, runDef, "--repo", repo, "--head", "--cache-dir", cache, "--profile", "full", "--format", format, "Render"))
-			if !strings.Contains(output, "\n- warning W_SEARCH_STORE_UNAVAILABLE\n") {
-				t.Fatalf("def %s does not carry the store warning:\n%s", format, output)
+			output := string(run(t, runDef, "--repo", repo, "--head", "--cache-dir", cache, "--profile", "full", "--format", format, "Render", "Draw"))
+			if got := storeWarningLines(output); got != 1 {
+				t.Fatalf("def %s [Render Draw] prints the store warning %d times, want once:\n%s", format, got, output)
 			}
 		})
 	}
@@ -302,8 +312,8 @@ func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 	t.Run("cold explain --head text", func(t *testing.T) {
 		cache := coldCacheWithBlockedSidecar(t)
 		output := string(runWithStdin(t, buildError, runExplain, explainArgs(cache, "text")...))
-		if !strings.Contains(output, "\n- warning W_SEARCH_STORE_UNAVAILABLE\n") {
-			t.Fatalf("explain text does not carry the store warning:\n%s", output)
+		if storeWarningLines(output) != 1 {
+			t.Fatalf("explain text does not carry the store warning once:\n%s", output)
 		}
 	})
 	// neighbors, impact and query print the warning after the answer too,
