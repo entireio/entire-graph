@@ -39,8 +39,8 @@ var brainReference string
 // THIS FILE IS MIRRORED between entire-graph and entire-brain and must stay
 // byte-identical: both binaries install the same .entire/agent-guide.md, and
 // whichever product runs setup last rewrites it, so divergent wording makes the
-// installed guide depend on initialization order. scripts/test-agent-coordination.py
-// (in entire-brain) pins the mirror and render parity across both compiled CLIs.
+// installed guide depend on initialization order. Go tests in this package
+// cover guide rendering, activation order, and migration.
 
 // EVERY GRAPH INVOCATION BELOW ASKS FOR --format agent, AND THAT IS A COST DECISION.
 //
@@ -228,7 +228,7 @@ you do not already know about.
 // brainRetrieval names recall as the retrieval for prior decisions (issue #335): the
 // brief's memories section is a sample and query mixes memories with docs and
 // history, so an agent asked "was this decided before?" needs the command spelled
-// out. Over MCP the equivalent write is brain_remember, which requires path.
+// out.
 const brainRetrieval = `Questions about why something is the way it is, what was decided, or what was
 tried before are answered by durable memories. Retrieve them directly; the brief's
 memories section is a sample, not the search:
@@ -250,8 +250,7 @@ Categories are architecture, constraints, preferences, project and workflow.
 Each path segment uses only lowercase letters, digits and underscores: write
 project.ci_cache.layout, not project.ci-cache.layout.
 Omitting --path classifies the memory for you, which requires a supported coding
-agent on PATH. Over MCP the same write is the brain_remember tool, which
-requires path. Retrieve with recall, and re-check anchors with verify.
+agent on PATH. Retrieve with recall, and re-check anchors with verify.
 
 Use Brain entities history to connect code changes to earlier checkpoints and
 sessions. Use Brain memory-informed review and workspace
@@ -306,5 +305,5 @@ const GraphGuide = "# Entire repository agent guide — Graph\n\n" + graphWorkfl
 const CombinedGuide = "# Entire repository agent guide — Graph and Brain\n\n" + combinedWorkflow + "\n" + graphCommonGuide
 
 func BrainGuide() string {
-	return "# Entire repository agent guide — Brain\n\n" + brainWorkflow + "\nUse Brain's semantic inspection tools for relevant code questions.\n\n" + commonGuide + "\n" + brainReference
+	return "# Entire repository agent guide — Brain\n\n" + brainWorkflow + "\nUse Brain's code inspection tools for relevant code questions.\n\n" + commonGuide + "\n" + brainReference
 }
