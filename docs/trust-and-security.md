@@ -221,9 +221,11 @@ these rules existed misses instead of re-emitting the paths it named.
   `.claude/settings.local.json`; that path is never followed through a symlink
   or hard link. To decide whether a status line is already set, it only reads
   `.claude/settings.local.json` and `.claude/settings.json` (under the same
-  symlink, hard-link and regular-file refusals) and `~/.claude/settings.json`;
-  without a terminal and without `--statusline` it reads only
-  `settings.local.json`, and with `--no-statusline` none of them. Existing legacy Graph/Brain guide paths are
+  symlink, hard-link and regular-file refusals) and `~/.claude/settings.json`,
+  in that order, stopping at the first one that defines a `statusLine`. It does
+  this whether or not a terminal is attached, and also with `--statusline`
+  (which additionally validates `settings.local.json` before writing); only
+  `--no-statusline` reads none of them. Existing legacy Graph/Brain guide paths are
   also checked and rewritten as redirects under the same protections. See
   [coordination](agent-coordination.md) for detection and migration.
   A repository-committed symlink at one of
