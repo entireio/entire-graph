@@ -35,6 +35,10 @@ auto-generated notes on
   agent and text output print one line beside the callers with a `grep` the
   reader can run to find those references. A degenerate `impact` ("no callers")
   keeps its marker line and prints the disclosure after it.
+- The agent guide that `setup` writes when Brain is enabled now says what a
+  `remember --path` segment may contain: lowercase letters, digits and
+  underscores, no hyphens. It is the rule Brain's own guide states
+  (entireio/entire-brain#605).
 
 ### Fixed
 

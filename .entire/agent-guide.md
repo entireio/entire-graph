@@ -51,6 +51,8 @@ when you learn something durable that the code does not already state:
     entire brain remember "<memory>" --path <category.subcategory.type> --json
 
 Categories are architecture, constraints, preferences, project and workflow.
+Each path segment uses only lowercase letters, digits and underscores: write
+project.ci_cache.layout, not project.ci-cache.layout.
 Omitting --path classifies the memory for you, which requires a supported coding
 agent on PATH. Over MCP the same write is the brain_remember tool, which
 requires path. Retrieve with recall, and re-check anchors with verify.

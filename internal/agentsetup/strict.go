@@ -167,6 +167,8 @@ invariant, a gotcha that cost you time - RECORD it before finishing:
     entire brain remember "<memory>" --path <category.subcategory.type> --json
 
 Categories are architecture, constraints, preferences, project and workflow.
+Each path segment uses only lowercase letters, digits and underscores: write
+project.ci_cache.layout, not project.ci-cache.layout.
 Omitting --path classifies the memory for you and requires a supported coding
 agent on PATH; pass --path when none is guaranteed. Over MCP the same write is
 the brain_remember tool, which requires path. Retrieve with recall and
