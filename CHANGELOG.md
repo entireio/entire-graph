@@ -77,9 +77,9 @@ auto-generated notes on
   replayed. The search cache version moves to v28 for the same reason: `graph
   store` and `graph context` serve the persisted entry and its sqlite store without
   building, so an earlier build's warning-less entry is retired rather than served.
-- On Windows, Git and VERIFY's `sh` no longer open a console window that flashes
-  and steals focus when entire-graph runs without a console, as a Claude Code
-  status line render does.
+- On Windows, Git and the shell that `entire graph verify` runs no longer open a
+  console window that flashes and steals focus when entire-graph runs without a
+  console, as a Claude Code status line render does.
 
 ## [0.5.0] - 2026-10-23
 
