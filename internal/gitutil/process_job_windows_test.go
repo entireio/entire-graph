@@ -49,8 +49,9 @@ func TestPathOutputChildSysProcAttrPreservesEveryCallerField(t *testing.T) {
 	parent := syscall.Handle(61)
 	want := *original
 	want.ParentProcess = parent
-	// The surrogate parent never has a console, so the child always runs
-	// without a console window, whatever the caller asked for.
+	// A child created under the surrogate parent cannot join the caller's
+	// console, so it always gets a windowless one, whatever the caller asked
+	// for.
 	want.CreationFlags |= createNoWindow
 	want.HideWindow = true
 	if got := pathOutputChildSysProcAttr(original, parent); !reflect.DeepEqual(got, want) {

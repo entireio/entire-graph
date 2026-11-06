@@ -21,13 +21,19 @@ import (
 // file, it records whether it has a visible console window there and exits.
 const consoleProbeEnv = "ENTIRE_GRAPH_TEST_CONSOLE_PROBE"
 
-// consoleHelperEnv names the directory where the consoleless helper process
-// asks each probe to write its verdict.
+// consoleHelperEnv names the directory where a helper process asks each probe
+// to write its verdict.
 const consoleHelperEnv = "ENTIRE_GRAPH_TEST_CONSOLE_HELPER"
 
-// detachedProcess is DETACHED_PROCESS: the new process has no console at all,
-// like an entire-graph status line render that Claude Code starts without one.
-const detachedProcess = 0x00000008
+const (
+	// detachedProcess is DETACHED_PROCESS: the new process has no console at
+	// all, like an entire-graph status line render that Claude Code starts
+	// without one.
+	detachedProcess = 0x00000008
+	// createNewConsole is CREATE_NEW_CONSOLE: the new process gets a console of
+	// its own, like entire-graph run from a terminal.
+	createNewConsole = 0x00000010
+)
 
 var (
 	probeKernel32             = syscall.NewLazyDLL("kernel32.dll")
@@ -87,18 +93,11 @@ func installConsoleProbeGit(t *testing.T) string {
 	return binDir
 }
 
-// TestSubprocessesStartedWithoutAConsoleHaveNoVisibleWindow catches any
-// subprocess that opens its own console window when entire-graph runs without
-// a console, which is the window the user saw flash and steal focus. The test
-// re-runs itself with DETACHED_PROCESS so the helper has no console, and the
-// helper starts the probe as git through a plain run and through the
-// path-output launcher.
-func TestSubprocessesStartedWithoutAConsoleHaveNoVisibleWindow(t *testing.T) {
-	if verdictDir := os.Getenv(consoleHelperEnv); verdictDir != "" {
-		startProbesWithoutAConsole(t, verdictDir)
-		return
-	}
-
+// assertConsoleProbesHidden re-runs the named test as a helper started with
+// attrs. The helper starts the probe as git through a plain run and through
+// the path-output launcher, and each probe must report no visible window.
+func assertConsoleProbesHidden(t *testing.T, testName, caller string, attrs *syscall.SysProcAttr) {
+	t.Helper()
 	binDir := installConsoleProbeGit(t)
 	verdictDir := t.TempDir()
 	testExecutable, err := os.Executable()
@@ -107,31 +106,66 @@ func TestSubprocessesStartedWithoutAConsoleHaveNoVisibleWindow(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	helper := exec.CommandContext(ctx, testExecutable, "-test.run=^TestSubprocessesStartedWithoutAConsoleHaveNoVisibleWindow$", "-test.v")
+	helper := exec.CommandContext(ctx, testExecutable, "-test.run=^"+testName+"$", "-test.v")
 	helper.Env = append(os.Environ(),
 		consoleHelperEnv+"="+verdictDir,
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
-	helper.SysProcAttr = &syscall.SysProcAttr{CreationFlags: detachedProcess}
+	helper.SysProcAttr = attrs
 	if output, err := helper.CombinedOutput(); err != nil {
-		t.Fatalf("consoleless helper failed: %v\n%s", err, output)
+		t.Fatalf("helper %s failed: %v\n%s", caller, err, output)
 	}
 
 	for _, launch := range []string{"plain-run", "path-output"} {
 		verdict, err := os.ReadFile(filepath.Join(verdictDir, launch))
 		if err != nil {
-			t.Errorf("%s git wrote no console verdict: %v", launch, err)
+			t.Errorf("%s git started %s wrote no console verdict: %v", launch, caller, err)
 			continue
 		}
 		if got := strings.TrimSpace(string(verdict)); got != "hidden" {
-			t.Errorf("%s git console started without a console = %q, want %q", launch, got, "hidden")
+			t.Errorf("%s git console started %s = %q, want %q", launch, caller, got, "hidden")
 		}
 	}
 }
 
-// startProbesWithoutAConsole runs in the consoleless helper. Each probe gets
-// its own verdict file.
-func startProbesWithoutAConsole(t *testing.T, verdictDir string) {
+// TestSubprocessesStartedWithoutAConsoleHaveNoVisibleWindow catches any
+// subprocess that opens its own console window when entire-graph runs without
+// a console, which is the window the user saw flash and steal focus. The test
+// re-runs itself with DETACHED_PROCESS so the helper has no console.
+func TestSubprocessesStartedWithoutAConsoleHaveNoVisibleWindow(t *testing.T) {
+	if verdictDir := os.Getenv(consoleHelperEnv); verdictDir != "" {
+		startConsoleProbes(t, verdictDir)
+		return
+	}
+	assertConsoleProbesHidden(t,
+		"TestSubprocessesStartedWithoutAConsoleHaveNoVisibleWindow",
+		"without a console",
+		&syscall.SysProcAttr{CreationFlags: detachedProcess},
+	)
+}
+
+// TestSubprocessesStartedWithAConsoleStartAndHaveNoVisibleWindow covers
+// entire-graph run with a console attached, as from a terminal or an agent
+// that starts it on a windowless console. Each path-output git must start and
+// show no window. It would not start without CREATE_NO_WINDOW: a child created
+// under the suspended surrogate parent on the caller's console fails with
+// STATUS_DLL_INIT_FAILED (0xc0000142).
+func TestSubprocessesStartedWithAConsoleStartAndHaveNoVisibleWindow(t *testing.T) {
+	if verdictDir := os.Getenv(consoleHelperEnv); verdictDir != "" {
+		startConsoleProbes(t, verdictDir)
+		return
+	}
+	const name = "TestSubprocessesStartedWithAConsoleStartAndHaveNoVisibleWindow"
+	assertConsoleProbesHidden(t, name, "with a windowless console",
+		&syscall.SysProcAttr{CreationFlags: createNoWindow})
+	// HideWindow keeps this console's own window from flashing during the test;
+	// the console is otherwise the one a terminal gives a program.
+	assertConsoleProbesHidden(t, name, "with a hidden-window console",
+		&syscall.SysProcAttr{CreationFlags: createNewConsole, HideWindow: true})
+}
+
+// startConsoleProbes runs in a helper. Each probe gets its own verdict file.
+func startConsoleProbes(t *testing.T, verdictDir string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	dir := t.TempDir()
