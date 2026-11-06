@@ -169,6 +169,60 @@ func TestSetupDoesNotAskWhenAStatusLineExists(t *testing.T) {
 	})
 }
 
+// TestSetupDoesNotInstallASecondCopyOfOurStatusLine catches a duplicate written over ours: when
+// the active status line is ours in the shared or the user scope, setup neither asks nor writes
+// settings.local.json, at a terminal or not, and the row names the file that holds it.
+func TestSetupDoesNotInstallASecondCopyOfOurStatusLine(t *testing.T) {
+	t.Parallel()
+	const ours = `{"statusLine":{"type":"command","command":"entire graph statusline"}}`
+	for _, tc := range []struct {
+		name  string
+		place func(t *testing.T, home func() string, repo string) string
+	}{
+		{name: "user scope", place: func(t *testing.T, home func() string, _ string) string {
+			writeUserSettings(t, home, ours)
+			return filepath.Join(home(), ".claude", "settings.json")
+		}},
+		{name: "project shared scope", place: func(t *testing.T, _ func() string, repo string) string {
+			path := filepath.Join(repo, ".claude", "settings.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(ours), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}},
+	} {
+		for _, interactive := range []bool{true, false} {
+			t.Run(tc.name+"/interactive="+strconv.FormatBool(interactive), func(t *testing.T) {
+				t.Parallel()
+				home := tempHome(t)
+				repo := gitRepoForTest(t, false)
+				holder := tc.place(t, home, repo)
+				var out string
+				if interactive {
+					var err error
+					if out, err = runSetupInteractive(t, home, repo, "y\n"); err != nil {
+						t.Fatalf("setup: %v\n%s", err, out)
+					}
+					if strings.Contains(out, "[y/N]") {
+						t.Errorf("setup asked although ours is active in %s:\n%s", holder, out)
+					}
+				} else {
+					out = runSetupForTest(t, home, repo)
+				}
+				if got := localStatusLine(t, repo); got != nil {
+					t.Fatalf("setup wrote a second copy of the status line: %v\n%s", got, out)
+				}
+				if want := "unchanged " + holder + " (Claude Code status line already present)"; !strings.Contains(out, want) {
+					t.Errorf("the row must say %q:\n%s", want, out)
+				}
+			})
+		}
+	}
+}
+
 // TestSetupNoClaudeHookIgnoresStatusLineSettingsUnlessChosen catches finding #2: a malformed
 // settings.local.json must not fail `setup --no-claude-hook` when the status line is not chosen.
 func TestSetupNoClaudeHookIgnoresStatusLineSettingsUnlessChosen(t *testing.T) {

@@ -149,12 +149,14 @@ const statusLinePrompt = "Install the Claude Code status line (graph token savin
 // planStatusLine decides the status line step; the first match wins:
 //
 //  1. --no-statusline skips without reading any settings.
-//  2. --statusline installs as before: the preflight, overriding a shared or user line in this
-//     repo, never replacing a foreign line inside settings.local.json.
-//  3. Otherwise ours already in settings.local.json is "unchanged".
-//  4. Not interactive: skip without reading any other settings.
-//  5. Interactive: an unreadable scope or a status line in any scope settles the row without asking;
-//     else ask, and only a yes runs the preflight and installs.
+//  2. --statusline installs as before: the preflight, then ours in settings.local.json even when
+//     ours is active in another scope, overriding a foreign shared or user line in this repo, never
+//     replacing a foreign line inside settings.local.json.
+//  3. Otherwise the active status line (ActiveStatusLine) being ours is "unchanged", naming the
+//     file that holds it, so a second copy is never written.
+//  4. Not interactive: skip with the --statusline hint, also when a scope cannot be read.
+//  5. Interactive: an unreadable scope or a foreign line in any scope settles the row without
+//     asking; else ask, and only a yes runs the preflight and installs.
 //
 // So settings.local.json is refused only when the status line is chosen, and a skip never writes:
 // a line installed earlier stays.
@@ -168,18 +170,19 @@ func planStatusLine(ctx context.Context, opts Options, root string, force, skip 
 		if err := agentsetup.CheckClaudeStatusLine(root); err != nil {
 			return statusLinePlan{}, err
 		}
-		foreign, scopeErr := agentsetup.ForeignStatusLine(root, opts.userHome())
-		return statusLinePlan{install: true, foreign: foreign, scopeErr: scopeErr, force: true}, nil
-	case agentsetup.OurStatusLineInstalled(root):
-		local := filepath.Join(root, filepath.FromSlash(agentsetup.ClaudeLocalSettings))
-		return statusLinePlan{mark: setupMarkDone, row: "unchanged " + local + " (Claude Code status line already present)"}, nil
+		active, ours, scopeErr := agentsetup.ActiveStatusLine(root, opts.userHome())
+		return statusLinePlan{install: true, foreign: foreignStatusLine(active, ours), scopeErr: scopeErr, force: true}, nil
+	}
+	active, ours, scopeErr := agentsetup.ActiveStatusLine(root, opts.userHome())
+	switch {
+	case scopeErr == nil && ours:
+		return statusLinePlan{mark: setupMarkDone, row: "unchanged " + active + " (Claude Code status line already present)"}, nil
 	case !opts.isInteractive():
 		return statusLinePlan{mark: setupMarkSkipped, row: "skipped (pass --statusline to install it)"}, nil
-	}
-	// One that cannot be read, or a line in any scope, is settled by installStatusLine without force,
-	// which writes nothing.
-	if foreign, scopeErr := agentsetup.ForeignStatusLine(root, opts.userHome()); foreign != "" || scopeErr != nil {
-		return statusLinePlan{install: true, foreign: foreign, scopeErr: scopeErr}, nil
+	case active != "" || scopeErr != nil:
+		// One that cannot be read, or a foreign line in any scope, is settled by installStatusLine
+		// without force, which writes nothing.
+		return statusLinePlan{install: true, foreign: active, scopeErr: scopeErr}, nil
 	}
 	if _, err := io.WriteString(opts.Stdout, statusLinePrompt); err != nil {
 		return statusLinePlan{}, err
@@ -195,6 +198,14 @@ func planStatusLine(ctx context.Context, opts Options, root string, force, skip 
 		return statusLinePlan{}, err
 	}
 	return statusLinePlan{install: true}, nil
+}
+
+// foreignStatusLine is the active status line's path when that line is not ours, else "".
+func foreignStatusLine(active string, ours bool) string {
+	if ours {
+		return ""
+	}
+	return active
 }
 
 // readYes reads one answer from in: the text up to the first newline or EOF, trimmed. y or yes in
@@ -232,7 +243,8 @@ func readYes(ctx context.Context, in io.Reader) (bool, error) {
 // without force (--statusline) a foreign line in any scope is kept and nothing is written. A
 // foreign line inside settings.local.json itself is kept even with force.
 //
-// scopeErr is ForeignStatusLine's failure to inspect the scope named by foreign. Without force the
+// foreign is the path of the active status line when that line is not ours (ActiveStatusLine), and
+// scopeErr is ActiveStatusLine's failure to inspect the scope foreign then names. Without force the
 // step is skipped, since that scope may hold a line ours would hide; with force ours is installed
 // and the row says the scope went unchecked.
 func installStatusLine(ui *setupUI, root, foreign string, scopeErr error, force bool) error {

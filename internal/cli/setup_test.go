@@ -152,7 +152,7 @@ func TestNestedRepoWarningSkipsAGitTrackedHome(t *testing.T) {
 	t.Setenv(homeEnv, home)
 
 	var out bytes.Buffer
-	_ = Run(context.Background(), Options{Stdout: &out, Stderr: &out, Env: EntireEnv{RepoRoot: project}}, []string{"setup"})
+	_ = Run(context.Background(), Options{Stdout: &out, Stderr: &out, Env: EntireEnv{RepoRoot: project}, homeDir: func() string { return home }}, []string{"setup"})
 	if strings.Contains(out.String(), "git repository inside") {
 		t.Errorf("a git-tracked home must not trigger the nested-repo warning:\n%s", out.String())
 	}
@@ -166,7 +166,7 @@ func TestNestedRepoWarningSkipsAGitTrackedHome(t *testing.T) {
 		}
 	}
 	var warned bytes.Buffer
-	_ = Run(context.Background(), Options{Stdout: &warned, Stderr: &warned, Env: EntireEnv{RepoRoot: inner}}, []string{"setup"})
+	_ = Run(context.Background(), Options{Stdout: &warned, Stderr: &warned, Env: EntireEnv{RepoRoot: inner}, homeDir: func() string { return home }}, []string{"setup"})
 	if !strings.Contains(warned.String(), "git repository inside") {
 		t.Errorf("an outer repository below home must still warn:\n%s", warned.String())
 	}

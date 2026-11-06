@@ -64,22 +64,22 @@ func TestStatusLineInstallKeepsForeignLocalStatusLine(t *testing.T) {
 	}
 }
 
-func TestForeignStatusLineFindsUserScope(t *testing.T) {
+func TestActiveStatusLineFindsUserScope(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	home := t.TempDir()
 	userSettings := filepath.Join(home, ".claude", "settings.json")
 	writeSettingsFile(t, userSettings, `{"statusLine":{"type":"command","command":"node graft-statusline.cjs"}}`)
 
-	got, err := ForeignStatusLine(root, home)
-	if err != nil || got != userSettings {
-		t.Fatalf("ForeignStatusLine = %q, %v; want %q", got, err, userSettings)
+	got, ours, err := ActiveStatusLine(root, home)
+	if err != nil || got != userSettings || ours {
+		t.Fatalf("ActiveStatusLine = %q, %v, %v; want %q, false", got, ours, err, userSettings)
 	}
 
 	writeSettingsFile(t, userSettings, `{"statusLine":{"type":"command","command":"entire graph statusline"}}`)
-	got, err = ForeignStatusLine(root, home)
-	if err != nil || got != "" {
-		t.Fatalf("ours in user scope: ForeignStatusLine = %q, %v; want \"\"", got, err)
+	got, ours, err = ActiveStatusLine(root, home)
+	if err != nil || got != userSettings || !ours {
+		t.Fatalf("ours in user scope: ActiveStatusLine = %q, %v, %v; want %q, true", got, ours, err, userSettings)
 	}
 }
 
@@ -117,7 +117,7 @@ func TestStatusLineInstallPreservesOtherSettings(t *testing.T) {
 
 // The shared .claude/settings.json comes with the checkout, so a committed symlink there must not
 // be followed: the outside file is not read and the scope counts as uninspectable.
-func TestForeignStatusLineDoesNotFollowASharedSettingsSymlink(t *testing.T) {
+func TestActiveStatusLineDoesNotFollowASharedSettingsSymlink(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.json")
@@ -130,8 +130,8 @@ func TestForeignStatusLineDoesNotFollowASharedSettingsSymlink(t *testing.T) {
 		t.Skipf("cannot create a symlink here: %v", err)
 	}
 
-	got, err := ForeignStatusLine(root, "")
-	if err == nil || got != shared {
-		t.Fatalf("ForeignStatusLine = %q, %v; want the shared scope refused as unreadable", got, err)
+	got, ours, err := ActiveStatusLine(root, "")
+	if err == nil || got != shared || ours {
+		t.Fatalf("ActiveStatusLine = %q, %v, %v; want the shared scope refused as unreadable", got, ours, err)
 	}
 }

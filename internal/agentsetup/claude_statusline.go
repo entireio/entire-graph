@@ -87,28 +87,6 @@ func CheckClaudeStatusLine(root string) error {
 	return nil
 }
 
-// OurStatusLineInstalled reports whether <root>/.claude/settings.local.json already holds our
-// statusLine: a readable, regular, non-link JSON object whose statusLine.command contains
-// StatusLineCommand. Every read or parse failure is false, never an error, so setup can ask it
-// before the user has chosen the status line without refusing a file it would not rewrite.
-func OurStatusLineInstalled(root string) bool {
-	repo, err := os.OpenRoot(root)
-	if err != nil {
-		return false
-	}
-	defer repo.Close()
-	state, err := readClaudeSettings(repo)
-	if err != nil || state.file == nil {
-		return false
-	}
-	settings, err := parseSettingsObject(ClaudeLocalSettings, state.content)
-	if err != nil {
-		return false
-	}
-	line := statusLineOf(settings)
-	return line != nil && isOurStatusLine(line)
-}
-
 // InstallClaudeStatusLineChanged merges statusLine into <root>/.claude/settings.local.json.
 // It never touches a foreign statusLine in that file.
 func InstallClaudeStatusLineChanged(root string) (path string, created, changed, foreign bool, err error) {
@@ -131,25 +109,26 @@ func InstallClaudeStatusLineChanged(root string) (path string, created, changed,
 	return path, state.file == nil, true, false, nil
 }
 
-// ForeignStatusLine reports which settings scope already defines a statusLine that
-// is not ours, in Claude Code precedence order: project local, project shared
-// (<root>/.claude/settings.json), user (<home>/.claude/settings.json). "" when none.
-// home is a parameter so tests never read the real one.
+// ActiveStatusLine reports the statusLine Claude Code shows: path is the first settings scope, in
+// Claude Code precedence order, that defines one, and ours says whether that line is ours. The
+// order is project local, project shared (<root>/.claude/settings.json), user
+// (<home>/.claude/settings.json). path is "" when no scope defines one. home is a parameter so
+// tests never read the real one.
 //
 // The first scope that defines a statusLine is the one Claude Code shows, so the scan stops there:
-// ours in a higher scope means the lower ones are already overridden. An empty home skips the
+// a line in a higher scope means the lower ones are already overridden. An empty home skips the
 // user scope.
 //
 // A scope that cannot be inspected stops the scan too, since it may hold a status line that
-// overrides the next: err is then non-nil and path names that scope. Both project files are read
-// through the repository root, never following a symlink, a hard link or a non-regular file,
-// because a checkout controls them. One leading UTF-8 BOM is tolerated in the two files setup only
-// reads (Windows PowerShell 5.1 writes one); settings.local.json, which setup rewrites, is refused
-// as before by CheckClaudeStatusLine.
-func ForeignStatusLine(root, home string) (path string, err error) {
+// overrides the next: err is then non-nil, path names that scope and ours is false. Both project
+// files are read through the repository root, never following a symlink, a hard link or a
+// non-regular file, because a checkout controls them. One leading UTF-8 BOM is tolerated in the two
+// files setup only reads (Windows PowerShell 5.1 writes one); settings.local.json, which setup
+// rewrites, is refused as before by CheckClaudeStatusLine.
+func ActiveStatusLine(root, home string) (path string, ours bool, err error) {
 	repo, err := os.OpenRoot(root)
 	if err != nil {
-		return root, err
+		return root, false, err
 	}
 	defer repo.Close()
 	type scope struct {
@@ -180,23 +159,20 @@ func ForeignStatusLine(root, home string) (path string, err error) {
 			continue
 		}
 		if err != nil {
-			return scope.path, err
+			return scope.path, false, err
 		}
 		if scope.name != ClaudeLocalSettings {
 			content = bytes.TrimPrefix(content, utf8BOM)
 		}
 		settings, err := parseSettingsObject(scope.name, content)
 		if err != nil {
-			return scope.path, err
+			return scope.path, false, err
 		}
 		if line := statusLineOf(settings); line != nil {
-			if isOurStatusLine(line) {
-				return "", nil
-			}
-			return scope.path, nil
+			return scope.path, isOurStatusLine(line), nil
 		}
 	}
-	return "", nil
+	return "", false, nil
 }
 
 // claudeSharedSettings is the project's shared, usually committed, Claude Code settings file.
