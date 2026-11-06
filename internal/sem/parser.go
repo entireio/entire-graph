@@ -6905,7 +6905,12 @@ func isWordByte(b byte) bool {
 
 var postgresGeneratedColumnPattern = regexp.MustCompile(`(?is)\bgenerated\s+always\s+as\s*\([^;]*?\)\s+stored`)
 var postgresIdentityColumnPattern = regexp.MustCompile(`(?i)\bgenerated\s+(?:always|by\s+default)\s+as\s+identity\b`)
-var postgresCheckConstraintPattern = regexp.MustCompile(`(?i)\b(?:constraint\s+(?:"(?:[^"]|"")*"|[a-z_][a-z0-9_$]*)\s+)?check\s*\(`)
+
+// PostgreSQL's scanner accepts non-ASCII bytes in unquoted identifiers. For
+// UTF-8 source, match the corresponding non-ASCII runes, including combining
+// marks, so CONSTRAINT and its full name are masked together.
+// https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/parser/scan.l
+var postgresCheckConstraintPattern = regexp.MustCompile(`(?i)\b(?:constraint\s+(?:"(?:[^"]|"")*"|[a-z_\x{80}-\x{10ffff}][a-z0-9_$\x{80}-\x{10ffff}]*)\s+)?check\s*\(`)
 var postgresVectorTypePattern = regexp.MustCompile(`(?i)\bvector\s*\([^)]*\)`)
 var postgresTimestamptzTypePattern = regexp.MustCompile(`(?i)\btimestamptz\b`)
 var postgresBigserialTypePattern = regexp.MustCompile(`(?i)\bbigserial\b`)

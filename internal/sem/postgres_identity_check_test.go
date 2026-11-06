@@ -90,7 +90,7 @@ func TestPostgresIdentityCheckSnapshot(t *testing.T) {
     attempt int,
     priority int,
     CONSTRAINT attempt_positive CHECK (attempt > 0),
-    CONSTRAINT priority_range CHECK (priority BETWEEN 1 AND 4)
+    CONSTRAINT priorité_范围 CHECK (priority BETWEEN 1 AND 4)
 );
 CREATE INDEX jobs_priority ON jobs (priority);
 CREATE TABLE after_jobs (id int);
@@ -112,6 +112,48 @@ CREATE TABLE after_jobs (id int);
 		}
 		if found != 1 {
 			t.Errorf("expected one %s symbol; got %d: %+v", name, found, snapshot.Symbols)
+		}
+	}
+}
+
+func TestPostgresUnicodeCheckConstraintNames(t *testing.T) {
+	for _, name := range []string{"gültig", "validé", "检查", "положительный", "re\u0301gle", "𝛂_valid", "valid$检查1"} {
+		for _, inline := range []bool{false, true} {
+			kind := "table"
+			definition := "    id int,\n    CONSTRAINT " + name + " CHECK (id > 0),\n"
+			if inline {
+				kind = "inline"
+				definition = "    id int CONSTRAINT " + name + " CHECK (id > 0),\n"
+			}
+			t.Run(kind+"/"+name, func(t *testing.T) {
+				src := "CREATE TABLE subject (\n" + definition + "    label text\n);\nCREATE TABLE after_tbl (id int);\n"
+				masked := maskPostgresUnsupportedSyntax(src)
+				if !strings.Contains(masked, ",\n    label text") {
+					t.Fatalf("constraint consumed following column separator:\n%s", masked)
+				}
+				if len(masked) != len(src) {
+					t.Fatal("mask changed byte length")
+				}
+				for i := range src {
+					if (src[i] == '\n' || src[i] == '\r') && masked[i] != src[i] {
+						t.Fatalf("newline moved at byte %d", i)
+					}
+				}
+				entities, _, status := (TreeSitterParser{}).ParseWithStatus("unicode.sql", src)
+				if status.ParseError {
+					t.Fatalf("parse error: %s\n%s", status.Detail, masked)
+				}
+				for _, table := range []string{"subject", "after_tbl"} {
+					if countEntity(entities, "table", table) != 1 {
+						t.Errorf("missing %s: %+v", table, entities)
+					}
+				}
+				for _, entity := range entities {
+					if entity.Name == "after_tbl" && entity.StartLine != strings.Count(src, "\n") {
+						t.Errorf("following table moved: %+v", entity)
+					}
+				}
+			})
 		}
 	}
 }
