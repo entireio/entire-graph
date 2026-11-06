@@ -35,6 +35,16 @@ auto-generated notes on
   agent and text output print one line beside the callers with a `grep` the
   reader can run to find those references. A degenerate `impact` ("no callers")
   keeps its marker line and prints the disclosure after it.
+- The agent guide that `setup` writes when Brain is enabled now says what a
+  `remember --path` segment may contain: lowercase letters, digits and
+  underscores, no hyphens. It is the rule Brain's own guide states
+  (entireio/entire-brain#605).
+- The Brain-enabled agent guide no longer says the write is available over MCP
+  as the `brain_remember` tool. Brain removed its MCP surface in 0.4.0, and its
+  own guide dropped the sentence then. With this and the `--path` rule above,
+  Graph renders the same guide text as a Brain that includes
+  entireio/entire-brain#605, so a repository's `.entire/agent-guide.md` no
+  longer depends on which product ran `setup` last.
 
 ### Fixed
 
