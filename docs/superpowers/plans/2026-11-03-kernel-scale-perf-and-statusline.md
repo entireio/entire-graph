@@ -862,7 +862,7 @@ Added after the user saw 3–4 console windows flash and steal focus. It fixes c
 - **Why this is safe:** the filter repeats exact resolution's own comparison, so the focused starting set holds exactly the symbols exact resolution can pick. Hops and kinship start from that set. The SQL and the sidecar schema are unchanged.
 - `def` and `explain` are unchanged. `--line` is not a filter.
 
-**#4: trust the stamp on the full-sidecar read.**
+**#4: trust the stamp on the full-sidecar read.** *Reverted in fix round 1 (381c36a6).* It measured neutral: orbweaver 2.858 s → 2.853 s, and on the kernel it removes about 0.3 s of a 54–57 s read. The full-sidecar read hashes the entry every time again. The steps below are kept as a record and are not the shipped behaviour.
 - Extract `entryDigestForStore(ctx context.Context, db *sql.DB, entry cacheEntry) (cacheDigest, error)` from `openExactSearchStoreForEntry`. It returns the recorded digest when `searchEntryStampMatches` holds, and otherwise `memoizedEntryDigest`.
 - Use it in both `openExactSearchStoreForEntry` and `loadSearchStoreForEntry` (`search_store.go:999`).
   - `loadSearchStore` (`:409`) opens its own connection today. Restructure so that `loadSearchStoreForEntry` opens the sidecar once and hands that `db` to both `entryDigestForStore` and the load, rather than opening it twice.
