@@ -933,7 +933,7 @@ Added after the user saw 3–4 console windows flash and steal focus. It fixes c
   - If the active line is ours, report `unchanged <path> (Claude Code status line already present)`, marked done.
   - Otherwise unchanged. A non-interactive run skips with the hint, including when a scope cannot be read.
   - Delete `OurStatusLineInstalled`; its only caller is this branch.
-  - Rewrite the numbered steps in `planStatusLine`'s doc comment and the `scopeErr` comment on `installStatusLine` (`agents.go:235`). Step 3 no longer holds: it says "skip without reading any other settings".
+  - Rewrite the numbered steps in `planStatusLine`'s doc comment and the `scopeErr` comment on `installStatusLine` (`agents.go:235`). Steps 3 and 4 (`agents.go:154-155`) no longer hold.
 - **`--statusline` is unchanged.** It writes the local line even when ours is active in another scope, because the user asked for it. `foreign` is set only when the active line is not ours.
 - **Plan note:** this amends Task 9c steps 3, 4.1 and 4.2, which name `OurStatusLineInstalled` and the read-nothing-else skip. Add an "Amended by Task 9h" line under 9c's heading.
 
@@ -968,13 +968,13 @@ Added after the user saw 3–4 console windows flash and steal focus. It fixes c
   - #6: the stats gross-estimate tests.
 
 - [ ] Step 1: Write the failing tests.
-  - **#2:** extend `TestColdIndexSurfacesStoreWriteFailureAsWarning` on its blocked-sidecar cache, in a loop over three cases: `neighbors --head` text, `neighbors --head` agent with a `--max-context-bytes` small enough to reach the compact path, and `impact --head` text. `impact` has no agent format.
+  - **#2:** extend `TestColdIndexSurfacesStoreWriteFailureAsWarning` on its blocked-sidecar cache, in a loop over three cases: `neighbors --head` text, `neighbors --head` agent with a `--max-context-bytes` above 27 (the `!output-truncated/coverage` marker plus newline) and below the fixed full agent output, so the compact path runs both before and after the fix, and `impact --head` text. `impact` has no agent format.
     - Each output contains `\n- warning W_SEARCH_STORE_UNAVAILABLE\n`.
-    - No `Completeness:`, `C:` or `Diagnostics:` line mentions the code or counts it.
+    - The warning is the fixture's only diagnostic. So no line starts with `Completeness:`, `C:` or `Diagnostics:`, and the warning line comes after the answer, at the end of the output.
   - **#4:** run setup through its command entry point with the temp-home seam. A table covers our line in the temp home's `settings.json` and in the project's `.claude/settings.json`.
     - At a simulated terminal with stdin `y\n`: no prompt, no status line written to `settings.local.json`, and the `unchanged` row naming the file that holds it.
     - Non-interactive: the same `unchanged` row.
-  - **#4, existing tests:** every test that runs setup must use the home seam, now that the non-interactive path reads the user scope. Audit callers such as `hook_test.go:221`.
+  - **#4, existing tests:** every test that runs setup without `--no-statusline` or `--statusline` must use the home seam, now that the non-interactive path reads the user scope. Audit those runs.
   - **#6:** a transcript whose record `cwd` is a temp dir.
     - `cd sub && entire graph query --repo . ...`, with a result that names a file existing only under `sub/`: the gross estimate prices it.
     - On Windows, the same with `cd /<drive>/<rest of the temp path>/sub`.
