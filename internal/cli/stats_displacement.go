@@ -101,29 +101,33 @@ const (
 	timelineEdit
 )
 
-// lineSpan is an inclusive 1-based line range; end < 0 means "to end of file".
-type lineSpan struct{ start, end int }
-
-func (s lineSpan) overlaps(o lineSpan) bool {
-	return (s.end < 0 || o.start <= s.end) && (o.end < 0 || s.start <= o.end)
+// lineSpan is an inclusive 1-based line range; End < 0 means "to end of file".
+type lineSpan struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
 }
 
-// timelineEntry is one tool call in transcript order. It lives only while a file is scanned; what
-// is cached is the resulting class on the locate call's summaryCall.
+func (s lineSpan) overlaps(o lineSpan) bool {
+	return (s.End < 0 || o.Start <= s.End) && (o.End < 0 || s.Start <= o.End)
+}
+
+// timelineEntry is one tool call in transcript order. It lives while a file is scanned, and in the
+// status line's checkpoint of a scanner (fileScanner); what the memo caches is the resulting class
+// on the locate call's summaryCall.
 type timelineEntry struct {
-	kind  timelineKind
-	paths []string // read/edit: the file(s) touched; locate: the paths its output named
+	Kind  timelineKind `json:"kind"`
+	Paths []string     `json:"paths"` // read/edit: the file(s) touched; locate: the paths its output named
 	// read: the requested span, when known (Read tool). locate: delivered spans per named path,
-	// only when the output parsed as a complete search response.
-	readSpan  *lineSpan
-	delivered map[string][]lineSpan
-	callIndex int // locate: index into fileSummary.Calls
-	// locate, set when its result arrives: deliveredAt is the number of timeline entries that
-	// existed at delivery (the window starts there); deliverSeq orders deliveries.
-	hasResult   bool
-	deliveredAt int
-	deliverSeq  int
-	isError     bool
+	// only when the output parsed as a complete search response (nil otherwise, not empty).
+	ReadSpan  *lineSpan             `json:"read_span"`
+	Delivered map[string][]lineSpan `json:"delivered"`
+	CallIndex int                   `json:"call_index"` // locate: index into fileSummary.Calls
+	// locate, set when its result arrives: DeliveredAt is the number of timeline entries that
+	// existed at delivery (the window starts there); DeliverSeq orders deliveries.
+	HasResult   bool `json:"has_result"`
+	DeliveredAt int  `json:"delivered_at"`
+	DeliverSeq  int  `json:"deliver_seq"`
+	IsError     bool `json:"is_error"`
 }
 
 // timelineFromToolUse classifies a tool_use for the follow-up window. It is deliberately
@@ -131,31 +135,31 @@ type timelineEntry struct {
 func timelineFromToolUse(block contentBlock) timelineEntry {
 	if key, ok := editTools[block.Name]; ok {
 		path, _ := block.Input[key].(string)
-		return timelineEntry{kind: timelineEdit, paths: []string{path}}
+		return timelineEntry{Kind: timelineEdit, Paths: []string{path}}
 	}
 	switch block.Name {
 	case "Grep", "Glob":
-		return timelineEntry{kind: timelineRequery}
+		return timelineEntry{Kind: timelineRequery}
 	case "Read":
 		path, _ := block.Input["file_path"].(string)
 		if path == "" {
-			return timelineEntry{kind: timelineOther}
+			return timelineEntry{Kind: timelineOther}
 		}
-		return timelineEntry{kind: timelineRead, paths: []string{path}, readSpan: readToolSpan(block.Input)}
+		return timelineEntry{Kind: timelineRead, Paths: []string{path}, ReadSpan: readToolSpan(block.Input)}
 	case "Bash":
 		command, _ := block.Input["command"].(string)
 		if verb, ok := graphVerbFromCommand(command); ok {
 			switch {
 			case graphLocateVerbs[verb]:
-				return timelineEntry{kind: timelineLocate}
+				return timelineEntry{Kind: timelineLocate}
 			case graphLookupVerbs[verb]:
-				return timelineEntry{kind: timelineRequery}
+				return timelineEntry{Kind: timelineRequery}
 			}
-			return timelineEntry{kind: timelineOther}
+			return timelineEntry{Kind: timelineOther}
 		}
 		return shellTimelineEntry(command)
 	}
-	return timelineEntry{kind: timelineOther}
+	return timelineEntry{Kind: timelineOther}
 }
 
 // readToolSpan is the Read tool's requested range: offset is the 1-based first line, limit the line
@@ -192,16 +196,16 @@ func readToolSpan(input map[string]any) *lineSpan {
 // make.
 func shellTimelineEntry(command string) timelineEntry {
 	if command == "" {
-		return timelineEntry{kind: timelineOther}
+		return timelineEntry{Kind: timelineOther}
 	}
 	var reads []string
 	if shellTimelineScan(command, 0, &reads) {
-		return timelineEntry{kind: timelineRequery}
+		return timelineEntry{Kind: timelineRequery}
 	}
 	if len(reads) == 0 {
-		return timelineEntry{kind: timelineOther}
+		return timelineEntry{Kind: timelineOther}
 	}
-	return timelineEntry{kind: timelineRead, paths: reads}
+	return timelineEntry{Kind: timelineRead, Paths: reads}
 }
 
 // shellTimelineScan reports whether the command, or any command substitution inside it, runs a
@@ -622,8 +626,8 @@ func pathsOverlap(named, touched []string) bool {
 
 // readSubclass decides which FOLLOW-UP READ bucket a matching read falls in.
 func readSubclass(locate, read timelineEntry, edited []string) string {
-	for _, touched := range read.paths {
-		for _, named := range locate.paths {
+	for _, touched := range read.Paths {
+		for _, named := range locate.Paths {
 			if !pathOverlaps(named, touched) {
 				continue
 			}
@@ -632,12 +636,12 @@ func readSubclass(locate, read timelineEntry, edited []string) string {
 					return followUpReadUnknownSpan // delivered lines may be stale
 				}
 			}
-			spans, known := locate.delivered[named]
-			if read.readSpan == nil || !known {
+			spans, known := locate.Delivered[named]
+			if read.ReadSpan == nil || !known {
 				return followUpReadUnknownSpan
 			}
 			for _, span := range spans {
-				if span.overlaps(*read.readSpan) {
+				if span.overlaps(*read.ReadSpan) {
 					return followUpReadOverlapping
 				}
 			}
@@ -658,23 +662,23 @@ func readSubclass(locate, read timelineEntry, edited []string) string {
 func classifyFollowUp(timeline []timelineEntry, index, window int, claimed map[int]bool) string {
 	entry := timeline[index]
 	switch {
-	case entry.isError:
+	case entry.IsError:
 		return followUpError
-	case len(entry.paths) == 0:
+	case len(entry.Paths) == 0:
 		return followUpIneligible
 	}
-	start := entry.deliveredAt
+	start := entry.DeliveredAt
 	end := min(len(timeline), start+window)
 	var edited []string
 	for at := start; at < end; at++ {
 		next := timeline[at]
-		switch next.kind {
+		switch next.Kind {
 		case timelineLocate, timelineRequery:
 			return followUpRequery
 		case timelineEdit:
-			edited = append(edited, next.paths...)
+			edited = append(edited, next.Paths...)
 		case timelineRead:
-			if !pathsOverlap(entry.paths, next.paths) {
+			if !pathsOverlap(entry.Paths, next.Paths) {
 				continue
 			}
 			if claimed[at] {
@@ -695,18 +699,18 @@ func classifyFollowUp(timeline []timelineEntry, index, window int, claimed map[i
 // result has no bytes and no named paths, and the model does not price it.
 func (s *fileScanner) finishFollowUp() {
 	var locates []int
-	for index, entry := range s.timeline {
-		if entry.kind == timelineLocate && entry.hasResult {
+	for index, entry := range s.Timeline {
+		if entry.Kind == timelineLocate && entry.HasResult {
 			locates = append(locates, index)
 		}
 	}
 	sort.Slice(locates, func(i, j int) bool {
-		return s.timeline[locates[i]].deliverSeq > s.timeline[locates[j]].deliverSeq
+		return s.Timeline[locates[i]].DeliverSeq > s.Timeline[locates[j]].DeliverSeq
 	})
 	claimed := map[int]bool{}
 	for _, index := range locates {
-		entry := s.timeline[index]
-		s.summary.Calls[entry.callIndex].Disp = classifyFollowUp(s.timeline, index, followUpWindow, claimed)
+		entry := s.Timeline[index]
+		s.Summary.Calls[entry.CallIndex].Disp = classifyFollowUp(s.Timeline, index, followUpWindow, claimed)
 	}
 }
 

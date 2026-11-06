@@ -2,8 +2,10 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -569,40 +571,43 @@ type fileSummary struct {
 	Unkeyed statsTokens `json:"unkeyed,omitempty"`
 }
 
-// fileScanner turns one transcript file into one fileSummary.
+// fileScanner turns one transcript file into one fileSummary. Its fields are its whole state, and
+// they are exported with JSON names because the status line checkpoints a scanner between two
+// lines (transcriptCheckpoint) and resumes it later: a field added here is checkpointed with the
+// rest. No map or slice is omitempty, since nil and empty differ for a timeline entry's Delivered.
 type fileScanner struct {
-	summary  fileSummary
-	pending  map[string]int // tool_use id -> index into summary.Calls
-	seenUse  map[string]bool
-	usageIdx map[string]int // message id -> index into summary.Usage
-	// timeline is every distinct tool call in file order, for the follow-up window;
-	// locateAt maps a locate call's summary.Calls index to its timeline entry; deliveries counts
+	Summary  fileSummary     `json:"summary"`
+	Pending  map[string]int  `json:"pending"` // tool_use id -> index into Summary.Calls
+	SeenUse  map[string]bool `json:"seen_use"`
+	UsageIdx map[string]int  `json:"usage_idx"` // message id -> index into Summary.Usage
+	// Timeline is every distinct tool call in file order, for the follow-up window;
+	// LocateAt maps a locate call's Summary.Calls index to its Timeline entry; Deliveries counts
 	// locate results in arrival order.
-	timeline   []timelineEntry
-	locateAt   map[int]int
-	deliveries int
-	// locateRoot maps a locate call's summary.Calls index to the root it resolved against.
-	locateRoot map[int]graphRoot
+	Timeline   []timelineEntry `json:"timeline"`
+	LocateAt   map[int]int     `json:"locate_at"`
+	Deliveries int             `json:"deliveries"`
+	// LocateRoot maps a locate call's Summary.Calls index to the root it resolved against.
+	LocateRoot map[int]graphRoot `json:"locate_root"`
 }
 
 func newFileScanner() *fileScanner {
 	return &fileScanner{
-		pending:    map[string]int{},
-		seenUse:    map[string]bool{},
-		usageIdx:   map[string]int{},
-		locateAt:   map[int]int{},
-		locateRoot: map[int]graphRoot{},
+		Pending:    map[string]int{},
+		SeenUse:    map[string]bool{},
+		UsageIdx:   map[string]int{},
+		LocateAt:   map[int]int{},
+		LocateRoot: map[int]graphRoot{},
 	}
 }
 
 func (s *fileScanner) consume(record transcriptRecord) {
 	if ts, err := time.Parse(time.RFC3339, record.Timestamp); err == nil {
 		nanos := ts.UnixNano()
-		if s.summary.FirstUnixNano == 0 || nanos < s.summary.FirstUnixNano {
-			s.summary.FirstUnixNano = nanos
+		if s.Summary.FirstUnixNano == 0 || nanos < s.Summary.FirstUnixNano {
+			s.Summary.FirstUnixNano = nanos
 		}
-		if nanos > s.summary.LastUnixNano {
-			s.summary.LastUnixNano = nanos
+		if nanos > s.Summary.LastUnixNano {
+			s.Summary.LastUnixNano = nanos
 		}
 	}
 	if usage := record.Message.Usage; usage != nil {
@@ -638,48 +643,48 @@ func (s *fileScanner) consume(record transcriptRecord) {
 // usage exactly in 250/250 benchmark sessions).
 func (s *fileScanner) consumeUsage(id string, tokens statsTokens) {
 	if id == "" {
-		s.summary.Unkeyed.Input += tokens.Input
-		s.summary.Unkeyed.CacheWrite += tokens.CacheWrite
-		s.summary.Unkeyed.CacheRead += tokens.CacheRead
-		s.summary.Unkeyed.Output += tokens.Output
+		s.Summary.Unkeyed.Input += tokens.Input
+		s.Summary.Unkeyed.CacheWrite += tokens.CacheWrite
+		s.Summary.Unkeyed.CacheRead += tokens.CacheRead
+		s.Summary.Unkeyed.Output += tokens.Output
 		return
 	}
-	if index, ok := s.usageIdx[id]; ok {
-		s.summary.Usage[index].Tokens = tokens
+	if index, ok := s.UsageIdx[id]; ok {
+		s.Summary.Usage[index].Tokens = tokens
 		return
 	}
-	s.usageIdx[id] = len(s.summary.Usage)
-	s.summary.Usage = append(s.summary.Usage, summaryUsage{ID: id, Tokens: tokens})
+	s.UsageIdx[id] = len(s.Summary.Usage)
+	s.Summary.Usage = append(s.Summary.Usage, summaryUsage{ID: id, Tokens: tokens})
 }
 
 func (s *fileScanner) consumeToolUse(block contentBlock, cwd string) {
 	// One tool_use id is one API call. A re-serialised turn repeats the block, and counting
 	// every occurrence would bill the same call twice; first occurrence wins.
 	if block.ID != "" {
-		if s.seenUse[block.ID] {
+		if s.SeenUse[block.ID] {
 			return
 		}
-		s.seenUse[block.ID] = true
+		s.SeenUse[block.ID] = true
 	}
 	entry := timelineFromToolUse(block)
 	call, ok := classifyToolUse(block)
 	if !ok {
-		s.timeline = append(s.timeline, entry)
+		s.Timeline = append(s.Timeline, entry)
 		return
 	}
 	call.ID = block.ID
-	s.summary.Calls = append(s.summary.Calls, call)
-	index := len(s.summary.Calls) - 1
+	s.Summary.Calls = append(s.Summary.Calls, call)
+	index := len(s.Summary.Calls) - 1
 	if block.ID != "" {
-		s.pending[block.ID] = index
+		s.Pending[block.ID] = index
 	}
-	if entry.kind == timelineLocate {
-		entry.callIndex = index
-		s.locateAt[index] = len(s.timeline)
+	if entry.Kind == timelineLocate {
+		entry.CallIndex = index
+		s.LocateAt[index] = len(s.Timeline)
 		command, _ := block.Input["command"].(string)
-		s.locateRoot[index] = graphCallRootFromCommand(command, cwd)
+		s.LocateRoot[index] = graphCallRootFromCommand(command, cwd)
 	}
-	s.timeline = append(s.timeline, entry)
+	s.Timeline = append(s.Timeline, entry)
 }
 
 // classifyToolUse puts a tool_use in the graph bucket, the exploration bucket, or neither.
@@ -694,32 +699,36 @@ func classifyToolUse(block contentBlock) (summaryCall, bool) {
 }
 
 func (s *fileScanner) consumeToolResult(block contentBlock) {
-	index, ok := s.pending[block.ToolUseID]
+	index, ok := s.Pending[block.ToolUseID]
 	if !ok {
 		return
 	}
 	// Dropping the pending entry is what stops a repeated tool_result from being billed twice
 	// against the same call: the second one finds nothing pending.
-	delete(s.pending, block.ToolUseID)
+	delete(s.Pending, block.ToolUseID)
 	text := toolResultText(block.Content)
-	s.summary.Calls[index].Bytes = int64(len(text))
-	s.summary.Calls[index].HasResult = true
-	if at, ok := s.locateAt[index]; ok {
+	s.Summary.Calls[index].Bytes = int64(len(text))
+	s.Summary.Calls[index].HasResult = true
+	if at, ok := s.LocateAt[index]; ok {
 		// The follow-up window starts HERE, at delivery: calls already issued are not reactions.
-		entry := &s.timeline[at]
-		entry.hasResult, entry.isError = true, block.IsError
-		entry.deliveredAt, entry.deliverSeq = len(s.timeline), s.deliveries
-		s.deliveries++
-		entry.paths = graphOutputPaths(text)
-		entry.delivered = graphDeliveredSpans(text)
+		entry := &s.Timeline[at]
+		entry.HasResult, entry.IsError = true, block.IsError
+		entry.DeliveredAt, entry.DeliverSeq = len(s.Timeline), s.Deliveries
+		s.Deliveries++
+		entry.Paths = graphOutputPaths(text)
+		entry.Delivered = graphDeliveredSpans(text)
 		// A call whose directory is unknown keeps no Paths, so it drops out of the gross estimate;
 		// follow-up classification reads the timeline entry's own paths.
-		if root := s.locateRoot[index]; !block.IsError && len(entry.paths) > 0 && !root.unknown {
-			s.summary.Calls[index].Paths = entry.paths
-			s.summary.Calls[index].Root, s.summary.Calls[index].Top = root.dir, root.top
+		if root := s.LocateRoot[index]; !block.IsError && len(entry.Paths) > 0 && !root.Unknown {
+			s.Summary.Calls[index].Paths = entry.Paths
+			s.Summary.Calls[index].Root, s.Summary.Calls[index].Top = root.Dir, root.Top
 		}
 	}
 }
+
+// transcriptMaxLineBytes bounds one transcript line. Lines routinely exceed bufio's 64 KiB default
+// (large tool results inline); a longer line than this ends the scan as one malformed record.
+const transcriptMaxLineBytes = 16 * 1024 * 1024
 
 func summariseTranscript(path string) (fileSummary, bool) {
 	handle, err := os.Open(path) //nolint:gosec // the path comes from walking the caller's own transcript directory
@@ -727,29 +736,67 @@ func summariseTranscript(path string) (fileSummary, bool) {
 		return fileSummary{}, false // skip unreadable transcripts rather than abort the report
 	}
 	defer func() { _ = handle.Close() }()
-
 	scanner := newFileScanner()
-	lines := bufio.NewScanner(handle)
-	// Transcript lines routinely exceed bufio's 64KiB default (large tool results inline).
-	lines.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for lines.Scan() {
-		line := strings.TrimSpace(lines.Text())
-		if line == "" {
-			continue
-		}
-		var record transcriptRecord
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			scanner.summary.Malformed++
-			continue
-		}
-		scanner.consume(record)
-	}
-	if err := lines.Err(); err != nil {
-		// A truncated or over-long line is treated like a malformed line, not a hard failure.
-		scanner.summary.Malformed++
-	}
+	_, tail, _ := consumeTranscriptLines(scanner, bufio.NewReaderSize(handle, 64*1024), nil)
+	scanner.consumeLine(tail)
 	scanner.finishFollowUp()
-	return scanner.summary, true
+	return scanner.Summary, true
+}
+
+// consumeTranscriptLines feeds scanner each newline-terminated line of reader, also writing it to
+// digest when digest is not nil, and returns how many bytes those lines span. tail is a last line
+// with no newline yet, which Claude Code may still be writing: it is returned unconsumed. A line
+// over transcriptMaxLineBytes, or a read error, counts as one malformed record and ends the scan
+// (stopped, tail nil), as bufio.Scanner's error did.
+func consumeTranscriptLines(scanner *fileScanner, reader *bufio.Reader, digest io.Writer) (consumed int64, tail []byte, stopped bool) {
+	for {
+		line, err := readTranscriptLine(reader)
+		switch {
+		case err == nil:
+			scanner.consumeLine(line)
+			if digest != nil {
+				_, _ = digest.Write(line)
+			}
+			consumed += int64(len(line))
+		case errors.Is(err, io.EOF):
+			return consumed, line, false
+		default:
+			scanner.Summary.Malformed++
+			return consumed, nil, true
+		}
+	}
+}
+
+// readTranscriptLine returns reader's next line with its newline. At the end of the input it
+// returns what is left, possibly nothing, with io.EOF. A line over transcriptMaxLineBytes is
+// bufio.ErrTooLong.
+func readTranscriptLine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if len(line)+len(chunk) > transcriptMaxLineBytes {
+			return nil, bufio.ErrTooLong
+		}
+		line = append(line, chunk...)
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return line, err
+		}
+	}
+}
+
+// consumeLine feeds one transcript line to the scanner. A blank line is skipped, and a line that is
+// not a JSON record counts as malformed.
+func (s *fileScanner) consumeLine(line []byte) {
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 {
+		return
+	}
+	var record transcriptRecord
+	if err := json.Unmarshal(line, &record); err != nil {
+		s.Summary.Malformed++
+		return
+	}
+	s.consume(record)
 }
 
 // --- session assembly -------------------------------------------------------------------
@@ -985,6 +1032,9 @@ type statsCollector struct {
 	transcripts int
 	fromCache   int
 	malformed   int
+	// resume, when not nil, parses a transcript of statsCacheMinTranscriptBytes or more from its
+	// checkpoint (the status line's); nil parses every file in full (`stats`).
+	resume *transcriptResume
 }
 
 func newStatsCollector() *statsCollector {
@@ -1048,7 +1098,13 @@ func (c *statsCollector) summarise(file transcriptFile) (fileSummary, bool) {
 	if path == "" {
 		path = file.path
 	}
-	summary, ok := summariseTranscript(path)
+	var summary fileSummary
+	var ok bool
+	if c.resume != nil && file.size >= statsCacheMinTranscriptBytes {
+		summary, ok = c.resume.summarise(path)
+	} else {
+		summary, ok = summariseTranscript(path)
+	}
 	if !ok {
 		return fileSummary{}, false
 	}
@@ -1354,11 +1410,11 @@ func shellUnquote(word []rune) string {
 
 // graphRoot is the directory a graph call resolved its named paths against.
 type graphRoot struct {
-	dir string
-	// top: the call passed no --repo, so the graph resolved the checkout containing dir.
-	top bool
-	// unknown: the command line does not say which directory the call ran in.
-	unknown bool
+	Dir string `json:"dir"`
+	// Top: the call passed no --repo, so the graph resolved the checkout containing Dir.
+	Top bool `json:"top"`
+	// Unknown: the command line does not say which directory the call ran in.
+	Unknown bool `json:"unknown"`
 }
 
 // graphCallRootFromCommand is graphCallRoot for the graph call in command, run from the directory
@@ -1378,14 +1434,14 @@ func graphCallRootFromCommand(command, cwd string) graphRoot {
 		for _, before := range segments[:at] {
 			moved, ok := shellSegmentDir(before, dir)
 			if !ok {
-				return graphRoot{unknown: true}
+				return graphRoot{Unknown: true}
 			}
 			dir = moved
 		}
 		return graphCallRoot(graphRepoFromWords(shellArgWords(segment.text)), dir)
 	}
 	if commandRunsCd(command, 0) {
-		return graphRoot{unknown: true}
+		return graphRoot{Unknown: true}
 	}
 	return graphCallRoot(graphRepoFromCommand(command), cwd)
 }
@@ -1501,11 +1557,11 @@ func commandRunsCd(command string, depth int) bool {
 func graphCallRoot(repo, cwd string) graphRoot {
 	switch {
 	case repo == "":
-		return graphRoot{dir: cwd, top: true}
+		return graphRoot{Dir: cwd, Top: true}
 	case filepath.IsAbs(repo) || cwd == "":
-		return graphRoot{dir: repo}
+		return graphRoot{Dir: repo}
 	default:
-		return graphRoot{dir: filepath.Join(cwd, repo)}
+		return graphRoot{Dir: filepath.Join(cwd, repo)}
 	}
 }
 

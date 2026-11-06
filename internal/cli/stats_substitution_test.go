@@ -94,14 +94,14 @@ func TestShellClassifiersRecurseIntoCommandSubstitution(t *testing.T) {
 		`files=$(cd internal && grep -rln Foo .)`,
 		"echo `cd /r && rg Foo`",
 	} {
-		if entry := shellTimelineEntry(command); entry.kind != timelineRequery {
-			t.Errorf("shellTimelineEntry(%q).kind = %v; want re-query", command, entry.kind)
+		if entry := shellTimelineEntry(command); entry.Kind != timelineRequery {
+			t.Errorf("shellTimelineEntry(%q).kind = %v; want re-query", command, entry.Kind)
 		}
 	}
-	if entry := shellTimelineEntry(`body=$(cat internal/cli/stats.go)`); entry.kind != timelineRead || !slices.Contains(entry.paths, "internal/cli/stats.go") {
+	if entry := shellTimelineEntry(`body=$(cat internal/cli/stats.go)`); entry.Kind != timelineRead || !slices.Contains(entry.Paths, "internal/cli/stats.go") {
 		t.Errorf("a substituted cat must be a read of its operand, got %+v", entry)
 	}
-	if entry := timelineFromToolUse(contentBlock{Name: "Bash", Input: map[string]any{"command": `x=$(entire graph search --query foo)`}}); entry.kind != timelineLocate {
+	if entry := timelineFromToolUse(contentBlock{Name: "Bash", Input: map[string]any{"command": `x=$(entire graph search --query foo)`}}); entry.Kind != timelineLocate {
 		t.Errorf("a substituted graph search must be a locate on the timeline, got %+v", entry)
 	}
 

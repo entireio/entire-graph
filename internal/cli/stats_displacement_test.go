@@ -824,9 +824,9 @@ func TestFollowUpDeliveredTrailingBlankLines(t *testing.T) {
 func TestFollowUpClassifiesFirstMatchingReadEvenWhenLaterReadIsUnclaimed(t *testing.T) {
 	t.Parallel()
 	timeline := []timelineEntry{
-		{paths: []string{"a.go"}, deliveredAt: 1},
-		{kind: timelineRead, paths: []string{"a.go"}},
-		{kind: timelineRead, paths: []string{"a.go"}},
+		{Paths: []string{"a.go"}, DeliveredAt: 1},
+		{Kind: timelineRead, Paths: []string{"a.go"}},
+		{Kind: timelineRead, Paths: []string{"a.go"}},
 	}
 	claimed := map[int]bool{1: true}
 	if got := classifyFollowUp(timeline, 0, 5, claimed); got != followUpReadShared {

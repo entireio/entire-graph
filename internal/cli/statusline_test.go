@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -621,4 +622,162 @@ func TestStatuslineNoticesALaterIndex(t *testing.T) {
 	if got := statuslineIndexedState(t, cacheDir, stdin); got != "current" {
 		t.Fatalf("after index the render shows %q, want current", got)
 	}
+}
+
+// BenchmarkStatuslineAppendRender is Task S1's gate: one render after one appended graph query
+// and its result, on a transcript of about 50 MB whose earlier render is cached. Every assistant
+// message pays this.
+//
+//	go test ./internal/cli -run '^$' -bench BenchmarkStatuslineAppendRender -benchtime 20x -count 5
+func BenchmarkStatuslineAppendRender(b *testing.B) {
+	b.Setenv("NO_COLOR", "1")
+	b.Setenv("COLUMNS", "120")
+	repo := b.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "bench"},
+		{"-c", "user.name=bench", "-c", "user.email=bench@example.com", "-c", "commit.gpgsign=false",
+			"commit", "-q", "--allow-empty", "-m", "one"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			b.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	command := "entire graph query --repo " + filepath.ToSlash(repo) + " --query 'where is A'"
+	result := "1. a.go:10 func A()\n// " + strings.Repeat("p", 2048)
+	pair := func(id int) []byte {
+		var out []byte
+		toolID := "toolu_" + strconv.Itoa(id)
+		for _, record := range []map[string]any{
+			{"type": "assistant", "cwd": repo, "message": map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "id": toolID, "name": "Bash", "input": map[string]any{"command": command}}}}},
+			{"type": "user", "cwd": repo, "message": map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": toolID, "content": result}}}},
+		} {
+			line, err := json.Marshal(record)
+			if err != nil {
+				b.Fatal(err)
+			}
+			out = append(append(out, line...), '\n')
+		}
+		return out
+	}
+	transcript := filepath.Join(b.TempDir(), "bench-session.jsonl")
+	var body []byte
+	for id := 0; len(body) < 50<<20; id++ {
+		body = append(body, pair(id)...)
+	}
+	if err := os.WriteFile(transcript, body, 0o644); err != nil {
+		b.Fatal(err)
+	}
+	stdin := `{"transcript_path":` + strconv.Quote(transcript) + `,"workspace":{"project_dir":` + strconv.Quote(repo) + `}}`
+	cacheDir := b.TempDir()
+	render := func() {
+		var out bytes.Buffer
+		if err := Run(b.Context(), Options{Version: "bench", Stdout: &out, Stderr: &out, Stdin: strings.NewReader(stdin)},
+			[]string{"statusline", "--cache-dir", cacheDir}); err != nil || out.Len() == 0 {
+			b.Fatalf("render: %v %q", err, out.String())
+		}
+	}
+	render()
+	handle, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer handle.Close()
+	b.ResetTimer()
+	for index := range b.N {
+		if _, err := handle.Write(pair(1_000_000 + index)); err != nil {
+			b.Fatal(err)
+		}
+		render()
+	}
+}
+
+// appendTranscriptText appends text to the file at path.
+func appendTranscriptText(t *testing.T, path, text string) {
+	t.Helper()
+	handle, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.WriteString(text); err != nil {
+		_ = handle.Close()
+		t.Fatal(err)
+	}
+	if err := handle.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestStatuslineResumedRenderMatchesAFreshOne catches a render resumed after an append that drifts
+// from a full parse. A 1 MiB filler record puts the transcript over the size from which renders
+// resume; the transcript then grows a part at a time, and after every write the render must print
+// what a render with an empty cache directory prints. The session: a Grep and its result, a graph
+// query run after `cd sub` (sub/a.go is 2,000 bytes, a.go 4,000) with its result in two writes, the
+// query's tool_use again (a re-serialised turn, one call), five unrelated calls that close the
+// query's follow-up window with no follow-up, and one assistant message whose usage is written
+// twice. The writes split a tool_use from its result, a line in two, and the follow-up window, so a
+// checkpoint that lost a pending call, the call's directory, the tool_use ids already seen or the
+// timeline prints other figures. Then the transcript is rewritten in place with other, longer
+// content, and truncated, and the render must still match.
+func TestStatuslineResumedRenderMatchesAFreshOne(t *testing.T) {
+	repo := statuslineRepo(t)
+	write(t, repo, "sub/a.go", strings.Repeat("s", 2000))
+	record := func(recordType string, block map[string]any) string {
+		return grossRecord(t, recordType, repo, []any{block}) + "\n"
+	}
+	toolUse := func(id, name string, input map[string]any) string {
+		return record("assistant", map[string]any{"type": "tool_use", "id": id, "name": name, "input": input})
+	}
+	toolResult := func(id, content string) string {
+		return record("user", map[string]any{"type": "tool_result", "tool_use_id": id, "content": content})
+	}
+	usage := func(output int) string {
+		return encodeLine(t, map[string]any{
+			"type": "assistant", "timestamp": statsTime(0), "cwd": repo, "sessionId": "gross-session",
+			"message": map[string]any{
+				"id": "msg_resume", "role": "assistant",
+				"usage":   map[string]any{"input_tokens": 100, "output_tokens": output},
+				"content": []any{map[string]any{"type": "text", "text": "reading"}},
+			},
+		}) + "\n"
+	}
+	session := func(resultBytes int) []string {
+		query := toolUse("toolu_q", "Bash", map[string]any{"command": "cd sub && entire graph query --repo . --query 'where is A'"})
+		result := toolResult("toolu_q", grossResult(t, resultBytes, "1. a.go:10 func A()"))
+		parts := []string{
+			toolUse("toolu_g", "Grep", map[string]any{"pattern": "A"}) + toolResult("toolu_g", strings.Repeat("g", 200)),
+			query,
+			result[:len(result)/2], result[len(result)/2:],
+			query,
+		}
+		for index := range followUpWindow {
+			id := "toolu_o" + strconv.Itoa(index)
+			parts = append(parts, toolUse(id, "Bash", map[string]any{"command": "go vet ./..."})+toolResult(id, "ok"))
+		}
+		return append(parts, usage(50), usage(5))
+	}
+	filler := record("user", map[string]any{"type": "text", "text": strings.Repeat("f", 1<<20)})
+	dir := t.TempDir()
+	transcript := filepath.Join(dir, "resume-session.jsonl")
+	cacheDir := t.TempDir()
+	assertMatchesFresh := func(step string) {
+		t.Helper()
+		stdin := statuslineStdin(t, transcript, repo, "")
+		got := runStatuslineForTest(t, 120, cacheDir, stdin)
+		if want := runStatuslineForTest(t, 120, t.TempDir(), stdin); got != want {
+			t.Fatalf("%s: the resumed render printed %q, a fresh one %q", step, got, want)
+		}
+	}
+
+	write(t, dir, "resume-session.jsonl", filler)
+	assertMatchesFresh("filler only")
+	for index, part := range session(400) {
+		appendTranscriptText(t, transcript, part)
+		assertMatchesFresh("after part " + strconv.Itoa(index))
+	}
+	write(t, dir, "resume-session.jsonl", filler+strings.Join(session(600), ""))
+	assertMatchesFresh("rewritten in place, longer")
+	write(t, dir, "resume-session.jsonl", filler+session(400)[0])
+	assertMatchesFresh("truncated")
 }

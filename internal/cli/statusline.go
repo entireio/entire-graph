@@ -294,6 +294,8 @@ type statuslineGraphSize struct {
 
 // statuslineFiguresFor serves the figures from the cache when every in-scope transcript file, HEAD's
 // tree and this binary are unchanged, and otherwise runs the stats collector and caches the result.
+// The collector resumes a transcript that only grew from where the last render stopped
+// (transcriptResume), so it parses only the appended lines.
 func statuslineFiguresFor(transcript, repo, tree, cacheDir, version string) (statuslineFigures, bool) {
 	files, err := listTranscriptFiles(transcript, true)
 	if err != nil || len(files) == 0 {
@@ -320,6 +322,7 @@ func statuslineFiguresFor(transcript, repo, tree, cacheDir, version string) (sta
 
 	collector := newStatsCollector()
 	collector.cache = openStatsCache(cacheDir, transcript, version, files)
+	collector.resume = newTranscriptResume(cacheDir, version)
 	collector.run(files, time.Time{})
 	report := statsResponse{RepoRoot: repo}
 	collector.finish(&report, time.Time{})

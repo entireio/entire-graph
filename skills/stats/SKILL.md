@@ -132,5 +132,5 @@ now a shim that runs the subcommand.
 
 The line is scoped to the CURRENT session (its transcript and subagent transcripts) and caches
 its figures until a transcript, HEAD's tree or the binary changes, so a render does not re-scan
-every session in the project. Its net number carries exactly the caveats above — same estimator,
-same assumption.
+every session in the project; after an append it parses only the appended lines. Its net number
+carries exactly the caveats above — same estimator, same assumption.
