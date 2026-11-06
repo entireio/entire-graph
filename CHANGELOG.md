@@ -63,6 +63,11 @@ auto-generated notes on
   agent and text output print one line beside the callers with a `grep` the
   reader can run to find those references. A degenerate `impact` ("no callers")
   keeps its marker line and prints the disclosure after it.
+- `stats` JSON gains `gross_covered_bytes` and `gross_covered_est_tokens`: the
+  size of the distinct existing files each graph locate result names, less the
+  result's own bytes, summed over results (tokens are bytes / 4). It assumes
+  nothing about what the agent would have read. The status line shows the
+  token figure.
 
 ### Fixed
 
