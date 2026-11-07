@@ -46,7 +46,16 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := refresh(*lang, *ref, *url, *subdir, *manifestPath, *grammarsDir, *allowLocal); err != nil {
+	o := options{
+		Lang:              *lang,
+		Ref:               *ref,
+		URL:               *url,
+		Subdir:            *subdir,
+		ManifestPath:      *manifestPath,
+		GrammarsDir:       *grammarsDir,
+		AllowLocalChanges: *allowLocal,
+	}
+	if err := refresh(o); err != nil {
 		fmt.Fprintln(os.Stderr, "grammar-refresh:", err)
 		os.Exit(1)
 	}
@@ -54,7 +63,17 @@ func main() {
 
 var languageNamePattern = regexp.MustCompile(`^[a-z0-9_]+$`)
 
-func refresh(lang, ref, url, subdir, manifestPath, grammarsDir string, allowLocalChanges bool) error {
+// options holds one run's settings. An empty URL or Subdir falls back to the
+// manifest entry.
+type options struct {
+	Lang, Ref, URL, Subdir    string
+	ManifestPath, GrammarsDir string
+	AllowLocalChanges         bool
+}
+
+func refresh(o options) error {
+	lang, ref, url, subdir := o.Lang, o.Ref, o.URL, o.Subdir
+	manifestPath, grammarsDir := o.ManifestPath, o.GrammarsDir
 	if !languageNamePattern.MatchString(lang) {
 		return fmt.Errorf("invalid -lang %q: use the lower-case directory name under %s", lang, grammarsDir)
 	}
@@ -83,8 +102,18 @@ func refresh(lang, ref, url, subdir, manifestPath, grammarsDir string, allowLoca
 	if subdir != "" && !filepath.IsLocal(subdir) {
 		return fmt.Errorf("invalid path %q for %s in %s: must be a relative path inside the repository", subdir, lang, manifestPath)
 	}
-	if existing.LocalChanges && !allowLocalChanges {
+	if existing.LocalChanges && !o.AllowLocalChanges {
 		return fmt.Errorf("%s has local changes that a verbatim refresh would discard (%s); pass -allow-local-changes to overwrite it, then reapply them by hand", lang, existing.Note)
+	}
+	build := existing.LocalBuild
+	var patchFile string
+	if build != nil && build.Patch != "" {
+		if !filepath.IsLocal(build.Patch) {
+			return fmt.Errorf("invalid patch %q for %s in %s: must be a relative path inside %s", build.Patch, lang, manifestPath, grammarsDir)
+		}
+		if patchFile, err = filepath.Abs(filepath.Join(grammarsDir, build.Patch)); err != nil {
+			return err
+		}
 	}
 
 	tmp, err := os.MkdirTemp("", "grammar-refresh-")
@@ -105,6 +134,11 @@ func refresh(lang, ref, url, subdir, manifestPath, grammarsDir string, allowLoca
 	if err != nil {
 		return err
 	}
+	if patchFile != "" {
+		if err := applyPatch(tmp, subdir, patchFile); err != nil {
+			return fmt.Errorf("%s at %s: %w", url, ref, err)
+		}
+	}
 
 	files, abi, err := vendor(tmp, subdir, filepath.Join(grammarsDir, lang))
 	if err != nil {
@@ -122,6 +156,7 @@ func refresh(lang, ref, url, subdir, manifestPath, grammarsDir string, allowLoca
 		// are due. A note the new revision makes obsolete is removed by hand.
 		LocalChanges: existing.LocalChanges,
 		Note:         existing.Note,
+		LocalBuild:   build,
 	})
 	if err := saveManifest(manifestPath, grammars); err != nil {
 		return err
@@ -142,6 +177,22 @@ func git(dir string, args ...string) error {
 	cmd.Dir = dir
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// applyPatch applies patchFile to the grammar at subdir inside checkout; the
+// patch's paths are relative to the grammar directory.
+func applyPatch(checkout, subdir, patchFile string) error {
+	args := []string{"apply"}
+	if subdir != "" {
+		args = append(args, "--directory="+filepath.ToSlash(subdir))
+	}
+	args = append(args, "--", patchFile)
+	cmd := exec.Command("git", args...)
+	cmd.Dir = checkout
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("apply %s: %w\n%s", patchFile, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func gitOutput(dir string, args ...string) (string, error) {
