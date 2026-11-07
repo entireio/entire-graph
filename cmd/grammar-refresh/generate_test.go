@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,38 +9,30 @@ import (
 	"testing"
 )
 
-// fakeNPX puts an npx stand-in first on PATH. It logs each invocation's
-// arguments, answers --version with "tree-sitter <version>", and for
-// generate writes src/parser.c at the given ABI (or exits 1 when abi is
-// "fail").
-func fakeNPX(t *testing.T, version, abi string) (logPath string) {
+// fakeNPX replaces the npx runner for one test, so no test needs Node or a
+// shell. It records each call's arguments, answers --version with
+// "tree-sitter <version>", and for generate writes src/parser.c at the given
+// ABI (or fails when abi is "fail").
+func fakeNPX(t *testing.T, version, abi string) *[]string {
 	t.Helper()
-	bin := t.TempDir()
-	logPath = filepath.Join(bin, "npx.log")
-	script := `#!/bin/sh
-echo "$*" >> "` + logPath + `"
-while [ "$1" = "--yes" ]; do shift; done
-shift
-case "$1" in
---version) echo "tree-sitter ` + version + `" ;;
-generate)
-	[ "` + abi + `" = fail ] && exit 1
-	mkdir -p src
-	printf '#define LANGUAGE_VERSION ` + abi + `\n// generated\n' > src/parser.c ;;
-esac
-`
-	writeTestFile(t, filepath.Join(bin, "npx"), script)
-	if err := os.Chmod(filepath.Join(bin, "npx"), 0o755); err != nil {
-		t.Fatal(err)
+	calls := &[]string{}
+	run, find := npx, findNPX
+	t.Cleanup(func() { npx, findNPX = run, find })
+	findNPX = func() error { return nil }
+	npx = func(dir string, args ...string) (string, error) {
+		*calls = append(*calls, strings.Join(args, " "))
+		switch args[1] {
+		case "--version":
+			return "tree-sitter " + version, nil
+		case "generate":
+			if abi == "fail" {
+				return "", errors.New("exit status 1")
+			}
+			writeTestFile(t, filepath.Join(dir, "src", "parser.c"), "#define LANGUAGE_VERSION "+abi+"\n// generated\n")
+		}
+		return "", nil
 	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return logPath
-}
-
-func npxLog(t *testing.T, logPath string) []string {
-	t.Helper()
-	data, _ := os.ReadFile(logPath)
-	return strings.Split(strings.TrimSpace(string(data)), "\n")
+	return calls
 }
 
 func buildManifest(t *testing.T, repo, revision string, build *LocalBuild) (manifest, root string) {
@@ -82,15 +75,15 @@ func TestCLIVersion(t *testing.T) {
 }
 
 func TestRefreshRegeneratesPinned(t *testing.T) {
-	log := fakeNPX(t, "0.24.7", "14")
+	calls := fakeNPX(t, "0.24.7", "14")
 	repo, revision := generatedGrammarRepo(t)
 	manifest, root := buildManifest(t, repo, revision, &LocalBuild{TreeSitterCLI: "0.24.7"})
 	if err := refresh(options{Lang: "demo", Ref: "HEAD", ManifestPath: manifest, GrammarsDir: root}); err != nil {
 		t.Fatal(err)
 	}
-	if got := npxLog(t, log); !reflect.DeepEqual(got, []string{
-		"--yes tree-sitter-cli@0.24.7 --version",
-		"--yes tree-sitter-cli@0.24.7 generate --abi 14",
+	if got := *calls; !reflect.DeepEqual(got, []string{
+		"tree-sitter-cli@0.24.7 --version",
+		"tree-sitter-cli@0.24.7 generate --abi 14",
 	}) {
 		t.Fatalf("npx calls = %q", got)
 	}
@@ -104,16 +97,16 @@ func TestRefreshRegeneratesPinned(t *testing.T) {
 }
 
 func TestRefreshGenerateRecordsLatest(t *testing.T) {
-	log := fakeNPX(t, "0.27.1", "14")
+	calls := fakeNPX(t, "0.27.1", "14")
 	repo, _ := generatedGrammarRepo(t)
 	root := t.TempDir()
 	manifest := filepath.Join(root, "grammars.json")
 	if err := refresh(options{Lang: "demo", Ref: "HEAD", URL: repo, ManifestPath: manifest, GrammarsDir: root, Generate: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := npxLog(t, log); !reflect.DeepEqual(got, []string{
-		"--yes tree-sitter-cli@latest --version",
-		"--yes tree-sitter-cli@0.27.1 generate --abi 14",
+	if got := *calls; !reflect.DeepEqual(got, []string{
+		"tree-sitter-cli@latest --version",
+		"tree-sitter-cli@0.27.1 generate --abi 14",
 	}) {
 		t.Fatalf("npx calls = %q", got)
 	}
@@ -152,6 +145,16 @@ func TestRefreshGenerateFailureLeavesVendorUntouched(t *testing.T) {
 
 func TestRefreshGeneratedABI15SuggestsOlderCLI(t *testing.T) {
 	fakeNPX(t, "0.30.0", "15")
+	repo, _ := generatedGrammarRepo(t)
+	root := t.TempDir()
+	err := refresh(options{Lang: "demo", Ref: "HEAD", URL: repo, ManifestPath: filepath.Join(root, "grammars.json"), GrammarsDir: root, Generate: true})
+	if err == nil || !strings.Contains(err.Error(), "-tree-sitter-cli") {
+		t.Fatalf("err = %v; want a hint to pass -tree-sitter-cli", err)
+	}
+}
+
+func TestRefreshGenerateFailureSuggestsOlderCLI(t *testing.T) {
+	fakeNPX(t, "0.30.0", "fail")
 	repo, _ := generatedGrammarRepo(t)
 	root := t.TempDir()
 	err := refresh(options{Lang: "demo", Ref: "HEAD", URL: repo, ManifestPath: filepath.Join(root, "grammars.json"), GrammarsDir: root, Generate: true})

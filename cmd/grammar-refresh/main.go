@@ -134,8 +134,8 @@ func refresh(o options) error {
 	}
 	generating := wantsGeneration(existing, o)
 	if generating {
-		if _, err := exec.LookPath("npx"); err != nil {
-			return errNoNPX
+		if err := findNPX(); err != nil {
+			return err
 		}
 	}
 
@@ -241,7 +241,18 @@ func applyPatch(checkout, subdir, patchFile string) error {
 
 var errNoNPX = errors.New("tree-sitter generation needs Node.js; npx was not found on PATH")
 
-func npx(dir string, args ...string) (string, error) {
+// npx and findNPX are variables so tests can stand in for Node.
+var (
+	npx     = runNPX
+	findNPX = func() error {
+		if _, err := exec.LookPath("npx"); err != nil {
+			return errNoNPX
+		}
+		return nil
+	}
+)
+
+func runNPX(dir string, args ...string) (string, error) {
 	cmd := exec.Command("npx", append([]string{"--yes"}, args...)...)
 	cmd.Dir = dir
 	cmd.Stderr = os.Stderr

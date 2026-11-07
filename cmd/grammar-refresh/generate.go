@@ -50,7 +50,7 @@ func resolveCLI(dir, spec string) (string, error) {
 
 func generate(grammarRoot, version string, args []string) error {
 	if _, err := npx(grammarRoot, append([]string{"tree-sitter-cli@" + version, "generate"}, args...)...); err != nil {
-		return fmt.Errorf("tree-sitter-cli@%s generate: %w", version, err)
+		return fmt.Errorf("tree-sitter-cli@%s generate: %w; if this release cannot generate ABI 14, pass -tree-sitter-cli <older version>", version, err)
 	}
 	return nil
 }
