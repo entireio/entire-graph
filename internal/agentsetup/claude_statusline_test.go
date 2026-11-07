@@ -71,15 +71,15 @@ func TestActiveStatusLineFindsUserScope(t *testing.T) {
 	userSettings := filepath.Join(home, ".claude", "settings.json")
 	writeSettingsFile(t, userSettings, `{"statusLine":{"type":"command","command":"node graft-statusline.cjs"}}`)
 
-	got, ours, err := ActiveStatusLine(root, home)
-	if err != nil || got != userSettings || ours {
-		t.Fatalf("ActiveStatusLine = %q, %v, %v; want %q, false", got, ours, err, userSettings)
+	got, kind, err := ActiveStatusLine(root, filepath.Join(home, ".claude"))
+	if err != nil || got != userSettings || kind != StatusLineForeign {
+		t.Fatalf("ActiveStatusLine = %q, %v, %v; want %q, StatusLineForeign", got, kind, err, userSettings)
 	}
 
 	writeSettingsFile(t, userSettings, `{"statusLine":{"type":"command","command":"entire graph statusline"}}`)
-	got, ours, err = ActiveStatusLine(root, home)
-	if err != nil || got != userSettings || !ours {
-		t.Fatalf("ours in user scope: ActiveStatusLine = %q, %v, %v; want %q, true", got, ours, err, userSettings)
+	got, kind, err = ActiveStatusLine(root, filepath.Join(home, ".claude"))
+	if err != nil || got != userSettings || kind != StatusLineOurs {
+		t.Fatalf("ours in user scope: ActiveStatusLine = %q, %v, %v; want %q, StatusLineOurs", got, kind, err, userSettings)
 	}
 }
 
@@ -130,8 +130,8 @@ func TestActiveStatusLineDoesNotFollowASharedSettingsSymlink(t *testing.T) {
 		t.Skipf("cannot create a symlink here: %v", err)
 	}
 
-	got, ours, err := ActiveStatusLine(root, "")
-	if err == nil || got != shared || ours {
-		t.Fatalf("ActiveStatusLine = %q, %v, %v; want the shared scope refused as unreadable", got, ours, err)
+	got, kind, err := ActiveStatusLine(root, "")
+	if err == nil || got != shared || kind == StatusLineOurs {
+		t.Fatalf("ActiveStatusLine = %q, %v, %v; want the shared scope refused as unreadable", got, kind, err)
 	}
 }

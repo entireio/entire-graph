@@ -26,7 +26,7 @@ import (
 // stats answers the question users actually ask about a code graph: "did this save me
 // anything?". It is a local, read-only report over the coding-agent session transcripts that
 // already exist on disk (Claude Code writes one JSONL file per session under
-// ~/.claude/projects/<path-slug>/). Nothing is uploaded; the only thing written is a per-file
+// ~/.claude/projects/<path-slug>/, or $CLAUDE_CONFIG_DIR/projects/ when that is set). Nothing is uploaded; the only thing written is a per-file
 // memo under the cache directory, which --no-cache turns off.
 //
 // The DEFAULT output is one line: a signed, explicitly counterfactual context model.
@@ -451,16 +451,17 @@ func parseSince(value string) (time.Duration, error) {
 	return time.Duration(amount) * scale, nil
 }
 
-// resolveSessionsDir maps a repo path to the Claude Code transcript directory. Claude Code
+// resolveSessionsDir maps a repo path to the Claude Code transcript directory under
+// <claudeConfigDir>/projects (CLAUDE_CONFIG_DIR when set, else ~/.claude). Claude Code
 // slugifies the absolute project path into a single directory name; historically that is a
 // straight `/` -> `-` substitution, but non-alphanumerics are also folded, so both candidates
 // are probed and the first that exists wins.
 func resolveSessionsDir(repo string) (string, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil || repo == "" {
+	configDir := claudeConfigDir()
+	if configDir == "" || repo == "" {
 		return "", false
 	}
-	root := filepath.Join(home, ".claude", "projects")
+	root := filepath.Join(configDir, "projects")
 	for _, slug := range sessionSlugCandidates(repo) {
 		candidate := filepath.Join(root, slug)
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {

@@ -50,15 +50,18 @@ settings file:
   `--statusline`. It does not ask when ours is already installed (the row says
   `unchanged`), or when another status line is set. A project-local status
   line overrides the shared and user ones, so when
-  `.claude/settings.local.json`, `.claude/settings.json` or
-  `~/.claude/settings.json` already defines another, `setup` keeps it, writes
-  nothing, and says so. `--statusline` installs ours anyway, overriding a
-  shared or user status line in this repository only; a status line already in
-  `settings.local.json` is never replaced. If one of those files cannot be
+  `.claude/settings.local.json`, `.claude/settings.json` or the user's
+  `settings.json` (in `$CLAUDE_CONFIG_DIR` when that is set, else `~/.claude`)
+  already defines another, `setup` keeps it, writes nothing, and says so.
+  `--statusline` installs ours anyway, overriding a shared or user status line
+  in this repository only; a status line already in `settings.local.json` is
+  never replaced, except a legacy line running
+  `scripts/entire-graph-statusline.sh`, which `setup` names with the command to
+  switch to and `--statusline` replaces. If one of those files cannot be
   read (not JSON, or in the repository a symlink, hard link or other
   non-regular file, which is never followed), `setup` skips only the status
   line and says why; `--statusline` installs it anyway. A leading UTF-8 BOM in
-  `.claude/settings.json` and `~/.claude/settings.json` is accepted. Unless the
+  `.claude/settings.json` and the user's `settings.json` is accepted. Unless the
   status line is chosen, `setup` never refuses a malformed
   `settings.local.json` on its account. `--no-statusline` skips this step
   without reading any settings. A skip never removes a status line installed

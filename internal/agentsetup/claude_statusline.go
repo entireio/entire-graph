@@ -36,23 +36,56 @@ func statusLineOf(settings map[string]json.RawMessage) json.RawMessage {
 	return raw
 }
 
-func isOurStatusLine(raw json.RawMessage) bool {
+// StatusLineKind says whose a settings scope's statusLine is.
+type StatusLineKind int
+
+const (
+	// StatusLineForeign is anyone else's status line.
+	StatusLineForeign StatusLineKind = iota
+	// StatusLineOurs runs StatusLineCommand.
+	StatusLineOurs
+	// StatusLineLegacy runs the compatibility shim scripts/entire-graph-statusline.sh, the line the
+	// plugin manifest and docs installed before the subcommand existed. It is ours, only older:
+	// setup names it and the command to switch to, and --statusline replaces it in
+	// settings.local.json.
+	StatusLineLegacy
+)
+
+// legacyStatusLineScript is the shim a legacy statusLine command runs.
+const legacyStatusLineScript = "entire-graph-statusline.sh"
+
+func statusLineKindOf(raw json.RawMessage) StatusLineKind {
 	var line struct {
 		Command string `json:"command"`
 	}
-	return json.Unmarshal(raw, &line) == nil && strings.Contains(line.Command, StatusLineCommand)
+	if json.Unmarshal(raw, &line) != nil {
+		return StatusLineForeign
+	}
+	switch {
+	case strings.Contains(line.Command, StatusLineCommand):
+		return StatusLineOurs
+	case strings.Contains(line.Command, legacyStatusLineScript):
+		return StatusLineLegacy
+	}
+	return StatusLineForeign
 }
 
 // mergeStatusLine adds our statusLine to a settings document. Every other key is preserved. An
-// existing statusLine is never replaced: ours makes this a no-op, and anyone else's is reported as
-// foreign and left exactly as it is.
+// existing statusLine is never replaced, with one exception: ours makes this a no-op, anyone
+// else's is reported as foreign and left exactly as it is, and the legacy shim line (ours, older)
+// is replaced by ours.
 func mergeStatusLine(existing []byte) (rendered []byte, changed, foreign bool, err error) {
 	settings, err := parseSettingsObject(ClaudeLocalSettings, existing)
 	if err != nil {
 		return nil, false, false, err
 	}
 	if line := statusLineOf(settings); line != nil {
-		return existing, false, !isOurStatusLine(line), nil
+		switch statusLineKindOf(line) {
+		case StatusLineOurs:
+			return existing, false, false, nil
+		case StatusLineForeign:
+			return existing, false, true, nil
+		}
 	}
 	if settings["statusLine"], err = marshalSettingsValue(statusLineValue()); err != nil {
 		return nil, false, false, err
@@ -110,35 +143,37 @@ func InstallClaudeStatusLineChanged(root string) (path string, created, changed,
 }
 
 // ActiveStatusLine reports the statusLine Claude Code shows: path is the first settings scope, in
-// Claude Code precedence order, that defines one, and ours says whether that line is ours. The
-// order is project local, project shared (<root>/.claude/settings.json), user
-// (<home>/.claude/settings.json). path is "" when no scope defines one. home is a parameter so
-// tests never read the real one.
+// Claude Code precedence order, that defines one, and kind says whose that line is. The order is
+// project local, project shared (<root>/.claude/settings.json), user (<configDir>/settings.json,
+// where configDir is CLAUDE_CONFIG_DIR when set, else <home>/.claude, resolved by the caller). path
+// is "" when no scope defines one. configDir is a parameter so tests never read the real one; an
+// empty configDir skips the user scope.
 //
 // The first scope that defines a statusLine is the one Claude Code shows, so the scan stops there:
-// a line in a higher scope means the lower ones are already overridden. An empty home skips the
-// user scope.
+// a line in a higher scope means the lower ones are already overridden.
 //
 // A scope that cannot be inspected stops the scan too, since it may hold a status line that
-// overrides the next: err is then non-nil, path names that scope and ours is false. Both project
-// files are read through the repository root, never following a symlink, a hard link or a
-// non-regular file, because a checkout controls them. One leading UTF-8 BOM is tolerated in the two
-// files setup only reads (Windows PowerShell 5.1 writes one); settings.local.json, which setup
-// rewrites, is refused as before by CheckClaudeStatusLine.
-func ActiveStatusLine(root, home string) (path string, ours bool, err error) {
+// overrides the next: err is then non-nil, path names that scope and kind is StatusLineForeign. A
+// parse error does not name the file again; path does. Both project files are read through the
+// repository root, never following a symlink, a hard link or a non-regular file, because a
+// checkout controls them. One leading UTF-8 BOM is tolerated in the two files setup only reads
+// (Windows PowerShell 5.1 writes one); settings.local.json, which setup rewrites, is refused as
+// before by CheckClaudeStatusLine.
+func ActiveStatusLine(root, configDir string) (path string, kind StatusLineKind, err error) {
 	repo, err := os.OpenRoot(root)
 	if err != nil {
-		return root, false, err
+		return root, StatusLineForeign, err
 	}
 	defer repo.Close()
 	type scope struct {
-		path, name string
-		read       func() ([]byte, error)
+		path  string
+		local bool
+		read  func() ([]byte, error)
 	}
 	repoScope := func(name string) scope {
 		return scope{
-			path: filepath.Join(root, filepath.FromSlash(name)),
-			name: name,
+			path:  filepath.Join(root, filepath.FromSlash(name)),
+			local: name == ClaudeLocalSettings,
 			read: func() ([]byte, error) {
 				state, err := readRepoClaudeSettings(repo, name)
 				if err == nil && state.file == nil {
@@ -149,9 +184,9 @@ func ActiveStatusLine(root, home string) (path string, ours bool, err error) {
 		}
 	}
 	scopes := []scope{repoScope(ClaudeLocalSettings), repoScope(claudeSharedSettings)}
-	if home != "" {
-		user := filepath.Join(home, ".claude", "settings.json")
-		scopes = append(scopes, scope{path: user, name: "~/.claude/settings.json", read: func() ([]byte, error) { return readSettingsFile(user) }})
+	if configDir != "" {
+		user := filepath.Join(configDir, "settings.json")
+		scopes = append(scopes, scope{path: user, read: func() ([]byte, error) { return readSettingsFile(user) }})
 	}
 	for _, scope := range scopes {
 		content, err := scope.read()
@@ -159,20 +194,20 @@ func ActiveStatusLine(root, home string) (path string, ours bool, err error) {
 			continue
 		}
 		if err != nil {
-			return scope.path, false, err
+			return scope.path, StatusLineForeign, err
 		}
-		if scope.name != ClaudeLocalSettings {
+		if !scope.local {
 			content = bytes.TrimPrefix(content, utf8BOM)
 		}
-		settings, err := parseSettingsObject(scope.name, content)
+		settings, err := parseSettingsObject("the file", content)
 		if err != nil {
-			return scope.path, false, err
+			return scope.path, StatusLineForeign, err
 		}
 		if line := statusLineOf(settings); line != nil {
-			return scope.path, isOurStatusLine(line), nil
+			return scope.path, statusLineKindOf(line), nil
 		}
 	}
-	return "", false, nil
+	return "", StatusLineForeign, nil
 }
 
 // claudeSharedSettings is the project's shared, usually committed, Claude Code settings file.

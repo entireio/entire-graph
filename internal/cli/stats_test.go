@@ -1788,3 +1788,22 @@ func TestCombinedRedirectIsARedirectNotAStatementBoundary(t *testing.T) {
 		t.Fatalf("a backgrounding & must still split statements, got %q", stages)
 	}
 }
+
+// TestStatsFindsTranscriptsUnderClaudeConfigDir catches the sessions directory looked up under
+// ~/.claude when CLAUDE_CONFIG_DIR moves Claude Code's data: without --sessions-dir, stats reads
+// $CLAUDE_CONFIG_DIR/projects/<slug>, where Claude Code files this repository's sessions.
+func TestStatsFindsTranscriptsUnderClaudeConfigDir(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	repo := t.TempDir()
+	writeTranscript(t, filepath.Join(configDir, "projects", sessionSlugCandidates(repo)[0]), "s1.jsonl",
+		toolUseLine(t, statsTime(0), "Bash", "toolu_1", map[string]any{"command": "entire graph query --query 'where is A'"}))
+	report := runStatsRawJSON(t, "--repo", repo, "--since", "all", "--format", "json", "--no-cache")
+	dir, _ := report["sessions_dir"].(string)
+	if found, _ := report["sessions_dir_found"].(bool); !found || !strings.HasPrefix(dir, configDir) {
+		t.Fatalf("sessions_dir = %q (found %v), want a directory under %s", dir, found, configDir)
+	}
+	if got := rawInt(t, report, "transcripts"); got != 1 {
+		t.Fatalf("transcripts = %d, want the 1 under %s", got, configDir)
+	}
+}

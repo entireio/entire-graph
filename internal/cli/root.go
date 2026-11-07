@@ -38,25 +38,40 @@ type Options struct {
 	// tests can hand runProviderRecords a summary no build in sem produces any
 	// more -- one marked truncated -- and prove the cache refusals still hold.
 	streamSnapshot func(ctx context.Context, repo, providerVersion string, options sem.ProviderSnapshotOptions, emit func(record any) error) error
-	// homeDir stands in for os.UserHomeDir when non-nil: the home whose ~/.claude/settings.json setup
-	// inspects for an existing status line. Tests set it so they never read the real one.
+	// homeDir stands in for os.UserHomeDir when non-nil: the home whose .claude/settings.json setup
+	// inspects for an existing status line; when set, CLAUDE_CONFIG_DIR is not read. Tests set it so
+	// they never read the real one.
 	homeDir func() string
 	// interactive stands in for "stdin and stdout are both terminals" when non-nil: whether setup
 	// may ask before installing the status line. Tests set it to answer the prompt through Stdin.
 	interactive func() bool
 }
 
-// userHome is the home setup inspects for the user's own status line; "" when it cannot be
-// determined, which skips that scope.
-func (o Options) userHome() string {
-	if o.homeDir != nil {
-		return o.homeDir()
+// claudeConfigDir is Claude Code's config directory, found as Claude Code finds it:
+// CLAUDE_CONFIG_DIR when set, else <home>/.claude; "" when neither is known. It holds the user's
+// settings.json (setup's user scope) and projects/<slug>/ (the transcripts stats reads).
+func claudeConfigDir() string {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return dir
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".claude")
 	}
-	return home
+	return ""
+}
+
+// userSettingsDir is the directory whose settings.json setup inspects for the user's status line:
+// claudeConfigDir, unless the homeDir test seam is set, which stands in for the whole lookup
+// (<seam>/.claude) so a test never reads the real environment's CLAUDE_CONFIG_DIR. "" skips the
+// user scope.
+func (o Options) userSettingsDir() string {
+	if o.homeDir == nil {
+		return claudeConfigDir()
+	}
+	if home := o.homeDir(); home != "" {
+		return filepath.Join(home, ".claude")
+	}
+	return ""
 }
 
 // isInteractive reports whether setup may ask a question: stdin and stdout are both terminals.

@@ -28,10 +28,13 @@ auto-generated notes on
   entries built earlier gain theirs the next time `index` runs. Outside a
   checkout it prints nothing. A project-local status line overrides the shared
   and user ones, so when `.claude/settings.local.json`,
-  `.claude/settings.json` or `~/.claude/settings.json` already defines another,
+  `.claude/settings.json` or the user settings (`$CLAUDE_CONFIG_DIR/settings.json`
+  when that is set, else `~/.claude/settings.json`) already defines another,
   setup keeps it, writes nothing and says so. `--statusline` installs ours
   anyway, overriding a shared or user line in that repository; one already in
-  `settings.local.json` is never replaced. `--no-statusline` skips the step
+  `settings.local.json` is never replaced, except a legacy line running
+  `scripts/entire-graph-statusline.sh`: setup names it and the command to switch
+  to, and `--statusline` replaces it. `--no-statusline` skips the step
   without reading any settings, and `--no-claude-hook` does not skip it. A
   malformed `settings.local.json` stops setup only at a step that rewrites it,
   and the error names that step's opt-out. A settings file that cannot be read
@@ -50,6 +53,9 @@ auto-generated notes on
 
 ### Changed
 
+- `stats` without `--sessions-dir` or `--transcript` reads transcripts from
+  `$CLAUDE_CONFIG_DIR/projects/` when `CLAUDE_CONFIG_DIR` is set, as Claude Code
+  writes them, instead of `~/.claude/projects/`.
 - The Claude Code plugin no longer declares a status line; installing it does
   not turn one on. `scripts/entire-graph-statusline.sh` remains as a shim that
   runs `entire graph statusline` with its arguments, so settings that name it

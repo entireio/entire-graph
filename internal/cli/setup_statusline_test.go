@@ -344,12 +344,92 @@ func TestSetupSkipsStatusLineWhenAScopeIsUnreadable(t *testing.T) {
 	if got := localStatusLine(t, repo); got != nil {
 		t.Fatalf("statusLine written over an uninspected scope: %v\n%s", got, out)
 	}
-	if !strings.Contains(out, "skipped (could not read ") {
+	row := ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "skipped (could not read ") {
+			row = line
+		}
+	}
+	if row == "" {
 		t.Errorf("the row must say the scope could not be read:\n%s", out)
+	}
+	// L107: the row names the file by its path once, not again in the parse error.
+	if strings.Count(row, "settings.json") != 1 {
+		t.Errorf("the row names the settings file %d times, want once: %s", strings.Count(row, "settings.json"), row)
 	}
 
 	out = runSetupForTest(t, home, repo, "--statusline")
 	if got := localStatusLine(t, repo); !reflect.DeepEqual(got, wantStatusLine) {
 		t.Fatalf("with --statusline: statusLine = %v, want %v\n%s", got, wantStatusLine, out)
 	}
+}
+
+// TestSetupReadsTheUserStatusLineFromClaudeConfigDir catches the user scope read from ~/.claude when
+// CLAUDE_CONFIG_DIR moves Claude Code's settings: a status line in $CLAUDE_CONFIG_DIR/settings.json
+// is kept, and setup neither asks nor writes its own over it.
+func TestSetupReadsTheUserStatusLineFromClaudeConfigDir(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	user := filepath.Join(configDir, "settings.json")
+	if err := os.WriteFile(user, []byte(`{"statusLine":{"type":"command","command":"node graft-statusline.cjs"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := gitRepoForTest(t, false)
+	var out bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &out, Stderr: &out, Stdin: strings.NewReader("y\n"),
+		interactive: func() bool { return true }}, []string{"setup", "--repo", repo})
+	if err != nil {
+		t.Fatalf("setup: %v\n%s", err, out.String())
+	}
+	if got := localStatusLine(t, repo); got != nil {
+		t.Fatalf("setup hid the status line in %s with %v\n%s", user, got, out.String())
+	}
+	if want := "kept your status line (" + user + ")"; !strings.Contains(out.String(), want) {
+		t.Fatalf("the row must say %q:\n%s", want, out.String())
+	}
+}
+
+// TestSetupRecognisesTheLegacyStatusLineScript catches the shim line treated as someone else's:
+// at a terminal or not, setup names it and the command to switch to and writes nothing, and
+// --statusline replaces it in settings.local.json.
+func TestSetupRecognisesTheLegacyStatusLineScript(t *testing.T) {
+	t.Parallel()
+	const legacy = `{"statusLine":{"type":"command","command":"sh /opt/entire-graph/scripts/entire-graph-statusline.sh"}}`
+	for _, interactive := range []bool{true, false} {
+		t.Run("user scope/interactive="+strconv.FormatBool(interactive), func(t *testing.T) {
+			t.Parallel()
+			home := tempHome(t)
+			writeUserSettings(t, home, legacy)
+			repo := gitRepoForTest(t, false)
+			var out string
+			if interactive {
+				var err error
+				if out, err = runSetupInteractive(t, home, repo, "y\n"); err != nil {
+					t.Fatalf("setup: %v\n%s", err, out)
+				}
+			} else {
+				out = runSetupForTest(t, home, repo)
+			}
+			if got := localStatusLine(t, repo); got != nil {
+				t.Fatalf("setup wrote %v over the legacy line\n%s", got, out)
+			}
+			for _, want := range []string{"kept the legacy status line script (", "change its command to `entire graph statusline`"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("the row must say %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+	t.Run("local scope with --statusline", func(t *testing.T) {
+		t.Parallel()
+		repo := gitRepoForTest(t, false)
+		writeLocalSettings(t, repo, legacy)
+		out := runSetupForTest(t, tempHome(t), repo, "--statusline")
+		if got := localStatusLine(t, repo); !reflect.DeepEqual(got, wantStatusLine) {
+			t.Fatalf("statusLine = %v, want %v\n%s", got, wantStatusLine, out)
+		}
+		if !strings.Contains(out, "replaced the legacy status line script") {
+			t.Errorf("the row must say the legacy line was replaced:\n%s", out)
+		}
+	})
 }

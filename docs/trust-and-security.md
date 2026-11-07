@@ -117,7 +117,8 @@ other is installation.
   implicit discovery fails closed. All selected-repository subprocesses
   discard it.
 - For `stats` only: local coding-agent session transcripts
-  (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
+  (`~/.claude/projects/<path-slug>/*.jsonl`, under
+  `$CLAUDE_CONFIG_DIR/projects/` when that is set, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the
   report is read-only and local. No other command reads transcripts.
 
@@ -221,8 +222,9 @@ these rules existed misses instead of re-emitting the paths it named.
   `.claude/settings.local.json`; that path is never followed through a symlink
   or hard link. To decide whether a status line is already set, it only reads
   `.claude/settings.local.json` and `.claude/settings.json` (under the same
-  symlink, hard-link and regular-file refusals) and `~/.claude/settings.json`,
-  in that order, stopping at the first one that defines a `statusLine`. It does
+  symlink, hard-link and regular-file refusals) and the user's
+  `settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when that is set, else
+  `~/.claude/settings.json`), in that order, stopping at the first one that defines a `statusLine`. It does
   this whether or not a terminal is attached, and also with `--statusline`
   (which additionally validates `settings.local.json` before writing); only
   `--no-statusline` reads none of them. Existing legacy Graph/Brain guide paths are

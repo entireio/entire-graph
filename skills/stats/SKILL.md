@@ -38,7 +38,8 @@ everything and `--cache-dir` relocates the memo. Requires the `entire-graph` plu
 
 ## What it reads
 
-Coding-agent session transcripts already on disk: `~/.claude/projects/<repo-path-slug>/**/*.jsonl`
+Coding-agent session transcripts already on disk: `~/.claude/projects/<repo-path-slug>/**/*.jsonl` (under
+`$CLAUDE_CONFIG_DIR/projects/` when that is set)
 (the slug is the repo's absolute path with non-alphanumerics folded to `-`). Nothing is
 uploaded and no model is called; the only thing written is the summary memo under the cache
 directory. If there are no sessions for the repo it says so and exits 0.
@@ -113,9 +114,9 @@ beside those two.
 
 The status line is opt-in. `entire graph setup` asks at a terminal (default no) before installing
 it in the repository's `.claude/settings.local.json`; `entire graph setup --statusline` installs it
-without asking. If the user already has a status line in `.claude/settings.json` or
-`~/.claude/settings.json`, setup keeps theirs and does not ask; `--statusline` replaces it in this
-repository only. To set it by hand:
+without asking. If the user already has a status line in `.claude/settings.json` or their user
+settings (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`), setup keeps theirs
+and does not ask; `--statusline` replaces it in this repository only. To set it by hand:
 
 ```json
 {

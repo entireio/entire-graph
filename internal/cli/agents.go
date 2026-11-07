@@ -154,6 +154,8 @@ const statusLinePrompt = "Install the Claude Code status line (estimated graph t
 //     replacing a foreign line inside settings.local.json.
 //  3. Otherwise the active status line (ActiveStatusLine) being ours is "unchanged", naming the
 //     file that holds it, so a second copy is never written.
+//     3a. A legacy shim line (scripts/entire-graph-statusline.sh) in any scope settles the row
+//     without asking, naming it and the command to switch to.
 //  4. Not interactive: skip with the --statusline hint, also when a scope cannot be read.
 //  5. Interactive: an unreadable scope or a foreign line in any scope settles the row without
 //     asking; else ask, and only a yes runs the preflight and installs.
@@ -170,13 +172,16 @@ func planStatusLine(ctx context.Context, opts Options, root string, force, skip 
 		if err := agentsetup.CheckClaudeStatusLine(root); err != nil {
 			return statusLinePlan{}, err
 		}
-		active, ours, scopeErr := agentsetup.ActiveStatusLine(root, opts.userHome())
-		return statusLinePlan{install: true, foreign: foreignStatusLine(active, ours), scopeErr: scopeErr, force: true}, nil
+		active, kind, scopeErr := agentsetup.ActiveStatusLine(root, opts.userSettingsDir())
+		return statusLinePlan{install: true, foreign: foreignStatusLine(active, kind), scopeErr: scopeErr, force: true}, nil
 	}
-	active, ours, scopeErr := agentsetup.ActiveStatusLine(root, opts.userHome())
+	active, kind, scopeErr := agentsetup.ActiveStatusLine(root, opts.userSettingsDir())
 	switch {
-	case scopeErr == nil && ours:
+	case scopeErr == nil && kind == agentsetup.StatusLineOurs:
 		return statusLinePlan{mark: setupMarkDone, row: "unchanged " + active + " (Claude Code status line already present)"}, nil
+	case scopeErr == nil && kind == agentsetup.StatusLineLegacy:
+		return statusLinePlan{mark: setupMarkSkipped, row: "kept the legacy status line script (" + active +
+			") — change its command to `" + agentsetup.StatusLineCommand + "`, or rerun with --statusline"}, nil
 	case !opts.isInteractive():
 		return statusLinePlan{mark: setupMarkSkipped, row: "skipped (pass --statusline to install it)"}, nil
 	case active != "" || scopeErr != nil:
@@ -200,9 +205,11 @@ func planStatusLine(ctx context.Context, opts Options, root string, force, skip 
 	return statusLinePlan{install: true}, nil
 }
 
-// foreignStatusLine is the active status line's path when that line is not ours, else "".
-func foreignStatusLine(active string, ours bool) string {
-	if ours {
+// foreignStatusLine is the active status line's path when that line is not ours, else "". A legacy
+// line counts as not ours here: --statusline then overrides it, or replaces it in
+// settings.local.json.
+func foreignStatusLine(active string, kind agentsetup.StatusLineKind) string {
+	if kind == agentsetup.StatusLineOurs {
 		return ""
 	}
 	return active
@@ -210,7 +217,10 @@ func foreignStatusLine(active string, ours bool) string {
 
 // readYes reads one answer from in: the text up to the first newline or EOF, trimmed. y or yes in
 // any case is yes; anything else is no, including EOF, a read error and a nil reader. The read runs
-// in a goroutine so a cancelled ctx returns its error at once, before setup writes anything.
+// in a goroutine so a cancelled ctx returns its error at once, before setup writes anything. On
+// cancel that goroutine stays blocked on in until it yields a line or EOF. That is deliberate:
+// setup is one process that exits right after, and the buffered channel lets the goroutine finish
+// without a receiver.
 func readYes(ctx context.Context, in io.Reader) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -273,6 +283,9 @@ func installStatusLine(ui *setupUI, root, foreign string, scopeErr error, force 
 		ui.Row(setupMarkDone, title, "unchanged "+path+" (Claude Code status line already present)")
 	case scopeErr != nil:
 		ui.Row(setupMarkDone, title, "wrote "+path+" ("+agentsetup.StatusLineCommand+"); could not check "+foreign+": "+scopeErr.Error())
+	case foreign == local:
+		// Only the legacy shim line in settings.local.json gets here: mergeStatusLine replaced it.
+		ui.Row(setupMarkDone, title, "wrote "+path+" (replaced the legacy status line script with "+agentsetup.StatusLineCommand+")")
 	case foreign != "":
 		ui.Row(setupMarkDone, title, "wrote "+path+" ("+agentsetup.StatusLineCommand+"); overrides "+foreign+" in this repo")
 	default:
