@@ -712,14 +712,20 @@ func appendTranscriptText(t *testing.T, path, text string) {
 // TestStatuslineResumedRenderMatchesAFreshOne catches a render resumed after an append that drifts
 // from a full parse. A 1 MiB filler record puts the transcript over the size from which renders
 // resume; the transcript then grows a part at a time, and after every write the render must print
-// what a render with an empty cache directory prints. The session: a Grep and its result, a graph
-// query run after `cd sub` (sub/a.go is 2,000 bytes, a.go 4,000) with its result in two writes, the
-// query's tool_use again (a re-serialised turn, one call), five unrelated calls that close the
-// query's follow-up window with no follow-up, and one assistant message whose usage is written
-// twice. The writes split a tool_use from its result, a line in two, and the follow-up window, so a
-// checkpoint that lost a pending call, the call's directory, the tool_use ids already seen or the
-// timeline prints other figures. Then the transcript is rewritten in place with other, longer
-// content, and truncated, and the render must still match.
+// what a render with an empty cache directory prints, and `stats --transcript` served from the
+// summary that render stored must report the follow-up classes a fresh `stats` reports. The
+// session: a Grep and its result, a graph query run after `cd sub` (sub/a.go is 2,000 bytes, a.go
+// 4,000) with its result in two writes, the query's tool_use again (a re-serialised turn, one
+// call), five unrelated calls that close the query's follow-up window with no follow-up, then two
+// parallel graph queries, a text answer naming a.go and then, in a later write, a JSON answer
+// delivering a.go's lines 1-3, a Read of a.go's line 2 that both answers' windows hold, and one
+// assistant message whose usage is written twice. The read goes to the later-delivered JSON answer
+// (overlapping; the text answer's read is shared), so a checkpoint that lost the delivery count, the
+// delivered spans or the read's span reports another read class. The writes split a tool_use from
+// its result, a line in two, and the follow-up window, so a checkpoint that lost a pending call, the
+// call's directory, the tool_use ids already seen or the timeline prints other figures. Then the
+// transcript is rewritten in place with other, longer content, and truncated, and both must still
+// match.
 func TestStatuslineResumedRenderMatchesAFreshOne(t *testing.T) {
 	repo := statuslineRepo(t)
 	write(t, repo, "sub/a.go", strings.Repeat("s", 2000))
@@ -755,18 +761,49 @@ func TestStatuslineResumedRenderMatchesAFreshOne(t *testing.T) {
 			id := "toolu_o" + strconv.Itoa(index)
 			parts = append(parts, toolUse(id, "Bash", map[string]any{"command": "go vet ./..."})+toolResult(id, "ok"))
 		}
+		delivered, err := json.Marshal(map[string]any{"results": []any{map[string]any{
+			"file_path": "a.go", "snippet_start_line": 1, "snippet_end_line": 3, "snippet": "package main\n\nfunc A() {}",
+		}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts = append(parts,
+			toolUse("toolu_t", "Bash", map[string]any{"command": "entire graph query --repo . --query 'who calls A'"})+
+				toolUse("toolu_j", "Bash", map[string]any{"command": "entire graph query --repo . --query 'A' --format json"}),
+			toolResult("toolu_t", grossResult(t, resultBytes/2, "1. a.go:3 func A()")),
+			toolResult("toolu_j", string(delivered)),
+			toolUse("toolu_r", "Read", map[string]any{"file_path": filepath.Join(repo, "a.go"), "offset": 2, "limit": 1})+
+				toolResult("toolu_r", "func A() {}"),
+		)
 		return append(parts, usage(50), usage(5))
 	}
 	filler := record("user", map[string]any{"type": "text", "text": strings.Repeat("f", 1<<20)})
 	dir := t.TempDir()
 	transcript := filepath.Join(dir, "resume-session.jsonl")
 	cacheDir := t.TempDir()
+	followUpClasses := func(cache string) string {
+		report := runStatsRawJSON(t, "--repo", repo, "--transcript", transcript, "--format", "json",
+			"--since", "all", "--cache-dir", cache)
+		var classes []string
+		for _, key := range []string{
+			"graph_locate_calls", "graph_locate_no_follow_up", "graph_locate_requery",
+			"graph_locate_follow_up_read_overlapping", "graph_locate_follow_up_read_different_region",
+			"graph_locate_follow_up_read_unknown_span", "graph_locate_follow_up_read_shared",
+			"graph_locate_censored", "graph_locate_error", "graph_locate_ineligible",
+		} {
+			classes = append(classes, strings.TrimPrefix(key, "graph_locate_")+"="+strconv.FormatInt(rawInt(t, report, key), 10))
+		}
+		return strings.Join(classes, " ")
+	}
 	assertMatchesFresh := func(step string) {
 		t.Helper()
 		stdin := statuslineStdin(t, transcript, repo, "")
 		got := runStatuslineForTest(t, 120, cacheDir, stdin)
 		if want := runStatuslineForTest(t, 120, t.TempDir(), stdin); got != want {
 			t.Fatalf("%s: the resumed render printed %q, a fresh one %q", step, got, want)
+		}
+		if got, want := followUpClasses(cacheDir), followUpClasses(t.TempDir()); got != want {
+			t.Fatalf("%s: stats served from the resumed render's summary reports %s, a fresh one %s", step, got, want)
 		}
 	}
 

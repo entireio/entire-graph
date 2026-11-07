@@ -47,8 +47,10 @@ func (r *transcriptResume) path(identity string) string {
 // summarise returns what summariseTranscript returns for path's current bytes. When path's
 // checkpoint was written by this code and the file still starts with the bytes it covered, it
 // parses only what follows; otherwise (a rewrite, a truncation, no checkpoint) it parses from the
-// start. Either way it leaves a checkpoint at the end of the last complete line, before the
-// unterminated tail (if any) is fed to the scanner.
+// start. When this call read at least one new complete line and the scan did not stop (on a line
+// over transcriptMaxLineBytes or a read error), it writes a checkpoint at the end of the last
+// complete line, before the unterminated tail (if any) is fed to the scanner; otherwise the
+// existing checkpoint, if any, is left as it was.
 func (r *transcriptResume) summarise(path string) (fileSummary, bool) {
 	handle, err := os.Open(path) //nolint:gosec // the path comes from listing the session's own transcripts
 	if err != nil {
