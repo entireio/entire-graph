@@ -22,6 +22,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -40,6 +41,8 @@ func main() {
 		manifestPath = flag.String("manifest", "internal/sem/grammars/grammars.json", "path to the grammar manifest")
 		grammarsDir  = flag.String("dir", "internal/sem/grammars", "directory holding vendored grammars")
 		allowLocal   = flag.Bool("allow-local-changes", false, "overwrite a grammar whose manifest entry records local changes; they must then be reapplied by hand")
+		generateFlag = flag.Bool("generate", false, "regenerate the parser with tree-sitter-cli (via npx) even if the manifest entry records no local build")
+		cliFlag      = flag.String("tree-sitter-cli", "", "tree-sitter-cli version to generate with; implies -generate")
 	)
 	flag.Parse()
 	if *lang == "" || *ref == "" {
@@ -54,6 +57,8 @@ func main() {
 		ManifestPath:      *manifestPath,
 		GrammarsDir:       *grammarsDir,
 		AllowLocalChanges: *allowLocal,
+		Generate:          *generateFlag,
+		TreeSitterCLI:     *cliFlag,
 	}
 	if err := refresh(o); err != nil {
 		fmt.Fprintln(os.Stderr, "grammar-refresh:", err)
@@ -69,6 +74,10 @@ type options struct {
 	Lang, Ref, URL, Subdir    string
 	ManifestPath, GrammarsDir string
 	AllowLocalChanges         bool
+	// Generate regenerates the parser even when the entry records no
+	// tree-sitter-cli; TreeSitterCLI overrides the version chosen.
+	Generate      bool
+	TreeSitterCLI string
 }
 
 func refresh(o options) error {
@@ -115,6 +124,12 @@ func refresh(o options) error {
 			return err
 		}
 	}
+	generating := wantsGeneration(existing, o)
+	if generating {
+		if _, err := exec.LookPath("npx"); err != nil {
+			return errNoNPX
+		}
+	}
 
 	tmp, err := os.MkdirTemp("", "grammar-refresh-")
 	if err != nil {
@@ -139,8 +154,29 @@ func refresh(o options) error {
 			return fmt.Errorf("%s at %s: %w", url, ref, err)
 		}
 	}
+	var version string
+	if generating {
+		grammarRoot := filepath.Join(tmp, subdir)
+		if version, err = resolveCLI(grammarRoot, cliVersion(existing, revision, o)); err != nil {
+			return err
+		}
+		args := generateArgs(build)
+		if err := generate(grammarRoot, version, args); err != nil {
+			return err
+		}
+		next := LocalBuild{}
+		if build != nil {
+			next = *build
+		}
+		next.TreeSitterCLI, next.GenerateArgs = version, args
+		build = &next
+	}
 
 	files, abi, err := vendor(tmp, subdir, filepath.Join(grammarsDir, lang))
+	var unsupported abiError
+	if generating && errors.As(err, &unsupported) {
+		return fmt.Errorf("%s at %s: %w; tree-sitter-cli %s may no longer generate ABI 14, so pass -tree-sitter-cli <older version>", url, ref, err, version)
+	}
 	if err != nil {
 		return fmt.Errorf("%s at %s: %w", url, ref, err)
 	}
@@ -193,6 +229,19 @@ func applyPatch(checkout, subdir, patchFile string) error {
 		return fmt.Errorf("apply %s: %w\n%s", patchFile, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+var errNoNPX = errors.New("tree-sitter generation needs Node.js; npx was not found on PATH")
+
+func npx(dir string, args ...string) (string, error) {
+	cmd := exec.Command("npx", append([]string{"--yes"}, args...)...)
+	cmd.Dir = dir
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if errors.Is(err, exec.ErrNotFound) {
+		err = errNoNPX
+	}
+	return strings.TrimSpace(string(out)), err
 }
 
 func gitOutput(dir string, args ...string) (string, error) {
