@@ -22,18 +22,15 @@ const (
 
 // Grammar is one vendored grammar's origin, as recorded in grammars.json.
 type Grammar struct {
-	Language  string   `json:"language"`
-	URL       string   `json:"url"`
-	Reference string   `json:"reference"`
-	Revision  string   `json:"revision"`
-	Path      string   `json:"path,omitempty"`
-	Files     []string `json:"files"`
-	ABI       int      `json:"abi"`
-	// LocalChanges marks vendored files that differ from upstream at Revision
-	// in ways a refresh would discard. Note says how to reapply them.
-	LocalChanges bool        `json:"local_changes,omitempty"`
-	Note         string      `json:"note,omitempty"`
-	LocalBuild   *LocalBuild `json:"local_build,omitempty"`
+	Language   string      `json:"language"`
+	URL        string      `json:"url"`
+	Reference  string      `json:"reference"`
+	Revision   string      `json:"revision"`
+	Path       string      `json:"path,omitempty"`
+	Files      []string    `json:"files"`
+	ABI        int         `json:"abi"`
+	Note       string      `json:"note,omitempty"`
+	LocalBuild *LocalBuild `json:"local_build,omitempty"`
 }
 
 // LocalBuild is how grammar-refresh turns the upstream checkout into the

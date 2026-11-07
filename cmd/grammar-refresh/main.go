@@ -7,7 +7,7 @@
 // Usage:
 //
 //	go run ./cmd/grammar-refresh -lang zig -ref v1.1.2
-//	go run ./cmd/grammar-refresh -lang fsharp -ref <commit> -path fsharp -allow-local-changes
+//	go run ./cmd/grammar-refresh -lang fsharp -ref <commit> -path fsharp
 //	go run ./cmd/grammar-refresh -lang newlang -ref v1.0.0 -url https://github.com/o/tree-sitter-newlang
 //	go run ./cmd/grammar-refresh -lang rust -ref v0.24.2 -url https://github.com/tree-sitter/tree-sitter-rust -generate
 //	go run ./cmd/grammar-refresh -lang csharp -ref v0.24.0 -tree-sitter-cli 0.26.7
@@ -20,14 +20,9 @@
 // regenerates with the recorded version; a new revision uses @latest and
 // records the version it ran. -tree-sitter-cli pins one, which is the fix if
 // a future tree-sitter release stops generating maxABI. binding.go is never
-// touched, so
-// a new language still needs one. A grammar that changes parse results needs
-// an IdentityRevision bump (internal/sem/provider.go) in the same commit.
-//
-// A manifest entry with local_changes carries edits that upstream does not
-// have, and copying upstream verbatim would discard them. The tool refuses
-// such a grammar unless -allow-local-changes is passed, and the maintainer then
-// reapplies the steps in the entry's note. Notes survive every refresh.
+// touched, so a new language still needs one. A grammar that changes parse
+// results needs an IdentityRevision bump (internal/sem/provider.go) in the
+// same commit. An entry's note survives every refresh.
 package main
 
 import (
@@ -49,7 +44,6 @@ func main() {
 		subdir       = flag.String("path", "", "grammar subdirectory within the repository; defaults to the manifest entry")
 		manifestPath = flag.String("manifest", "internal/sem/grammars/grammars.json", "path to the grammar manifest")
 		grammarsDir  = flag.String("dir", "internal/sem/grammars", "directory holding vendored grammars")
-		allowLocal   = flag.Bool("allow-local-changes", false, "overwrite a grammar whose manifest entry records local changes; they must then be reapplied by hand")
 		generateFlag = flag.Bool("generate", false, "regenerate the parser with tree-sitter-cli (via npx) even if the manifest entry records no local build")
 		cliFlag      = flag.String("tree-sitter-cli", "", "tree-sitter-cli version to generate with; implies -generate")
 	)
@@ -59,15 +53,14 @@ func main() {
 		os.Exit(2)
 	}
 	o := options{
-		Lang:              *lang,
-		Ref:               *ref,
-		URL:               *url,
-		Subdir:            *subdir,
-		ManifestPath:      *manifestPath,
-		GrammarsDir:       *grammarsDir,
-		AllowLocalChanges: *allowLocal,
-		Generate:          *generateFlag,
-		TreeSitterCLI:     *cliFlag,
+		Lang:          *lang,
+		Ref:           *ref,
+		URL:           *url,
+		Subdir:        *subdir,
+		ManifestPath:  *manifestPath,
+		GrammarsDir:   *grammarsDir,
+		Generate:      *generateFlag,
+		TreeSitterCLI: *cliFlag,
 	}
 	if err := refresh(o); err != nil {
 		fmt.Fprintln(os.Stderr, "grammar-refresh:", err)
@@ -82,7 +75,6 @@ var languageNamePattern = regexp.MustCompile(`^[a-z0-9_]+$`)
 type options struct {
 	Lang, Ref, URL, Subdir    string
 	ManifestPath, GrammarsDir string
-	AllowLocalChanges         bool
 	// Generate regenerates the parser even when the entry records no
 	// tree-sitter-cli; TreeSitterCLI overrides the version chosen.
 	Generate      bool
@@ -119,9 +111,6 @@ func refresh(o options) error {
 	}
 	if subdir != "" && !filepath.IsLocal(subdir) {
 		return fmt.Errorf("invalid path %q for %s in %s: must be a relative path inside the repository", subdir, lang, manifestPath)
-	}
-	if existing.LocalChanges && !o.AllowLocalChanges {
-		return fmt.Errorf("%s has local changes that a verbatim refresh would discard (%s); pass -allow-local-changes to overwrite it, then reapply them by hand", lang, existing.Note)
 	}
 	build := existing.LocalBuild
 	var patchFile string
@@ -207,19 +196,15 @@ func refresh(o options) error {
 		Path:      subdir,
 		Files:     files,
 		ABI:       abi,
-		// Kept across a revision change: that is when a note's manual steps
-		// are due. A note the new revision makes obsolete is removed by hand.
-		LocalChanges: existing.LocalChanges,
-		Note:         existing.Note,
-		LocalBuild:   build,
+		// Kept across a revision change; a note the new revision makes
+		// obsolete is removed by hand.
+		Note:       existing.Note,
+		LocalBuild: build,
 	})
 	if err := saveManifest(manifestPath, grammars); err != nil {
 		return err
 	}
 	fmt.Printf("vendored %s %s (%s, ABI %d) into %s\n", lang, ref, revision[:7], abi, filepath.Join(grammarsDir, lang))
-	if existing.LocalChanges {
-		fmt.Printf("warning: %s now lacks its local changes; reapply them before committing\n", lang)
-	}
 	if existing.Note != "" {
 		fmt.Printf("note: %s\n", existing.Note)
 	}

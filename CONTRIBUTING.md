@@ -55,18 +55,18 @@ cache. CI additionally runs the POSIX shell suite
   block makes the tool build the grammar instead of copying it: `patch` (a
   path under `internal/sem/grammars`) is applied to the checkout, then the
   parser is regenerated with
-  `npx tree-sitter-cli@<tree_sitter_cli> generate <generate_args>`. Pass
-  `-generate` to add that block to a grammar whose release ships only ABI 15;
-  it defaults to `--abi 14`. Generating needs Node.js (`npx`) on `PATH`.
+  `npx tree-sitter-cli@<tree_sitter_cli> generate --abi 14`. An entry sets
+  `generate_args` only to override those arguments. Pass `-generate` to add
+  that block to a grammar whose release ships only ABI 15. Generating needs
+  Node.js (`npx`) on `PATH`.
   Regenerating the recorded revision reuses the recorded CLI version, so the
   output matches the vendored files exactly. A new revision uses
   `tree-sitter-cli@latest` and records the version it ran. `-tree-sitter-cli
   <version>` overrides both. Tree-sitter can currently still generate ABI 14,
   but a future release may drop it. If the tool then reports an ABI it cannot
-  vendor, pin an older CLI with `-tree-sitter-cli`. An entry with
-  `local_changes` differs from upstream in ways the tool cannot reapply, so it
-  refuses that grammar unless you pass `-allow-local-changes` and redo the
-  changes by hand. Check the entry's `note` for manual steps, regenerate
+  vendor, pin an older CLI with `-tree-sitter-cli`. Any other difference from
+  upstream belongs in the entry's patch, so a refresh never needs manual
+  edits. Check the entry's `note`, regenerate
   `NOTICES`, and bump `IdentityRevision` in `internal/sem/provider.go` in the
   same commit when parse results change.
 - **User-visible behavior** belongs in `CHANGELOG.md` under the unreleased

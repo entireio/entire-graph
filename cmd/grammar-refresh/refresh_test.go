@@ -279,19 +279,18 @@ func TestUpsertKeepsManifestSorted(t *testing.T) {
 	}
 }
 
-func localChangesManifest(t *testing.T, repo, revision string) (manifest, root string) {
+func notedManifest(t *testing.T, repo, revision string) (manifest, root string) {
 	t.Helper()
 	root = t.TempDir()
 	manifest = filepath.Join(root, "grammars.json")
 	if err := saveManifest(manifest, []Grammar{{
-		Language:     "demo",
-		URL:          repo,
-		Reference:    "v0",
-		Revision:     revision,
-		Files:        []string{"LICENSE", "parser.c"},
-		ABI:          14,
-		LocalChanges: true,
-		Note:         "reapply demo.patch",
+		Language:  "demo",
+		URL:       repo,
+		Reference: "v0",
+		Revision:  revision,
+		Files:     []string{"LICENSE", "parser.c"},
+		ABI:       14,
+		Note:      "keep this note",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -309,37 +308,12 @@ func generatedGrammarRepo(t *testing.T) (repo, revision string) {
 	return repo, revision
 }
 
-func TestRefreshRefusesLocalChanges(t *testing.T) {
-	repo, revision := generatedGrammarRepo(t)
-	for name, recorded := range map[string]string{"same revision": revision, "new revision": "0000000"} {
-		t.Run(name, func(t *testing.T) {
-			manifest, root := localChangesManifest(t, repo, recorded)
-			before, _ := os.ReadFile(manifest)
-			err := refresh(options{Lang: "demo", Ref: "v1", ManifestPath: manifest, GrammarsDir: root})
-			if err == nil {
-				t.Fatal("want refusal for a grammar with local changes")
-			}
-			for _, want := range []string{"-allow-local-changes", "reapply demo.patch"} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error %q does not mention %q", err, want)
-				}
-			}
-			if got, _ := os.ReadFile(filepath.Join(root, "demo", "parser.c")); string(got) != "patched\n" {
-				t.Fatalf("parser.c changed on refusal: %q", got)
-			}
-			if after, _ := os.ReadFile(manifest); string(after) != string(before) {
-				t.Fatalf("manifest changed on refusal:\n%s", after)
-			}
-		})
-	}
-}
-
 func TestRefreshKeepsNoteAcrossRevisions(t *testing.T) {
 	repo, revision := generatedGrammarRepo(t)
 	for name, recorded := range map[string]string{"same revision": revision, "new revision": "0000000"} {
 		t.Run(name, func(t *testing.T) {
-			manifest, root := localChangesManifest(t, repo, recorded)
-			if err := refresh(options{Lang: "demo", Ref: "v1", ManifestPath: manifest, GrammarsDir: root, AllowLocalChanges: true}); err != nil {
+			manifest, root := notedManifest(t, repo, recorded)
+			if err := refresh(options{Lang: "demo", Ref: "v1", ManifestPath: manifest, GrammarsDir: root}); err != nil {
 				t.Fatal(err)
 			}
 			grammars, err := loadManifest(manifest)
@@ -347,7 +321,7 @@ func TestRefreshKeepsNoteAcrossRevisions(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := grammars[0]
-			if got.Revision != revision || got.Note != "reapply demo.patch" || !got.LocalChanges {
+			if got.Revision != revision || got.Note != "keep this note" {
 				t.Fatalf("entry = %+v", got)
 			}
 		})
