@@ -42,6 +42,13 @@ type LocalBuild struct {
 	GenerateArgs  []string `json:"generate_args,omitempty"`
 }
 
+// abiError is a generated parser.c the go-tree-sitter runtime cannot load.
+type abiError struct{ abi int }
+
+func (e abiError) Error() string {
+	return fmt.Sprintf("grammar is ABI %d, but the go-tree-sitter runtime accepts ABI %d-%d; regenerate it with `tree-sitter generate --abi 14` and vendor the result", e.abi, minABI, maxABI)
+}
+
 var languageVersionPattern = regexp.MustCompile(`(?m)^#define LANGUAGE_VERSION (\d+)\s*$`)
 
 func languageABI(parserC []byte) (int, error) {
@@ -69,7 +76,7 @@ func vendor(repoRoot, subdir, destDir string) ([]string, int, error) {
 		return nil, 0, err
 	}
 	if abi < minABI || abi > maxABI {
-		return nil, 0, fmt.Errorf("grammar is ABI %d, but the go-tree-sitter runtime accepts ABI %d-%d; regenerate it with `tree-sitter generate --abi 14` and vendor the result", abi, minABI, maxABI)
+		return nil, 0, abiError{abi}
 	}
 
 	sources := map[string]string{"parser.c": filepath.Join(grammarRoot, "src", "parser.c")}
