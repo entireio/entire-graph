@@ -28,8 +28,18 @@ type Grammar struct {
 	ABI       int      `json:"abi"`
 	// LocalChanges marks vendored files that differ from upstream at Revision
 	// in ways a refresh would discard. Note says how to reapply them.
-	LocalChanges bool   `json:"local_changes,omitempty"`
-	Note         string `json:"note,omitempty"`
+	LocalChanges bool        `json:"local_changes,omitempty"`
+	Note         string      `json:"note,omitempty"`
+	LocalBuild   *LocalBuild `json:"local_build,omitempty"`
+}
+
+// LocalBuild is how grammar-refresh turns the upstream checkout into the
+// vendored files: Patch (relative to the grammars directory) is applied
+// first, then the parser is regenerated when TreeSitterCLI is set.
+type LocalBuild struct {
+	Patch         string   `json:"patch,omitempty"`
+	TreeSitterCLI string   `json:"tree_sitter_cli,omitempty"`
+	GenerateArgs  []string `json:"generate_args,omitempty"`
 }
 
 var languageVersionPattern = regexp.MustCompile(`(?m)^#define LANGUAGE_VERSION (\d+)\s*$`)
