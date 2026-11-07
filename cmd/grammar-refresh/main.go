@@ -9,9 +9,17 @@
 //	go run ./cmd/grammar-refresh -lang zig -ref v1.1.2
 //	go run ./cmd/grammar-refresh -lang fsharp -ref <commit> -path fsharp -allow-local-changes
 //	go run ./cmd/grammar-refresh -lang newlang -ref v1.0.0 -url https://github.com/o/tree-sitter-newlang
+//	go run ./cmd/grammar-refresh -lang rust -ref v0.24.2 -url https://github.com/tree-sitter/tree-sitter-rust -generate
+//	go run ./cmd/grammar-refresh -lang csharp -ref v0.24.0 -tree-sitter-cli 0.26.7
 //
-// The ref must contain generated sources (src/parser.c) built for ABI 13-14,
-// the range the go-tree-sitter runtime loads. binding.go is never touched, so
+// The vendored src/parser.c must be ABI 13-14, the range the go-tree-sitter
+// runtime loads. A manifest entry's local_build block, or -generate, builds it
+// instead of copying it: the entry's patch is applied to the checkout, then
+// `npx tree-sitter-cli@<version> generate <args>` runs (default --abi 14),
+// which needs Node.js. The recorded revision regenerates with the recorded
+// version; a new revision uses @latest and records the version it ran.
+// -tree-sitter-cli pins one, which is the fix if a future tree-sitter release
+// stops generating ABI 14. binding.go is never touched, so
 // a new language still needs one. A grammar that changes parse results needs
 // an IdentityRevision bump (internal/sem/provider.go) in the same commit.
 //

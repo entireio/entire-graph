@@ -19,19 +19,19 @@ The patch preserves syntax that regressed in the grammar upgrade:
 - The scanner looks through block comments when deciding whether a newline
   separates statements, while retaining operator continuations.
 
-To regenerate, in a separate checkout of the upstream commit:
+The manifest's `local_build` entry records the patch, generator version and
+arguments, so regenerating needs Node.js (`npx`) and one command from the
+repository root:
 
 ```sh
-git apply /path/to/entire-graph/internal/sem/grammars/swift/compatibility.patch
-tree-sitter generate --abi 14
-cp src/parser.c src/scanner.c /path/to/entire-graph/internal/sem/grammars/swift/
+go run ./cmd/grammar-refresh -lang swift -ref 0.7.4-with-generated-files
 ```
 
-Use the exact generator version above. No generation or download occurs when
-building or running Graph. `grammar-refresh` copies upstream verbatim, so it
-refuses this grammar unless passed `-allow-local-changes`; after that, reapply or
-reconcile this patch before committing. Update the manifest note and identity
-revision whenever the resulting parser changes.
+At the recorded commit this reuses tree-sitter-cli 0.24.7 and should
+reproduce the vendored files exactly. A newer ref uses the latest
+tree-sitter-cli and stops if the patch no longer applies; reconcile the patch,
+then run it again. No generation or download occurs when building or running
+Graph. Update the identity revision whenever the resulting parser changes.
 
 Regression coverage lives in `internal/sem/swift_grammar_regression_test.go`;
 `swift_test.go` also protects the newer Swift Testing macro support.
