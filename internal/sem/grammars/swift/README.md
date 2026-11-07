@@ -27,8 +27,11 @@ repository root:
 go run ./cmd/grammar-refresh -lang swift -ref 0.7.4-with-generated-files
 ```
 
-At the recorded commit this reuses tree-sitter-cli 0.24.7 and should
-reproduce the vendored files exactly. A newer ref uses the latest
+At the recorded commit this reuses tree-sitter-cli 0.24.7 and reproduces
+`parser.c`, `scanner.c` and `tree_sitter/parser.h` exactly. The vendored
+`tree_sitter/alloc.h` and `array.h` are upstream's committed copies; the tool
+replaces them with 0.24.7's generated ones, which differ only in parameter
+names and warning pragmas. A newer ref uses the latest
 tree-sitter-cli and stops if the patch no longer applies; reconcile the patch,
 then run it again. No generation or download occurs when building or running
 Graph. Update the identity revision whenever the resulting parser changes.
