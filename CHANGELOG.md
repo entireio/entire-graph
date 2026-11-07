@@ -27,6 +27,9 @@ auto-generated notes on
 
 ### Changed
 
+- Rust now uses vendored tree-sitter-rust 0.24.2, regenerated at ABI 14, instead
+  of the older grammar bundled with go-tree-sitter. The parser identity revision
+  is bumped to rebuild cached snapshots.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being
   assigned to a variable, passed as an argument, or stored in a struct field or

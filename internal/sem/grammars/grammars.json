@@ -156,6 +156,24 @@
     "note": "upstream's tree_sitter/array.h was not vendored; a refresh adds it"
   },
   {
+    "language": "rust",
+    "url": "https://github.com/tree-sitter/tree-sitter-rust",
+    "reference": "v0.24.2",
+    "revision": "77a3747266f4d621d0757825e6b11edcbf991ca5",
+    "files": [
+      "LICENSE",
+      "parser.c",
+      "scanner.c",
+      "tree_sitter/alloc.h",
+      "tree_sitter/array.h",
+      "tree_sitter/parser.h"
+    ],
+    "abi": 14,
+    "local_build": {
+      "tree_sitter_cli": "0.27.2"
+    }
+  },
+  {
     "language": "swift",
     "url": "https://github.com/alex-pinkus/tree-sitter-swift",
     "reference": "0.7.4-with-generated-files",
