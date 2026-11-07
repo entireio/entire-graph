@@ -227,7 +227,9 @@ first-parent ancestor is (at most 5), else `not indexed`, and shows no size. It 
 `entire graph setup` asks at a terminal, or installs it with `--statusline`, in
 `.claude/settings.local.json`; see [agent activation](agents.md).
 `scripts/entire-graph-statusline.sh` remains only as a shim that runs the
-subcommand, for settings that still name it.
+subcommand, for settings that still name it. It prefers `entire graph statusline`,
+which reads the cache `entire graph index` writes; `ENTIRE_GRAPH_BIN` or an
+`entire-graph` on PATH runs only when `entire` is not on PATH.
 
 ## Release archives
 

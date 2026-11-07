@@ -4,7 +4,8 @@
 #   sh scripts/entire-graph-statusline_test.sh
 #
 # The rendering itself is tested in Go (internal/cli/statusline_test.go). This pins only what the
-# shim adds: the status JSON reaches the subcommand unchanged, and a missing `entire` prints nothing.
+# shim adds: which binary runs, in which order, with the status JSON and the arguments unchanged,
+# and that finding none prints nothing.
 
 set -u
 
@@ -24,28 +25,44 @@ check() { # check <name> <want> <got>
 	fi
 }
 
-# A fake `entire` that echoes its arguments and its stdin.
-mkdir -p "$WORK/bin" "$WORK/empty"
-cat >"$WORK/bin/entire" <<'FAKE'
+# A fake that prints its label, its arguments and its stdin with shell built-ins only, so each
+# case's PATH can hold nothing but the fakes it wants found: a real `entire` elsewhere on PATH
+# would otherwise win.
+fake() { # fake <path> <label>
+	mkdir -p "$(dirname -- "$1")"
+	cat >"$1" <<FAKE
 #!/bin/sh
-printf '%s|' "$@"
-cat
+printf '%s|' '$2' "\$@"
+while IFS= read -r line || [ -n "\$line" ]; do printf '%s' "\$line"; done
 FAKE
-chmod +x "$WORK/bin/entire"
+	chmod +x "$1"
+}
+fake "$WORK/entire/entire" entire
+fake "$WORK/graph/entire-graph" entire-graph
+fake "$WORK/override/graph-dev" dev
+mkdir -p "$WORK/empty"
 
-OUT=$(printf '{"session_id":"s1"}' | PATH="$WORK/bin:$PATH" "$SH" "$SCRIPT")
-check 'runs entire graph statusline with stdin unchanged' 'graph|statusline|{"session_id":"s1"}' "$OUT"
+OUT=$(printf '{"session_id":"s1"}' | ENTIRE_GRAPH_BIN= PATH="$WORK/entire" "$SH" "$SCRIPT")
+check 'runs entire graph statusline with stdin unchanged' 'entire|graph|statusline|{"session_id":"s1"}' "$OUT"
 
 # Finding #8: the PATH fallback dropped the shim's own arguments.
-OUT=$(printf '{"session_id":"s3"}' | ENTIRE_GRAPH_BIN= PATH="$WORK/bin:$PATH" "$SH" "$SCRIPT" --cache-dir /tmp/c)
-check 'the PATH fallback passes the arguments through' 'graph|statusline|--cache-dir|/tmp/c|{"session_id":"s3"}' "$OUT"
+OUT=$(printf '{"session_id":"s2"}' | ENTIRE_GRAPH_BIN= PATH="$WORK/entire" "$SH" "$SCRIPT" --cache-dir /tmp/c)
+check 'passes the arguments through' 'entire|graph|statusline|--cache-dir|/tmp/c|{"session_id":"s2"}' "$OUT"
 
-OUT=$(printf '{"session_id":"s2"}' | ENTIRE_GRAPH_BIN="$WORK/bin/entire" "$SH" "$SCRIPT")
-check 'ENTIRE_GRAPH_BIN runs as <bin> statusline' 'statusline|{"session_id":"s2"}' "$OUT"
+# ENTIRE_GRAPH_BIN runs the binary without Entire's ENTIRE_PLUGIN_DATA_DIR, so it would read another
+# cache than `entire graph index` writes: entire wins when both are there.
+OUT=$(printf '{"session_id":"s3"}' | ENTIRE_GRAPH_BIN="$WORK/override/graph-dev" PATH="$WORK/entire:$WORK/graph" "$SH" "$SCRIPT")
+check 'entire outranks ENTIRE_GRAPH_BIN' 'entire|graph|statusline|{"session_id":"s3"}' "$OUT"
 
-OUT=$(printf '{}' | PATH="$WORK/empty" "$SH" "$SCRIPT" 2>&1)
+OUT=$(printf '{"session_id":"s4"}' | ENTIRE_GRAPH_BIN="$WORK/override/graph-dev" PATH="$WORK/graph" "$SH" "$SCRIPT")
+check 'without entire, ENTIRE_GRAPH_BIN outranks entire-graph' 'dev|statusline|{"session_id":"s4"}' "$OUT"
+
+OUT=$(printf '{"session_id":"s5"}' | ENTIRE_GRAPH_BIN= PATH="$WORK/graph" "$SH" "$SCRIPT" --cache-dir /tmp/c)
+check 'then entire-graph on PATH runs as entire-graph statusline' 'entire-graph|statusline|--cache-dir|/tmp/c|{"session_id":"s5"}' "$OUT"
+
+OUT=$(printf '{}' | ENTIRE_GRAPH_BIN= PATH="$WORK/empty" "$SH" "$SCRIPT" 2>&1)
 STATUS=$?
-check 'no entire on PATH prints nothing' '' "$OUT"
-check 'no entire on PATH exits 0' 0 "$STATUS"
+check 'nothing found prints nothing' '' "$OUT"
+check 'nothing found exits 0' 0 "$STATUS"
 
 [ "$FAIL" -eq 0 ]

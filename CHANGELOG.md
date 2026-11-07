@@ -53,7 +53,8 @@ auto-generated notes on
 - The Claude Code plugin no longer declares a status line; installing it does
   not turn one on. `scripts/entire-graph-statusline.sh` remains as a shim that
   runs `entire graph statusline` with its arguments, so settings that name it
-  keep working. `ENTIRE_GRAPH_BIN` still selects the binary; the
+  keep working. It runs `entire graph statusline` when `entire` is on PATH, else
+  `$ENTIRE_GRAPH_BIN statusline`, else an `entire-graph` on PATH; the
   `ENTIRE_GRAPH_STATUSLINE_*` variables no longer apply.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being

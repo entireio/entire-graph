@@ -10,11 +10,20 @@
 #
 # Change that command to `entire graph statusline`.
 #
-# Claude Code passes the status JSON on stdin; exec hands it, and any arguments, to the subcommand
-# unchanged. ENTIRE_GRAPH_BIN, when it names an executable entire-graph binary, is run as
-# `<bin> statusline`. Without it or an `entire` on PATH this prints nothing and exits 0: a status
-# line must never surface an error.
+# Claude Code passes the status JSON on stdin; exec hands it, and any arguments, to the first of:
+#
+#   1. `entire graph statusline`, when `entire` is on PATH. Entire sets ENTIRE_PLUGIN_DATA_DIR, so
+#      the line reads the cache that `entire graph index` and `query --head` write.
+#   2. `$ENTIRE_GRAPH_BIN statusline`, when ENTIRE_GRAPH_BIN names an executable.
+#   3. `entire-graph statusline`, when `entire-graph` is on PATH.
+#
+# 2 and 3 run the binary without Entire, so it uses its default cache, the one a bare
+# `entire-graph index` writes, unless the arguments pass --cache-dir. With none of the three this
+# prints nothing and exits 0: a status line must never surface an error.
 
+if command -v entire >/dev/null 2>&1; then
+	exec entire graph statusline "$@"
+fi
 [ -x "${ENTIRE_GRAPH_BIN:-}" ] && exec "$ENTIRE_GRAPH_BIN" statusline "$@"
-command -v entire >/dev/null 2>&1 || exit 0
-exec entire graph statusline "$@"
+command -v entire-graph >/dev/null 2>&1 || exit 0
+exec entire-graph statusline "$@"

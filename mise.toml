@@ -27,7 +27,6 @@ run = "go test -race -timeout 30m ./..."
 
 [tasks."test:statusline"]
 description = "Test the Claude Code status line compatibility shim"
-depends = ["build"]
 run = "sh scripts/entire-graph-statusline_test.sh"
 
 [tasks.build]
