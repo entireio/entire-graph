@@ -167,10 +167,12 @@ const (
 //
 // ok is false when the layout needs git to interpret, and the caller must take its full path:
 // .git that is not a plain directory (a linked worktree, a submodule, a link), that has a
-// commondir, or that lacks a HEAD file or plain refs and objects directories; a HEAD that is neither `ref: refs/...` nor a 40- or 64-hex id; a loose ref that is
-// itself symbolic; a config that uses include, includeIf, worktreeConfig or refStorage; and any
-// input that is a link, is not a regular file, or exceeds its read bound. Every read goes through
-// an os.Root of repo with Lstat. A missing input hashes as a stable "absent".
+// commondir, or that lacks a HEAD file or plain refs and objects directories; a HEAD that is
+// neither `ref: refs/...` nor a 40- or 64-hex id; a loose ref that is itself symbolic; a config
+// with an [include] or [includeIf] section or a worktreeConfig or refStorage key
+// (configNeedsGit); and any input that is a link, is not a regular file, or exceeds its read
+// bound. Every read goes through an os.Root of repo with Lstat. A missing input hashes as a
+// stable "absent".
 func HeadKeyWithoutGit(repo string) (key string, unborn, ok bool) {
 	root, err := os.OpenRoot(repo)
 	if err != nil {
@@ -216,11 +218,8 @@ func HeadKeyWithoutGit(repo string) (key string, unborn, ok bool) {
 	if !ok {
 		return "", false, false
 	}
-	lowered := bytes.ToLower(config)
-	for _, unsupported := range []string{"include", "worktreeconfig", "refstorage"} {
-		if bytes.Contains(lowered, []byte(unsupported)) {
-			return "", false, false
-		}
+	if configNeedsGit(config) {
+		return "", false, false
 	}
 	writeHeadKeyInput(hash, "config", config, present)
 	graphIgnore, present, ok := readHeadKeyInput(root, graphIgnoreFileName)
@@ -236,6 +235,40 @@ func HeadKeyWithoutGit(repo string) (key string, unborn, ok bool) {
 	}
 	writeHeadKeyInput(hash, "shallow", shallow, present)
 	return hex.EncodeToString(hash.Sum(nil)), unborn, true
+}
+
+// configNeedsGit reports whether a .git/config uses something the key cannot follow without git:
+// an [include] or [includeIf ...] section, which reads other files, or a worktreeConfig or
+// refStorage key, which moves the config or the refs. Only section headers and key names count,
+// so a value, a comment or a subsection name that merely contains one of those words (a branch
+// named feature/include-paths) does not. Text after a header's section name is searched for the
+// two keys rather than parsed, since a quoted subsection can itself hold a `]`; a misread there
+// only refuses the key, which is safe.
+func configNeedsGit(config []byte) bool {
+	for _, raw := range strings.Split(string(config), "\n") {
+		line := strings.ToLower(strings.TrimSpace(raw))
+		if rest, header := strings.CutPrefix(line, "["); header {
+			end := strings.IndexAny(rest, "]. \t\"")
+			if end < 0 {
+				end = len(rest)
+			}
+			if section := rest[:end]; section == "include" || section == "includeif" {
+				return true
+			}
+			if strings.Contains(rest[end:], "worktreeconfig") || strings.Contains(rest[end:], "refstorage") {
+				return true
+			}
+			continue
+		}
+		key := line
+		if end := strings.IndexAny(key, "= \t#;"); end >= 0 {
+			key = key[:end]
+		}
+		if key == "worktreeconfig" || key == "refstorage" {
+			return true
+		}
+	}
+	return false
 }
 
 // writeHeadKeyRef hashes the loose ref, or when it is absent the packed-refs lines that can name
