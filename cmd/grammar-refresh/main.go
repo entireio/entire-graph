@@ -12,14 +12,15 @@
 //	go run ./cmd/grammar-refresh -lang rust -ref v0.24.2 -url https://github.com/tree-sitter/tree-sitter-rust -generate
 //	go run ./cmd/grammar-refresh -lang csharp -ref v0.24.0 -tree-sitter-cli 0.26.7
 //
-// The vendored src/parser.c must be ABI 13-14, the range the go-tree-sitter
-// runtime loads. A manifest entry's local_build block, or -generate, builds it
-// instead of copying it: the entry's patch is applied to the checkout, then
-// `npx tree-sitter-cli@<version> generate <args>` runs (default --abi 14),
-// which needs Node.js. The recorded revision regenerates with the recorded
-// version; a new revision uses @latest and records the version it ran.
-// -tree-sitter-cli pins one, which is the fix if a future tree-sitter release
-// stops generating ABI 14. binding.go is never touched, so
+// The vendored src/parser.c must be within the ABI range the go-tree-sitter
+// runtime loads (minABI-maxABI). A manifest entry's local_build block, or
+// -generate, builds it instead of copying it: the entry's patch is applied to
+// the checkout, then `npx tree-sitter-cli@<version> generate <args>` runs
+// (default --abi maxABI), which needs Node.js. The recorded revision
+// regenerates with the recorded version; a new revision uses @latest and
+// records the version it ran. -tree-sitter-cli pins one, which is the fix if
+// a future tree-sitter release stops generating maxABI. binding.go is never
+// touched, so
 // a new language still needs one. A grammar that changes parse results needs
 // an IdentityRevision bump (internal/sem/provider.go) in the same commit.
 //
@@ -183,7 +184,7 @@ func refresh(o options) error {
 	files, abi, err := vendor(tmp, subdir, filepath.Join(grammarsDir, lang))
 	var unsupported abiError
 	if generating && errors.As(err, &unsupported) {
-		return fmt.Errorf("%s at %s: %w; tree-sitter-cli %s may no longer generate ABI 14, so pass -tree-sitter-cli <older version>", url, ref, err, version)
+		return fmt.Errorf("%s at %s: %w; tree-sitter-cli %s may no longer generate ABI %d, so pass -tree-sitter-cli <older version>", url, ref, err, version, maxABI)
 	}
 	if err != nil {
 		return fmt.Errorf("%s at %s: %w", url, ref, err)
