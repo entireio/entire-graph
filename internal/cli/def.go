@@ -484,9 +484,9 @@ func encodeDefJSON(response defResponse) ([]byte, error) {
 }
 
 // fitDefJSON encodes the JSON answer within `budget` bytes (0 = unbounded). It clips signatures to
-// the card's width, shrinks the member and implementor lists, empties the warning, partial-failure and
-// completeness metadata, and only then drops trailing declarations, recording each omission in
-// budget_omitted. A document that still does not fit is an error,
+// the card's width, shrinks the member and implementor lists, empties the warning (all but run
+// warnings), partial-failure and completeness metadata, and only then drops trailing declarations,
+// recording each omission in budget_omitted. A document that still does not fit is an error,
 // never a cut: a byte-truncated JSON document is not a smaller answer, it is an unparseable one.
 func fitDefJSON(response defResponse, budget, flagBudget int) ([]byte, error) {
 	encoded, err := encodeDefJSON(response)
@@ -529,8 +529,10 @@ func fitDefJSON(response defResponse, budget, flagBudget int) ([]byte, error) {
 	}
 	// Snapshot metadata goes before any declaration does: it is context for the answer, not the answer.
 	// On a polyglot repository the per-language completeness table alone can outgrow a per-name share.
-	omission.Warnings, omission.PartialFailures = len(fitted.Warnings), len(fitted.PartialFailures)
-	fitted.Warnings, fitted.PartialFailures = []sem.ProviderWarning{}, []sem.PartialFailure{}
+	// A run warning stays: it reports a failure of this run, and a budget must not drop it silently.
+	kept := explainWarnings(fitted.Warnings)
+	omission.Warnings, omission.PartialFailures = len(fitted.Warnings)-len(kept), len(fitted.PartialFailures)
+	fitted.Warnings, fitted.PartialFailures = append([]sem.ProviderWarning{}, kept...), []sem.PartialFailure{}
 	if out, ok, err := attempt(); err != nil || ok {
 		return out, err
 	}

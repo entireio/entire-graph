@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -299,6 +300,25 @@ func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 			}
 		})
 	}
+	// def's JSON budget must keep the run warning when it empties the others.
+	// The budget is one byte under the full answer.
+	t.Run("cold def --head json budgeted", func(t *testing.T) {
+		defJSON := func(cache string, budget int) []string {
+			return []string{"--repo", repo, "--head", "--cache-dir", cache, "--profile", "full", "--format", "json",
+				"--max-context-bytes", strconv.Itoa(budget), "Render"}
+		}
+		full := run(t, runDef, defJSON(coldCacheWithBlockedSidecar(t), 0)...)
+		output := run(t, runDef, defJSON(coldCacheWithBlockedSidecar(t), len(full)-1)...)
+		var fitted struct {
+			BudgetOmitted *struct {
+				Warnings int `json:"warnings"`
+			} `json:"budget_omitted"`
+		}
+		if err := json.Unmarshal(output, &fitted); err != nil || fitted.BudgetOmitted == nil {
+			t.Fatalf("premise: the budget did not trim the answer (err %v):\n%s", err, output)
+		}
+		requireWarning(t, output)
+	})
 	// explain reads the build error from stdin and prints no other warnings,
 	// so its text form must carry this one too.
 	const buildError = "main.go:2:1: undefined: Render\n"
