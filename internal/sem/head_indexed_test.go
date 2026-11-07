@@ -48,8 +48,8 @@ func removeHeadKeyPath(t *testing.T, repo, name string) {
 // TestHeadKeyWithoutGitRefusesOnlyWhatNeedsGit catches a key kept for a layout git interprets
 // differently, and a warm path lost to a word in a value: an [include] or [includeIf] section and
 // a worktreeConfig or refStorage key refuse the key, as do a .git that is a file, a commondir, a
-// missing HEAD, refs or objects, a symbolic loose ref, an unreadable HEAD and a config with a
-// second name; a branch, a remote URL or a comment that only mentions "include" does not.
+// missing HEAD, refs or objects, a symbolic loose ref, a HEAD that is neither a ref nor an id and
+// a config with a second name; a branch, a remote URL or a comment that only mentions "include" does not.
 func TestHeadKeyWithoutGitRefusesOnlyWhatNeedsGit(t *testing.T) {
 	t.Parallel()
 	config := func(content string) func(t *testing.T, repo string) {
@@ -67,6 +67,9 @@ func TestHeadKeyWithoutGitRefusesOnlyWhatNeedsGit(t *testing.T) {
 		{name: "include section", mutate: config("[include]\n\tpath = other\n"), ok: false},
 		{name: "include section in capitals", mutate: config("[Include]\n\tpath = other\n"), ok: false},
 		{name: "includeIf section", mutate: config("[includeIf \"gitdir:~/work/\"]\n\tpath = other\n"), ok: false},
+		{name: "include after another header on the line", mutate: config("[core] [include]\n\tpath = other\n"), ok: false},
+		{name: "includeIf after another header on the line", mutate: config("[extensions] [includeIf \"gitdir:x\"]\n\tpath = y\n"), ok: false},
+		{name: "include section after a byte order mark", mutate: config("\xef\xbb\xbf[include]\n\tpath = other\n"), ok: false},
 		{name: "worktreeConfig key", mutate: config("[extensions]\n\tworktreeConfig = true\n"), ok: false},
 		{name: "refStorage key after the header", mutate: config("[extensions] refStorage = reftable\n"), ok: false},
 		{name: "git file", mutate: func(t *testing.T, repo string) {

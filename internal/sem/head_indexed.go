@@ -243,20 +243,31 @@ func HeadKeyWithoutGit(repo string) (key string, unborn, ok bool) {
 // so a value, a comment or a subsection name that merely contains one of those words (a branch
 // named feature/include-paths) does not. Text after a header's section name is searched for the
 // two keys rather than parsed, since a quoted subsection can itself hold a `]`; a misread there
-// only refuses the key, which is safe.
+// only refuses the key, which is safe. Git reads several headers on one line, so every `[` on a
+// header line is checked, and it skips a leading UTF-8 byte order mark. A line git itself rejects
+// (a bare `include.path = x` key, or `[ include ]`) is not refused here, because git fails on
+// such a config anyway.
 func configNeedsGit(config []byte) bool {
-	for _, raw := range strings.Split(string(config), "\n") {
+	text := strings.TrimPrefix(string(config), string(rune(0xFEFF)))
+	for _, raw := range strings.Split(text, "\n") {
 		line := strings.ToLower(strings.TrimSpace(raw))
-		if rest, header := strings.CutPrefix(line, "["); header {
-			end := strings.IndexAny(rest, "]. \t\"")
-			if end < 0 {
-				end = len(rest)
-			}
-			if section := rest[:end]; section == "include" || section == "includeif" {
+		if strings.HasPrefix(line, "[") {
+			if strings.Contains(line, "worktreeconfig") || strings.Contains(line, "refstorage") {
 				return true
 			}
-			if strings.Contains(rest[end:], "worktreeconfig") || strings.Contains(rest[end:], "refstorage") {
-				return true
+			for rest := line; ; {
+				_, after, found := strings.Cut(rest, "[")
+				if !found {
+					break
+				}
+				rest = after
+				end := strings.IndexAny(after, "]. \t\"")
+				if end < 0 {
+					end = len(after)
+				}
+				if section := after[:end]; section == "include" || section == "includeif" {
+					return true
+				}
 			}
 			continue
 		}
@@ -316,7 +327,7 @@ func scanPackedRefs(root *os.Root, ref string) (lines []string, found, ok bool) 
 				lines = append(lines, line)
 			}
 		default:
-			if _, name, cut := strings.Cut(line, " "); cut && strings.TrimRight(name, "\r") == ref {
+			if _, name, cut := strings.Cut(line, " "); cut && name == ref {
 				lines = append(lines, line)
 				found, matched = true, true
 			}
