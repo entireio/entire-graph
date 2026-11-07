@@ -59,9 +59,7 @@ cache. CI additionally runs the POSIX shell suite
   `-generate` to add that block to a grammar whose release ships only ABI 15;
   it defaults to `--abi 14`. Generating needs Node.js (`npx`) on `PATH`.
   Regenerating the recorded revision reuses the recorded CLI version, so the
-  parser matches the vendored one exactly; `tree_sitter/` headers vendored
-  from upstream's committed copies may come back as that CLI's versions. A new
-  revision uses
+  output matches the vendored files exactly. A new revision uses
   `tree-sitter-cli@latest` and records the version it ran. `-tree-sitter-cli
   <version>` overrides both. Tree-sitter can currently still generate ABI 14,
   but a future release may drop it. If the tool then reports an ABI it cannot

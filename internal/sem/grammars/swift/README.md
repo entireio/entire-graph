@@ -2,7 +2,7 @@
 
 Based on tree-sitter-swift 0.7.4, commit
 `82bb3a533e0801fd2bbaa11dc49676e10bf41948`.
-The license and headers are copied from upstream. The parser is
+The license is copied from upstream. The parser and its headers are
 generated at ABI 14 with tree-sitter-cli **0.24.7** after applying
 [compatibility.patch](compatibility.patch) to upstream's `grammar.js` and `src/scanner.c`.
 
@@ -27,11 +27,9 @@ repository root:
 go run ./cmd/grammar-refresh -lang swift -ref 0.7.4-with-generated-files
 ```
 
-At the recorded commit this reuses tree-sitter-cli 0.24.7 and reproduces
-`parser.c`, `scanner.c` and `tree_sitter/parser.h` exactly. The vendored
-`tree_sitter/alloc.h` and `array.h` are upstream's committed copies; the tool
-replaces them with 0.24.7's generated ones, which differ only in parameter
-names and warning pragmas. A newer ref uses the latest
+At the recorded commit this reuses tree-sitter-cli 0.24.7 and reproduces the
+vendored files exactly, including the `tree_sitter/` headers, which come from
+that generator rather than upstream's committed copies. A newer ref uses the latest
 tree-sitter-cli and stops if the patch no longer applies; reconcile the patch,
 then run it again. No generation or download occurs when building or running
 Graph. Update the identity revision whenever the resulting parser changes.
