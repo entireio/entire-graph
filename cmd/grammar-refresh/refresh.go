@@ -12,6 +12,9 @@ import (
 	"strings"
 )
 
+// The ABI range the go-tree-sitter runtime loads. maxABI is also what
+// grammars are generated for. TestABIRangeMatchesRuntime fails when a
+// go-tree-sitter upgrade changes the range, so this is the one place to edit.
 const (
 	minABI = 13
 	maxABI = 14
@@ -46,7 +49,7 @@ type LocalBuild struct {
 type abiError struct{ abi int }
 
 func (e abiError) Error() string {
-	return fmt.Sprintf("grammar is ABI %d, but the go-tree-sitter runtime accepts ABI %d-%d; regenerate it with `tree-sitter generate --abi 14` and vendor the result", e.abi, minABI, maxABI)
+	return fmt.Sprintf("grammar is ABI %d, but the go-tree-sitter runtime accepts ABI %d-%d; regenerate it with `tree-sitter generate --abi %d` and vendor the result", e.abi, minABI, maxABI, maxABI)
 }
 
 var languageVersionPattern = regexp.MustCompile(`(?m)^#define LANGUAGE_VERSION (\d+)\s*$`)
