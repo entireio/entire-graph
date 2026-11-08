@@ -190,3 +190,10 @@ BRAIN_INTEGRATION_REQUIRED=1 BRAIN_INTEGRATION_REQUIRE_GUIDE_PARITY=1 \
 BRAIN_INTEGRATION_BRAIN_BINARY=<brain build> BRAIN_INTEGRATION_GRAPH_BINARY=<graph build of this tree> \
 go test ./tools/integration -count=1
 ```
+
+"The matching guide change" is literal: strict parity is byte equality, so it
+holds only against a Brain that carries the other half. The `remember --path`
+rule above is entireio/entire-brain#605, and Brain's `compareGuideText` still
+re-inserts the two obsolete MCP sentences for the pinned Graph release. Run the
+parity leg against Brain main before #605 lands and it fails on this
+repository's own correction rather than on a regression.
