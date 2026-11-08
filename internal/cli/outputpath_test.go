@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -198,7 +199,7 @@ func TestVerifyRecordBaselineWritesToCallerOwnedPaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(content), `"format_version": 1`) {
+		if !strings.Contains(string(content), fmt.Sprintf(`"format_version": %d`, verifyBaselineFormatVersion)) {
 			t.Fatalf("baseline at %s is not the recorded JSON:\n%s", path, content)
 		}
 	}
@@ -459,7 +460,7 @@ func TestVerifyRecordBaselineOutsideAGitRepository(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(content), `"format_version": 1`) {
+		if !strings.Contains(string(content), fmt.Sprintf(`"format_version": %d`, verifyBaselineFormatVersion)) {
 			t.Fatalf("baseline at %s is not the recorded JSON:\n%s", path, content)
 		}
 	}
@@ -1045,7 +1046,7 @@ func TestOutputPathsOutsideTheRepositoryKeepWorkingThroughLinkedDirectories(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(baseline), `"format_version": 1`) {
+	if !strings.Contains(string(baseline), fmt.Sprintf(`"format_version": %d`, verifyBaselineFormatVersion)) {
 		t.Fatalf("baseline is not the recorded JSON:\n%s", baseline)
 	}
 }

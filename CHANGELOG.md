@@ -27,6 +27,11 @@ auto-generated notes on
 
 ### Changed
 
+- `verify` baselines now record the `--setup` command and refuse a baseline
+  recorded with a different one. Setup runs before the test command and prepares
+  the tree it adjudicates, so comparing runs prepared differently is the same
+  incomparability already refused for a changed `--test` command. The baseline
+  `format_version` is now 2; re-record baselines written by an older build.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being
   assigned to a variable, passed as an argument, or stored in a struct field or

@@ -316,6 +316,71 @@ func TestParseVerifyFlagsRequiresABaseline(t *testing.T) {
 	}
 }
 
+// TestRecordedBaselineCarriesTheSetupCommand pins that --setup is part of the recorded provenance.
+// The comparison below refuses a baseline whose setup differs, so the record path has to carry it.
+func TestRecordedBaselineCarriesTheSetupCommand(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	path := filepath.Join(repo, "baseline.json")
+	var out bytes.Buffer
+	flags := verifyFlags{Test: "go test ./...", Setup: "go mod download", RecordBaseline: path}
+	if err := writeVerifyBaseline(t.Context(), Options{Stdout: &out}, repo, flags,
+		verifyResults{}, "exit-code-only", false, 0); err != nil {
+		t.Fatalf("record baseline: %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var baseline verifyBaseline
+	if err := json.Unmarshal(content, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	if baseline.Setup != flags.Setup {
+		t.Fatalf("recorded setup = %q, want %q", baseline.Setup, flags.Setup)
+	}
+	if baseline.FormatVersion != verifyBaselineFormatVersion {
+		t.Fatalf("recorded format_version = %d, want %d", baseline.FormatVersion, verifyBaselineFormatVersion)
+	}
+}
+
+// TestValidateVerifyBaselineRejectsADifferentSetup pins that a baseline is refused when the setup
+// command that prepared the tree differs, even when repository, test command and parser match. Setup
+// runs before the test command, so a different one can select different dependencies or build
+// configuration and the two id sets would describe differently prepared trees.
+func TestValidateVerifyBaselineRejectsADifferentSetup(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	baseline := verifyBaseline{
+		FormatVersion: verifyBaselineFormatVersion,
+		Repo:          verifyRecordedRepo(repo),
+		TestCommand:   "go test ./...",
+		Setup:         "go mod download",
+		Parser:        "go test",
+	}
+	if err := validateVerifyBaseline(baseline, "b.json", repo, "go test ./...", "go mod download", "go test", true, 0); err != nil {
+		t.Fatalf("a matching setup was refused: %v", err)
+	}
+	for _, testCase := range []struct {
+		name  string
+		setup string
+	}{
+		{name: "no setup this run", setup: ""},
+		{name: "different setup", setup: "go generate ./..."},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateVerifyBaseline(baseline, "b.json", repo, "go test ./...", testCase.setup, "go test", true, 0)
+			if err == nil {
+				t.Fatalf("a baseline recorded with setup %q was accepted for setup %q", baseline.Setup, testCase.setup)
+			}
+			if !strings.Contains(err.Error(), "setup command") {
+				t.Fatalf("error does not name the setup command: %v", err)
+			}
+		})
+	}
+}
+
 // TestVerifySetupFailureStopsTheRun pins the exit code of the SETUP command. runVerifyShell reports a
 // command that ran and failed as (nonzero, nil error), so a caller that keeps only the error learns
 // nothing about a failed install or build. The regression this guards is not cosmetic: the test

@@ -55,7 +55,11 @@ const (
 // verifyBaselineFormatVersion is the on-disk shape this build writes AND the only shape it will
 // adjudicate. A baseline is compared field-by-field against ids the current run produced, so a file
 // this build cannot claim to understand must be refused rather than half-read.
-const verifyBaselineFormatVersion = 1
+//
+// Version 2 added the `setup` field. Without the bump a version-1 baseline would carry `setup: ""`
+// and be accepted for a run that used a setup command, which is the incomparability this field
+// exists to refuse.
+const verifyBaselineFormatVersion = 2
 
 // verifyBaseline is the on-disk pre-edit record. The format is deliberately boring — a status per id
 // plus provenance — because its only consumer is the diff below and its only job is to still be
@@ -65,6 +69,7 @@ type verifyBaseline struct {
 	RecordedAt          string        `json:"recorded_at"`
 	Repo                string        `json:"repo"`
 	TestCommand         string        `json:"test_command"`
+	Setup               string        `json:"setup"`
 	Parser              string        `json:"parser"`
 	ExitCode            int           `json:"exit_code"`
 	Results             verifyResults `json:"results"`
@@ -163,7 +168,7 @@ func runVerify(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := validateVerifyBaseline(baseline, flags.PreEditBaseline, repo, flags.Test, parser, parsed, flags.TestFailureExitCode); err != nil {
+	if err := validateVerifyBaseline(baseline, flags.PreEditBaseline, repo, flags.Test, flags.Setup, parser, parsed, flags.TestFailureExitCode); err != nil {
 		return err
 	}
 	_, writeErr := opts.Stdout.Write(renderVerifyVerdict(
@@ -300,6 +305,7 @@ func writeVerifyBaseline(
 		RecordedAt:          time.Now().UTC().Format(time.RFC3339),
 		Repo:                verifyRecordedRepo(repo),
 		TestCommand:         flags.Test,
+		Setup:               flags.Setup,
 		TestFailureExitCode: flags.TestFailureExitCode,
 		Parser:              parser,
 		ExitCode:            exitCode,
@@ -358,7 +364,7 @@ func readVerifyBaseline(path string) (verifyBaseline, error) {
 // because the failure mode this verb exists to prevent is a confident verdict on a run that did not
 // happen the way the verdict assumes.
 func validateVerifyBaseline(
-	baseline verifyBaseline, path, repo, testCommand, parser string, parsed bool, testFailureExitCode int,
+	baseline verifyBaseline, path, repo, testCommand, setup, parser string, parsed bool, testFailureExitCode int,
 ) error {
 	if baseline.FormatVersion != verifyBaselineFormatVersion {
 		return fmt.Errorf(
@@ -383,6 +389,15 @@ func validateVerifyBaseline(
 		return fmt.Errorf(
 			"verify --pre-edit-baseline %s recorded test command %q but this run ran %q: "+
 				"the two id sets are not comparable", path, baseline.TestCommand, testCommand)
+	}
+	// --setup is not cosmetic to the comparison: it runs before the test command and prepares the tree
+	// that command then adjudicates, so a different setup selects different dependencies or build
+	// configuration. The verdict would then be rendered over two id sets produced from differently
+	// prepared trees - the same incomparability the test command is refused for above.
+	if baseline.Setup != setup {
+		return fmt.Errorf(
+			"verify --pre-edit-baseline %s recorded setup command %q but this run ran %q: "+
+				"the two id sets were produced from differently prepared trees", path, baseline.Setup, setup)
 	}
 	if baseline.TestFailureExitCode != testFailureExitCode {
 		return fmt.Errorf("verify --pre-edit-baseline %s recorded test-failure exit code %d but this run declares %d (0 means automatic): re-record with the same --test-failure-exit-code", path, baseline.TestFailureExitCode, testFailureExitCode)
