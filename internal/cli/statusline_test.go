@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 // statuslineRepo is a committed git repository holding one 4,000-byte Go file, a.go. Its index is
@@ -269,6 +271,44 @@ func TestHeadQueryWritesTheSize(t *testing.T) {
 	line := statuslineLine1(t, repo, cacheDir)
 	fast := statuslineIndexAs(t, repo, cacheDir, "fast")
 	assertSizeAfterMark(t, line, fast)
+}
+
+// TestAnEntryThatFailedToLandLeavesNoSize catches counts written ahead of an entry that never
+// lands: with every HEAD entry's path taken by a directory, neither `index` (which fails) nor a
+// cold `query --head` or `def --head` (which answer from memory) can publish the entry, so none
+// of them may leave a size beside it for the status line to show.
+func TestAnEntryThatFailedToLandLeavesNoSize(t *testing.T) {
+	for _, command := range [][]string{
+		{"index", "--profile", "full", "--format", "json"},
+		{"query", "--head", "--profile", "fast", "--format", "json", "--query", "F0500 calls F0501"},
+		{"def", "--head", "--profile", "full", "--format", "json", "F0500"},
+	} {
+		t.Run(command[0], func(t *testing.T) {
+			repo := statuslineSizedRepo(t)
+			cacheDir := t.TempDir()
+			commit, tree := rev(t, repo, "HEAD"), rev(t, repo, "HEAD^{tree}")
+			head, _, _, err := sem.HeadIndexEntries(t.Context(), repo, "test", cacheDir, commit, tree, 0)
+			if err != nil || len(head) == 0 {
+				t.Fatalf("HEAD's index entries: %v (%d)", err, len(head))
+			}
+			for _, entry := range head {
+				if err := os.MkdirAll(filepath.Join(entry.Root, entry.Relative, "blocker"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var out bytes.Buffer
+			args := append([]string{command[0], "--repo", repo, "--cache-dir", cacheDir}, command[1:]...)
+			// index fails on the blocked rename; query and def answer from memory. Either
+			// way the entry did not land.
+			_ = Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out}, args)
+			for _, entry := range head {
+				if symbols, relations, ok := sem.IndexEntryCounts(entry); ok {
+					t.Fatalf("%s recorded %d nodes and %d edges beside an entry it could not write:\n%s",
+						command[0], symbols, relations, out.String())
+				}
+			}
+		})
+	}
 }
 
 // TestHeadLookupWritesTheSize catches the cold lookup writer without the counts helper: a cold

@@ -81,7 +81,7 @@ func TestEverySearchSnapshotWriterRefusesATruncatedSnapshot(t *testing.T) {
 			if _, err := readSearchSnapshot(entry); err == nil {
 				t.Fatalf("%s left a readable entry behind", writer.name)
 			}
-			// The counts file is written ahead of the entry, so it must also come after the refusal.
+			// A refused write leaves no counts file either.
 			if _, _, ok := IndexEntryCounts(IndexEntry{Root: entry.root, Relative: entry.relative}); ok {
 				t.Fatalf("%s left a counts file behind", writer.name)
 			}

@@ -539,15 +539,14 @@ func loadOrBuildSearchSnapshotPersisting(
 	// a writable cache directory.
 	if generationKnown && persistBuilt {
 		cache := newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot, ctx)
-		if len(options.OnlyFiles) == 0 {
+		if err := writeSearchSnapshot(entry, cache); err == nil && len(options.OnlyFiles) == 0 {
 			// A complete entry gets its counts here too: this is where a cold
 			// lookup (`def`, `neighbors`, `impact`, `explain` with --head)
 			// persists, and without them the status line shows no size until
-			// `index` runs. Best effort, and ahead of the entry's rename (see
+			// `index` runs. Best effort, and only once the entry has landed (see
 			// writeSearchSnapshotCounts, which refuses a truncated snapshot).
 			_ = writeSearchSnapshotCounts(entry, cache)
 		}
-		_ = writeSearchSnapshot(entry, cache)
 	}
 	return snapshot, false, nil
 }
@@ -773,8 +772,6 @@ func persistVerifiedSearchSnapshot(
 	if err := refuseTruncatedSnapshot(cache); err != nil {
 		return err
 	}
-	// Best effort, and ahead of the entry's rename (see writeSearchSnapshotCounts).
-	_ = writeSearchSnapshotCounts(entry, cache)
 	var verifyErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		written, err := entry.writeDigest("snapshot", cache)
@@ -788,6 +785,9 @@ func persistVerifiedSearchSnapshot(
 		case stored != written:
 			verifyErr = errors.New("persisted entry does not match the bytes written")
 		default:
+			// The entry landed and verified, so its counts may describe it now
+			// (writeSearchSnapshotCounts); best effort.
+			_ = writeSearchSnapshotCounts(entry, cache)
 			// The explicit prebuild is exactly where a reader expects the
 			// sidecar to exist; best effort, like writeSearchSnapshot's.
 			_ = writeSearchStoreSidecar(ctx, entry, written.String(), &cache)
@@ -1769,8 +1769,10 @@ func searchSnapshotCountsEntryFor(entry cacheEntry) cacheEntry {
 
 // writeSearchSnapshotCounts records cache.Snapshot.Header.Stats' symbol and relation counts beside
 // a COMPLETE entry, through the confined entry directory (ADR 0004). Every complete entry writer
-// calls it before the entry's own rename, so a render rarely sees an entry without its counts; a
-// selective view must never reach it, since its stats count a subset. It calls
+// calls it only once the entry has landed (renamed into place, and for `index` verified), so the
+// counts never describe a build that was not published; a render between the two renames sees
+// the previous counts or none. A selective view must never reach it, since its stats count a
+// subset. It calls
 // refuseTruncatedSnapshot itself and writes nothing on a refusal, so a caller that does not refuse
 // first (the index hit's backfill) is guarded too. It is best effort: its error never fails a
 // write, an `index` or a lookup, and never blocks the entry's rename. A failed write only leaves
@@ -1865,12 +1867,12 @@ func writeSearchSnapshotAndStore(ctx context.Context, entry cacheEntry, cache ca
 	if err := refuseTruncatedSnapshot(cache); err != nil {
 		return err
 	}
-	// Best effort, and ahead of the entry's rename (see writeSearchSnapshotCounts).
-	_ = writeSearchSnapshotCounts(entry, cache)
 	digest, err := entry.writeDigest("snapshot", cache)
 	if err != nil {
 		return err
 	}
+	// Best effort, and only once the entry has landed (see writeSearchSnapshotCounts).
+	_ = writeSearchSnapshotCounts(entry, cache)
 	_ = writeSearchStoreSidecar(ctx, entry, digest.String(), &cache)
 	return nil
 }
