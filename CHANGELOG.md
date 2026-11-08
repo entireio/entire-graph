@@ -27,6 +27,12 @@ auto-generated notes on
 
 ### Changed
 
+- The cache root reclaims version directories this build cannot address. A
+  cache version is hashed into every entry key, so an upgraded build never
+  reads an older version's entries; they were previously kept forever (an
+  observed cache root was 95% dead versions). Pruning is best-effort and leaves
+  a version directory alone until it has been untouched for 24 hours, so a
+  concurrently running older build is not disturbed.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being
   assigned to a variable, passed as an argument, or stored in a struct field or

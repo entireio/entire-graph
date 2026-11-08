@@ -283,6 +283,9 @@ func loadOrBuildSearchSnapshotPersisting(
 	if options.Profile == "" {
 		options.Profile = ProfileFull
 	}
+	if cacheDir != "" && !disableCache {
+		PruneStaleCacheVersions(cacheDir)
+	}
 	// uncached is every route that builds what options asks for without the
 	// cache. None of them is a complete build published under the lock, so a
 	// selection that assumed one (coldCompletePolicy.required) is refused here.
@@ -632,6 +635,7 @@ func preindexProviderSnapshotWithPersistenceVerifier(
 	if cacheDir == "" {
 		return ProviderSnapshot{}, false, errors.New("preindex requires a cache directory")
 	}
+	PruneStaleCacheVersions(cacheDir)
 	options.Worktree = false
 	options.OnlyFiles = nil
 	if options.Profile == "" {

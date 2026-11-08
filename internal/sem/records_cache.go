@@ -221,6 +221,9 @@ func BeginProviderRecordsCache(ctx context.Context, repo, providerVersion, commi
 	if cacheDir == "" || commit == "" || tree == "" || options.Worktree {
 		return transaction, nil
 	}
+	// The caller has committed to the cache for this run, so this is the moment
+	// to reclaim version directories no build can address any more.
+	PruneStaleCacheVersions(cacheDir)
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
 		return nil, err
