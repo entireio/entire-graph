@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -111,9 +113,67 @@ func TestRefreshGenerateRecordsLatest(t *testing.T) {
 		t.Fatalf("npx calls = %q", got)
 	}
 	grammars, _ := loadManifest(manifest)
-	want := &LocalBuild{TreeSitterCLI: "0.27.1", GenerateArgs: []string{"--abi", "14"}}
+	// GenerateArgs stays empty: see TestRefreshDoesNotPinTheDefaultABI.
+	want := &LocalBuild{TreeSitterCLI: "0.27.1"}
 	if got := grammars[0].LocalBuild; !reflect.DeepEqual(got, want) {
 		t.Fatalf("local_build = %+v, want %+v", got, want)
+	}
+}
+
+// TestRefreshDoesNotPinTheDefaultABI holds the one-constant promise. generate
+// runs with --abi maxABI and the manifest records nothing, so the next runtime
+// bump edits maxABI and every grammar follows. Writing the resolved default
+// back would make it an explicit pin, and each grammar would go on generating
+// the old ABI -- which vendor keeps accepting for as long as it is inside the
+// range, so no test and no run would say a word.
+func TestRefreshDoesNotPinTheDefaultABI(t *testing.T) {
+	calls := fakeNPX(t, "0.27.1", "14")
+	repo, _ := generatedGrammarRepo(t)
+	root := t.TempDir()
+	manifest := filepath.Join(root, "grammars.json")
+	if err := refresh(options{Lang: "demo", Ref: "HEAD", URL: repo, ManifestPath: manifest, GrammarsDir: root, Generate: true}); err != nil {
+		t.Fatal(err)
+	}
+	wantCall := "tree-sitter-cli@0.27.1 generate --abi " + strconv.Itoa(maxABI)
+	if !slices.Contains(*calls, wantCall) {
+		t.Errorf("npx calls = %q, want one of them to be %q", *calls, wantCall)
+	}
+	grammars, err := loadManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args := grammars[0].LocalBuild.GenerateArgs; args != nil {
+		t.Errorf("manifest recorded generate_args %q; the default must stay derived from maxABI", args)
+	}
+	raw, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "generate_args") {
+		t.Errorf("manifest still mentions generate_args:\n%s", raw)
+	}
+}
+
+// Explicit args are the maintainer's, so they are used and kept verbatim.
+func TestRefreshKeepsExplicitGenerateArgs(t *testing.T) {
+	calls := fakeNPX(t, "0.24.7", "14")
+	repo, revision := generatedGrammarRepo(t)
+	manifest, root := buildManifest(t, repo, revision, &LocalBuild{
+		TreeSitterCLI: "0.24.7",
+		GenerateArgs:  []string{"--abi", "13"},
+	})
+	if err := refresh(options{Lang: "demo", Ref: "HEAD", ManifestPath: manifest, GrammarsDir: root}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "tree-sitter-cli@0.24.7 generate --abi 13"; !slices.Contains(*calls, want) {
+		t.Errorf("npx calls = %q, want one of them to be %q", *calls, want)
+	}
+	grammars, err := loadManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := grammars[0].LocalBuild.GenerateArgs, []string{"--abi", "13"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("generate_args = %q, want %q", got, want)
 	}
 }
 
@@ -167,5 +227,70 @@ func TestResolveCLIRejectsUnparseableVersion(t *testing.T) {
 	fakeNPX(t, "nonsense", "14")
 	if v, err := resolveCLI(t.TempDir(), "latest"); err == nil {
 		t.Fatalf("resolveCLI = %q; want an error", v)
+	}
+}
+
+func TestResolveCLIKeepsAPrereleaseVersion(t *testing.T) {
+	const printed = "0.25.0-rc.1"
+	fakeNPX(t, printed, "14")
+	got, err := resolveCLI(t.TempDir(), "latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != printed {
+		t.Errorf("resolveCLI = %q, want %q; recording the release version pins a build that never generated these bytes", got, printed)
+	}
+}
+
+func TestCLIVersionPatternTakesTheWholeVersion(t *testing.T) {
+	for printed, want := range map[string]string{
+		"tree-sitter 0.24.7":        "0.24.7",
+		"tree-sitter 0.25.0-rc.1":   "0.25.0-rc.1",
+		"tree-sitter 0.25.0-rc.1.":  "0.25.0-rc.1",
+		"tree-sitter 1.0.0+build.5": "1.0.0+build.5",
+		"tree-sitter nonsense":      "",
+	} {
+		if got := cliVersionPattern.FindString(printed); got != want {
+			t.Errorf("%q -> %q, want %q", printed, got, want)
+		}
+	}
+}
+
+// TestRecordedLocalBuildLeavesTheDefaultDerived is the pure form of the
+// one-constant promise: nothing writes --abi maxABI into the manifest, so a
+// runtime bump that edits maxABI changes what every grammar generates.
+func TestRecordedLocalBuildLeavesTheDefaultDerived(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in   *LocalBuild
+		want *LocalBuild
+	}{
+		"new grammar": {
+			nil,
+			&LocalBuild{TreeSitterCLI: "0.27.1"},
+		},
+		"version refreshed": {
+			&LocalBuild{TreeSitterCLI: "0.24.7"},
+			&LocalBuild{TreeSitterCLI: "0.27.1"},
+		},
+		"patch kept": {
+			&LocalBuild{Patch: "swift/compatibility.patch", TreeSitterCLI: "0.24.7"},
+			&LocalBuild{Patch: "swift/compatibility.patch", TreeSitterCLI: "0.27.1"},
+		},
+		"explicit args kept": {
+			&LocalBuild{TreeSitterCLI: "0.24.7", GenerateArgs: []string{"--abi", "13"}},
+			&LocalBuild{TreeSitterCLI: "0.27.1", GenerateArgs: []string{"--abi", "13"}},
+		},
+	} {
+		got := recordedLocalBuild(tc.in, "0.27.1")
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: recordedLocalBuild = %+v, want %+v", name, got, tc.want)
+		}
+		if tc.in != nil && len(tc.in.GenerateArgs) == 0 && got.GenerateArgs != nil {
+			t.Errorf("%s: the derived default was recorded as a pin: %q", name, got.GenerateArgs)
+		}
+	}
+	// The default itself must still reach the generator.
+	if args := generateArgs(nil); !reflect.DeepEqual(args, []string{"--abi", strconv.Itoa(maxABI)}) {
+		t.Errorf("generateArgs(nil) = %q, want --abi %d", args, maxABI)
 	}
 }

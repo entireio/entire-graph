@@ -134,6 +134,21 @@ func refresh(o options) error {
 		}
 	}
 	generating := wantsGeneration(existing, o)
+	if patchFile != "" && !generating {
+		// #357 vendored a Swift parser built from a hand-applied grammar.js
+		// patch, and nothing in the tree said the two were connected. The tool
+		// now applies that patch itself, which is only half the job: applying
+		// it to grammar.js and then copying upstream's committed parser.c
+		// discards it silently and reports success.
+		orphaned, err := patchPathsNeedingGeneration(patchFile)
+		if err != nil {
+			return err
+		}
+		if len(orphaned) > 0 {
+			return fmt.Errorf("%s patches %s, which reaches the vendored grammar only through a regenerated parser; set local_build.tree_sitter_cli for %s in %s, or pass -generate",
+				build.Patch, strings.Join(orphaned, ", "), lang, manifestPath)
+		}
+	}
 	if generating {
 		if err := findNPX(); err != nil {
 			return err
@@ -173,12 +188,7 @@ func refresh(o options) error {
 		if err := generate(grammarRoot, version, args); err != nil {
 			return err
 		}
-		next := LocalBuild{}
-		if build != nil {
-			next = *build
-		}
-		next.TreeSitterCLI, next.GenerateArgs = version, args
-		build = &next
+		build = recordedLocalBuild(build, version)
 	}
 
 	files, abi, err := vendor(tmp, subdir, filepath.Join(grammarsDir, lang))
