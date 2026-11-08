@@ -224,19 +224,20 @@ func assertNoSizeSegment(t *testing.T, line string) {
 }
 
 // TestStatuslineShowsTheGraphSize catches a missing or abbreviated size, a misplaced or missing
-// thousands separator, and counts that disagree with the fixture: the segment after the mark is the
-// full index's symbol and relation counts, written in full with comma separators.
-//
-// The fixture's full index, derived by hand from statuslineSizedRepo: 1,001 nodes are T and the
-// 1,000 functions. 6,998 edges are 1,001 DEFINES (funcs.go defines each node), 999 CALLS
-// (F0000-F0998 each call the next), 1,000 PARAM_TYPE and 1,000 RETURNS_TYPE (every function takes
-// and returns T), 1,000 USES_TYPE (every function uses T), and 1,998 DATA_FLOWS (each of the 999
-// calls forwards t into the callee's argument and returns the callee's result).
+// thousands separator, and counts that disagree with what index reported: the segment after the
+// mark is the full index's symbol and relation counts, written in full with comma separators.
+// The node count is pinned to the fixture: 1,001 nodes are T and the 1,000 functions of
+// statuslineSizedRepo. The edge count is compared with index's own report, since it depends on
+// parser heuristics (type uses, data flows) the status line does not own.
 func TestStatuslineShowsTheGraphSize(t *testing.T) {
 	repo := statuslineSizedRepo(t)
 	cacheDir := t.TempDir()
-	statuslineIndexAs(t, repo, cacheDir, "full")
-	assertSegmentsInOrder(t, statuslineLine1(t, repo, cacheDir), "◤ entire graph", "1,001 nodes | 6,998 edges")
+	counts := statuslineIndexAs(t, repo, cacheDir, "full")
+	line := statuslineLine1(t, repo, cacheDir)
+	assertSizeAfterMark(t, line, counts)
+	if size := statuslineSegments(line)[1]; !strings.HasPrefix(size, "1,001 nodes | ") {
+		t.Fatalf("line %q: size segment %q, want it to start with %q", line, size, "1,001 nodes | ")
+	}
 }
 
 // TestStatuslinePrefersTheFullIndexSize catches a fast entry winning over full: with only a fast
@@ -913,4 +914,64 @@ func TestStatuslineSweepsCacheFilesUnusedForAWeek(t *testing.T) {
 			t.Errorf("the sweep removed %s, which index wrote: %v", path, err)
 		}
 	}
+}
+
+// TestIndexRewritesTheSizeWhenAHitReportsOtherCounts catches a counts file kept although a later
+// `index` hit reports other numbers. A commit that changes a.go and b.go together and one that
+// restores both bring HEAD back to the indexed tree, so the full-profile `index` is a hit, yet its
+// relations now include those two files' FILE_CHANGES_WITH edges; the next render shows the
+// counts that hit reported.
+func TestIndexRewritesTheSizeWhenAHitReportsOtherCounts(t *testing.T) {
+	repo := statuslineRepo(t)
+	write(t, repo, "b.go", "package main\n\nfunc B() {}\n")
+	git(t, repo, "add", "b.go")
+	git(t, repo, "commit", "-m", "b")
+	cacheDir := t.TempDir()
+	before := statuslineIndexAs(t, repo, cacheDir, "full")
+	originals := map[string]string{}
+	for _, name := range []string{"a.go", "b.go"} {
+		content, err := os.ReadFile(filepath.Join(repo, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		originals[name] = string(content)
+		write(t, repo, name, string(content)+"// together\n")
+	}
+	git(t, repo, "commit", "-am", "together")
+	for name, content := range originals {
+		write(t, repo, name, content)
+	}
+	git(t, repo, "commit", "-am", "restore")
+	after := statuslineIndexAs(t, repo, cacheDir, "full")
+	if after == before {
+		t.Fatalf("fixture: index reported %+v before and after the co-changing commits, want them to differ", after)
+	}
+	assertSizeAfterMark(t, statuslineLine1(t, repo, cacheDir), after)
+}
+
+// TestStatuslineSpellsANegativeNetWithAMinusSign catches a negative net drawn with an ASCII hyphen
+// or a tilde: the only graph result is followed by a Read of the file it named, so no result is
+// credited and the modeled balance is minus the result's own tokens, spelled with U+2212.
+func TestStatuslineSpellsANegativeNetWithAMinusSign(t *testing.T) {
+	repo := statuslineRepo(t)
+	followUp := func(id, name string, input map[string]any, result string) []string {
+		return []string{
+			grossRecord(t, "assistant", repo, []any{map[string]any{"type": "tool_use", "id": id, "name": name, "input": input}}),
+			grossRecord(t, "user", repo, []any{map[string]any{"type": "tool_result", "tool_use_id": id, "content": result}}),
+		}
+	}
+	extra := append(followUp("toolu_read", "Read", map[string]any{"file_path": filepath.Join(repo, "a.go")}, strings.Repeat("r", 300)),
+		followUp("toolu_grep", "Grep", map[string]any{"pattern": "A"}, strings.Repeat("g", 200))...)
+	transcript := writeGrossTranscript(t, repo, repo, grossResult(t, 400, "1. a.go:10 func A()"), extra...)
+	report := runStatsRawJSON(t, "--repo", repo, "--transcript", transcript, "--format", "json", "--cache-dir", t.TempDir())
+	net := rawInt(t, report, "modeled_balance_est_tokens")
+	if rawInt(t, report, "sessions_with_savings_comparison") == 0 || net >= 0 || net <= -1000 {
+		t.Fatalf("fixture: stats reports net %d with %d comparisons, want a comparison and -1000 < net < 0",
+			net, rawInt(t, report, "sessions_with_savings_comparison"))
+	}
+	lines := statuslineLines(runStatuslineForTest(t, 120, t.TempDir(), statuslineStdin(t, transcript, repo, "")))
+	if len(lines) == 0 {
+		t.Fatal("the render printed nothing")
+	}
+	assertSegmentsInOrder(t, lines[0], "◤ entire graph", "−"+strconv.FormatInt(-net, 10)+" net")
 }
