@@ -245,6 +245,41 @@ type riskChangedEntity struct {
 	path   string
 }
 
+// riskChangeSeverity orders the entities that the per-entity impact analysis will
+// actually be spent on. That analysis is the expensive step --max-entities exists
+// to bound, so its evidence (DirectCallers, TypeConsumers) is not available here:
+// whatever this function ranks on decides which entities ever get measured.
+//
+// It must not lead with DependentsCount. That is sem's SHORT-NAME reference count
+// (internal/sem/dependents.go: referenceName -> shortEntityName), so a struct
+// field named err or n keys the same bucket as every other err in the repository
+// and scores in the hundreds, while a distinctively named exported function with
+// forty real callers scores low. Leading with it inverted the report: the cheap
+// collision-prone signal chose the subjects for the accurate one, and on a large
+// changeset the default cap of 5 was spent entirely on name collisions while
+// every removal and signature change was dropped unmeasured.
+//
+// Change type is exact, free and causal, so it leads instead. Removing or
+// re-signing an entity is what breaks a caller; changing a body can change
+// behaviour for existing callers; adding one cannot break anything that already
+// compiles. DependentsCount stays as a weak tiebreak WITHIN a severity band,
+// where a collision can no longer evict a whole class of change.
+func riskChangeSeverity(change sem.EntityChange) int {
+	switch change.Type {
+	case "removed":
+		return 4
+	case "signature_changed":
+		return 3
+	case "renamed":
+		return 2
+	case "body_changed":
+		return 1
+	default:
+		// "added", and anything a newer sem emits that this build does not rank.
+		return 0
+	}
+}
+
 func buildRiskReport(diff sem.Result, snapshot sem.ProviderSnapshot, flags riskFlags, readSource lineReader, evidenceAvailable bool, evidenceLimitation string) riskReport {
 	report := riskReport{FormatVersion: 1, OverallRisk: riskLow, Entries: []riskEntry{}, RecommendedTests: []string{}, Warnings: append([]sem.ProviderWarning{}, diff.Warnings...)}
 	report.Warnings = append(report.Warnings, snapshot.Header.Warnings...)
@@ -266,18 +301,22 @@ func buildRiskReport(diff sem.Result, snapshot sem.ProviderSnapshot, flags riskF
 	}
 	report.EntitiesChanged = len(changes)
 	sort.SliceStable(changes, func(i, j int) bool {
-		if changes[i].change.DependentsCount != changes[j].change.DependentsCount {
-			return changes[i].change.DependentsCount > changes[j].change.DependentsCount
+		left, right := changes[i], changes[j]
+		if ls, rs := riskChangeSeverity(left.change), riskChangeSeverity(right.change); ls != rs {
+			return ls > rs
 		}
-		if changes[i].path != changes[j].path {
-			return changes[i].path < changes[j].path
+		if left.change.DependentsCount != right.change.DependentsCount {
+			return left.change.DependentsCount > right.change.DependentsCount
 		}
-		return changes[i].change.Name < changes[j].change.Name
+		if left.path != right.path {
+			return left.path < right.path
+		}
+		return left.change.Name < right.change.Name
 	})
 	if len(changes) > flags.MaxEntities {
 		report.EntitiesSkipped = len(changes) - flags.MaxEntities
 		changes = changes[:flags.MaxEntities]
-		report.Limitations = append(report.Limitations, fmt.Sprintf("analysis is capped at %d entities; %d lower-priority entity changes were skipped", flags.MaxEntities, report.EntitiesSkipped))
+		report.Limitations = append(report.Limitations, fmt.Sprintf("analysis is capped at %d entities; %d entity changes were skipped, ordered by change type (removals and signature changes first) and then by a short-name dependent count that can collide on common names", flags.MaxEntities, report.EntitiesSkipped))
 	}
 	tests := map[string]bool{}
 	for _, item := range changes {
