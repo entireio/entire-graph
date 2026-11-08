@@ -103,7 +103,7 @@ func TestPreflightRejectsUncheckableCommand(t *testing.T) {
 	if err == nil {
 		t.Fatal("preflight silently approved a command it cannot check")
 	}
-	if !strings.Contains(err.Error(), "search") {
+	if !strings.Contains(err.Error(), "query") {
 		t.Fatalf("error does not list the checkable commands: %v", err)
 	}
 }

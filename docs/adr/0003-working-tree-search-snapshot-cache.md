@@ -72,7 +72,7 @@ invalidate the verdict explicitly.
 - Repeated agent queries against a clean checkout hit the cache instead of
   rebuilding, which is the normal steady state of the installed agent guide.
 - Any indexable dirty file turns reuse off repository-wide. Notably,
-  `init-agents` writes indexable Markdown, so a freshly activated repository
+  `setup` writes indexable Markdown, so a freshly activated repository
   rebuilds on every query until the activation files are committed.
 - `index` still prewarms only the committed-`HEAD` namespace; because of the
   `worktree` key term it cannot warm the default working-tree path.

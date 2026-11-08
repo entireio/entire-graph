@@ -87,7 +87,7 @@ const (
 //   - the 160-LINE CAP. A callable longer than that keeps its focused window, which is exactly the
 //     case where reading the file back costs the most.
 //   - NO DEMOTABLE TAIL at small --top-k. allocateSearchSnippets scans cuts down to
-//     minInt(headRanks, len(results)); with --top-k 5 and headRanks 5 that loop can only ever
+//     minInt(protectedRanks, len(results)); with --top-k 5 and protectedRanks 5 that loop can only ever
 //     evaluate "demote nothing", so the whole body budget is the 10 kB growth allowance.
 //
 // --full-unit-top N bypasses all three for the first N ranks. The unit is resolved as the callable
@@ -201,8 +201,20 @@ const (
 )
 
 // FullUnitSignal is searchFullUnitSignal exported for renderers: a result carrying it was returned
-// as its enclosing unit on the caller's orders and must never be abbreviated on the way out.
+// as its enclosing unit on the caller's orders. Any output shortening must not retain a
+// completeness promise.
+//
+// It does NOT mean the body is whole. A forced unit the safety cap clipped carries full-unit AND
+// FullUnitElidedSignal and withholds complete-symbol (see the producer below). A renderer deciding
+// whether the reader may skip a follow-up read must therefore key on complete-symbol, never on
+// full-unit alone -- doing the latter stamps a completeness promise onto a fragment.
 const FullUnitSignal = searchFullUnitSignal
+
+// FullUnitElidedSignal is searchFullUnitElidedSignal exported for the reason above: it is the
+// negative half of the full-unit contract, and a renderer that cannot see it cannot tell a whole
+// forced unit from a clipped one. Exported after peer review caught a predicate that accepted
+// full-unit alone.
+const FullUnitElidedSignal = searchFullUnitElidedSignal
 
 // RenderedSnippetHeadRanks is searchRenderedSnippetHeadRanks exported so the text renderer's test can
 // assert that the depth the allocator ASSUMES is printed is the depth that actually is. If the two
@@ -339,9 +351,82 @@ func clipSearchUnitToBytes(lines []string, start, end, focus, maxBytes int) (int
 	}
 }
 
-// CompleteSymbolSignal is searchCompleteSymbolSignal exported for renderers: a result carrying
-// it is a whole callable and must never be abbreviated on the way out.
+// CompleteSymbolSignal is searchCompleteSymbolSignal exported for renderers: the stored
+// source span contains the whole callable. A renderer may show an unmarked excerpt, but
+// must not display a completeness marker over a partial or transformed body.
 const CompleteSymbolSignal = searchCompleteSymbolSignal
+
+// certifyAlreadyCompleteSearchResults adds metadata to source already selected and
+// rendered. It runs after every allocation/merge pass: completeness participates in
+// those decisions, so assigning it earlier can spend a sibling's source on metadata.
+// eligible is the original body head, matched by identity rather than renumbered rank.
+// No source, identity, ordering or section is changed, and only spare serialized
+// budget (after funded context blocks) may pay for the signal.
+func certifyAlreadyCompleteSearchResults(
+	results, eligible []SearchResult,
+	symbolsByID map[string]SymbolRecord,
+	read contentReader,
+	maxBytes, reservedBytes int,
+) ([]SearchResult, int) {
+	if len(results) == 0 || len(eligible) == 0 {
+		return results, 0
+	}
+	type identity struct{ file, symbol string }
+	allowed := make(map[identity]bool, len(eligible))
+	for _, result := range eligible {
+		if result.SymbolID != "" {
+			allowed[identity{result.FilePath, result.SymbolID}] = true
+		}
+	}
+	plan := append([]SearchResult(nil), results...)
+	total, added := serializedSearchResultBytes(results), 0
+	fileLines := make(map[string][]string)
+	for index, result := range results {
+		if !allowed[identity{result.FilePath, result.SymbolID}] || !searchResultRendersSource(results, index) ||
+			hasSearchSignal(result, searchCompleteSymbolSignal) || hasSearchSignal(result, searchFullUnitElidedSignal) {
+			continue
+		}
+		symbol, ok := symbolsByID[result.SymbolID]
+		if !ok || symbol.ID != result.SymbolID || symbol.FilePath != result.FilePath || !searchEnclosableSymbolKind(symbol.Kind) ||
+			result.Kind != symbol.Kind || result.SymbolName != symbol.Name ||
+			symbol.StartLine < 1 || symbol.EndLine < symbol.StartLine {
+			continue
+		}
+		start, end := result.SnippetStartLine, result.SnippetEndLine
+		if start < 1 || start > symbol.StartLine || end < symbol.EndLine || result.StartLine < 1 ||
+			result.StartLine > start || result.EndLine < end || result.FocusLine < start || result.FocusLine > end ||
+			result.SymbolStartLine < 0 || result.SymbolEndLine < 0 ||
+			(result.SymbolStartLine > 0 && result.SymbolStartLine != symbol.StartLine) ||
+			(result.SymbolEndLine > 0 && result.SymbolEndLine != symbol.EndLine) {
+			continue
+		}
+		if (result.UnitStartLine != 0 || result.UnitEndLine != 0) &&
+			(result.UnitStartLine < start || result.UnitEndLine > end || result.UnitEndLine < result.UnitStartLine) {
+			continue
+		}
+		candidate := result
+		candidate.Signals = append(append([]string(nil), result.Signals...), searchCompleteSymbolSignal)
+		nextBytes := total - serializedSearchResultBytes(result) + serializedSearchResultBytes(candidate)
+		if maxBytes > 0 && nextBytes+reservedBytes > maxBytes {
+			continue
+		}
+		lines, cached := fileLines[result.FilePath]
+		if !cached {
+			content, readable := read(result.FilePath)
+			if readable && strings.IndexByte(content, 0) < 0 {
+				lines = strings.Split(content, "\n")
+			}
+			fileLines[result.FilePath] = lines
+		}
+		// True symbol bounds must fit without clamping. Exact slice equality also
+		// rejects byte-clipped single-line bodies whose line numbers still fit.
+		if end > len(lines) || result.Snippet != strings.Join(lines[start-1:end], "\n") {
+			continue
+		}
+		plan[index], total, added = candidate, nextBytes, added+1
+	}
+	return plan, added
+}
 
 // HeadWindowSignal is searchHeadWindowSignal exported for the same reason: the allocator spent budget
 // widening this result to a readable window, and a renderer that then prints it as a locator throws
@@ -586,12 +671,8 @@ func planSearchEnclosures(
 			}
 			continue
 		}
-		// The symbol must actually contain the hit, and there must be something to gain:
-		// a snippet that already spans the whole body needs no upgrade.
+		// The symbol must actually contain the hit.
 		if result.FocusLine < start || result.FocusLine > end {
-			continue
-		}
-		if result.SnippetStartLine <= start && result.SnippetEndLine >= end {
 			continue
 		}
 		// The margin is rank-1 only and never widens the reported symbol: `symbol` still names the
@@ -608,6 +689,14 @@ func planSearchEnclosures(
 			if padEnd-padStart+1 <= maxLines {
 				start, end = padStart, padEnd
 			}
+		}
+		// There must be something to gain, and what the caller asked to SEE is the body plus its
+		// margin — so the margin is applied first and the test is made against the padded span.
+		// Testing the bare body here made --enclosure-context-lines a no-op for exactly the case a
+		// short callable makes common: rank 1 whose ranked snippet already covered the whole body,
+		// which returned unpadded while the caller had asked for context on both sides.
+		if result.SnippetStartLine <= start && result.SnippetEndLine >= end {
+			continue
 		}
 		enclosures[index] = searchEnclosure{start: start, end: end, lines: lines, symbol: symbol}
 	}
@@ -763,6 +852,13 @@ func widenSearchResultToEnclosure(result SearchResult, enclosure searchEnclosure
 	if enclosure.symbol.StartLine > 0 && enclosure.symbol.EndLine >= enclosure.symbol.StartLine {
 		result.SymbolStartLine = enclosure.symbol.StartLine
 		result.SymbolEndLine = enclosure.symbol.EndLine
+		// The name line belongs to the result's IDENTITY, not to the bounds: it changes only
+		// together with SymbolID/SymbolName (below, or here when the enclosure is the same
+		// symbol). The window and focus-elided returns keep the inner identity, so they must keep
+		// the inner symbol's name line too.
+		if enclosure.symbol.ID != "" && enclosure.symbol.ID == result.SymbolID {
+			result.SymbolNameLine = enclosure.symbol.nameLine
+		}
 	}
 	if enclosure.window {
 		// A window is readable code but not a whole callable. It gets its own signal so an agent
@@ -804,6 +900,7 @@ func widenSearchResultToEnclosure(result SearchResult, enclosure searchEnclosure
 		result.SymbolName = enclosure.symbol.Name
 		result.QualifiedName = enclosure.symbol.QualifiedName
 		result.Signature = enclosure.symbol.Signature
+		result.SymbolNameLine = enclosure.symbol.nameLine
 	}
 	return result
 }
@@ -884,9 +981,16 @@ func searchResultsSize(sizes []int) int {
 //     Everything else is funded by demoting the tail.
 //   - Complete bodies are applied greedily in rank order while the plan fits, so a symbol
 //     too large for the allowance degrades to its focused window instead of blowing it.
-//   - Only the head (`headRanks`) is eligible for a body. Below it the agent is deciding
+//   - Only the body head (`bodyRanks`) is eligible for a body. Below it the agent is deciding
 //     "is this worth opening", not editing, so a whole callable there spends the head's
 //     budget on code that will not be read.
+//   - `protectedRanks` is the SEPARATE, usually deeper head that is never demoted to a locator.
+//     The two limits answer different questions — "who may be shown a whole callable" and "who
+//     must at least stay a snippet" — and --body-head-ranks moves only the first. Collapsing them
+//     into one parameter made `--body-head-ranks=2` silently tersify ranks 3-5 as well, which is
+//     the opposite of that flag's contract: a tail locator is the only mention of its file, and
+//     the gold file sits at rank 6-8 on 17% of instances, so the locator head is deliberately
+//     left where it is. See the measurement above searchEnclosureHeadRanks' use in search.go.
 //   - Among the plans that deliver the most complete bodies, the CHEAPEST is chosen, so the
 //     tail pays for a body before the growth allowance does and demotion never happens
 //     without buying something. Ties go to the plan that demotes fewest results.
@@ -898,13 +1002,18 @@ func allocateSearchSnippets(
 	results []SearchResult,
 	enclosures []searchEnclosure,
 	plain []searchEnclosure,
-	hardBudget, growth, headRanks, tailLines int,
+	hardBudget, growth, bodyRanks, protectedRanks, tailLines int,
 ) ([]SearchResult, int, int) {
 	if len(results) == 0 || len(enclosures) != len(results) {
 		return results, 0, 0
 	}
-	if headRanks < 0 {
-		headRanks = 0
+	if bodyRanks < 0 {
+		bodyRanks = 0
+	}
+	if protectedRanks < bodyRanks {
+		// A body rank that is not protected from demotion would be tersified and then upgraded in
+		// the same plan. The protected head is a floor under the body head, never above it.
+		protectedRanks = bodyRanks
 	}
 	if growth < 0 {
 		growth = 0
@@ -916,7 +1025,7 @@ func allocateSearchSnippets(
 	if forcedEnd := forcedSearchEnclosureEnd(enclosures); forcedEnd > 0 {
 		control, bodies, demoted := allocateSearchSnippets(
 			results, unforcedSearchEnclosures(enclosures, plain), nil,
-			hardBudget, growth, headRanks, tailLines,
+			hardBudget, growth, bodyRanks, protectedRanks, tailLines,
 		)
 		return seatForcedSearchUnits(control, results, enclosures, hardBudget, forcedEnd, bodies, demoted)
 	}
@@ -939,8 +1048,9 @@ func allocateSearchSnippets(
 	bestValue, bestBodies, bestSize, bestDemoted := 0.0, 0, 0, 0
 	// A ranking shorter than the protected head still needs the no-demotion plan evaluated,
 	// hence the clamp: without it a 1- or 2-result payload would never be allocated at all.
-	for demoteFrom := len(results); demoteFrom >= minInt(headRanks, len(results)); demoteFrom-- {
-		plan, bodies, windows, size := planWithDemotionFrom(results, enclosures, budget, headRanks, tailLines, demoteFrom)
+	for demoteFrom := len(results); demoteFrom >= minInt(protectedRanks, len(results)); demoteFrom-- {
+		plan, bodies, windows, size := planWithDemotionFrom(
+			results, enclosures, budget, bodyRanks, protectedRanks, tailLines, demoteFrom)
 		// A plan that delivered only WINDOWS is still worth taking: a head rank with 60 readable
 		// lines beats the same rank with two. So the "did this plan buy anything" test counts both,
 		// while the reported body count and the plan score still count complete bodies only.
@@ -950,7 +1060,7 @@ func allocateSearchSnippets(
 		value := completeBodyValue(plan) + searchHeadWindowValue(plan)
 		if best == nil || value > bestValue || (value == bestValue && size < bestSize) {
 			best, bestValue, bestBodies, bestSize = plan, value, bodies, size
-			bestDemoted = maxInt(0, len(results)-maxInt(demoteFrom, headRanks))
+			bestDemoted = maxInt(0, len(results)-maxInt(demoteFrom, protectedRanks))
 		}
 	}
 	if best == nil {
@@ -1127,7 +1237,7 @@ func seatForcedSearchUnits(
 			if searchResultRendersSource(control, tail) {
 				continue
 			}
-			terse := tersifySearchResult(trialPlan[tail], searchEnclosureTailSnippetLines)
+			terse := tersifySearchResultKeepingDeclaration(trialPlan[tail], searchEnclosureTailSnippetLines)
 			size := serializedSearchResultBytes(terse)
 			if size >= trialSizes[tail] {
 				continue
@@ -1307,21 +1417,21 @@ func hasSearchSignal(result SearchResult, want string) bool {
 func planWithDemotionFrom(
 	results []SearchResult,
 	enclosures []searchEnclosure,
-	budget, headRanks, tailLines, demoteFrom int,
+	budget, bodyRanks, protectedRanks, tailLines, demoteFrom int,
 ) ([]SearchResult, int, int, int) {
 	plan := append([]SearchResult(nil), results...)
-	cut := maxInt(demoteFrom, headRanks)
+	cut := maxInt(demoteFrom, protectedRanks)
 	sizes := make([]int, len(plan))
 	for index := range plan {
 		if index >= cut {
-			plan[index] = tersifySearchResult(plan[index], tailLines)
+			plan[index] = tersifySearchResultKeepingDeclaration(plan[index], tailLines)
 		}
 		sizes[index] = serializedSearchResultBytes(plan[index])
 	}
 	total := searchResultsSize(sizes)
 	bodies, windows := 0, 0
 	// The body upgrade is a head-only privilege; see allocateSearchSnippets' contract.
-	bodyLimit := headRanks
+	bodyLimit := bodyRanks
 	if bodyLimit > len(plan) {
 		bodyLimit = len(plan)
 	}

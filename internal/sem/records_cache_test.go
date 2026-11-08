@@ -10,12 +10,31 @@ import (
 	"testing"
 )
 
+// spoolRecords feeds literal record bytes through the transaction's spool the
+// way a producer tees them, so tests can Store byte streams directly.
+func spoolRecords(transaction *ProviderRecordsCacheTransaction, records []byte) (*ProviderRecordsSpool, error) {
+	spool, err := transaction.NewSpool()
+	if err != nil || spool == nil {
+		// A disabled transaction hands out no spool; Store(nil, ...) stays the
+		// same silent no-op the byte-slice Store had, which the worktree-bypass
+		// test depends on.
+		return nil, err
+	}
+	// Spool writes always report success; a failure is deferred to Store.
+	_, _ = spool.Write(records)
+	return spool, nil
+}
+
 func storeProviderRecordsForTest(ctx context.Context, repo, providerVersion, tree, mode, cacheDir string, options ProviderSnapshotOptions, records []byte, summary *SnapshotSummary) error {
 	transaction, err := BeginProviderRecordsCache(ctx, repo, providerVersion, tree, tree, mode, cacheDir, options)
 	if err != nil {
 		return err
 	}
-	return transaction.Store(records, summary, SnapshotHeader{
+	spool, err := spoolRecords(transaction, records)
+	if err != nil {
+		return err
+	}
+	return transaction.Store(spool, summary, SnapshotHeader{
 		SchemaVersion:   SchemaVersion,
 		Provider:        ProviderName,
 		ProviderVersion: providerVersion,
@@ -57,15 +76,30 @@ func TestProviderRecordsCacheTransactionRejectsObservedProvenanceMismatch(t *tes
 				Profile:         string(transaction.options.Profile),
 			}
 			tc.mutate(&header)
-			if err := transaction.Store([]byte("wrong provenance\n"), nil, header); err == nil {
+			spool, err := spoolRecords(transaction, []byte("wrong provenance\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := transaction.Store(spool, nil, header); err == nil {
 				t.Fatal("stored records observed with mismatched provenance")
 			}
 			if _, _, hit := transaction.Load(); hit {
 				t.Fatal("provenance-mismatched records reached the cache")
 			}
-			artifact := filepath.Join(transaction.entry.root, transaction.entry.relative)
-			if _, err := os.Stat(artifact); !os.IsNotExist(err) {
-				t.Fatalf("provenance-mismatched records created cache artifact %q: %v", artifact, err)
+			for _, entry := range []cacheEntry{transaction.entry, transaction.streamEntry} {
+				artifact := filepath.Join(entry.root, entry.relative)
+				if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+					t.Fatalf("provenance-mismatched records created cache artifact %q: %v", artifact, err)
+				}
+			}
+			// The refused spool's temporary must be gone too, or every refusal
+			// leaks a file in the cache directory.
+			leftovers, err := filepath.Glob(filepath.Join(transaction.entry.root, filepath.Dir(transaction.entry.relative), ".stream-*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(leftovers) != 0 {
+				t.Fatalf("provenance-mismatched store left spool temporaries %v", leftovers)
 			}
 		})
 	}
@@ -81,7 +115,11 @@ func TestProviderRecordsCacheDiscriminatesSameTreeCommits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := first.Store([]byte("commit-a records\n"), nil, SnapshotHeader{
+	firstSpool, err := spoolRecords(first, []byte("commit-a records\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Store(firstSpool, nil, SnapshotHeader{
 		SchemaVersion:   SchemaVersion,
 		Provider:        ProviderName,
 		ProviderVersion: "test",
@@ -214,7 +252,11 @@ func TestProviderRecordsCacheTransactionPinsPolicyThroughBuildAndStore(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := transaction.Store(records, nil, snapshot.Header); err != nil {
+			spool, err := spoolRecords(transaction, records)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := transaction.Store(spool, nil, snapshot.Header); err != nil {
 				t.Fatal(err)
 			}
 
@@ -541,6 +583,12 @@ func TestProviderRecordsKeyDiscriminatesRepoIdentity(t *testing.T) {
 // why the env path was easy to leave uncovered.
 func TestSearchSnapshotKeyDiscriminatesEnvFileCap(t *testing.T) {
 	repo := t.TempDir()
+	// The baseline has to be an ACTUALLY uncapped key, so clear the variable
+	// first. Reading the ambient environment made the assertion depend on how the
+	// suite was invoked: run with ENTIRE_GRAPH_MAX_FILES=5 already set, this
+	// "uncapped" key is the capped one and the test fails on a correct build —
+	// the one failure mode a cache-key test must not have.
+	t.Setenv(maxSourceFilesEnv, "")
 	uncapped, err := searchSnapshotKey(repo, "id", "v", "tree", ProviderSnapshotOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -577,6 +625,9 @@ func TestSearchSnapshotKeyDiscriminatesEnvFileCap(t *testing.T) {
 
 func TestProviderRecordsKeyDiscriminatesEnvFileCap(t *testing.T) {
 	repo := t.TempDir()
+	// Same reason as TestSearchSnapshotKeyDiscriminatesEnvFileCap: clear the
+	// variable so the baseline is uncapped whatever the caller's environment.
+	t.Setenv(maxSourceFilesEnv, "")
 	uncapped, err := providerRecordsKey(repo, "id", "v", "commit", "tree", "snapshot", ProviderSnapshotOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -653,5 +704,32 @@ func TestSearchSnapshotKeyDiscriminatesFileCap(t *testing.T) {
 	}
 	if a == b {
 		t.Fatal("capped and uncapped search snapshots share a key")
+	}
+}
+
+// Upgrading a dev build on an unchanged consumer tree must retire route records
+// produced before scoped Go receiver/middleware binding existed. Provider and
+// identity versions are deliberately unchanged in this scenario.
+func TestProviderRecordsCacheRejectsPreScopedGoRouteProducer(t *testing.T) {
+	repo, cacheDir := t.TempDir(), t.TempDir()
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+	records := []byte(`{"record_type":"relation","type":"HANDLES_ROUTE","to_id":"external:route:/old"}` + "\n")
+	if err := storeProviderRecordsForTest(t.Context(), repo, "dev", "same-tree", "snapshot", cacheDir, options, records, nil); err != nil {
+		t.Fatal(err)
+	}
+	control, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "same-tree", "same-tree", "snapshot", cacheDir, options)
+	if err != nil || !hit || !bytes.Equal(control, records) {
+		t.Fatalf("current producer control: hit=%v err=%v records=%q", hit, err, control)
+	}
+	// Even a legacy artifact copied into the current address must be refused.
+	rewriteCachedJSON(t, soleCacheArtifact(t, cacheDir), func(object map[string]any) {
+		object["cache_version"] = "provider-records-v11-4"
+	})
+	stale, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "same-tree", "same-tree", "snapshot", cacheDir, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit {
+		t.Fatalf("replayed pre-scoped-route producer records: %s", stale)
 	}
 }

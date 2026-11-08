@@ -30,6 +30,47 @@ endpoint records. Consumers should ignore unknown record types within the
 supported major schema version, and should not assume every relation target
 is a symbol.
 
+## Relation provenance (schema 1.4)
+
+Schema 1.4 adds the optional `provenance` annotation to native relation JSON and
+advertises `relation_provenance` in the snapshot header's `schema_features`.
+Existing relation fields, endpoint IDs, and their meanings are unchanged.
+Tolerant `1.x` readers ignore the new field; older artifacts may omit it.
+The labels describe the extraction method, not a calibrated probability or a
+promise that a target or behavior exists at runtime:
+
+| Label | Derivation |
+|---|---|
+| `EXTRACTED` | A non-pattern relation resolved as `exact`, `full`, `resolved`, `import_resolved`, or `package`. Here `package` means a uniquely identified same-package target, not a package-wide guess. |
+| `INFERRED` | A pattern-derived relation, or a non-pattern relation with `type_inferred` resolution. |
+| `AMBIGUOUS` | Other resolutions, including name-only/external references, empty values, and unrecognized future values. |
+
+Pattern-derived relation types are `HANDLES_ROUTE`, `HANDLES_GRPC`,
+`HANDLES_GRAPHQL`, `HANDLES_TRPC`, `HTTP_CALLS`, `EMITS`, `LISTENS_ON`,
+`HANDLES_TOOL`, `SIMILAR_TO`, and `TESTS`. They remain `INFERRED` even when the
+target resolution is `exact`: resolving the target does not change how the
+association was found. This classification is broader than
+`capabilities.heuristic_relation_types`, which lists global, language-independent
+passes. Protocol-specific RPC handlers remain in the per-language capability
+matrix; provenance does not exempt them from those extraction guards.
+
+`RelationRecord.MarshalJSON` derives the annotation from the final `type` and
+`resolution` on each serialization. It does not store a mutable label on the Go
+struct or trust a label supplied by an input artifact. Go callers use
+`EdgeProvenance(relation.Type, relation.Resolution)` to obtain the same result.
+Native `snapshot`, `edges`, cache replay, and decoded compact output therefore
+share the same annotation. The compact v1 positional relation row is unchanged:
+it stores the authoritative inputs and derives the annotation when re-exported
+as native JSON. Older compact readers may omit this newly understood annotation.
+SCIP remains a lossy navigation projection and does not encode relation
+provenance, confidence, or resolution; use native or compact output when those
+facts matter.
+
+The schema minor bump selects new raw-record and search cache keys even when
+provider version, source commit, and tree are unchanged. Older cache entries are
+rebuilt rather than replayed without the new feature. Parser identity revision,
+stable symbol IDs, and the persisted diff/checkpoint `Result` shape are unchanged.
+
 ## Streaming NDJSON
 
 The `snapshot`/`symbols`/`edges` commands stream records to stdout as they are
@@ -85,6 +126,32 @@ own tests: compare a whole ID; anchor on the LAST separator for a trailing
 segment; cut at the FIRST separator only inside the `external:<kind>:<value>`
 namespace, whose kind cannot contain a `:`; and take a file path from the
 record's own `file_path` field rather than from the ID.
+
+**Symbol IDs are stable across content edits, and NOT across releases.** This
+is two separate guarantees and consumers routinely conflate them.
+
+*Within a release*, an ID is stable across ordinary content edits: it encodes no
+line numbers, so editing a body, moving a symbol down a file, or editing an
+unrelated symbol does not move it. This is the property derived data can be keyed
+on, and it is pinned by tests.
+
+*Between releases*, IDs are NOT guaranteed stable. A parser-identity correction —
+fixing a symbol that was mis-qualified, mis-classified, or should never have been
+emitted — re-keys the affected symbols by construction, and entire-graph ships
+such corrections in ordinary minor releases. Through `0.x`, expect at least one
+identity revision per minor release, affecting any language.
+
+The signal is the `identity_revision` header field, described in
+[ADR 0001](adr/0001-ga-schema-contract.md). **A consumer that persists symbol IDs
+must store `identity_revision` alongside them and re-index when it changes**;
+comparing the complete opaque string for equality is the whole protocol. A
+consumer that ignores it will silently serve IDs that no longer resolve, and
+entire-graph's own on-disk caches are namespaced by it for exactly this reason.
+
+Note that a correction moves IDs in both directions. Removing a phantom symbol
+can move a *real* symbol back to a shorter ID, because the phantom was forcing a
+`#sig:` disambiguation suffix onto it. An ID gaining or losing a `#sig:` suffix
+is therefore expected across an identity revision, not a sign of corruption.
 
 **The final `summary` record is authoritative for aggregate metadata.** It
 carries the real `languages`, `language_tiers` (each present language

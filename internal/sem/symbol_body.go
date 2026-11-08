@@ -8,17 +8,28 @@ package sem
 // relation phase allocated 529 MiB doing it. Deriving it once and passing it
 // down removes the repeats without changing what any scanner sees.
 //
-// It is a value, not a cache. The relation phase resolves one symbol per
-// iteration across several workers, so a package-level memo would be contended,
-// and keying one by body text would be wrong the moment two symbols share a
-// body.
+// The value and its immutable facts live for one symbol's relation pass. The
+// workers share no mutable body state, and matching offsets always refer to
+// this exact stripped text.
 type symbolBody struct {
 	text     string
 	stripped string
+	facts    *relationFacts
 }
 
 func newSymbolBody(text string) symbolBody {
 	return symbolBody{text: text, stripped: stripCodeLiteralsAndComments(text)}
+}
+
+// newRelationSymbolBody shares immutable matches within one callable symbol's
+// full relation pass. Language-specific interpretation remains in the scanners;
+// facts never escape this body or enter a persistent cache.
+func newRelationSymbolBody(text, language string, spec profileSpec) symbolBody {
+	body := newSymbolBody(text)
+	if spec.shareRelationFacts && callExtractionLanguage(language) {
+		body.facts = collectRelationFacts(body.stripped)
+	}
+	return body
 }
 
 // masked returns the body for text a language mask derived from this one,

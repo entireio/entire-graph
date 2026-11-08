@@ -1,19 +1,23 @@
 #!/bin/sh
 # entire-graph — status line badge for Claude Code.
 #
-# Renders one line summarising what the code graph bought you in THIS session:
+# Renders the signed 1:1 context-output model for THIS session, not measured savings:
 #
-#   [GRAPH] ↗ 6.6K saved · 13 search · 3 impact · 1 nbrs · vs 2.6K explore · 1.5M explore tok ·
-#   graph-first ✗ · 2% of locates · 0.2% of session
+#   [GRAPH] 1:1 model +6.6K tok
 #
-# Segment order is fixed; any segment whose value is missing or zero is dropped rather than
-# rendered as a zero. Only WORK verbs are named (locate verbs search/neighbors/impact first,
-# then diff/analyze/commit/checkpoint/symbols/edges/snapshot/index). The self-reporting meta
-# verbs — stats, version, help, doctor, init-agents, agent-guide, capabilities — replace no
-# exploration, so they are struck from the verb split AND from the residual "other" count.
+# With ENTIRE_GRAPH_STATUSLINE_DETAIL=1 the measured context follows it:
+#   [GRAPH] 1:1 model -6.6K tok · 13 search · 3 impact · 1 nbrs · vs 2.6K explore · 1.5M est. explore tok
 #
-# The line is held under 150 visible characters. When it would overflow, whole segments are
-# dropped from the right — session %, then explore tok, then explore calls — never truncated.
+# Missing model data or no comparable sessions renders "1:1 model unavailable"; an observed
+# comparison with a zero modeled balance renders "1:1 model 0 tok". Optional zero counters are
+# dropped. Only WORK verbs are named (locate verbs search/neighbors/impact first,
+# then def/explain/verify/diff/analyze/commit/checkpoint/symbols/edges/snapshot/snapshot-query/
+# index). The self-reporting meta verbs — stats, version, help, doctor, setup (formerly init-agents),
+# agent-guide, capabilities, health — replace no exploration, so they are struck from the verb
+# split AND from the residual "other" count.
+#
+# The line is held under 152 visible characters. When it would overflow, whole segments are
+# dropped from the right — estimated explore tokens, then explore calls — never truncated.
 #
 # Claude Code invokes a status line command with the session JSON on stdin and takes stdout as
 # the badge (ANSI colour is allowed). The fields consumed here:
@@ -26,9 +30,10 @@
 #
 # Every number comes from `entire graph stats --transcript <path> --format json`, so the
 # accounting is exactly internal/cli/stats.go — command-position-only graph verbs against a
-# closed verb allowlist, locate verbs (search/neighbors/impact) alone credited, credit =
-# top-hit-file size − returned bytes floored at 0, 4 bytes = 1 token. There is no second
-# estimator here to drift out of sync.
+# closed verb allowlist. The signed model assumes one exploration call displaced per locate
+# result, priced at the same session's observed average exploration bytes, minus locate bytes;
+# 4 bytes = 1 estimated token. Losses remain negative. Legacy positive-only fields are never a
+# fallback. There is no second estimator here to drift out of sync.
 #
 # Enable it in ~/.claude/settings.json:
 #   "statusLine": { "type": "command",
@@ -37,9 +42,16 @@
 # Environment:
 #   ENTIRE_GRAPH_BIN               explicit path to the entire-graph binary
 #   ENTIRE_GRAPH_STATUSLINE_SCOPE  session (default) | project
-#                                  project re-scans the whole ~/.claude/projects/<slug>
-#                                  directory — hundreds of MB on a busy project, and far too
-#                                  slow to render per keystroke. Opt in knowingly.
+#                                  project re-scans the whole sessions directory belonging to
+#                                  the REPOSITORY (resolved by `stats --repo`, not by where
+#                                  the session happened to be launched) — hundreds of MB on a
+#                                  busy project, and far too slow to render per keystroke.
+#                                  Opt in knowingly. Sessions are grouped by the directory
+#                                  Claude Code was launched from, so a repository with no
+#                                  sessions of its own renders nothing rather than borrowing
+#                                  a parent directory's total. Attributing individual calls
+#                                  by their recorded cwd would be finer-grained still; stats
+#                                  does not do that yet.
 #   ENTIRE_GRAPH_STATUSLINE_SINCE  window for scope=project (default 30d)
 #   ENTIRE_GRAPH_STATUSLINE_CACHE  0 disables the render cache (always recompute, in-line)
 #   NO_COLOR                       set to any value to drop ANSI escapes
@@ -98,9 +110,17 @@ SESSION=$3
 
 # --- binary --------------------------------------------------------------------------------
 BIN=
+# Order matters, and the managed install has to outrank a developer build. A stray
+# `go install` leaves a binary in GOBIN or ~/go/bin that never updates again, and the
+# badge would silently report ITS accounting: measured on one machine, a six-week-old
+# GOBIN build reported 82,929,185 saved where the installed plugin reported 45,942 for
+# the same repository, window and sessions directory -- a factor of 1805, from nothing
+# but binary resolution. The savings model changes between versions, so an old binary
+# does not report a stale number, it reports a wrong one.
 for candidate in \
 	"${ENTIRE_GRAPH_BIN:-}" \
 	"${CLAUDE_PLUGIN_ROOT:-}${CLAUDE_PLUGIN_ROOT:+/entire-graph}" \
+	"${XDG_DATA_HOME:-$HOME/.local/share}/entire/plugins/bin/entire-graph" \
 	"${GOBIN:-}${GOBIN:+/entire-graph}" \
 	"${HOME}/go/bin/entire-graph"; do
 	if [ -n "$candidate" ] && [ -x "$candidate" ]; then
@@ -116,7 +136,15 @@ fi
 # --- measure + render ----------------------------------------------------------------------
 render() {
 	if [ "$SCOPE" = "project" ]; then
-		report=$("$BIN" stats --repo "$REPO" --sessions-dir "$(dirname "$TRANSCRIPT")" \
+		# No --sessions-dir. Passing `dirname $TRANSCRIPT` looked like "this project's
+		# sessions" and is not: Claude Code files a transcript under the directory the
+		# session was LAUNCHED from, so a session started in a parent directory and
+		# working inside a sub-repo reported the parent's sessions under the sub-repo's
+		# name. Measured before this change, /devenv, /devenv/entire-graph and
+		# /devenv/graphmark all rendered the identical "~17.7K saved". `stats --repo`
+		# resolves the sessions directory from the repository itself, which is what the
+		# badge has always claimed to show.
+		report=$("$BIN" stats --repo "$REPO" \
 			--since "$SINCE" --format json 2>/dev/null) || return 1
 	else
 		report=$("$BIN" stats --repo "$REPO" --transcript "$TRANSCRIPT" \
@@ -130,13 +158,18 @@ render() {
 	color=1
 	[ -n "${NO_COLOR:-}" ] && color=0
 
-	printf '%s' "$report" | awk -v color="$color" '
-		function number(key,   pat, raw) {
-			pat = "\"" key "\"[ \t]*:[ \t]*-?[0-9][0-9.eE+-]*"
-			if (!match(blob, pat)) return -1
+	printf '%s' "$report" | awk -v color="$color" -v detail="$DETAIL" '
+		function numberRaw(key,   pat, raw) {
+			pat = "\"" key "\"[ \t]*:[ \t]*-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?[ \t]*[,}]"
+			if (!match(blob, pat)) return ""
 			raw = substr(blob, RSTART, RLENGTH)
 			sub(/^[^:]*:[ \t]*/, "", raw)
-			return raw + 0
+			sub(/[ \t]*[,}]$/, "", raw)
+			return raw
+		}
+		function number(key,   raw) {
+			raw = numberRaw(key)
+			return raw == "" ? -1 : raw + 0
 		}
 		# 532 -> "532", 12345 -> "12.3K", 2000000 -> "2M", 2100000 -> "2.1M".
 		# NB: no backreference in the sub() — POSIX awk only understands "&", so the unit is
@@ -147,11 +180,6 @@ render() {
 			else { text = sprintf("%.1f", value / 1000000); unit = "M" }
 			sub(/\.0$/, "", text)
 			return text unit
-		}
-		function pct(value) {
-			if (value >= 10) return sprintf("%d%%", value + 0.5)
-			if (value >= 1) return sprintf("%.1f%%", value)
-			return sprintf("%.2f%%", value)
 		}
 		function paint(text, code) {
 			if (!color) return text
@@ -166,14 +194,18 @@ render() {
 		}
 		# Self-reporting verbs: they answer questions ABOUT the graph and replace no
 		# exploration, so they must never be named in the badge nor counted as work.
+		# health belongs here -- it reports on the index, not on the codebase.
 		function isMeta(n) {
-			return index(" stats version help doctor init-agents agent-guide capabilities ", " " n " ") > 0
+			return index(" stats version help doctor setup init-agents agent-guide capabilities health ", " " n " ") > 0
 		}
 		# Verbs that do work on the codebase. Locate verbs rank first in the split.
+		# Must cover every non-meta verb in internal/cli/stats.go graphVerbs: one missing
+		# here is counted in the graph total but named nowhere, so it silently inflates
+		# the residual "other" bucket instead of appearing as the usage it is.
 		function isWork(n) {
-			return index(" search neighbors impact diff analyze commit checkpoint symbols edges snapshot index ", " " n " ") > 0
+			return index(" query search neighbors impact def explain verify diff analyze commit checkpoint symbols edges snapshot snapshot-query index ", " " n " ") > 0
 		}
-		function isLocate(n) { return index(" search neighbors impact ", " " n " ") > 0 }
+		function isLocate(n) { return index(" query search neighbors impact ", " " n " ") > 0 }
 		# Segments are accumulated with their VISIBLE width (colour codes and multi-byte
 		# glyphs excluded, counted by the caller) and a drop rank: 0 never drops, 1 drops
 		# first. Overflow is handled by dropping whole segments, never by truncating one.
@@ -188,7 +220,8 @@ render() {
 		function addplain(text, rank) { addseg(sep() text, 3 + length(text), rank) }
 		{ blob = blob $0 }
 		END {
-			maxw = 150
+			# Keep the existing visible-width ceiling; shed only whole optional counters.
+			maxw = 152
 			sessions = number("sessions")
 			graph    = number("graph_calls")
 			explore  = number("exploration_calls")
@@ -226,26 +259,36 @@ render() {
 
 			if (work <= 0) {
 				out = label " " paint("no graph calls yet", "2")
-				if (explore > 0) out = out sep() paint(human(explore) " explore", "2")
+				# Same rule as the model line below: context is opt-in. This path has no
+				# model figure to stand alone, but "how much exploration happened instead"
+				# is still context, and gating it here keeps one rule rather than an
+				# exception nobody would predict from the name of the flag. (No apostrophes
+				# in here: the awk program is single-quoted.)
+				if (detail + 0 == 1 && explore > 0) out = out sep() paint(human(explore) " explore", "2")
 				print out
 				exit 0
 			}
 
-			saved    = number("estimated_savings_est_tokens")
-			savedPct = number("estimated_savings_pct_of_session_tokens")
-			expTok   = number("exploration_returned_est_tokens")
-			gfHit    = number("graph_first_sessions")
-			gfTotal  = number("sessions_with_locate")
-
-			if (saved > 0) {
-				text = human(saved)
-				# "[GRAPH] " = 8, "\342\206\227 " = 2, " saved" = 6.
-				addseg(label " " paint("\342\206\227 " text " saved", "38;5;78"), 16 + length(text), 0)
-			} else {
-				addseg(label, 7, 0)
+			# Presence is separate from value: -1 is a valid modeled loss, not the
+			# missing-value sentinel used by the nonnegative counters above.
+			signed = numberRaw("estimated_savings_est_tokens_unfloored")
+			comparable = number("sessions_with_savings_comparison")
+			expTok = number("exploration_returned_est_tokens")
+			model = "1:1 model unavailable"
+			if (signed != "" && comparable > 0) {
+				value = signed + 0
+				text = value == 0 ? "0" : (value < 0 ? "-" : "+") human(value < 0 ? -value : value)
+				model = "1:1 model " text " tok"
 			}
+			addseg(label " " paint(model, "2"), 8 + length(model), 0)
 
 			# Locate verbs first, then the remaining work verbs; calls-desc within each.
+			if (detail + 0 != 1) {
+				out = ""
+				for (i = 1; i <= nseg; i++) if (!gone[i]) out = out stext[i]
+				print out
+				exit 0
+			}
 			shown = 0
 			counted = 0
 			for (pass = 1; pass <= 2; pass++) {
@@ -263,33 +306,9 @@ render() {
 			if (shown == 0) addplain(work " graph", 0)
 			else if (counted < work) addplain((work - counted) " other", 0)
 
-			# What the graph was measured against: the exploration it did not replace.
+			# Observed exploration output, not a measured counterfactual or billed tokens.
 			if (explore > 0) addplain("vs " human(explore) " explore", 3)
-			if (expTok > 0) addplain(human(expTok) " explore tok", 2)
-
-			# graph-first: did the session OPEN with the graph rather than grep/read. One
-			# session is a yes/no; a multi-session scope is a rate, as `entire graph stats`
-			# reports it.
-			if (gfTotal > 0) {
-				if (sessions == 1)
-					# "graph-first " = 12 plus the one-glyph tick.
-					addseg(sep() "graph-first " (gfHit > 0 ? "\342\234\223" : "\342\234\227"), 16, 0)
-				else
-					addplain(sprintf("graph-first %d%%", (gfHit * 100 / gfTotal) + 0.5), 0)
-			}
-
-			# Share of all locate-ish calls that went to the graph instead of grep/read.
-			# A share that rounds to 0% would read as "no graph calls", which is false
-			# whenever we got this far — say "<1%" instead.
-			locates = graph + (explore > 0 ? explore : 0)
-			if (locates > 0) {
-				share = graph * 100 / locates
-				if (share < 0.5) addplain("<1% of locates", 0)
-				else addplain(sprintf("%d%% of locates", share + 0.5), 0)
-			}
-
-			# Below 0.005% every format rounds to "0.00%", which is a zero — drop it.
-			if (savedPct >= 0.005) addplain(pct(savedPct) " of session", 1)
+			if (expTok > 0) addplain(human(expTok) " est. explore tok", 2)
 
 			for (rank = 1; rank <= 3 && wtotal > maxw; rank++) {
 				for (i = 1; i <= nseg; i++) {
@@ -329,6 +348,17 @@ render() {
 # for a week. A session held open but idle that long loses its entry and pays one in-line
 # recompute; refreshing the mtime on every cache HIT would instead put a fork on the hottest
 # path in this script — one per keystroke — which costs more than the recompute it avoids.
+# Default is the model figure alone. The context fields were added to answer "is the graph
+# actually being used", which is a question for `entire graph stats`, not for a line that has to
+# stay readable next to everything else on a status bar -- and one of them (exploration token
+# totals) reads as a savings claim the paired benchmark does not support. Opt back in with
+# ENTIRE_GRAPH_STATUSLINE_DETAIL=1.
+#
+# Resolved HERE, above the cache block, not inside render(): the cache config below has to carry
+# it, and render() has not run yet at that point.
+DETAIL=0
+case "${ENTIRE_GRAPH_STATUSLINE_DETAIL:-}" in 1 | true | yes | on) DETAIL=1 ;; esac
+
 CACHE_DIR=
 CACHE_DIR_OK=
 CACHE_FILE=
@@ -389,11 +419,17 @@ if [ "${ENTIRE_GRAPH_STATUSLINE_CACHE:-1}" != "0" ]; then
 				;;
 			esac
 			CACHE_FILE=$CACHE_DIR/$SAFE-$DIGEST.line
-			# v3: the key scheme changed, so entries written by an older script must not be
-			# served. Sanitised in one pass because $SCOPE, $SINCE and $REPO all reach a
+			# v5: signed model rendering must not serve old positive-only savings badges.
+			# Sanitised in one pass because $SCOPE, $SINCE and $REPO all reach a
 			# TAB-delimited record, and a tab or newline in any of them shifts the field split.
-			CACHE_CONFIG=$(printf 'v3 %s %s color%s %s' \
-				"$SCOPE" "$SINCE" "${NO_COLOR:+-off}" "$REPO" | tr '\t\n' '__')
+			#
+			# $detail is part of the config, not incidental to it: this field is everything
+			# that changes WHAT is rendered, and the exact-match branch serves a stored line
+			# without re-rendering. Leave it out and flipping the toggle serves the previous
+			# setting's line until the transcript's stamp happens to move -- so the toggle
+			# would look broken exactly when the session is idle enough to notice.
+			CACHE_CONFIG=$(printf 'v5 %s %s color%s detail%s %s' \
+				"$SCOPE" "$SINCE" "${NO_COLOR:+-off}" "$DETAIL" "$REPO" | tr '\t\n' '__')
 		fi
 	fi
 fi

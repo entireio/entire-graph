@@ -36,13 +36,13 @@ import (
 // through unexpectedArgumentsError, so the preflight's message is the same one the real call would
 // have produced.
 var preflightParsers = map[string]func(version string, args []string) error{
-	"search": func(version string, args []string) error {
+	"query": func(version string, args []string) error {
 		_, rest, err := parseSearchFlags(args)
 		if err != nil {
 			return err
 		}
 		if len(rest) != 0 {
-			return unexpectedArgumentsError("search", version, rest)
+			return unexpectedArgumentsError("query", version, rest)
 		}
 		return nil
 	},
@@ -87,9 +87,12 @@ func preflightCommands() []string {
 func checkPreflight(version, spec string) error {
 	fields := strings.Fields(spec)
 	if len(fields) == 0 {
-		return fmt.Errorf("--assert needs a command line, for example --assert %q", "search --profile full")
+		return fmt.Errorf("--assert needs a command line, for example --assert %q", "query --profile full")
 	}
 	command, args := fields[0], fields[1:]
+	if command == "search" {
+		command = "query"
+	}
 	parse, ok := preflightParsers[command]
 	if !ok {
 		return fmt.Errorf("--assert cannot check %q: this binary can check %s",

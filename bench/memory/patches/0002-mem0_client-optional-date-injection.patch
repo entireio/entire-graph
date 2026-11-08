@@ -1,6 +1,6 @@
 --- a/benchmarks/common/mem0_client.py
 +++ b/benchmarks/common/mem0_client.py
-@@ -138,6 +138,17 @@
+@@ -138,6 +138,17 @@ class Mem0Client:
          """Add via OSS server — synchronous endpoint, no event polling."""
          session = await self._get_session()
  
@@ -18,3 +18,35 @@
          payload: dict[str, Any] = {"messages": messages, "user_id": user_id}
          if timestamp is not None:
              payload["timestamp"] = timestamp
+@@ -310,7 +321,14 @@ class Mem0Client:
+                     await asyncio.sleep(self.retry_delay * (attempt + 1))
+                 else:
+                     logger.error("SEARCH failed after %d attempts for user=%s", self.max_retries, user_id)
+-                    return []
++                    # An exhausted search must not look like an empty index: the
++                    # caller cannot tell the two apart from `[]`, and scoring an
++                    # infrastructure failure as a capability miss is what the
++                    # `search_dropped` accounting exists to prevent. Every other
++                    # adapter in this harness already raises here (README 3.2).
++                    raise RuntimeError(
++                        f"SEARCH_EXHAUSTED after {self.max_retries} attempts for user={user_id}"
++                    ) from exc
+ 
+     async def _search_cloud(self, query, user_id, top_k, rerank, score_debug) -> list[dict]:
+         """Search via Mem0 cloud V3 API."""
+@@ -341,7 +359,14 @@ class Mem0Client:
+                     await asyncio.sleep(self.retry_delay * (attempt + 1))
+                 else:
+                     logger.error("SEARCH failed after %d attempts for user=%s", self.max_retries, user_id)
+-                    return []
++                    # An exhausted search must not look like an empty index: the
++                    # caller cannot tell the two apart from `[]`, and scoring an
++                    # infrastructure failure as a capability miss is what the
++                    # `search_dropped` accounting exists to prevent. Every other
++                    # adapter in this harness already raises here (README 3.2).
++                    raise RuntimeError(
++                        f"SEARCH_EXHAUSTED after {self.max_retries} attempts for user={user_id}"
++                    ) from exc
+ 
+     # =========================================================================
+     # Delete

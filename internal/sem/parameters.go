@@ -22,8 +22,8 @@ import (
 // draws the boundaries the regex is guessing at — and, for a Go method, also
 // excludes the receiver, which no anchor-on-the-first-paren heuristic can do.
 func astParameterNames(node *sitter.Node, src []byte) ([]string, bool) {
-	list := parameterListNode(node)
-	if list == nil {
+	lists := parameterListNodes(node)
+	if len(lists) == 0 {
 		// Swift hangs `parameter` nodes directly off the declaration with no
 		// enclosing list node.
 		if direct := directParameterChildren(node, src); len(direct) > 0 {
@@ -42,8 +42,8 @@ func astParameterNames(node *sitter.Node, src []byte) ([]string, bool) {
 			names = append(names, parameterBindingNames(receiver.NamedChild(index), src)...)
 		}
 	}
-	for index := 0; index < int(list.NamedChildCount()); index++ {
-		names = append(names, parameterBindingNames(list.NamedChild(index), src)...)
+	for _, entry := range parameterListEntries(lists) {
+		names = append(names, parameterBindingNames(entry, src)...)
 	}
 	return names, true
 }
@@ -66,13 +66,9 @@ func astParameterNames(node *sitter.Node, src []byte) ([]string, bool) {
 //
 // Zig emitted zero RETURNS_TYPE edges across a whole repository as a result.
 func astSignatureTypeTexts(node *sitter.Node, src []byte) (string, string, bool) {
-	list := parameterListNode(node)
-	entries := []*sitter.Node{}
-	if list != nil {
-		for index := 0; index < int(list.NamedChildCount()); index++ {
-			entries = append(entries, list.NamedChild(index))
-		}
-	} else {
+	lists := parameterListNodes(node)
+	entries := parameterListEntries(lists)
+	if len(lists) == 0 {
 		for index := 0; index < int(node.NamedChildCount()); index++ {
 			if child := node.NamedChild(index); validNode(child) && child.Type() == "parameter" {
 				entries = append(entries, child)
@@ -89,7 +85,7 @@ func astSignatureTypeTexts(node *sitter.Node, src []byte) (string, string, bool)
 		}
 	}
 	returnText := ""
-	if node := callableReturnTypeNode(node, list); validNode(node) {
+	if node := callableReturnTypeNode(node, lists); validNode(node) {
 		returnText = strings.TrimSpace(node.Content(src))
 		// TypeScript keeps the annotation colon inside the node; Rust and Swift
 		// keep the arrow outside it, but trim defensively for both.
@@ -121,23 +117,64 @@ func parameterTypeText(entry *sitter.Node, src []byte) string {
 // and Dart give it no field at all and leave a bare type node among the
 // declaration's children, which is why the field lookup falls back to scanning
 // for a type-shaped child outside the parameter list.
-func callableReturnTypeNode(node *sitter.Node, list *sitter.Node) *sitter.Node {
+//
+// That scan cannot simply take the first unfielded type node. A Kotlin
+// EXTENSION function puts its receiver type there too, ahead of the name and the
+// parameter list — `fun Receiver.load(): Result` gives function_declaration two
+// unfielded `user_type` children, `Receiver` then `Result` — so first-wins
+// reported the receiver and lost the real return type on every extension
+// function in a Kotlin repository.
+//
+// Position separates them, but only in one direction per language: Kotlin, Scala
+// and Zig write the result AFTER the parameter clauses while Dart and Java write
+// it before. So prefer a type that starts after the last clause and fall back to
+// one before, which keeps `void f(...)` reading `void` and makes
+// `fun Receiver.load(): Result` read `Result`. With no clause to order against
+// (Swift's list-less form) the first match still wins, exactly as before.
+func callableReturnTypeNode(node *sitter.Node, lists []*sitter.Node) *sitter.Node {
 	for _, field := range []string{"result", "return_type", "returns", "type"} {
 		if found := node.ChildByFieldName(field); validNode(found) {
 			return found
 		}
 	}
+	var beforeLists *sitter.Node
 	for index := 0; index < int(node.NamedChildCount()); index++ {
 		child := node.NamedChild(index)
 		if !isTypeNode(child) {
 			continue
 		}
-		if list != nil && child.StartByte() >= list.StartByte() && child.EndByte() <= list.EndByte() {
+		if nodeWithinParameterLists(child, lists) {
 			continue // a parameter's own type, not the result
 		}
-		return child
+		if nodeAfterParameterLists(child, lists) {
+			return child
+		}
+		if beforeLists == nil {
+			beforeLists = child
+		}
 	}
-	return nil
+	return beforeLists
+}
+
+func nodeWithinParameterLists(node *sitter.Node, lists []*sitter.Node) bool {
+	for _, list := range lists {
+		if node.StartByte() >= list.StartByte() && node.EndByte() <= list.EndByte() {
+			return true
+		}
+	}
+	return false
+}
+
+// nodeAfterParameterLists reports whether node sits past every parameter clause.
+// With no clauses it is vacuously true, so a grammar that exposes none keeps the
+// first-match behavior this scan has always had.
+func nodeAfterParameterLists(node *sitter.Node, lists []*sitter.Node) bool {
+	for _, list := range lists {
+		if node.StartByte() < list.EndByte() {
+			return false
+		}
+	}
+	return true
 }
 
 // parameterListNodeTypes are the node types grammars use for a formal parameter
@@ -152,19 +189,82 @@ var parameterListNodeTypes = map[string]bool{
 	"function_value_parameters": true, // Kotlin
 }
 
-func parameterListNode(node *sitter.Node) *sitter.Node {
+// parameterGroupNodeTypes are wrapper nodes that appear as a list ENTRY but hold
+// several parameter entries instead of binding a name themselves. Dart puts its
+// positional-optional `[a = 1]` and named `{a: 1}` groups in one such node, with
+// each default VALUE as a sibling of the formal parameter it belongs to. Treated
+// as a single entry the group has no `name`/`pattern`/`declarator` field, so the
+// last-identifier fallback took the final default expression as the parameter:
+// `void f(int a, [int b = other])` bound {a, other} — inventing a flow from a
+// module-level constant and losing `b` — and `void g([User user = defaultUser])`
+// bound {defaultUser} and reported no parameter type at all, dropping PARAM_TYPE
+// and the overload resolution that reads it.
+var parameterGroupNodeTypes = map[string]bool{
+	"optional_formal_parameters": true, // Dart `[a = 1]` and `{a: 1}`
+	"named_formal_parameters":    true, // Dart grammars that split the two forms
+}
+
+// parameterListNodes returns EVERY formal parameter clause of a callable. Most
+// grammars have exactly one, but Scala curries: `def f(a: Int)(b: Int, c: Int)`
+// hangs two `parameters` children off the same definition, both under the
+// `parameters` field. ChildByFieldName returns only the first, so the extractor
+// reported a partial list — and reported it as AST-authoritative, which
+// suppressed the signature fallback and dropped every flow and type from the
+// later clauses.
+func parameterListNodes(node *sitter.Node) []*sitter.Node {
 	if !validNode(node) {
 		return nil
 	}
-	if list := node.ChildByFieldName("parameters"); validNode(list) {
-		return list
-	}
-	for index := 0; index < int(node.NamedChildCount()); index++ {
-		if child := node.NamedChild(index); validNode(child) && parameterListNodeTypes[child.Type()] {
-			return child
+	// The `parameters` field, when the grammar has one, is authoritative: Go
+	// spells its RECEIVER and its multi-value RESULT as `parameter_list` nodes
+	// too, and only the field tells the three apart. Every clause carrying the
+	// field is taken, which is what makes a curried Scala definition whole.
+	var fielded []*sitter.Node
+	var typed []*sitter.Node
+	for index := 0; index < int(node.ChildCount()); index++ {
+		child := node.Child(index)
+		if !validNode(child) || !child.IsNamed() {
+			continue
+		}
+		switch field := node.FieldNameForChild(index); field {
+		case "parameters":
+			fielded = append(fielded, child)
+		case "":
+			if parameterListNodeTypes[child.Type()] {
+				typed = append(typed, child)
+			}
 		}
 	}
-	return nil
+	if len(fielded) > 0 {
+		return fielded
+	}
+	return typed
+}
+
+// parameterListEntries flattens the clauses into the entries that actually bind
+// a parameter, unwrapping the group nodes described on parameterGroupNodeTypes.
+// A group's non-parameter children are its default VALUES and are dropped here:
+// they are expressions in the enclosing scope, not bindings.
+func parameterListEntries(lists []*sitter.Node) []*sitter.Node {
+	entries := []*sitter.Node{}
+	for _, list := range lists {
+		for index := 0; index < int(list.NamedChildCount()); index++ {
+			child := list.NamedChild(index)
+			if !validNode(child) {
+				continue
+			}
+			if !parameterGroupNodeTypes[child.Type()] {
+				entries = append(entries, child)
+				continue
+			}
+			for inner := 0; inner < int(child.NamedChildCount()); inner++ {
+				if nested := child.NamedChild(inner); isParameterNode(nested) {
+					entries = append(entries, nested)
+				}
+			}
+		}
+	}
+	return entries
 }
 
 func directParameterChildren(node *sitter.Node, src []byte) []string {
@@ -241,13 +341,20 @@ func parameterBindingNames(node *sitter.Node, src []byte) []string {
 // detectors match argument text against this set literally. Returning only the
 // bare name would silently drop every splat-forwarding flow (measured: 108 real
 // flows in pandas alone), so carry both spellings.
+//
+// `&` is in the sigil set for the same reason `*` is: Ruby binds a block
+// parameter as `block` but forwards it as `sink(&block)`, and the argument text
+// is compared for EQUALITY, so the bare name never matched and `def f(&block)`
+// contributed no DATA_FLOWS edge while the neighbouring `def g(*args)` did. The
+// extra spelling cannot invent a flow anywhere else: an argument only matches
+// when its whole text is exactly `&name`, which no `x & name` expression is.
 func withSplatSpelling(node *sitter.Node, src []byte, names []string) []string {
 	raw := strings.TrimSpace(node.Content(src))
 	// Take the sigil from the front of the entry rather than the entry text
 	// itself: an annotated splat (`**kwargs: Any`) carries its type in the same
 	// node, so the verbatim text is not what the call site writes — but the
 	// leading `**` is.
-	prefix := raw[:len(raw)-len(strings.TrimLeft(raw, "*"))]
+	prefix := raw[:len(raw)-len(strings.TrimLeft(raw, "*&"))]
 	if prefix == "" && strings.HasPrefix(raw, "...") {
 		prefix = "..."
 	}
@@ -382,10 +489,22 @@ func cleanParameterName(raw string) string {
 	// -only rule dropped every parameter of `func f(café string, naïve int)`,
 	// and because the parser still reported the list as AST-confirmed, the
 	// signature fallback did not run and the function contributed no flows.
-	for _, char := range name {
-		if char != '_' && !unicode.IsLetter(char) && !unicode.IsDigit(char) {
-			return ""
+	for index, char := range name {
+		if char == '_' || unicode.IsLetter(char) || unicode.IsDigit(char) {
+			continue
 		}
+		// A combining mark is part of the letter it follows, not punctuation:
+		// `café` written in NFD is `caf` + `e` + U+0301, which both Python and
+		// Rust accept as one identifier (XID_Continue includes the mark). macOS
+		// filesystems hand back decomposed source routinely, so rejecting it
+		// dropped the parameter — and, because the list stayed AST-authoritative,
+		// took every flow through it with no fallback and no warning. A LEADING
+		// mark cannot start an identifier in any supported language, so it is
+		// still refused.
+		if index > 0 && unicode.IsMark(char) {
+			continue
+		}
+		return ""
 	}
 	return name
 }

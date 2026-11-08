@@ -35,6 +35,20 @@ func TestWriteTextColorCanBeForced(t *testing.T) {
 	}
 }
 
+func TestWriteTextTitleUsesCLIPaletteAccent(t *testing.T) {
+	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "1")
+	t.Setenv("NO_COLOR", "")
+
+	var out bytes.Buffer
+	WriteText(&out, sampleTextResult())
+	if !strings.Contains(out.String(), "\x1b[1;35mSemantic changes\x1b[0m") {
+		t.Fatalf("title should render in the CLI palette accent (bold magenta):\n%q", out.String())
+	}
+	if strings.Contains(out.String(), "38;2;") {
+		t.Fatalf("output should not contain truecolor sequences; base16 slots follow the terminal theme:\n%q", out.String())
+	}
+}
+
 func TestNoColorOverridesForcedColor(t *testing.T) {
 	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "1")
 	t.Setenv("NO_COLOR", "1")

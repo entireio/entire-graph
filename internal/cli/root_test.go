@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -333,7 +334,7 @@ def check_token(token):
 		if err := json.Unmarshal([]byte(lines[0]), &header); err != nil {
 			t.Fatalf("%s invalid header json %q: %v", tt.command, lines[0], err)
 		}
-		if header["schema_version"] != "1.2" || header["provider"] != "entire-graph" {
+		if header["schema_version"] != "1.5" || header["provider"] != "entire-graph" {
 			t.Fatalf("%s header = %#v", tt.command, header)
 		}
 		seenTypes := map[string]bool{}
@@ -385,7 +386,7 @@ func TestSnapshotAcceptsNoNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"schema_version":"1.2"`) {
+	if !strings.Contains(out.String(), `"schema_version":"1.5"`) {
 		t.Fatalf("snapshot output:\n%s", out.String())
 	}
 }
@@ -399,7 +400,7 @@ func TestSnapshotAcceptsWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"schema_version":"1.2"`) {
+	if !strings.Contains(out.String(), `"schema_version":"1.5"`) {
 		t.Fatalf("snapshot output:\n%s", out.String())
 	}
 }
@@ -853,7 +854,7 @@ func TestSearchCommandAgentFormatDoesNotTreatHeaderSizedBudgetAsUnbounded(t *tes
 
 func TestSearchCommandAgentFormatKeepsTopLocationUnderTightBudget(t *testing.T) {
 	repo := t.TempDir()
-	write(t, repo, "a.py", "def target():\n    return True\n")
+	write(t, repo, "a.py", "target = True\n")
 
 	var out bytes.Buffer
 	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
@@ -1042,7 +1043,7 @@ func TestProviderCommandsAcceptIgnoreFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", command, err)
 		}
-		if !strings.Contains(out.String(), `"schema_version":"1.2"`) {
+		if !strings.Contains(out.String(), `"schema_version":"1.5"`) {
 			t.Fatalf("%s output missing header:\n%s", command, out.String())
 		}
 		if strings.Contains(out.String(), "ignored.py") || strings.Contains(out.String(), "ignored") {
@@ -1071,7 +1072,7 @@ func TestProviderCommandsAcceptIncludeFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", command, err)
 		}
-		if !strings.Contains(out.String(), `"schema_version":"1.2"`) {
+		if !strings.Contains(out.String(), `"schema_version":"1.5"`) {
 			t.Fatalf("%s output missing header:\n%s", command, out.String())
 		}
 		if !strings.Contains(out.String(), "reopened") {
@@ -1163,7 +1164,7 @@ func TestDiffJSONIncludesSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"schema_version": "1.2"`) {
+	if !strings.Contains(out.String(), `"schema_version": "1.5"`) {
 		t.Fatalf("diff json missing schema_version:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), `"producer_version": "9.9.9-test"`) {
@@ -1177,7 +1178,7 @@ func TestDiffJSONIncludesSchemaVersion(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
 		t.Fatalf("diff json invalid:\n%s\n%v", out.String(), err)
 	}
-	if payload.SchemaVersion != "1.2" {
+	if payload.SchemaVersion != "1.5" {
 		t.Fatalf("schema_version = %q, want 1.2", payload.SchemaVersion)
 	}
 	if payload.ProducerVersion != "9.9.9-test" {
@@ -1571,4 +1572,97 @@ func twoCommitRepo(t *testing.T) string {
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "two")
 	return repo
+}
+
+// TestSnapshotRecordCacheSpoolsToDisk pins the cache tee's spool contract.
+//
+// resolveCacheDir falls back to the user cache directory, so useCache is true for every ordinary
+// committed snapshot/symbols/edges run. The tee therefore must not hold the stream in memory — and
+// the bounded in-memory capture that once enforced that silently stored NOTHING past its 64MB cap,
+// so every repository whose snapshot outgrew it re-parsed on each run. The spool replaces both
+// failure modes: records gzip straight to a temporary file beside the entry, so storing is
+// size-independent.
+//
+// Pinned here: (1) a run stores the envelope + stream sidecar pair and leaves no temporary behind;
+// (2) a repeat run replays byte-identically from that pair; (3) a run whose spool cannot even open
+// still produces its complete output, says so once on stderr, and stores nothing.
+func TestSnapshotRecordCacheSpoolsToDisk(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "main.go", "package sample\n\nfunc Caller() { Callee() }\nfunc Callee() {}\n")
+	git(t, repo, "add", "main.go")
+	git(t, repo, "commit", "-m", "initial")
+
+	run := func(cacheDir string) (string, string) {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if err := Run(t.Context(), Options{
+			Version: "spool-capture-test",
+			Env:     EntireEnv{RepoRoot: repo},
+			Stdout:  &out,
+			Stderr:  &errOut,
+		}, []string{"snapshot", "--repo", repo, "--format", "ndjson", "--cache-dir", cacheDir}); err != nil {
+			t.Fatal(err)
+		}
+		return out.String(), errOut.String()
+	}
+	cacheFiles := func(dir string) []string {
+		t.Helper()
+		var files []string
+		if err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !entry.IsDir() {
+				files = append(files, filepath.Base(path))
+			}
+			return nil
+		}); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		return files
+	}
+
+	cacheDir := t.TempDir()
+	full, _ := run(cacheDir)
+	var envelopes, sidecars, temporaries int
+	for _, name := range cacheFiles(cacheDir) {
+		switch {
+		case strings.HasPrefix(name, "."):
+			temporaries++
+		case strings.HasSuffix(name, ".stream.gz"):
+			sidecars++
+		case strings.HasSuffix(name, ".json.gz"):
+			envelopes++
+		}
+	}
+	if envelopes != 1 || sidecars != 1 || temporaries != 0 {
+		t.Fatalf("stored run should leave exactly one envelope and one stream sidecar and no temporaries, got %v", cacheFiles(cacheDir))
+	}
+
+	warm, _ := run(cacheDir)
+	if warm != full {
+		t.Fatalf("warm replay differs from the cold stream:\n got %q\nwant %q", warm, full)
+	}
+
+	// A cache directory the spool cannot create its temporary in: the stream
+	// must be unaffected, the failure said once on stderr, nothing stored. The
+	// blocker is a regular FILE at the cache-directory path — unlike a 0o500
+	// directory, which Windows does not treat as unwritable.
+	unwritable := filepath.Join(t.TempDir(), "sealed")
+	if err := os.WriteFile(unwritable, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	degraded, degradedErr := run(unwritable)
+	if degraded != full {
+		t.Fatalf("a failed spool changed the streamed output:\n got %q\nwant %q", degraded, full)
+	}
+	if !strings.Contains(degradedErr, "provider records cache") {
+		t.Fatalf("a failed spool should be reported on stderr, got %q", degradedErr)
+	}
+	if info, err := os.Stat(unwritable); err != nil || info.IsDir() {
+		t.Fatalf("a failed spool replaced the blocking file: %v %v", info, err)
+	}
 }

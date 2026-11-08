@@ -304,7 +304,14 @@ func TestRefusedNewlinePathKeepsItsFileRecord(t *testing.T) {
 	repo := t.TempDir()
 	initRepo(t, repo)
 	writeSparseFile(t, repo, newlinePath, oversizeBytes, "# over the cap\n")
+	// Three ordinary peers, not one: this test is about the refused file keeping
+	// its record and a warning-severity E_FILE_TOO_LARGE rather than an
+	// error-severity E_FILE_READ, and a one-skip-in-two corpus would now be
+	// degraded on the skip RATIO (see snapshotCompletenessLevel) for reasons
+	// that have nothing to do with what is being asserted here.
 	write(t, repo, "plain.py", "def helper(value):\n    return value\n")
+	write(t, repo, "plain_two.py", "def helper_two(value):\n    return value\n")
+	write(t, repo, "plain_three.py", "def helper_three(value):\n    return value\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
 	wantHash, wantLines := fileSHA256(t, filepath.Join(repo, newlinePath))

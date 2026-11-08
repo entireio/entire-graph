@@ -63,24 +63,61 @@ const intro = "entire graph adds a deterministic, no-egress code graph to Entire
 // commandDocs is the ordered registry. Every command dispatched in root.go's Run
 // switch has an entry here (TestRegistryMatchesDispatch enforces the parity).
 var commandDocs = []commandDoc{
+	{
+		name:    "health",
+		group:   groupMeta,
+		summary: "Report committed-tree indexing health, including healthy results",
+		usage:   []string{"entire graph health [--repo path] [--json] [--refresh]"},
+		long:    "Reports unique flagged source files, percentages, the inclusive 5% degradation threshold, language and diagnostic breakdowns, affected files and parser diagnostic locations. Documentation, configuration and data do not dilute the source denominator. Intentional skips are listed separately; stronger unsafe and unusable-graph safeguards still apply. Parser limitations do not establish invalid source code.\n\nDefaults to committed HEAD and the full profile. Reuses a matching index or builds one, announcing the build on stderr. --refresh rebuilds and invalidates derived query caches. Older health calculations are invalidated by cache versioning. Matching means the same tree, profile, provider and indexing policy; it does not include uncommitted source edits. doctor remains the provider capability check.",
+		flags: []flagDoc{
+			{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
+			{name: "--json", desc: "Emit structured health JSON instead of text"},
+			{name: "--refresh", desc: "Rebuild even when a matching index exists"},
+			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Index profile"},
+			{name: "--cache-dir", arg: "path", desc: "Override the shared index cache directory"},
+			{name: "--format", arg: "text|json|auto", def: "text", desc: "Report format"},
+			{name: "--head", desc: "Accepted for symmetry; health always uses committed HEAD"},
+			{name: "--no-network", desc: "Accepted for symmetry; health is always local-only"},
+			{name: "--ignore-file", arg: "path", desc: "Extra exclude rules (repeatable)"},
+			{name: "--include-file", arg: "path", desc: "Re-include ignored paths (repeatable)"},
+		},
+		examples: []string{"entire graph health", "entire graph health --repo . --json", "entire graph health --refresh"},
+	},
 	// ── Set up your agent ────────────────────────────────────────────────
 	{
-		name:    "init-agents",
+		name:    "setup",
 		group:   groupSetup,
 		summary: "Install the coding-agent guide into AGENTS.md/CLAUDE.md",
-		usage:   []string{"entire graph init-agents [--repo path]"},
-		long:    "Writes the operating guide into a project's AGENTS.md and CLAUDE.md so any coding agent working in the repo knows to locate code with the graph before broad grep/read exploration.",
+		usage:   []string{"entire graph setup [--repo path] [--strict | --normal] [--no-claude-hook]"},
+		long:    "Writes one shared operating guide and managed AGENTS.md/CLAUDE.md references. Preserves repository Graph/Brain activation and the saved guidance mode. --strict saves mandatory tool-use rules for all enabled products; --normal resets to normal guidance. New repositories default to normal.\n\nAlso registers a Claude Code SubagentStart hook (entire graph hook claude-subagent-start) in the per-user, untracked .claude/settings.local.json, merged into existing settings and added once. Claude Code's Explore and Plan subagents do not load CLAUDE.md; the hook gives them the graph directive. --no-claude-hook skips it.",
 		flags: []flagDoc{
 			{name: "--repo", arg: "path", desc: "Repository to install into (default: current repo)"},
+			{name: "--strict", desc: "Save strict guidance for all enabled products (exclusive with --normal)"},
+			{name: "--normal", desc: "Save normal guidance for all enabled products (exclusive with --strict)"},
+			{name: "--no-claude-hook", desc: "Do not register the Claude Code SubagentStart hook in .claude/settings.local.json"},
 		},
-		examples: []string{"entire graph init-agents --repo ."},
+		examples: []string{"entire graph setup --repo ."},
 	},
 	{
-		name:     "agent-guide",
+		name:     "hook",
 		group:    groupSetup,
-		summary:  "Print the coding-agent operating guide",
-		usage:    []string{"entire graph agent-guide"},
-		long:     "Prints the resolution-first guide (graph retrieval, focused source inspection, verification) to stdout without writing any files. Use init-agents to install it into a project instead.",
+		hidden:   true,
+		summary:  "Serve a coding-agent hook (run by the agent, not by hand)",
+		usage:    []string{"entire graph hook claude-subagent-start < event.json"},
+		long:     "claude-subagent-start reads a Claude Code SubagentStart event on stdin and prints {\"hookSpecificOutput\":{\"hookEventName\":\"SubagentStart\",\"additionalContext\":...}} carrying the compact graph directive, so subagents that do not load CLAUDE.md (Explore, Plan) still learn to use the graph. It prints nothing unless the event's cwd (else the current directory) is inside a git work tree, never builds an index, and fails open: malformed input prints nothing and exits 0. setup registers it.",
+		examples: []string{`echo '{"hook_event_name":"SubagentStart","cwd":"'"$PWD"'","agent_type":"Explore"}' | entire graph hook claude-subagent-start`},
+	},
+	{
+		name:    "agent-guide",
+		group:   groupSetup,
+		summary: "Print the coding-agent operating guide",
+		usage:   []string{"entire graph agent-guide [--repo path] [--strict | --normal]"},
+		long:    "Previews the same repository-specific workflow setup would install, without writing files. Inherits the saved guidance mode; --strict and --normal override this preview only. Save a mode with `setup --strict` or `setup --normal`. Outside a repository, prints standalone Graph guidance (normal unless --strict is supplied).",
+		flags: []flagDoc{
+			{name: "--repo", arg: "path", desc: "Project root (default: host repository or nearest repository)"},
+			{name: "--strict", desc: "Preview strict guidance without saving (exclusive with --normal)"},
+			{name: "--normal", desc: "Preview normal guidance without saving (exclusive with --strict)"},
+		},
 		examples: []string{"entire graph agent-guide"},
 	},
 	{
@@ -88,7 +125,7 @@ var commandDocs = []commandDoc{
 		group:   groupSetup,
 		summary: "Build/warm a committed-tree cache variant for matching queries",
 		usage:   []string{"entire graph index --repo . [--head] [--force] [--profile syntax-only|fast|full] [--cache-dir path] [--report GRAPH_REPORT.md] [--format text|json|auto]"},
-		long: "Prebuilds a durable, complete committed-tree snapshot. Later --head searches/neighbors can reuse it when caching is enabled and they resolve the same cache directory, profile, and ordered ignore/include inputs, with unchanged input-file contents and .graphignore. index defaults to full while search defaults to fast, so a default index does not warm a default search --head. Re-running index refreshes that cache variant: an unchanged tree hits, while a changed tree rebuilds. Pass --force to rebuild and overwrite the entry even when the tree is unchanged.\n\n" +
+		long: "Prebuilds a durable, complete committed-tree snapshot. Later --head searches/neighbors can reuse it when caching is enabled and they resolve the same cache directory, profile, and ordered ignore/include inputs, with unchanged input-file contents and .graphignore. index defaults to full while query defaults to fast, so a default index does not warm a default query --head. Re-running index refreshes that cache variant: an unchanged tree hits, while a changed tree rebuilds. Pass --force to rebuild and overwrite the entry even when the tree is unchanged.\n\n" +
 			"At a terminal it draws a live progress bar on stderr (only when it actually builds — a cache hit returns instantly) and prints a readable summary; piped or with --format json it emits the schema-versioned JSON summary that agents and CI consume. --report writes a human-readable GRAPH_REPORT.md rendered from the snapshot, so the same tree always renders the same bytes. The cache defaults to the platform per-user cache dir (macOS ~/Library/Caches/entire-graph; XDG_CACHE_HOME or ~/.cache elsewhere); --cache-dir and ENTIRE_PLUGIN_DATA_DIR override it.\n\n" +
 			"A repo-root .graphignore (gitignore syntax) is honored by every graph command, on top of .gitignore. Use it for tracked-but-vendored/generated sources — e.g. tree-sitter parser.c blobs — that otherwise surface as E_FILE_TOO_LARGE/E_PARSE_ERROR partial failures and a \"degraded\" completeness. Oversized/minified skips also no longer count toward \"degraded\" on their own.",
 		flags: []flagDoc{
@@ -121,34 +158,80 @@ var commandDocs = []commandDoc{
 
 	// ── Inspect the graph ────────────────────────────────────────────────
 	{
-		name:    "search",
+		name:    "store",
+		group:   groupInspect,
+		summary: "Resolve the read-only committed-tree code store for local consumers",
+		usage:   []string{`entire graph store [--repo path] [--profile full] [--cache-dir path] [--ignore-file path] [--include-file path]`},
+		long:    "Returns a JSON descriptor containing the current committed-tree SQLite path, entry digest, provider metadata and counts. It never builds an index. A missing or incompatible store returns store_unavailable=true. Build the matching cache variant with ENTIRE_GRAPH_SEARCH_STORE=1 entire graph index --head. Consumers must open read-only and verify the entry digest; see docs/store-contract.md.",
+		flags: []flagDoc{
+			{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
+			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Indexing profile of the store to read (match the index that built it)"},
+			{name: "--cache-dir", arg: "path", desc: "Cache directory holding the store (default: plugin data dir, else user cache dir)"},
+			{name: "--ignore-file", arg: "path", desc: "Additional ignore file; repeatable, must match the indexed policy"},
+			{name: "--include-file", arg: "path", desc: "Additional include file; repeatable, must match the indexed policy"},
+		},
+		examples: []string{`entire graph store --repo . --profile full`},
+	},
+	{
+		name:    "context",
+		group:   groupSetup,
+		summary: "Task-relevant symbols, relations, and test suggestions from the committed-tree store (JSON)",
+		usage:   []string{`entire graph context --repo . --task "<task text>" [--limit N] [--tests-limit N] [--relations-limit N] [--allow-ancestor N] [--profile full] [--cache-dir path] [--ignore-file path] [--include-file path]`},
+		long: "The delegation surface for downstream consumers such as Entire Brain's brief: task text in, the store's ranked task-relevant symbols plus their relation fan-out and test suggestions out, as one JSON document. It reads ONLY the committed tree's sqlite store sidecar — it never parses and never builds — so latency is bounded by indexed reads (measured ~0.5s on a 52k-symbol repository).\n\n" +
+			"The store sidecar exists when the cache variant was built with ENTIRE_GRAPH_SEARCH_STORE=1 (`entire graph index --head`). Without one (or with a stale one), the response carries store_unavailable=true with empty lists, so a consumer degrades exactly as it would with the plugin absent instead of paying a parse.\n\n" +
+			"--allow-ancestor N (opt-in, at most 5) answers an exact miss from the newest of the N nearest first-parent ancestors that has a store under the same provider version and ignore policy, provided the paths changed since then are known completely and number at most 5% of its indexed files. Every symbol, test and relation in a changed file is withheld, and the response carries a typed stale block (ancestor_commit, ancestor_tree, commits_behind, changed_files, excluded_records). Without the block the answer is exact. A refused ancestor returns the exact miss unchanged. `graph store` never serves an ancestor.",
+		flags: []flagDoc{
+			{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
+			{name: "--ignore-file", arg: "path", desc: "Additional ignore file; repeatable, must match the indexed policy"},
+			{name: "--include-file", arg: "path", desc: "Additional include file; repeatable, must match the indexed policy"},
+			{name: "--task", arg: "text", desc: "Task text to find context for (required)"},
+			{name: "--limit", arg: "N", def: "12", desc: "Maximum symbols returned"},
+			{name: "--tests-limit", arg: "N", def: "6", desc: "Maximum test suggestions returned"},
+			{name: "--relations-limit", arg: "N", def: "200", desc: "Maximum relations returned; highest confidence kept, relations_truncated signals a cut"},
+			{name: "--allow-ancestor", arg: "N", def: "0", desc: "On an exact miss, serve a first-parent ancestor's store up to N (max 5) commits back, changed files withheld, marked by a stale block"},
+			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Indexing profile of the store to read (match the index that built it)"},
+			{name: "--cache-dir", arg: "path", desc: "Cache directory holding the store (default: plugin data dir, else user cache dir)"},
+		},
+		examples: []string{`entire graph context --repo . --task "add a kind filter flag to the recall command"`},
+	},
+	{name: "search", aliasOf: "query", hidden: true},
+	{
+		name:    "query",
 		group:   groupInspect,
 		summary: "Find the code for a task from a plain-language query (start here)",
-		usage:   []string{`entire graph search --query "issue or concept" --repo . [--top-k 10] [--format text|json|ndjson|agent] [--head] [--profile fast|full] [--deep]`},
+		usage: []string{
+			`entire graph query --query "issue or concept" --repo . [--top-k 10] [--format text|json|ndjson|agent] [--head] [--profile fast|full] [--deep]`,
+			`entire graph query [flags] "issue or concept"`,
+		},
 		long: "Ranked source regions for a plain-language description, with source and file:line inline, budgeted to drop straight into context. This is the first move for almost every locate task.\n\n" +
-			"By default search returns: ranked candidate fix sites (top hits as full function bodies), RELATED SITES, the COVERING TEST plus other tests over the same code (ALSO COVERING), SAME-CONCEPT LITERAL (every place the concept is named, tagged EDIT/CONSUMER/DOC), a VERIFY line (the narrowest test command for the file), and a CLOSED-SET WARNING when a switch over a sealed set would fail at runtime. The three reference blocks (container map, signature types, declaration card) are OFF by default because they cost turns in agent sessions; --reference-blocks all turns them on for interactive reading.\n\n" +
-			"--top-k only changes how many results come back; --deep additionally runs the exhaustive sparse (BM25) pass and fuses it with the semantic ranking (slower, reads every eligible file).\n\n" +
+			"By default query returns: ranked candidate fix sites (top hits as full function bodies), RELATED SITES, the COVERING TEST plus other tests over the same code (ALSO COVERING), SAME-CONCEPT LITERAL (every place the concept is named, tagged EDIT/CONSUMER/DOC), a VERIFY line (the narrowest test command for the file), and a CLOSED-SET WARNING when a switch over a sealed set would fail at runtime. The three reference blocks (container map, signature types, declaration card) are OFF by default because they cost turns in agent sessions; --reference-blocks all turns them on for interactive reading.\n\n" +
+			"--verify-block off (or --omit-verify, or " + envVerifyBlock + "=off) removes the VERIFY block and nothing else: the test command and the run-once/fix/stop advice that rides with it. That advice would help an agent with no tool just as much, so it exists for fair A/B comparisons (both arms get it, or neither). JSON then omits verify_command and reports stats.verify_omitted. In agent format the freed bytes go to ranked results under the same --max-context-bytes, so off is a different selection, not the on payload with lines deleted.\n\n" +
+			"--top-k caps normal results, including automatic related sites and covering tests, without changing retrieval strategy. Explicit --callee-hop may add called-helper results beyond that cap, under its existing byte-budget and ranked-source protections. --deep additionally runs the exhaustive sparse (BM25) pass and fuses it with the semantic ranking (slower, reads every eligible file).\n\n" +
 			"Ranking returns one region per unit, which is right for code and wrong for whole prose documents: one markdown document can hold the answer across several distant regions. So for prose the unit is the SECTION, not the file — a document's headed sections are ranked against every other section on their own scores, exactly as independent files would be (--document-resolution ranks a document as one unit instead). Separately, and on prose of any shape including headed documents, when fewer distinct units match than --top-k asked for, the spare slots are spent returning finer regions of the same document as results of their own (multi-resolution retrieval) — strictly additive, so it never displaces a unit and never breaches --max-context-bytes. --single-resolution turns that off. The two stack: a headed document can be ranked by section AND have spare slots filled with promoted passages, so a prose payload may carry both.",
 		flags: []flagDoc{
-			{name: "--query", arg: "text", desc: "The task or bug in one plain sentence (required)"},
+			{name: "--query", arg: "text", desc: "The task or bug in one plain sentence; alternatively supply one final argument"},
 			{name: "--repo", arg: "path", desc: "Repository to search (default: current repo)"},
-			{name: "--top-k", arg: "n", def: "10", desc: "Number of results to return"},
+			{name: "--top-k", arg: "n", def: "10", desc: "Maximum normal results, including related/covering entries (--callee-hop may add helpers)"},
 			{name: "--format", arg: "text|json|ndjson|agent", def: "json", desc: "Output format; text is tiered for reading, agent is compact"},
 			{name: "--head", desc: "Search the committed tree (cached) instead of the working tree"},
 			{name: "--profile", arg: "syntax-only|fast|full", def: "fast", desc: "Parsing depth; use full for bug-fix/locate (call-graph active)"},
 			{name: "--deep", desc: "Also run the exhaustive BM25 pass and fuse it (slower)"},
+			{name: "--callee-hop", desc: "Add called-helper results beyond --top-k, subject to byte-budget and ranked-source protections"},
 			{name: "--single-resolution", desc: "One result per ranked unit; do not spend spare slots on finer regions of a prose document"},
 			{name: "--document-resolution", desc: "Rank a prose document as one unit; do not rank its sections separately"},
-			{name: "--max-context-bytes", arg: "n", def: "24576", desc: "Output byte budget; 0 = unbounded"},
+			{name: "--max-context-bytes", arg: "n", def: "24576", desc: "Output byte budget; 0 = unbounded. Unset with --format agent: the smallest of 4096/8192/16384 that shows the top hit whole, else 24576"},
 			{name: "--reference-blocks", arg: "all|container-map,signature-types,type-card", desc: "Turn reference blocks back on (off by default)"},
+			{name: "--verify-block", arg: "on|off", def: "on", desc: "off removes the VERIFY block (suggested test command plus its run/fix/stop advice) in every format; exists for fair A/B comparisons against an arm with no tool. Env: " + envVerifyBlock},
+			{name: "--omit-verify", desc: "Shorthand for --verify-block off"},
 			{name: "--max-indexed-files", arg: "n", desc: "Bound cold-search parsing to N files"},
 			{name: "--index-all-files", desc: "Widen cold-search parsing to every file"},
 			{name: "--cache-dir", arg: "path", desc: "Override the committed-tree cache directory"},
 			{name: "--no-cache", desc: "Disable the committed-tree cache"},
 		},
 		examples: []string{
-			`entire graph search --repo . --query "token refresh returns 401" --format text --top-k 8`,
-			`entire graph search --repo . --query "csv export ordering" --profile full`,
+			`entire graph query --repo . --format text "token refresh returns 401"`,
+			`entire graph query --repo . --query "token refresh returns 401" --format text --top-k 8`,
+			`entire graph query --repo . --query "csv export ordering" --profile full`,
 		},
 	},
 	{
@@ -219,7 +302,7 @@ var commandDocs = []commandDoc{
 			{name: "--kind", arg: "kind", desc: "Disambiguate by symbol kind"},
 			{name: "--members", arg: "n", def: "15", desc: "Max members listed per group"},
 			{name: "--format", arg: "text|json", desc: "Output format"},
-			{name: "--max-context-bytes", arg: "n", def: "4096", desc: "Total text budget"},
+			{name: "--max-context-bytes", arg: "n", def: "4096", desc: "Total output budget, card and source, text or json, shared by all names; 0 = unbounded"},
 			{name: "--head", desc: "Query the committed tree (cached)"},
 		},
 		examples: []string{"entire graph def Result --repo ."},
@@ -247,7 +330,7 @@ var commandDocs = []commandDoc{
 			{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
 		},
 		examples: []string{
-			"go test ./internal/configs -run '^TestX$' 2>&1 | entire graph explain --repo .",
+			`( o=$(go test ./internal/configs -run '^TestX$' 2>&1); r=$?; printf '%s\n' "$o" | entire graph explain --repo .; exit $r )`,
 		},
 	},
 	{
@@ -255,7 +338,7 @@ var commandDocs = []commandDoc{
 		group:    groupInspect,
 		summary:  "Stream every symbol definition (bulk NDJSON)",
 		usage:    []string{"entire graph symbols --repo . --format ndjson [--worktree]"},
-		long:     "A bulk NDJSON stream of every symbol record (stable compound-v1 ID, kind, qualified name, source range, signature, language, container). There is no name argument — grep the stream client-side, or prefer search/neighbors for a single lookup. The trailing summary record carries aggregate stats and completeness.",
+		long:     "A bulk NDJSON stream of every symbol record (stable compound-v1 ID, kind, qualified name, source range, signature, language, container). There is no name argument — grep the stream client-side, or prefer query/neighbors for a single lookup. The trailing summary record carries aggregate stats and completeness.",
 		flags:    providerFlagDocs,
 		examples: []string{"entire graph symbols --repo . --format ndjson"},
 	},
@@ -316,7 +399,7 @@ var commandDocs = []commandDoc{
 		group:   groupAnalyze,
 		summary: "Entity-level change list for a commit vs its first parent",
 		usage:   []string{"entire graph commit [rev] [--json] [--progress] [--max-seconds n] [--repo path]"},
-		long:    "Entity-level change list (added / removed / renamed / signature-changed / body-changed) with a heuristic dependent count, so a signature change with many dependents stands out. Stops cleanly after --max-seconds and emits the partial result with W_ANALYSIS_BUDGET_EXCEEDED warnings listing what was skipped.",
+		long:    "Entity-level change list (added / removed / renamed / signature-changed / body-changed) with a heuristic dependent count, so a signature change with many dependents stands out. Stops cleanly after --max-seconds and emits the partial result with W_ANALYSIS_BUDGET_EXCEEDED warnings listing what was skipped. --repo must name the checkout root; subdirectories are rejected.",
 		args: []argDoc{
 			{name: "rev", desc: "Commit to analyze (default: HEAD)"},
 		},
@@ -328,7 +411,7 @@ var commandDocs = []commandDoc{
 		group:   groupAnalyze,
 		summary: "Entity-level change list between two refs",
 		usage:   []string{"entire graph diff --base <rev> --head <rev> [--json] [--progress] [--max-seconds n] [--repo path] [-- path...]"},
-		long:    "Entity-level change list between two refs, with heuristic dependent counts. High dependent counts on a signature change mean run tests first. `analyze` is an alias for this command. Stops cleanly after --max-seconds and emits the partial result with W_ANALYSIS_BUDGET_EXCEEDED warnings.",
+		long:    "Entity-level change list between two refs, with heuristic dependent counts. High dependent counts on a signature change mean run tests first. `analyze` is an alias for this command. Stops cleanly after --max-seconds and emits the partial result with W_ANALYSIS_BUDGET_EXCEEDED warnings. --repo must name the checkout root; subdirectories are rejected.",
 		flags: append([]flagDoc{
 			{name: "--base", arg: "rev", def: "HEAD~1", desc: "Base revision"},
 			{name: "--head", arg: "rev", def: "HEAD", desc: "Head revision"},
@@ -346,7 +429,7 @@ var commandDocs = []commandDoc{
 		group:   groupAnalyze,
 		summary: "Analyze the commit behind an Entire-Checkpoint trailer",
 		usage:   []string{"entire graph checkpoint <checkpoint-id> [--json] [--repo path]"},
-		long:    "Runs the entity-level change analysis for the commit referenced by an Entire-Checkpoint trailer. Useful when reviewing whether a checkpoint is safe to keep, revert, or continue.",
+		long:    "Runs the entity-level change analysis for the commit referenced by an Entire-Checkpoint trailer. Useful when reviewing whether a checkpoint is safe to keep, revert, or continue. --repo must name the checkout root; subdirectories are rejected.",
 		args: []argDoc{
 			{name: "<checkpoint-id>", desc: "The checkpoint ID to analyze"},
 		},
@@ -360,16 +443,18 @@ var commandDocs = []commandDoc{
 		name:    "verify",
 		group:   groupAnalyze,
 		summary: "Run a test command and return an adjudicated verdict, not test output",
-		usage:   []string{`entire graph verify --test "<cmd>" --repo . [--setup "<cmd>"] [--record-baseline path | --pre-edit-baseline path] [--max-bytes 2048]`},
+		usage:   []string{`entire graph verify --test "<cmd>" --repo . [--setup "<cmd>"] [--record-baseline path | --pre-edit-baseline path] [--test-failure-exit-code n] [--max-bytes 2048]`},
 		long: "verify runs your test command and reports WHICH TESTS CHANGED rather than what the runner printed: which newly pass, which newly fail, and which were ALREADY failing before the edit (labelled PRE-EXISTING). Raw runner output is never forwarded — ids are, text is not — and id lists cap at 20 with a count.\n\n" +
 			"Record a baseline on the pristine tree first (--record-baseline), then pass that file as --pre-edit-baseline after editing. Without a baseline the verdict is a state rather than a delta, so a failure that predates the change cannot be labelled as one.\n\n" +
-			"Parsers: pytest, jest/vitest, cargo test, go test, phpunit, rspec, minitest, maven/gradle surefire, ctest. An unrecognised format degrades to an exit-code-only verdict and says so.",
+			"Parsers: pytest, jest/vitest, cargo test, go test, phpunit, rspec, minitest, maven/gradle surefire, ctest. An unrecognised format degrades to an exit-code-only verdict and says so.\n\n" +
+			"For configured runner failure statuses (for example Jest testFailureExitCode or RSpec failure_exit_code), pass --test-failure-exit-code on both baseline recording and comparison. This declares the status; it does not configure the runner. Parsed failures must still be present, and missing tests or unbuilt targets still make verification incomplete. A shell-reported signal can share the declared number, so the declaration cannot distinguish those cases.",
 		flags: []flagDoc{
 			{name: "--test", arg: "cmd", desc: "The test command to run (required)"},
 			{name: "--repo", arg: "path", desc: "Repository to run in (default: current repo)"},
 			{name: "--setup", arg: "cmd", desc: "Command run before the tests; its output never contributes test ids"},
 			{name: "--record-baseline", arg: "path", desc: "Write the pristine-tree result to this file instead of adjudicating"},
 			{name: "--pre-edit-baseline", arg: "path", desc: "Diff this run against a previously recorded baseline"},
+			{name: "--test-failure-exit-code", arg: "n", desc: "Declare the runner's failure status (1-255), overriding automatic exit-code rules; use the same value when recording and comparing"},
 			{name: "--max-bytes", arg: "n", def: "2048", desc: "Cap the rendered verdict; the verdict clause always survives"},
 		},
 		examples: []string{
@@ -380,16 +465,17 @@ var commandDocs = []commandDoc{
 	{
 		name:    "stats",
 		group:   groupAnalyze,
-		summary: "Estimated tokens the graph saved (one line; --verbose for the full report)",
+		summary: "Observed follow-up of graph results, plus a signed modeled balance; not measured savings",
 		usage:   []string{"entire graph stats [--repo .] [--since 30d|7d|all] [--verbose] [--format text|json] [--sessions-dir path|--transcript path]"},
 		long: "A local, read-only report for humans (agents should not run it as part of a task). It reads the coding-agent session transcripts already on disk (~/.claude/projects/<path-slug>/*.jsonl).\n\n" +
-			"By DEFAULT it prints one line: the ESTIMATED tokens saved, marked with ~ because it is a model, not a measurement. --verbose restores the full report — graph calls per verb vs exploration calls, bytes each pulled into context, billed tokens, a graph-first rate, the measured per-call costs, and the model's assumption printed with the number.\n\n" +
-			"The estimate credits each graph locate call (search/neighbors/impact) with the ONE exploration call it displaced, priced from that session's own measured bytes per graph call and bytes per exploration call. A session whose graph calls returned more per call than the exploration they displaced correctly contributes nothing.\n\n" +
+			"By DEFAULT it prints one line: OBSERVED FOLLOW-UP rates for graph locate results, then a signed modeled balance with its assumption and population. It is an observational proxy, not measured savings. Negative sessions remain in the total; a missing comparison is unavailable rather than zero. --verbose adds observed graph/exploration counts, result bytes, transcript-reported usage, every follow-up class, the legacy 1:1 model and assumptions.\n\n" +
+			"Observed follow-up: each graph locate result (query/search/neighbors/impact) is classified by the next 5 tool calls issued AFTER the result was delivered, in the same transcript. ERROR (the result was an error) and INELIGIBLE (empty, or named no file) located nothing. RE-QUERY: another graph lookup, Grep, Glob or shell search came first. FOLLOW-UP READ: the agent first read a file whose path overlaps one the result named, sub-bucketed as overlapping lines, a different region, unknown span, or shared (the same read was span-attributed to another result). CENSORED: the transcript ended before 5 calls and nothing qualified. NO FOLLOW-UP: 5 calls were observed and none qualified. Absence of a follow-up is not an observed avoided call. Every class is counted; the modeled balance ASSUMES each no-follow-up result replaced one average exploration result of its session, and subtracts every locate result's bytes. Limits: path overlap is a suffix match on extension-bearing paths named in result rows (extensionless files are missed; a same-named file elsewhere can match; coverage diagnostics, VERIFY and \"No search results.\" name nothing); delivered line spans are known only when the whole output parsed as a search response; anything after the 5-call window is invisible; one read is span-attributed to one result and is a shared read for any other result naming that file; subagent work is not in the caller's window.\n\n" +
+			"The legacy 1:1 model (--verbose, and the estimated_savings_* JSON keys) assumes each observed graph locate result (query/search/neighbors/impact) replaces ONE exploration result at the same session's average bytes/result, then subtracts graph bytes and converts bytes/4 to estimated tokens. Larger graph results contribute a modeled loss. The substitution and token conversion are assumptions, not evidence of causal or billed-token savings. Legacy positive-only JSON fields remain unchanged.\n\n" +
 			"--transcript narrows the whole report to ONE session (that transcript plus its subagent transcripts) instead of a whole project directory. Summaries of unchanged transcripts are memoised under the cache directory, keyed on file identity; --no-cache turns that off.",
 		flags: []flagDoc{
 			{name: "--repo", arg: "path", desc: "Repository whose sessions to report on (default: current repo)"},
 			{name: "--since", arg: "30d|7d|all", def: "30d", desc: "Lookback window (<n>h|<n>d|<n>w, or all)"},
-			{name: "--verbose", desc: "Print the full report instead of the single savings line"},
+			{name: "--verbose", desc: "Print the full report instead of the single model line"},
 			{name: "--format", arg: "text|json", def: "text", desc: "Output format (json is unaffected by --verbose)"},
 			{name: "--sessions-dir", arg: "path", desc: "Override the transcript lookup directory"},
 			{name: "--transcript", arg: "path", desc: "Report on a single session transcript"},
@@ -397,42 +483,6 @@ var commandDocs = []commandDoc{
 			{name: "--no-cache", desc: "Re-parse every transcript instead of reusing the memo"},
 		},
 		examples: []string{"entire graph stats --repo .", "entire graph stats --repo . --since 7d --verbose"},
-	},
-	{
-		name:    "rank",
-		group:   groupAnalyze,
-		summary: "Evidence-based developer/commit ranking (Hacker House)",
-		usage: []string{
-			"entire graph rank demo [--format text|json]",
-			"entire graph rank commit <rev> --repo . [--profile fast|full] [--format text|json]",
-			"entire graph rank developer --username NAME --stars n --user-prs n --total-prs n --commit <rev> [--commit <rev> ...] --repo . [--format text|json]",
-			"entire graph rank leaderboard --repo . --roster roster.json [--format text|json]",
-		},
-		long: "Combines the preserved GitHub-reach formula (min(stars * userPRs/totalPRs, 10000)) with an Entire-derived engineering-impact score built from the SAME impact/neighbors/semantic-diff evidence those commands already expose, so a developer's ranking is traceable down to specific commit evidence instead of resting on stars or PR count alone.\n\n" +
-			"`rank commit` analyzes one commit's structural/dependent/architectural/semantic evidence into a 0-100 CommitImpactScore. `rank developer` aggregates a chosen set of commits (recency-weighted) and combines the result with the reach formula into a FinalScore. `rank leaderboard` does the same for every developer listed in a --roster JSON file (one relation-graph build shared across all of them), for a multi-contributor table on a real repository. `rank demo` runs a deterministic, three-developer fixture with no repository required, showing that diff size alone does not win and that incomplete graph evidence is exposed as uncertainty (evidence_state: confirmed/partial/requires_verification), never silently read as zero impact.\n\n" +
-			"A --roster file is a JSON array: [{\"username\":\"alice\",\"stars\":1000,\"user_prs\":5,\"total_prs\":50,\"commits\":[\"abc123\",\"def456\"]}, ...]. Entire does not call the GitHub API itself -- stars/PR counts and which commits are a developer's merged PRs are external facts the roster supplies; Entire is the evidence provider for what those commits actually changed, not the source of who merged what.\n\n" +
-			"On a large real-world repository the first index build is the dominant cost (minutes, not seconds) and is identical to what `impact`/`neighbors` would pay; --profile fast trades the IMPLEMENTS/EXTENDS/INHERITS/type-consumer relations for several times faster indexing (CALLS/CONSTRUCTS/HANDLES_ROUTE/HANDLES_TOOL are unaffected). --cache-dir persists the build so a second commit/developer/leaderboard run against the same commit tree is a cache hit.",
-		flags: []flagDoc{
-			{name: "--repo", arg: "path", desc: "Repository (default: current repo); not used by demo"},
-			{name: "--format", arg: "text|json", def: "text", desc: "Output format"},
-			{name: "--username", arg: "name", desc: "developer: developer identifier (required)"},
-			{name: "--stars", arg: "n", desc: "developer: repository stars (required)"},
-			{name: "--user-prs", arg: "n", desc: "developer: this developer's merged PR count (required)"},
-			{name: "--total-prs", arg: "n", desc: "developer: total merged PR count (required)"},
-			{name: "--commit", arg: "rev", desc: "developer: a commit/PR to analyze (repeatable, at least one required)"},
-			{name: "--roster", arg: "path.json", desc: "leaderboard: JSON file listing developers to score (required)"},
-			{name: "--cache-dir", arg: "path", desc: "commit/developer/leaderboard: override the committed-tree index cache directory"},
-			{name: "--no-cache", desc: "commit/developer/leaderboard: disable the index cache"},
-			{name: "--worktree", desc: "commit/developer/leaderboard: index the working tree instead of the committed tree (uncached)"},
-			{name: "--head", desc: "commit/developer/leaderboard: index the committed tree (default; cacheable)"},
-			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "commit/developer/leaderboard: parsing/relation depth"},
-		},
-		examples: []string{
-			"entire graph rank demo",
-			"entire graph rank commit HEAD --repo .",
-			"entire graph rank developer --repo . --username alice --stars 420 --user-prs 6 --total-prs 40 --commit HEAD --commit HEAD~3",
-			"entire graph rank leaderboard --repo . --roster roster.json --profile fast --cache-dir /tmp/rank-cache",
-		},
 	},
 
 	// ── Help & diagnostics ───────────────────────────────────────────────
@@ -457,7 +507,7 @@ var commandDocs = []commandDoc{
 		},
 		examples: []string{
 			"entire graph doctor --json",
-			`entire graph doctor --assert "search --profile full --top-k 10 --format text"`,
+			`entire graph doctor --assert "query --profile full --top-k 10 --format text"`,
 		},
 	},
 	{
@@ -553,10 +603,33 @@ func findCommandDoc(name string) (commandDoc, bool) {
 	return commandDoc{}, false
 }
 
-// wantsHelp reports whether the args request help for a command.
-func wantsHelp(args []string) bool {
-	for _, a := range args {
-		if a == "--help" || a == "-h" {
+// wantsHelp reports whether the args request help for the command documented by doc.
+//
+// It reads the args the way the command's own parser will, because a flat scan for the two spellings
+// cannot tell a request for help from DATA that happens to be spelled like one. Two ways it got that
+// wrong: `search --query --help` is a search for the literal text "--help" and printed help instead,
+// and `diff -- --help` addresses a path named `--help` — after the separator every remaining argument
+// is positional by definition, so nothing there can be a flag at all.
+//
+// The value-taking flags come from the doc registry rather than a second list, because that registry
+// is already the thing this file renders and the command parsers are already checked against it
+// (agentguide_test.go). A hand-copied list here would be a third spelling of the same fact, and the
+// one nothing would notice going stale.
+func wantsHelp(doc commandDoc, args []string) bool {
+	valued := make(map[string]bool, len(doc.flags))
+	for _, flag := range doc.flags {
+		if flag.arg != "" {
+			valued[flag.name] = true
+		}
+	}
+	for index := 0; index < len(args); index++ {
+		switch {
+		case args[index] == "--":
+			return false
+		case valued[args[index]]:
+			// The next argument is this flag's VALUE, whatever it is spelled like.
+			index++
+		case args[index] == "--help" || args[index] == "-h":
 			return true
 		}
 	}
@@ -592,7 +665,7 @@ func renderRootHelp(w io.Writer) {
 	}
 
 	fmt.Fprintln(w, "\nUse \"entire graph <command> --help\" for details on a command.")
-	fmt.Fprintln(w, "For coding agents: run \"entire graph agent-guide\" or \"entire graph init-agents\".")
+	fmt.Fprintln(w, "For coding agents: run \"entire graph agent-guide\" or \"entire graph setup\".")
 }
 
 // renderCommandHelp prints the detail view for one command.
