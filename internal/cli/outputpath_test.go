@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -49,6 +50,12 @@ func runIndexReport(t *testing.T, repo, report string) error {
 		Stdout:  &bytes.Buffer{},
 	}, []string{"index", "--repo", repo, "--format", "json", "--report", report})
 }
+
+// recordedBaselineVersion is the format_version line a freshly recorded baseline
+// carries. These tests assert "this file is the recorded JSON", not "the format is
+// version 1", so they read the constant: a deliberate format bump otherwise reads
+// as three unrelated containment regressions in a file about output paths.
+var recordedBaselineVersion = fmt.Sprintf(`"format_version": %d`, verifyBaselineFormatVersion)
 
 func runVerifyRecord(t *testing.T, repo, baseline string) error {
 	t.Helper()
@@ -198,7 +205,7 @@ func TestVerifyRecordBaselineWritesToCallerOwnedPaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(content), `"format_version": 1`) {
+		if !strings.Contains(string(content), recordedBaselineVersion) {
 			t.Fatalf("baseline at %s is not the recorded JSON:\n%s", path, content)
 		}
 	}
@@ -459,7 +466,7 @@ func TestVerifyRecordBaselineOutsideAGitRepository(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(content), `"format_version": 1`) {
+		if !strings.Contains(string(content), recordedBaselineVersion) {
 			t.Fatalf("baseline at %s is not the recorded JSON:\n%s", path, content)
 		}
 	}
@@ -1045,7 +1052,7 @@ func TestOutputPathsOutsideTheRepositoryKeepWorkingThroughLinkedDirectories(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(baseline), `"format_version": 1`) {
+	if !strings.Contains(string(baseline), recordedBaselineVersion) {
 		t.Fatalf("baseline is not the recorded JSON:\n%s", baseline)
 	}
 }

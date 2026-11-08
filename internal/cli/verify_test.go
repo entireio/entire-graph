@@ -585,3 +585,38 @@ func TestVerifyRefusesBaselineWithDifferentSetup(t *testing.T) {
 		t.Fatalf("error does not name the mismatched setup command: %v", err)
 	}
 }
+
+// TestVerifyBaselineRecordsTheSetupCommandItRan covers the write side, which the
+// mismatch test above cannot reach. That test records with one --setup and reruns
+// with another, so it still passes when writeVerifyBaseline stops recording Setup
+// at all: the recorded "" mismatches the rerun either way. The failure that leaves
+// is the one that matters in practice — every baseline carries "", so an honest
+// rerun with the SAME --setup is refused as a mismatch, and the comparison the
+// baseline exists for never happens.
+func TestVerifyBaselineRecordsTheSetupCommandItRan(t *testing.T) {
+	const setup = "printf one > setup-one"
+	repo := t.TempDir()
+	write(t, repo, "run.sh", "#!/bin/sh\necho \"tests/test_a.py::test_x PASSED\"\n")
+	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+		[]string{"verify", "--repo", repo, "--setup", setup, "--test", "sh run.sh", "--record-baseline", baselinePath}); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var baseline verifyBaseline
+	if err := json.Unmarshal(recorded, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	if baseline.Setup != setup {
+		t.Errorf("recorded setup = %q, want %q; the baseline cannot be compared on a command it did not store", baseline.Setup, setup)
+	}
+	out.Reset()
+	if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+		[]string{"verify", "--repo", repo, "--setup", setup, "--test", "sh run.sh", "--pre-edit-baseline", baselinePath}); err != nil {
+		t.Fatalf("a baseline recorded with the SAME --setup was refused: %v", err)
+	}
+}
