@@ -149,6 +149,19 @@ func buildJSScanState(ctx context.Context, grammar *sitter.Language, parseSrc []
 	}
 	parseCtx, cancel := context.WithTimeout(ctx, jsScanParseTimeout)
 	defer cancel()
+	// The budget can already be gone before the parse starts: WithTimeout
+	// inherits the caller's deadline, so a caller near its own limit leaves
+	// nothing for this file. Report it here rather than only after ParseCtx
+	// returns, because tree-sitter surfaces cancellation ONLY if it polls
+	// before finishing -- a parse that completed first returned a valid tree
+	// with the budget spent and nothing recorded it, so the relation phase
+	// silently used results produced past its deadline.
+	if parseCtx.Err() != nil {
+		if callerErr := ctx.Err(); callerErr != nil {
+			return state, fmt.Errorf("tree-sitter scope parse stopped by caller: %w", callerErr)
+		}
+		return state, fmt.Errorf("%w: tree-sitter scope parse had no budget left, limit %s", context.DeadlineExceeded, jsScanParseTimeout)
+	}
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(grammar)
