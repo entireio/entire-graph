@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -121,11 +122,12 @@ func runStatusline(ctx context.Context, opts Options, args []string) error {
 	if len(rest) != 0 {
 		return unexpectedArgumentsError("statusline", opts.Version, rest)
 	}
-	lines := renderStatusline(ctx, opts, resolveCacheDir(cacheFlag, opts.Env.PluginDataDir))
-	if len(lines) == 0 || opts.Stdout == nil {
-		return nil
+	cacheDir := resolveCacheDir(cacheFlag, opts.Env.PluginDataDir)
+	if lines := renderStatusline(ctx, opts, cacheDir); len(lines) != 0 && opts.Stdout != nil {
+		_, _ = io.WriteString(opts.Stdout, strings.Join(lines, "\n")+"\n")
 	}
-	_, _ = io.WriteString(opts.Stdout, strings.Join(lines, "\n")+"\n")
+	// After the line is out, so the sweep never delays it.
+	sweepStatuslineCache(cacheDir, time.Now())
 	return nil
 }
 
@@ -333,7 +335,12 @@ func statuslineFiguresFor(transcript, repo, tree, cacheDir, version string) (sta
 	}
 
 	collector := newStatsCollector()
-	collector.cache = openStatsCache(cacheDir, transcript, version, files)
+	memoDir := ""
+	if cacheDir != "" {
+		// Under statusline/, so the sweep removes a finished session's memo with its figures.
+		memoDir = filepath.Join(cacheDir, "statusline")
+	}
+	collector.cache = openStatsCache(memoDir, transcript, version, files)
 	collector.resume = newTranscriptResume(cacheDir, version)
 	collector.run(files, time.Time{})
 	report := statsResponse{RepoRoot: repo}
@@ -385,6 +392,62 @@ func saveStatuslineJSON(path string, value any) {
 	if err := os.Rename(name, path); err != nil {
 		_ = os.Remove(name)
 	}
+}
+
+const (
+	// statuslineSweepEvery throttles the sweep to once a day, as the old script's prune was.
+	statuslineSweepEvery = 24 * time.Hour
+	// statuslineSweepAge is how long a status line cache file may go unwritten before it is swept.
+	statuslineSweepAge = 7 * 24 * time.Hour
+	// statuslineSweepTempAge is the age past which a temporary file is an orphan of a killed render.
+	// A render writes and renames its temporary file within its own lifetime, which Claude Code
+	// keeps far below this, so a file this old is never one a render is still writing.
+	statuslineSweepTempAge = time.Hour
+	// statuslineSweepStamp is the file whose mtime records the last sweep.
+	statuslineSweepStamp = ".swept"
+)
+
+// sweepStatuslineCache removes what renders leave under <cache>/statusline: temporary files older
+// than statuslineSweepTempAge, and every other file not written for statuslineSweepAge (a finished
+// session's figures, checkpoint and memo, a repository's git record). Files a live render reads or
+// writes are never that old: each write lands as a fresh temporary file renamed into place, and a
+// file removed just before a read is a miss. It runs at most once per statuslineSweepEvery, gated by
+// the stamp's mtime, which it rewrites before sweeping, so concurrent renders mostly skip and two
+// that both sweep only race to remove the same files. Every error is ignored: a status line must
+// never surface one. Reads stay inside the directory through os.Root and never follow a link.
+func sweepStatuslineCache(cacheDir string, now time.Time) {
+	if cacheDir == "" {
+		return
+	}
+	root, err := os.OpenRoot(filepath.Join(cacheDir, "statusline"))
+	if err != nil {
+		return
+	}
+	defer root.Close()
+	if info, err := root.Lstat(statuslineSweepStamp); err == nil && info.Mode().IsRegular() &&
+		now.Sub(info.ModTime()) < statuslineSweepEvery {
+		return
+	}
+	if root.WriteFile(statuslineSweepStamp, nil, 0o600) != nil {
+		return
+	}
+	_ = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || path == statuslineSweepStamp {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		limit := statuslineSweepAge
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			limit = statuslineSweepTempAge
+		}
+		if now.Sub(info.ModTime()) > limit {
+			_ = root.Remove(filepath.FromSlash(path))
+		}
+		return nil
+	})
 }
 
 // statuslineMainSegments builds line 1. distance is statuslineIndexDistance's answer: the graph's

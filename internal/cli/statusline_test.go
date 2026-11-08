@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -845,5 +846,71 @@ func TestStatuslineShowsNoIndexStateWithoutACommit(t *testing.T) {
 			}
 		}
 		assertSegmentsInOrder(t, lines[0], "◤ entire graph", "~900 tok gross")
+	}
+}
+
+// cacheFileTimes maps every regular file under dir, by its path relative to dir, to its mtime.
+func cacheFileTimes(t *testing.T, dir string) map[string]time.Time {
+	t.Helper()
+	files := map[string]time.Time{}
+	if err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		files[relative] = info.ModTime()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+// TestStatuslineSweepsCacheFilesUnusedForAWeek catches a status line cache that only grows: after
+// every file in the cache directory is aged by eight days, the next render (another session)
+// leaves no file a render wrote at that age, removes nothing `index` wrote, and still reads the
+// index.
+func TestStatuslineSweepsCacheFilesUnusedForAWeek(t *testing.T) {
+	repo := statuslineRepo(t)
+	cacheDir := t.TempDir()
+	statuslineIndex(t, repo, cacheDir)
+	index := cacheFileTimes(t, cacheDir)
+	runStatuslineForTest(t, 120, cacheDir, statuslineStdin(t, statuslineTranscript(t, repo), repo, ""))
+	weekAgo := time.Now().Add(-8 * 24 * time.Hour)
+	written := 0
+	for path := range cacheFileTimes(t, cacheDir) {
+		if _, ok := index[path]; !ok {
+			written++
+		}
+		if err := os.Chtimes(filepath.Join(cacheDir, path), weekAgo, weekAgo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if written == 0 {
+		t.Fatal("the render wrote no cache file to age")
+	}
+	stdin := statuslineStdin(t, statuslineTranscript(t, repo), repo, "")
+	if got := statuslineIndexedState(t, cacheDir, stdin); got != "current" {
+		t.Fatalf("a render over a week-old cache shows %q, want current", got)
+	}
+	for path, modTime := range cacheFileTimes(t, cacheDir) {
+		if _, ok := index[path]; !ok && modTime.Before(weekAgo.Add(time.Hour)) {
+			t.Errorf("%s went a week unused and survived the sweep", path)
+		}
+	}
+	for path := range index {
+		if _, err := os.Stat(filepath.Join(cacheDir, path)); err != nil {
+			t.Errorf("the sweep removed %s, which index wrote: %v", path, err)
+		}
 	}
 }
