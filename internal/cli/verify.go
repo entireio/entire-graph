@@ -130,6 +130,14 @@ func parseVerifyFlags(args []string) (verifyFlags, error) {
 	if strings.TrimSpace(flags.Test) == "" {
 		return flags, fmt.Errorf("verify requires --test <command>")
 	}
+	// The two baseline flags are separate MODES, not two settings. Recording writes a baseline instead
+	// of adjudicating, so letting it win over a requested comparison would report "BASELINE RECORDED"
+	// to a caller that believed a delta had been computed. Refuse the contradictory intent instead.
+	if flags.RecordBaseline != "" && flags.PreEditBaseline != "" {
+		return flags, fmt.Errorf(
+			"verify --record-baseline and --pre-edit-baseline are mutually exclusive: " +
+				"record a baseline on the pristine tree, then compare against it in a separate run")
+	}
 	if flags.RecordBaseline == "" && flags.PreEditBaseline == "" {
 		return flags, fmt.Errorf(
 			"verify requires --pre-edit-baseline <path> (or --record-baseline <path> to create one)")

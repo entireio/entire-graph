@@ -316,6 +316,46 @@ func TestParseVerifyFlagsRequiresABaseline(t *testing.T) {
 	}
 }
 
+// TestParseVerifyFlagsRejectsConflictingBaselineModes pins that a command line asking both to record
+// a baseline and to compare against one is refused. --record-baseline used to win silently, so the
+// caller was told BASELINE RECORDED while believing a comparison had happened.
+func TestParseVerifyFlagsRejectsConflictingBaselineModes(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "same path",
+			args: []string{"--test", "pytest -q", "--record-baseline", "b.json", "--pre-edit-baseline", "b.json"},
+		},
+		{
+			name: "different paths",
+			args: []string{"--test", "pytest -q", "--record-baseline", "new.json", "--pre-edit-baseline", "old.json"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := parseVerifyFlags(testCase.args)
+			if err == nil {
+				t.Fatal("verify accepted --record-baseline with --pre-edit-baseline")
+			}
+			for _, flag := range []string{"--record-baseline", "--pre-edit-baseline"} {
+				if !strings.Contains(err.Error(), flag) {
+					t.Fatalf("error does not name %s: %v", flag, err)
+				}
+			}
+		})
+	}
+	// Each mode on its own is still accepted; only the contradictory pair is refused.
+	if _, err := parseVerifyFlags([]string{"--test", "pytest -q", "--record-baseline", "b.json"}); err != nil {
+		t.Fatalf("--record-baseline alone was refused: %v", err)
+	}
+	if _, err := parseVerifyFlags([]string{"--test", "pytest -q", "--pre-edit-baseline", "b.json"}); err != nil {
+		t.Fatalf("--pre-edit-baseline alone was refused: %v", err)
+	}
+}
+
 // TestVerifySetupFailureStopsTheRun pins the exit code of the SETUP command. runVerifyShell reports a
 // command that ran and failed as (nonzero, nil error), so a caller that keeps only the error learns
 // nothing about a failed install or build. The regression this guards is not cosmetic: the test

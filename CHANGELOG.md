@@ -38,6 +38,9 @@ auto-generated notes on
 
 ### Fixed
 
+- `verify` refuses a command line that passes both `--record-baseline` and
+  `--pre-edit-baseline`. Recording used to win silently, so a caller that meant
+  to compare could receive a recorded baseline and a success message instead.
 - Partial clones (`--filter=blob:none`, or any repository with a promisor
   remote) are no longer refused outright when the Git that runs in them is
   2.45.1 or newer (or, on an older release line, 2.39.4+, 2.40.2+, 2.41.1+,
