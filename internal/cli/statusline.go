@@ -26,7 +26,7 @@ import (
 //
 // Line 1 shows only what the user acts on: the indexed graph's size (symbol nodes and relations,
 // as `index` reported them for HEAD's entry, written in full) only when HEAD itself is indexed; an
-// index state segment and its remedy only when HEAD has no index ("index N commits behind" when a
+// index state segment and its remedy only when HEAD has a commit but no index ("index N commits behind" when a
 // recent first-parent ancestor has one, else "not indexed"); then the gross and net figures once
 // the session has made a graph lookup. Every token figure is an estimated count from the stats
 // collector (run in-process, never as a subprocess) over this session's transcript and its
@@ -51,6 +51,14 @@ const (
 	statuslineIndigo    = "\x1b[38;2;84;111;255m"
 	statuslineMuted     = "\x1b[38;5;244m"
 	statuslineReset     = "\x1b[0m"
+)
+
+const (
+	// statuslineNotIndexed is statuslineIndexDistance's answer when no entry exists.
+	statuslineNotIndexed = -1
+	// statuslineNoHead stands for a HEAD with no tree to index: unborn, or git refused or failed.
+	// `index` cannot fix that, so the line shows no index state and no remedy.
+	statuslineNoHead = -2
 )
 
 type statuslineInput struct {
@@ -154,6 +162,9 @@ func renderStatusline(ctx context.Context, opts Options, cacheDir string) (lines
 		return nil
 	}
 	distance, current := statuslineIndexDistance(head, behind)
+	if tree == "" {
+		distance = statuslineNoHead
+	}
 	// The size is read on every render, hits included, and only for HEAD's own entry: beside a
 	// stale state it would read as the current code's size.
 	var size statuslineGraphSize
@@ -214,7 +225,8 @@ type statuslineGitRecord struct {
 // statuslineHeadState returns HEAD's tree ("" when unborn or unresolvable), its index entries and
 // its ancestors' (nearest first). When the git key (sem.HeadKeyWithoutGit plus the repo, the cache
 // dir and this binary) matches the stored record, it runs no git and skips the metadata validation,
-// which guards git subprocesses and has none to guard. Otherwise it takes the full path and stores a
+// which guards git subprocesses and has none to guard. Otherwise it takes the full path (HEAD read
+// once, then sem.HeadIndexEntries) and stores a
 // record, but only when the validation passed, HEAD resolved (or is unborn), the ancestor walk
 // succeeded and ctx was not cancelled, so a transient failure never pins an answer under an
 // unchanged key. ok is false when the render must print nothing.
@@ -233,25 +245,25 @@ func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (t
 	}
 
 	// One metadata validation receipt serves the HEAD read below and every git call
-	// HeadIndexEntries makes. The tree keys the figures cache; an unresolvable HEAD is "not indexed".
+	// HeadIndexEntries makes, and HEAD is read once: HeadIndexEntries takes the commit and tree.
+	// The tree keys the figures cache; with no tree the line shows no index state.
 	gitCtx, validationErr := sem.WithGitMetadataValidationForSetup(ctx, repo)
 	resolved := false
 	if validationErr == nil {
-		if _, headTree, err := gitutil.HeadCommitAndTree(gitCtx, repo); err == nil {
-			tree, resolved = headTree, true
-		} else {
+		if commit, headTree, err := gitutil.HeadCommitAndTree(gitCtx, repo); err != nil {
 			resolved = unborn
-		}
-	}
-	if tree != "" {
-		// The walk is an extra: when it fails the render still shows HEAD's own state, unkept.
-		var walkErr, err error
-		head, behind, walkErr, err = sem.HeadIndexEntries(gitCtx, repo, version, cacheDir, sem.MaxStoreContextAncestorDistance)
-		if err != nil {
-			return "", nil, nil, false
-		}
-		if walkErr != nil {
-			resolved = false
+		} else {
+			tree, resolved = headTree, true
+			// The walk is an extra: when it fails the render still shows HEAD's own state, unkept.
+			var walkErr error
+			head, behind, walkErr, err = sem.HeadIndexEntries(gitCtx, repo, version, cacheDir, commit, tree,
+				sem.MaxStoreContextAncestorDistance)
+			if err != nil {
+				return "", nil, nil, false
+			}
+			if walkErr != nil {
+				resolved = false
+			}
 		}
 	}
 	// The key was read before the git calls. A checkout landing in between would store the new HEAD's
@@ -267,7 +279,7 @@ func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (t
 }
 
 // statuslineIndexDistance stats HEAD's entries, then each ancestor's in order, and returns 0 when
-// HEAD is indexed, n when the nearest indexed ancestor is n commits back, and -1 when none is. When
+// HEAD is indexed, n when the nearest indexed ancestor is n commits back, and statuslineNotIndexed when none is. When
 // HEAD is indexed, current is its first existing entry in sem.HeadIndexEntries order (full before
 // fast), the one whose size is shown. It runs no git, so an `index` since the last render shows at
 // once.
@@ -282,7 +294,7 @@ func statuslineIndexDistance(head []sem.IndexEntry, behind [][]sem.IndexEntry) (
 			return index + 1, sem.IndexEntry{}
 		}
 	}
-	return -1, sem.IndexEntry{}
+	return statuslineNotIndexed, sem.IndexEntry{}
 }
 
 // statuslineGraphSize is the indexed graph's size as `index` reported it: symbol nodes and
@@ -377,7 +389,7 @@ func saveStatuslineJSON(path string, value any) {
 
 // statuslineMainSegments builds line 1. distance is statuslineIndexDistance's answer: the graph's
 // size appears only when HEAD is indexed and its counts were read, the index state and its remedy
-// only when HEAD has no index, and the figures only after a lookup.
+// only when HEAD has a commit but no index, and the figures only after a lookup.
 func statuslineMainSegments(distance int, size statuslineGraphSize, figures statuslineFigures) []statuslineSegment {
 	segments := []statuslineSegment{{{text: "◤", figure: true}, {text: " entire graph"}}}
 	if distance == 0 && size.ok {
@@ -392,10 +404,10 @@ func statuslineMainSegments(distance int, size statuslineGraphSize, figures stat
 		segments = append(segments, statuslineSegment{{text: "index 1 commit behind"}})
 	case distance > 1:
 		segments = append(segments, statuslineSegment{{text: "index " + strconv.Itoa(distance) + " commits behind"}})
-	case distance < 0:
+	case distance == statuslineNotIndexed:
 		segments = append(segments, statuslineSegment{{text: "not indexed"}})
 	}
-	if distance != 0 {
+	if distance > 0 || distance == statuslineNotIndexed {
 		segments = append(segments, statuslineSegment{{text: "run entire graph index"}})
 	}
 	if figures.Lookups == 0 {

@@ -27,33 +27,34 @@ type IndexEntry struct{ Root, Relative string }
 
 // HeadIndexEntries returns the entries whose presence means HEAD is indexed, and, for each
 // of HEAD's first-parent ancestors up to maxBehind commits back, nearest first, the same
-// for that ancestor's tree (same repo key, scope and policy inputs). The ancestors come
-// from one gitutil.FirstParentCommitTrees(ctx, repo, head, maxBehind+1) walk, whose first
-// element must be HEAD itself (as search_store_ancestor.go:179 checks). A shorter or
-// shallow history returns fewer. walkErr reports a failed walk separately from err.
+// for that ancestor's tree (same repo key, scope and policy inputs). commit and tree are
+// HEAD's, as the caller resolved them (gitutil.HeadCommitAndTree) under ctx's metadata
+// validation, so a render reads HEAD once. The ancestors come from one
+// gitutil.FirstParentCommitTrees(ctx, repo, commit, maxBehind+1) walk, whose first element
+// must be HEAD itself (as search_store_ancestor.go:179 checks). A shorter or shallow history
+// returns fewer. walkErr reports a failed walk separately from err.
 //
 // HEAD's entries are the committed-tree search cache entries under each of headIndexedProfiles,
 // with the repository's default policy inputs (its .graphignore, no explicit ignore or include
-// files). Any one of them existing means HEAD is indexed. Deriving them resolves HEAD, the remote
+// files). Any one of them existing means HEAD is indexed. Deriving them resolves the remote
 // URLs and the checkout scope through git, and any failure among them is an error rather than a
 // fallback key term; checking them (AnyIndexEntryExists) runs no git, which is what lets the status
 // line keep the entries and re-check them every render.
 //
-// An empty cacheDir has no entries. An unresolvable HEAD, or metadata git may not be run on, is an
-// error: the caller decides whether that is "not indexed", and must not keep the answer. A failed
-// walk leaves HEAD's entries valid and behind nil; the caller must not keep that answer either.
+// An empty cacheDir has no entries. An empty commit or tree, or metadata git may not be run on, is
+// an error: the caller must not keep that answer. A failed walk leaves HEAD's entries valid and
+// behind nil; the caller must not keep that answer either.
 //
 // Entry paths come from newCacheEntry, the helper every search cache reader and writer addresses
 // entries through, so a change to the on-disk layout changes this check with it.
-func HeadIndexEntries(ctx context.Context, repo, providerVersion, cacheDir string, maxBehind int) (head []IndexEntry, behind [][]IndexEntry, walkErr, err error) {
+func HeadIndexEntries(ctx context.Context, repo, providerVersion, cacheDir, commit, tree string, maxBehind int) (head []IndexEntry, behind [][]IndexEntry, walkErr, err error) {
 	if cacheDir == "" {
 		return nil, nil, nil, nil
 	}
-	absRepo, err := filepath.Abs(repo)
-	if err != nil {
-		return nil, nil, nil, err
+	if commit == "" || tree == "" {
+		return nil, nil, nil, errors.New("HeadIndexEntries needs HEAD's commit and tree")
 	}
-	commit, tree, err := resolveCommittedHEAD(ctx, absRepo)
+	absRepo, err := filepath.Abs(repo)
 	if err != nil {
 		return nil, nil, nil, err
 	}

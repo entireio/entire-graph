@@ -223,7 +223,8 @@ the `counts.symbols` and `counts.relations` that `entire graph index` last
 reported for HEAD's entry (full before fast), read from the `<key>.counts.json`
 file beside it; nodes are symbol nodes only, not file or external-endpoint
 nodes. When HEAD has no index it says how many commits behind the nearest indexed
-first-parent ancestor is (at most 5), else `not indexed`, and shows no size. It is opt-in:
+first-parent ancestor is (at most 5), else `not indexed`, and shows no size. With no commit yet,
+or when git cannot be run on the checkout, it shows no index state at all. It is opt-in:
 `entire graph setup` asks at a terminal, or installs it with `--statusline`, in
 `.claude/settings.local.json`; see [agent activation](agents.md).
 `scripts/entire-graph-statusline.sh` remains only as a shim that runs the

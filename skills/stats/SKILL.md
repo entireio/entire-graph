@@ -110,7 +110,7 @@ It shows only what the user acts on: the graph's size when HEAD itself is indexe
 gross figure once the session has made a graph lookup, the net figure when stats has a comparison,
 and, when HEAD has no index, `index N commits behind` (a first-parent ancestor at most 5 commits
 back has one) or `not indexed`, each followed by `run entire graph index`. The size is never shown
-beside those two.
+beside those two, and with no commit yet neither appears.
 
 The status line is opt-in. `entire graph setup` asks at a terminal (default no) before installing
 it in the repository's `.claude/settings.local.json`; `entire graph setup --statusline` installs it

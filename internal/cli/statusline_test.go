@@ -818,3 +818,32 @@ func TestStatuslineResumedRenderMatchesAFreshOne(t *testing.T) {
 	write(t, dir, "resume-session.jsonl", filler+session(400)[0])
 	assertMatchesFresh("truncated")
 }
+
+// TestStatuslineShowsNoIndexStateWithoutACommit catches a remedy that cannot work: in a repository
+// with no commit yet `entire graph index` has nothing to index, so line 1 says neither "not
+// indexed" nor "run entire graph index", on the cold render and on the warm one served from the
+// git record, and still shows the session's figures.
+func TestStatuslineShowsNoIndexStateWithoutACommit(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init", "-b", "statusline-trunk")
+	head := "package main\n\nfunc A() {}\n// "
+	write(t, repo, "a.go", head+strings.Repeat("x", 4000-len(head)))
+	cacheDir := t.TempDir()
+	stdin := statuslineStdin(t, statuslineTranscript(t, repo), repo, "")
+	for _, render := range []string{"cold", "warm"} {
+		lines := statuslineLines(runStatuslineForTest(t, 120, cacheDir, stdin))
+		if len(lines) == 0 {
+			t.Fatalf("%s render printed nothing", render)
+		}
+		segments := statuslineSegments(lines[0])
+		if segments[0] != "◤ entire graph" {
+			t.Fatalf("%s render: line 1 = %q, want it to start with the mark", render, lines[0])
+		}
+		for _, segment := range segments {
+			if segment == "not indexed" || segment == "run entire graph index" {
+				t.Fatalf("%s render: line 1 = %q shows %q with no commit to index", render, lines[0], segment)
+			}
+		}
+		assertSegmentsInOrder(t, lines[0], "◤ entire graph", "~900 tok gross")
+	}
+}
