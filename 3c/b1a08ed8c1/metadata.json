@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.11.5-nightly.202610100625.1f44a6f96.0.20261024214757-e7c0393725dd",
+  "checkpoint_id": "3cb1a08ed8c1",
+  "strategy": "manual-commit",
+  "branch": "fix/269-preflight-quoting",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "internal/cli/preflight.go",
+    "internal/cli/preflight_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3c/b1a08ed8c1/0/metadata.json",
+      "transcript": "/3c/b1a08ed8c1/0/full.jsonl",
+      "compact_transcript": "/3c/b1a08ed8c1/0/transcript.jsonl",
+      "content_hash": "/3c/b1a08ed8c1/0/content_hash.txt",
+      "prompt": "/3c/b1a08ed8c1/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 28,
+    "cache_creation_tokens": 21399,
+    "cache_read_tokens": 2226525,
+    "output_tokens": 13235,
+    "api_call_count": 14
+  },
+  "redaction": {
+    "replacements": 375,
+    "layers": {
+      "betterleaks": 5,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 67,
+      "credentialed_uri": 3,
+      "entropy": 305,
+      "key_context": 0,
+      "provider_token": 9,
+      "shell_stdin": 0
+    }
+  }
+}
