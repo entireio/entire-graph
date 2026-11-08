@@ -1,0 +1,48 @@
+{
+  "cli_version": "0.11.5-nightly.202610100625.1f44a6f96.0.20261024214757-e7c0393725dd",
+  "checkpoint_id": "f973f8243c1e",
+  "strategy": "manual-commit",
+  "branch": "fix/392-agentsetup-guide",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/agent-coordination.md",
+    "internal/agentsetup/remember_path_guidance_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f9/73f8243c1e/0/metadata.json",
+      "transcript": "/f9/73f8243c1e/0/full.jsonl",
+      "compact_transcript": "/f9/73f8243c1e/0/transcript.jsonl",
+      "content_hash": "/f9/73f8243c1e/0/content_hash.txt",
+      "prompt": "/f9/73f8243c1e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 196,
+    "cache_creation_tokens": 441525,
+    "cache_read_tokens": 18948083,
+    "output_tokens": 78915,
+    "api_call_count": 98,
+    "subagent_tokens": {
+      "input_tokens": 0,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0,
+      "output_tokens": 0,
+      "api_call_count": 0
+    }
+  },
+  "redaction": {
+    "replacements": 379,
+    "layers": {
+      "betterleaks": 5,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 67,
+      "credentialed_uri": 3,
+      "entropy": 309,
+      "key_context": 0,
+      "provider_token": 9,
+      "shell_stdin": 0
+    }
+  }
+}
