@@ -187,7 +187,8 @@ func TestGrossResolvesACwdCallAgainstItsCheckoutRoot(t *testing.T) {
 
 // TestGrossReadsOnlyTheCallsOwnRepoFlag catches quote-unaware --repo parsing: "--repo" inside a
 // quoted query is query text, and a quoted --repo value is one word with its quotes removed,
-// spaces included. Every spelling resolves to B (a.go 4,000 bytes; the cwd A has none), so a
+// spaces included. Every spelling resolves to B, also after a cd the parser cannot follow, since
+// an absolute --repo names the root whatever any cd did (a.go 4,000 bytes; the cwd A has none), so a
 // 600-byte result covers 3,400 bytes.
 func TestGrossReadsOnlyTheCallsOwnRepoFlag(t *testing.T) {
 	t.Parallel()
@@ -200,9 +201,10 @@ func TestGrossReadsOnlyTheCallsOwnRepoFlag(t *testing.T) {
 	b := filepath.ToSlash(repoB)
 	result := grossResult(t, 600, "1. a.go:10 func A()")
 	for name, command := range map[string]string{
-		"flag inside a quoted query": `entire graph query --query 'how does --repo work' --repo "` + b + `"`,
-		"double-quoted equals value": `entire graph query --repo="` + b + `" --query 'where is A'`,
-		"single-quoted value":        `entire graph query --repo '` + b + `' --query 'where is A'`,
+		"flag inside a quoted query":           `entire graph query --query 'how does --repo work' --repo "` + b + `"`,
+		"double-quoted equals value":           `entire graph query --repo="` + b + `" --query 'where is A'`,
+		"single-quoted value":                  `entire graph query --repo '` + b + `' --query 'where is A'`,
+		"absolute after a cd it cannot follow": `cd "$D" && entire graph query --repo "` + b + `" --query 'where is A'`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -216,7 +218,11 @@ func TestGrossReadsOnlyTheCallsOwnRepoFlag(t *testing.T) {
 // record's cwd, `cd sub && entire graph query --repo .` prints paths relative to <cwd>/sub, where
 // a.go is 4,000 bytes, so a 600-byte result covers 3,400 bytes; on Windows the Git Bash spelling
 // of the same directory moves there too. A `cd` to a directory the command line does not spell out
-// leaves the call unpriced, though <cwd>/a.go exists. The report's --repo is an unrelated empty
+// leaves the call unpriced, though <cwd>/a.go exists. A cd inside a { ...; } group, or run as
+// `builtin cd` or `command cd`, moves like a plain one, and an explicit subdirectory --repo (with a
+// space or =) is the same directory; a call in a substitution after any of those cds is unpriced.
+// A cd in another pipeline element than the call (cd sub | ..., { cd sub; } | ...) moves nothing,
+// so that call is priced against the cwd. The report's --repo is an unrelated empty
 // directory, so no fallback can find the file.
 func TestGrossSizesACallAgainstTheDirectoryALeadingCdMovedTo(t *testing.T) {
 	t.Parallel()
@@ -228,7 +234,14 @@ func TestGrossSizesACallAgainstTheDirectoryALeadingCdMovedTo(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeGrossFile(t, sub, "a.go", 4000)
-	moves := map[string]string{"relative": "cd sub" + call}
+	moves := map[string]string{
+		"relative":             "cd sub" + call,
+		"brace group":          "{ cd sub; }" + call,
+		"builtin cd":           "builtin cd sub" + call,
+		"command cd":           "command cd sub" + call,
+		"subdirectory --repo":  "entire graph query --repo sub --query 'where is A'",
+		"subdirectory --repo=": "entire graph query --repo=sub --query 'where is A'",
+	}
 	if runtime.GOOS == "windows" {
 		volume := filepath.VolumeName(sub)
 		gitBash := "/" + strings.ToLower(strings.TrimSuffix(volume, ":")) + filepath.ToSlash(strings.TrimPrefix(sub, volume))
@@ -241,10 +254,32 @@ func TestGrossSizesACallAgainstTheDirectoryALeadingCdMovedTo(t *testing.T) {
 			assertGross(t, runGrossStats(t, grossRepo(t, nil), transcript, t.TempDir()), 3400, 850)
 		})
 	}
-	t.Run("unknown target", func(t *testing.T) {
-		t.Parallel()
-		unmoved := grossRepo(t, map[string]int{"a.go": 4000})
-		transcript := writeGrossCommandTranscript(t, unmoved, `cd "$D"`+call, result)
-		assertGross(t, runGrossStats(t, grossRepo(t, nil), transcript, t.TempDir()), 0, 0)
-	})
+	for name, command := range map[string]string{
+		"unknown target":                   `cd "$D"` + call,
+		"builtin cd inside a substitution": `x=$(builtin cd sub && entire graph query --repo . --query 'where is A')`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			unmoved := grossRepo(t, map[string]int{"a.go": 4000})
+			transcript := writeGrossCommandTranscript(t, unmoved, command, result)
+			assertGross(t, runGrossStats(t, grossRepo(t, nil), transcript, t.TempDir()), 0, 0)
+		})
+	}
+	// A cd in one pipeline element runs in that element's subshell, so the call piped to or from
+	// it runs in the cwd: <cwd>/a.go (4,000 bytes), not sub/a.go (2,000).
+	for name, command := range map[string]string{
+		"cd piped into the call":          "cd sub | entire graph query --repo . --query 'where is A'",
+		"brace group piped into the call": "{ cd sub; } | entire graph query --repo . --query 'where is A'",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			piped := grossRepo(t, map[string]int{"a.go": 4000})
+			if err := os.MkdirAll(filepath.Join(piped, "sub"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeGrossFile(t, filepath.Join(piped, "sub"), "a.go", 2000)
+			transcript := writeGrossCommandTranscript(t, piped, command, result)
+			assertGross(t, runGrossStats(t, grossRepo(t, nil), transcript, t.TempDir()), 3400, 850)
+		})
+	}
 }

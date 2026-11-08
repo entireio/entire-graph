@@ -1419,32 +1419,85 @@ type graphRoot struct {
 }
 
 // graphCallRootFromCommand is graphCallRoot for the graph call in command, run from the directory
-// the top-level segments before it moved to with `cd DIR`. It finds the call where
-// graphRepoFromCommand does. A cd moves only as `cd DIR` followed by `&&`, `;` or a newline, to a
-// DIR the command spells out (cdTarget); any other cd form, a `pushd`, or a segment starting with
-// `(` before the call leaves the root unknown. So does a call found only inside a command
-// substitution of a command that runs a cd anywhere. A command without cd resolves as
-// graphCallRoot always has.
+// the top-level segments before it moved to with cd. It finds the call where graphRepoFromCommand
+// does. An absolute --repo is the root whatever any cd before the call did. Otherwise a cd moves
+// only as `cd DIR` (also `builtin cd DIR`, `command cd DIR`, or inside a `{ ...; }` group)
+// followed by `&&`, `;` or a newline, to a DIR the command spells out (cdTarget); any other cd
+// form, a `pushd`, or a segment starting with `(` before the call leaves the root unknown. A cd in
+// a pipeline element (`cd DIR | ...`, or a `{ ...; }` group piped to or from another command)
+// moves nothing outside that element, because bash runs each element in a subshell. A call found
+// only inside a command substitution of a command that runs a cd anywhere has an unknown root. A
+// command without cd resolves as graphCallRoot always has.
 func graphCallRootFromCommand(command, cwd string) graphRoot {
 	segments := splitShellSeparated(command)
+	elements := shellPipelineElements(segments)
 	for at, segment := range segments {
 		if _, ok := graphVerbFromSegments(segment.text); !ok {
 			continue
 		}
+		repo := graphRepoFromWords(shellArgWords(segment.text))
+		if filepath.IsAbs(repo) {
+			return graphCallRoot(repo, cwd)
+		}
 		dir := cwd
-		for _, before := range segments[:at] {
+		for index, before := range segments[:at] {
+			if elements[index] != 0 && elements[index] != elements[at] {
+				continue // another pipeline element's subshell: it moves nothing here
+			}
 			moved, ok := shellSegmentDir(before, dir)
 			if !ok {
 				return graphRoot{Unknown: true}
 			}
 			dir = moved
 		}
-		return graphCallRoot(graphRepoFromWords(shellArgWords(segment.text)), dir)
+		return graphCallRoot(repo, dir)
+	}
+	repo := graphRepoFromCommand(command)
+	if filepath.IsAbs(repo) {
+		return graphCallRoot(repo, cwd)
 	}
 	if commandRunsCd(command, 0) {
 		return graphRoot{Unknown: true}
 	}
-	return graphCallRoot(graphRepoFromCommand(command), cwd)
+	return graphCallRoot(repo, cwd)
+}
+
+// shellPipelineElements numbers, for each segment, the pipeline element it runs in when that
+// element is one of two or more joined by `|`; 0 is a segment in no such pipeline. A `{ ...; }`
+// group piped to or from another command is one element. Bash runs each such element in a
+// subshell, so a cd in one moves only the segments after it in the same element.
+func shellPipelineElements(segments []shellSegment) []int {
+	elements := make([]int, len(segments))
+	next := 0
+	var groups []int // the index of each open `{` segment
+	for index, segment := range segments {
+		if (index > 0 && shellPipe(segments[index-1].separator)) || shellPipe(segment.separator) {
+			next++
+			elements[index] = next
+		}
+		words := shellArgWords(segment.text)
+		if len(words) > 0 && words[0] == "{" {
+			groups = append(groups, index)
+		}
+		if len(words) > 0 && words[0] == "}" && len(groups) > 0 {
+			open := groups[len(groups)-1]
+			groups = groups[:len(groups)-1]
+			if (open > 0 && shellPipe(segments[open-1].separator)) || shellPipe(segment.separator) {
+				next++
+				for inner := open; inner <= index; inner++ {
+					elements[inner] = next
+				}
+			}
+		}
+	}
+	return elements
+}
+
+// shellPipe reports whether separator joins two pipeline elements: `|` or `|&`, possibly followed
+// by newlines.
+func shellPipe(separator string) bool {
+	rest := strings.ReplaceAll(separator, "\n", "")
+	return rest == "|" || rest == "|&"
 }
 
 // shellSegment is one splitShellSegments segment and the separator run that follows it, "" for
@@ -1486,14 +1539,31 @@ func shellSegmentDir(segment shellSegment, dir string) (string, bool) {
 	if strings.HasPrefix(strings.TrimLeft(segment.text, " \t"), "(") {
 		return "", false
 	}
-	words := shellArgWords(segment.text)
-	if len(words) == 0 || (words[0] != "cd" && words[0] != "pushd") {
+	name, operands, ok := shellDirectoryCommand(shellArgWords(segment.text))
+	if !ok {
 		return dir, true
 	}
-	if words[0] == "pushd" || len(words) != 2 || !cdCarries(segment.separator) {
+	if name == "pushd" || len(operands) != 1 || !cdCarries(segment.separator) {
 		return "", false
 	}
-	return cdTarget(words[1], dir)
+	return cdTarget(operands[0], dir)
+}
+
+// shellDirectoryCommand is the directory-changing command a segment's words run, with its
+// operands: cd, also as `builtin cd` or `command cd`, or pushd. A leading `{` word (a brace group,
+// which runs in the current shell, so its cd carries) is skipped. ok is false for any other
+// command.
+func shellDirectoryCommand(words []string) (name string, operands []string, ok bool) {
+	if len(words) > 0 && words[0] == "{" {
+		words = words[1:]
+	}
+	if len(words) > 0 && (words[0] == "builtin" || words[0] == "command") {
+		words = words[1:]
+	}
+	if len(words) == 0 || (words[0] != "cd" && words[0] != "pushd") {
+		return "", nil, false
+	}
+	return words[0], words[1:], true
 }
 
 // cdCarries reports whether a cd followed by separator moves the next segment: `&&`, `;` or
@@ -1532,10 +1602,10 @@ func isASCIILetter(character byte) bool {
 }
 
 // commandRunsCd reports whether any segment of command, or of a command substitution in it, runs
-// cd, including inside a `(` or `{` group.
+// cd (also as `builtin cd` or `command cd`), including inside a `(` or `{` group.
 func commandRunsCd(command string, depth int) bool {
 	for _, segment := range splitShellSegments(command) {
-		if words := shellArgWords(strings.TrimLeft(segment, " \t({")); len(words) > 0 && words[0] == "cd" {
+		if name, _, ok := shellDirectoryCommand(shellArgWords(strings.TrimLeft(segment, " \t({"))); ok && name == "cd" {
 			return true
 		}
 	}
