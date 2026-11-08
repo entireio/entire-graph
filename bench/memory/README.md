@@ -36,12 +36,22 @@ identical spine. The only thing allowed to differ between arms is *which memorie
   `azure_ai/gpt-5.6-terra` as their internal extractor. This asymmetry is the architectural
   difference being *measured*, not a fairness violation — it is disclosed, not homogenized away.
 - **`FAIR_MODE=1` hard-exits on arm-asymmetric settings.** Implemented in
-  [`benchmarks/common/runmeta.py`](benchmarks/common/runmeta.py) (`assert_fair_mode`). If any of
-  `EG_SESSION_EXPAND`, `EG_SESSION_EXPAND_CAP`, `EG_ANSWER_ENUM`, `EG_ANSWER_ENUM_R`,
-  `EG_USER_PROFILE`, or the `--user-profile` CLI flag is active, the run raises `SystemExit` before
-  it measures anything. `runmeta.capture()` additionally stamps every run artifact with env
-  snapshot, argv, git state, and md5 of every file that can change a measured number — secret-named
-  env vars are recorded as `sha256:<12 hex>` fingerprints, never in cleartext.
+  [`benchmarks/common/runmeta.py`](benchmarks/common/runmeta.py) (`assert_fair_mode`). It covers
+  every knob that changes what one arm ingests, retrieves or says —
+  `runmeta.ASYMMETRY_FLAGS` (entire-graph retrieval, prompt and ingest knobs, `MEM0_DATE_INJECT`,
+  the BM25 scoring parameters, per-arm budgets and deadlines), any unrecognised `EG_*` variable,
+  the `--user-profile` CLI flag, and a `MEM0_BACKEND` override that disagrees with `--backend`
+  — and raises `SystemExit` before the run measures anything.
+  Variables that only say *where* a backend lives are listed in `runmeta.SYMMETRIC_ARM_SETTINGS`
+  and stay legal. `runmeta.capture()` additionally stamps every run artifact with env snapshot,
+  redacted argv, git state, and md5 of every file that can change a measured number — credential-named
+  env vars are recorded as `<redacted>` and other env values by declared class, and the command line is filtered
+  through an allowlist of both option names **and values**: a value is recorded verbatim only
+  when it validates against the closed domain of its own option (integers, integer lists, the
+  `--backend`/`--mode` enums), otherwise it is a `sha256:` fingerprint, a URL's location, or
+  `<redacted>`. No free-form string reaches a published artifact, so a credential cannot arrive
+  in a shape nobody anticipated. See FAIR-CONFIG.md B7 for what that costs and where the
+  dropped identity fields are recorded instead.
 - **Scoring reads ONLY the aggregate `metrics_by_cutoff.top_200`** from the run's results JSON.
   Never a per-conversation re-derivation, never a hand-summed subset.
 - **Gate: a run is void if drops exceed 1%, or if zero-context questions cluster by conversation.**
@@ -80,9 +90,30 @@ python3.12 -m venv .venv
 #    or managed identity). Only the endpoint and API version are configuration.
 export AZURE_AI_ENDPOINT=... AZURE_AI_API_VERSION=2024-05-01-preview
 
-# 6. Run an arm
+# 6. Point the non-entire arms at their engine. There is deliberately no
+#    default -- neither one that resolves on only one machine, nor one that
+#    resolves on PATH -- so each adapter validates its configuration at
+#    construction and fails with the variable to set.
+#      cmm      CMM_BIN (required): the path to a cmm binary, or a bare name to
+#               resolve on PATH. The published row is the PATCHED build, so the
+#               binary is fingerprinted at construction (see 3.3) and the run
+#               aborts unless it is the build CMM_BUILD declares.
+#               CMM_BUILD is `patched` (default) or `stock`.
+#      graphify GRAPHIFY_PYTHON (interpreter with graphify + networkx importable)
+#               and GRAPHIFY_SOURCE (the graphify checkout added to sys.path).
+#               Both are verified at construction, not merely present: the
+#               checkout must define the entry points this arm imports
+#               (graphify/extractors/markdown.py, graphify/serve.py) and the
+#               interpreter must import them together with networkx.
+export CMM_BIN=/path/to/codebase-memory-mcp   # built with patches/0005
+
+# 7. Run an arm
 bash <path-to-this-dir>/run_locomo.sh cmm
 ```
+
+`run_locomo.sh <arm> resume` is accepted only for the server-backed Mem0 arms. The `entire`,
+`graphify`, `cmm` and `bm25` adapters buffer ingestion in memory, so a resumed run would skip
+every `add()` and score a partial corpus; the launcher refuses those combinations outright.
 
 [`run_locomo.sh`](run_locomo.sh) preserves the published launch configuration while replacing the
 model-key input with refreshable Microsoft Entra authentication.
@@ -150,7 +181,10 @@ Fixed: `search()` now raises `RuntimeError("BUFFER_MISSING...")` on a missing in
 instead of returning an empty list, in every affected client. Verify with
 `grep -c 'BUFFER_MISSING' benchmarks/common/{cognee,graphiti,letta,supermemory}_client.py` — must
 be ≥1 in each. The same guard was applied to *our own* `entire_client.py`, which had the same
-silent-`[]` behaviour while the competitors already raised.
+silent-`[]` behaviour while the competitors already raised — and to `mem0_client.py`, whose
+`_search_oss`/`_search_cloud` swallowed an exhausted search the same way (patch `0002`, now
+raising `SEARCH_EXHAUSTED`). Every adapter therefore signals a failed search by raising, and
+an empty list means a genuine zero-match retrieval everywhere.
 
 **cognee gained +13.77pp: 79.09 → 92.86** (1430/1540). It had hit 301 questions; graphiti 356.
 
@@ -174,8 +208,24 @@ that drops `'Section'` from that exclusion list in both queries and changes noth
 which also adds an upstream regression test.
 
 **This row must always be labelled `cmm (patched, Markdown-Section)`.** It is not the shipped
-product's score; it is the most charitable version of the product. The unpatched binary remains
-selectable via `CMM_BIN`.
+product's score; it is the most charitable version of the product.
+
+Because the two builds differ only in a string constant and the shipped one scores a structural
+zero, the adapter refuses to run a binary it has not identified. `CMM_BIN` is **required** — there
+is no PATH default, because an implicit lookup would resolve to whichever build happened to be
+installed and publish its score under this row. The binary named by `CMM_BIN` is then fingerprinted
+without being executed: both exclusion lists are adjacent C string literals, so each form survives
+compilation verbatim in the binary's read-only data, and the file is scanned for them.
+
+| resolved binary | `CMM_BUILD` unset / `patched` | `CMM_BUILD=stock` |
+|---|---|---|
+| patched (no `'Section'` in the list) | runs, labelled `patched` | aborts: `CMM_BUILD` mismatch |
+| shipped v0.9.0 (`'Section'` still excluded) | aborts: `CMM_UNPATCHED_BINARY` | runs, labelled `stock` |
+| neither fingerprint found | aborts: `CMM_UNVERIFIED_BINARY` | aborts: `CMM_UNVERIFIED_BINARY` |
+
+There is no fallback in any cell: an unrecognised build aborts rather than have an unknown score
+attributed to the published row. The unpatched binary remains selectable, but only by declaring it
+with `CMM_BUILD=stock`, which labels the run as the shipped build rather than this one.
 
 ### Why this matters
 
@@ -196,6 +246,8 @@ The defects we found on our own side are listed in `RESULTS.md` §6 and were rem
 | `benchmarks/common/cmm_client.py` | our port of `codebase-memory-mcp` as a benchmark arm |
 | `benchmarks/common/bm25_client.py` | lexical BM25 baseline over raw conversation turns |
 | `benchmarks/common/test_bm25_client.py` | regression coverage for BM25 candidate selection |
+| `benchmarks/common/test_kit_reproducibility.py` | adapter configuration must be portable, and a failed retrieval must not score as an empty one |
+| `ci/test_kit_launcher_and_patches.py` | launcher resume refusals and patch-set integrity |
 | `benchmarks/common/runmeta.py` | run-provenance capture + the `FAIR_MODE` guard |
 | `patches/0001`–`0004`, `0006` | our diffs against upstream harness files (see `UPSTREAM.md`) |
 | `patches/0005` | the cmm `Section` one-line patch + its regression test — applied to the separate `codebase-memory-mcp` repo, not this harness |
@@ -207,10 +259,15 @@ The defects we found on our own side are listed in `RESULTS.md` §6 and were rem
 | `AUTO-SCORES.md` | raw scorer output with gate counts, verbatim |
 | `UPSTREAM.md` | upstream commit, licence, and file-level provenance manifest |
 
-The adapters carry machine-specific default paths from the benchmark host (e.g. `_DEFAULT_BIN`
-in `cmm_client.py`). They are all overridable by the env vars documented in each module docstring;
-the files are vendored **verbatim** so that their md5s match the fingerprints recorded in the run
-artifacts by `runmeta.code_hashes()`.
+No adapter default encodes a path from the benchmark host. Engine locations come from the env
+vars documented in each module docstring, and each adapter validates them at construction: `cmm`
+requires `CMM_BIN` and additionally verifies that the binary it resolves is the build `CMM_BUILD`
+declares, and `graphify` requires `GRAPHIFY_PYTHON` and `GRAPHIFY_SOURCE` because it has no
+discoverable default, and holds them to the same bar: the source must define the entry points the
+adapter imports and the interpreter must import them, with `networkx`, before ingestion starts.
+The files are
+vendored **verbatim** so that their md5s match the fingerprints recorded in the run artifacts by
+`runmeta.code_hashes()`.
 
 **No credential values appear anywhere in this directory.** Foundry inference uses Microsoft Entra
 ID rather than a model API key. Its non-secret configuration is referenced by env-var name only

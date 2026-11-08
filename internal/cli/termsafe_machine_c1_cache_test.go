@@ -3,8 +3,9 @@ package cli
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/base64"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -63,22 +64,19 @@ func poisonProviderRecordsCache(t *testing.T, cacheDir string) {
 		t.Fatalf("glob cache: %v", err)
 	}
 	if len(entries) != 1 {
-		t.Fatalf("expected exactly one cached record stream, found %d: %v", len(entries), entries)
+		t.Fatalf("expected exactly one cached envelope, found %d: %v", len(entries), entries)
 	}
-
-	raw := readGzip(t, entries[0])
-	var entry map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		t.Fatalf("decode cache entry: %v", err)
-	}
-	var encoded string
-	if err := json.Unmarshal(entry["records"], &encoded); err != nil {
-		t.Fatalf("decode records field: %v", err)
-	}
-	records, err := base64.StdEncoding.DecodeString(encoded)
+	// The records live in the `.stream.gz` sidecar; the envelope only vouches
+	// for them by digest, which is restamped below so the poisoned stream is
+	// served rather than read as a digest-mismatch miss.
+	streams, err := filepath.Glob(filepath.Join(cacheDir, "records", "*", "*.stream.gz"))
 	if err != nil {
-		t.Fatalf("decode records payload: %v", err)
+		t.Fatalf("glob stream sidecars: %v", err)
 	}
+	if len(streams) != 1 {
+		t.Fatalf("expected exactly one stream sidecar, found %d: %v", len(streams), streams)
+	}
+	records := readGzip(t, streams[0])
 
 	poisoned := bytes.ReplaceAll(records, []byte("\\u009d"), []byte("\u009d"))
 	poisoned = bytes.ReplaceAll(poisoned, []byte("\\u009c"), []byte("\u009c"))
@@ -89,11 +87,21 @@ func poisonProviderRecordsCache(t *testing.T, cacheDir string) {
 		t.Fatal("poisoned stream holds no raw C1, so the replay would prove nothing")
 	}
 
-	repoisoned, err := json.Marshal(base64.StdEncoding.EncodeToString(poisoned))
+	writeGzip(t, streams[0], poisoned)
+	stored, err := os.ReadFile(streams[0])
 	if err != nil {
-		t.Fatalf("re-encode records: %v", err)
+		t.Fatalf("read poisoned sidecar: %v", err)
 	}
-	entry["records"] = repoisoned
+
+	raw := readGzip(t, entries[0])
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("decode cache entry: %v", err)
+	}
+	entry["records_digest"], err = json.Marshal(fmt.Sprintf("%x", sha256.Sum256(stored)))
+	if err != nil {
+		t.Fatalf("re-encode digest: %v", err)
+	}
 	rewritten, err := json.Marshal(entry)
 	if err != nil {
 		t.Fatalf("re-encode cache entry: %v", err)

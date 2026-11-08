@@ -1913,3 +1913,69 @@ func TestConfinementRootsKeepBothChainsCheckouts(t *testing.T) {
 		t.Fatalf("an ordinary subdirectory produced %d boundaries: %q", len(got), got)
 	}
 }
+
+// TestWriteOutputFileDoesNotWriteOutsideThroughALinkSwappedDuringClassification is
+// the regression for the OUTSIDE half of the same TOCTOU the confined write already
+// closed, and like that one it is a RACE rather than a shape.
+//
+// `<repo>/link/../zshrc` is classified twice against two different filesystems. The
+// destination is read first, through realOutputPath, where `link` is a symbolic link
+// committed in the repository and the ".." therefore steps out of the LINK'S TARGET:
+// the destination is the attacker's directory, outside the repository, so containment
+// says caller-owned. The route is read second, through traversedRepositorySymlink,
+// and by then the repository has made `link` an ordinary directory, so that walk sees
+// no committed link to refuse. Neither check is wrong about what it saw; the write
+// then went to the destination the FIRST answer named, which the repository chose.
+//
+// The swapper flips one entry between the two states as fast as it can while the sink
+// is driven repeatedly. It can only ever produce a FALSE PASS: a run that never lands
+// in the window reports nothing, and a run that does lands in it only because the
+// window is real. It never fails on a build that has none.
+func TestWriteOutputFileDoesNotWriteOutsideThroughALinkSwappedDuringClassification(t *testing.T) {
+	requireSymlinkSupport(t)
+	const content = "export PATH=/usr/bin\n# real user config\n"
+	holder := t.TempDir()
+	if err := os.Mkdir(filepath.Join(holder, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(holder, "zshrc")
+	if err := os.WriteFile(victim, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := outputPathRepo(t)
+	link := filepath.Join(repo, "link")
+	if err := os.Mkdir(link, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	swapped := make(chan struct{})
+	go func() {
+		defer close(swapped)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// The two states the destination read and the route read must
+			// disagree about: a link out of the repository, which moves the
+			// destination the ".." lands on, and an ordinary directory, which
+			// leaves the route with nothing to refuse.
+			_ = os.Remove(link)
+			_ = os.Symlink(filepath.Join(holder, "a"), link)
+			_ = os.Remove(link)
+			_ = os.Mkdir(link, 0o755)
+		}
+	}()
+
+	given := dotDotPath(link, "zshrc")
+	for range 40000 {
+		_ = writeOutputFileUnder(repo, given, []byte("SWAPPED DURING CLASSIFICATION\n"), 0o644, false)
+	}
+	close(stop)
+	<-swapped
+
+	assertVictimIntact(t, victim, content)
+}

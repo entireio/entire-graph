@@ -7,7 +7,7 @@ Date: 2026-07-03
 
 `entire-graph` emits a semantic index consumed by downstream tools (notably
 `entire-brain`). The wire format carries `schema_version` in `major.minor` form.
-The provider currently advertises **`1.1`** (`internal/sem/provider.go`
+The provider currently advertises **`1.4`** (`internal/sem/provider.go`
 `SchemaVersion`), where the `1.1` minor adds *optional, additive* relation fields
 that tolerant readers ignore. A compatibility policy already exists in the
 [semantic provider requirements](../semantic-provider-requirements.md), but it
@@ -19,7 +19,7 @@ against it and so future changes have clear, non-breaking rules.
 
 ## Decision
 
-**GA ships on schema `1.x`, with `1.1` as the current minor. `1.x` is the frozen,
+**GA ships on schema `1.x`, with `1.4` as the current minor. `1.x` is the frozen,
 stable GA contract.** We do NOT roll back to `1.0`; `1.1` is strictly additive
 over `1.0` and every `1.0` reader already tolerates it.
 
@@ -101,3 +101,111 @@ same schema-version decision.
 - The stale `1.0` example header in the
   [semantic provider requirements](../semantic-provider-requirements.md) is
   updated to `1.1` for consistency with the emitted version.
+
+### Parser identity corrections and consumer upgrades
+
+`identity_revision` is an additive, opaque field on the snapshot header and on
+`graph version --json`, and the persisted diff/checkpoint Result payload.
+Schema `1.2` adds this optional field to the `1.1` contract; its presence does
+not change the stable-ID format or require a major bump. It identifies parser
+rules that affect existing symbol
+IDs or entity-history keys; it does not replace `schema_version` or
+`stable_id_version`. Its absence means legacy parser rules. Consumers comparing
+stored and current revisions must treat inequality (including missing/present)
+as a need to refresh derived semantic data. History consumers must also migrate
+previously persisted entity deltas rather than merely append newly parsed ones.
+
+This is one global revision for parser identity rules across all languages.
+The value is a decimal revision encoded as a string, currently `"5"`. Consumers
+compare the complete opaque string for equality rather than relying on numeric
+ordering. The field name supplies its meaning; the value names no language or
+feature. A bump invalidates both snapshot and search
+cache namespaces even when the source tree and provider release are unchanged.
+It does not change the individual symbol-ID format.
+
+Revision `"5"` cuts Julia signatures to declaration headers. Same-name Julia
+overloads use a `#sig:<hash>` suffix derived from the signature, so their IDs
+change even when the indexed source is unchanged. Unique-name Julia symbols keep
+their IDs. Revision `"5"` also retains the body as rename evidence for Julia
+definitions, both in single-line fingerprints and in fallback similarity;
+unrelated replacements no longer match on parameter types alone.
+Consumers upgrading from revision `"4"` or earlier must refresh derived snapshots
+and recompute persisted entity deltas using the new parser, preserving source
+commits, checkpoint/session provenance, and authored memory. The local provider
+and search cache bumps alone do not migrate a downstream consumer's stored IDs
+or history. Verify consumer support for revision-mismatch migration before
+deploying this revision.
+
+Revision `"4"` extends the nested-callable correction to Swift, Kotlin, Rust and
+PHP. Those nested declarations receive corrected function IDs, and real members
+whose names collided with phantom nested members can lose their `#sig:` suffixes.
+
+Revision `"3"` adds the Python nested-callable correction
+(issue #199). A callable declared inside a Python method body was qualified by
+the enclosing CLASS, so `def helper(...)` inside `C.m` emitted the method
+`C.helper` — a member no instance of `C` has ever had, because the name binds in
+the method's local frame when the method runs and is gone when it returns. It is
+now qualified by the enclosing CALLABLE: `C.m.helper`, kind `function`, marked
+local. Two kinds of ID move as a result:
+
+- Every Python nested-callable symbol is re-keyed from
+  `…:method:<Class>.<name>` to `…:function:<Class>.<method>.<name>`.
+- Real class members whose names collided with a nested callable are re-keyed in
+  the opposite direction — *back* to their bare ID. Before this revision,
+  `C.helper` (phantom) and a real `C.helper` shared one base ID, so the
+  signature-disambiguation branch fired for both and pushed the real member onto
+  `…:method:C.helper#sig:<hash>`. With the phantom gone the collision is gone and
+  the real member returns to `…:method:C.helper`.
+
+Revision `"2"` included trail 154's JS/TS callable-scope
+corrections and trail 163's anonymous default-export corrections. Callable exports
+previously classified as classes receive corrected function IDs, phantom exports
+in comments and literals are removed, and corrected source ranges/signatures can
+affect entity history. The original token `js-ts-callable-scope-1` and the interim
+`js-ts-callable-scope-2` are historical values, not separate language revisions.
+
+Consumers upgrading from either historical token must refresh derived snapshots
+and recompute persisted entity deltas using the current parser, preserving source
+commits, checkpoint/session provenance, and authored memory. A revision mismatch
+is the migration trigger; changing the producer token alone does not implement
+the consumer migration. Verify consumer support before deploying this revision.
+Future changes that re-key existing symbols in any language must revise this token
+and document the corresponding consumer migration; ordinary body edits do not.
+
+### Compact snapshot reader compatibility
+
+Trail 163 raises the compact summary allowance from 16 MiB to 128 MiB and enforces
+the same ceiling on encoding and decoding. Older readers can still reject summary
+records larger than 16 MiB; upgrade readers before exchanging these larger
+artifacts. The identity revision describes parser identity rules, not compact
+reader compatibility, and does not remove this reader upgrade requirement.
+
+### Source-file health accounting (schema 1.3)
+
+Schema 1.3 adds optional `completeness.health` counts, percentages, threshold,
+status and language totals, plus an optional partial-failure `language` for
+source classification when no file record is available. The existing completeness status still describes
+indexing usability; its heuristic now uses unique eligible source files and an
+inclusive 5% degradation threshold, retaining stronger safeguards. Diagnostic
+arrays remain intact. Both cache families are versioned to discard obsolete
+calculations. The persisted Result shape and symbol identity revision are
+unchanged. See [operations](../operations.md#graph-health) for denominator policy.
+
+### Derived relation provenance (schema 1.4)
+
+Schema 1.4 adds the optional native relation `provenance` field, detected through
+`schema_features: relation_provenance`; no existing field is removed, retyped,
+or reinterpreted. The three labels and their conservative derivation are defined
+in [snapshot format](../snapshot-format.md#relation-provenance-schema-14).
+Older supported-major readers ignore the additive field and may warn on the
+newer minor. No consumer identity migration or parser revision change is needed.
+
+`RelationRecord` uses an explicit JSON hook to compute the field from final
+relation inputs. This hook is covered by a serialized field contract, refinement
+and tolerant-reader tests, compact projection/hash parity, SCIP projection tests,
+and cold/warm CLI cache output tests. It is outside the persisted `Result` type
+graph: its reflection-based no-hook guard and pinned wire-shape digest remain
+unchanged. The Result version is re-pinned to 1.4 with its existing shape digest.
+Both cache families already include the exact schema version in their addresses
+and reject a mismatched envelope, so this bump invalidates pre-provenance data
+without changing parser identity or the compact v1 row layout.

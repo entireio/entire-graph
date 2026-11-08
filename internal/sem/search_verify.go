@@ -2,9 +2,11 @@ package sem
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"os/exec"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -110,7 +112,7 @@ const (
 type SearchVerifyCommand struct {
 	// Command is runnable as written, from the repository root.
 	Command string `json:"command"`
-	// Targets is the test file the command runs, or the package when no covering test was found.
+	// Targets describes the test file, package, suite, or parse/build scope the command verifies.
 	Targets string `json:"targets"`
 	// DerivedFrom names the repository evidence behind the command, so a reader can judge it
 	// instead of trusting it.
@@ -138,10 +140,14 @@ type SearchVerifyCommand struct {
 // searchVerifyEvidence is the bounded view of the repository the derivation is allowed to consult.
 // It caches misses as well as hits: a manifest that is not there is probed once per path.
 type searchVerifyEvidence struct {
-	read  contentReader
+	read contentReader
+	// files is the already-discovered repository inventory, not a directory walk.
+	files []string
 	cache map[string]string
 	miss  map[string]bool
 	reads int
+	// goNative caches bounded native-package applicability across ancestor probes.
+	goNative map[string]bool
 	// lookPath resolves an executable name the way exec.LookPath does. Injected so the runner check is
 	// a pure function of its inputs in tests instead of a fact about the machine running them.
 	lookPath func(string) (string, error)
@@ -150,6 +156,10 @@ type searchVerifyEvidence struct {
 	// prefix is the caller's --verify-prefix decorator, carried here because the derivations build the
 	// command string and the renderer must not have to re-parse it.
 	prefix string
+	// aboveScope resolves, on first use, the part of the checkout above the searched scope: nil, or
+	// false from it, when --repo is the git toplevel or no toplevel can be read. Lazy, because it
+	// costs a Git subprocess and is only consulted after every in-scope walk has declined.
+	aboveScope func() (searchVerifyAboveScope, bool)
 }
 
 // file returns a repository file's content, or false. It never reads more than
@@ -242,6 +252,17 @@ func buildSearchVerifyCommand(
 			command.Tier = searchVerifyTierSuite
 		}
 	}
+	runnerEvidence := &evidence
+	if command == nil {
+		// Still inside the search, the walks above stopped at --repo. When --repo is a subdirectory of
+		// the checkout the build manifest is routinely above it (a Go module's go.mod at the toplevel,
+		// a workspace's root package.json), and stopping there printed "none derivable" for a tree that
+		// has one. So the walk continues to the git toplevel, narrow before suite as it would have run
+		// from there. See deriveSearchVerifyAboveScope.
+		if above, aboveEvidence := deriveSearchVerifyAboveScope(subject, &evidence); above != nil {
+			command, runnerEvidence = above, aboveEvidence
+		}
+	}
 	if command == nil {
 		// Third rung: does what I just wrote PARSE? A different question from "does it behave", labelled
 		// as such, and the only rung that fires when no manifest in the tree licenses a test command.
@@ -252,7 +273,7 @@ func buildSearchVerifyCommand(
 	}
 	command.Prefix, command.PreFixStatus = evidence.prefix, evidence.preFixStatus
 	// The runner check ANNOTATES; it never suppresses. See searchVerifyRunnerNote.
-	command.RunnerMissing = searchVerifyRunnerMissing(command.Command, &evidence)
+	command.RunnerMissing = searchVerifyRunnerMissing(command.Command, runnerEvidence)
 	// DEGRADE, never delete. Returning nil on overflow reintroduced silent absence through a byte
 	// budget — the exact failure the residual floor exists to prevent. The command line is the
 	// irreducible part, so provenance yields first and the target second.
@@ -352,7 +373,7 @@ func searchVerifySubjectFor(results []SearchResult) (searchVerifySubject, bool) 
 				continue
 			}
 			if searchTestArtifactPath(searchLowerPath(result.FilePath)) {
-				if rankedTestPath == "" {
+				if rankedTestPath == "" && !searchVerifyFixtureArtifactPath(result.FilePath) {
 					rankedTestPath = filePathToSlash(result.FilePath)
 					rankedTestName = searchVerifyTestName(result)
 				}
@@ -368,7 +389,8 @@ func searchVerifySubjectFor(results []SearchResult) (searchVerifySubject, bool) 
 				}
 			}
 		case searchSectionCoveringTest:
-			if subject.testPath == "" && result.FilePath != "" {
+			if subject.testPath == "" && result.FilePath != "" &&
+				!searchVerifyFixtureArtifactPath(result.FilePath) {
 				subject.testPath = filePathToSlash(result.FilePath)
 				subject.testName = searchVerifyTestName(result)
 				subject.testEvidence = "covering test"
@@ -386,6 +408,18 @@ func searchVerifySubjectFor(results []SearchResult) (searchVerifySubject, bool) 
 		subject.sourcePath = rankedTestPath
 	}
 	return subject, subject.sourcePath != ""
+}
+
+// searchVerifyFixtureArtifactPath reports whether a path is a fixture or golden artifact, which is
+// never a test to RUN even when it sits in a tree `searchTestArtifactPath` recognises.
+//
+// This is the VERIFY half of the pair described on `searchFixtureIsRecording`. A program-text
+// fixture — `internal/sem/testdata/case.go` — is in the primary section, and `testdata` satisfies
+// `searchTestArtifactPath`, so without this the payload would tell the agent to run a parser FIXTURE
+// as its verification command. Keying on the fixture CLASS rather than on test trees in general is
+// what keeps `internal/sem/parser_test.go` and every ordinary `tests/` file adopted as before.
+func searchVerifyFixtureArtifactPath(filePath string) bool {
+	return classifySearchFile(filePath) == searchFileClassFixture
 }
 
 // searchVerifyTestName is the covering test's own function name, unqualified: it is what every test
@@ -510,12 +544,28 @@ func searchVerifyMirrorTest(sourcePath string, evidence *searchVerifyEvidence) s
 // workspace stanza, or a monorepo leaf `package.json` with no test runner in it, is evidence about
 // the tree, not about how to run a test, so the walk continues outward to the manifest that is.
 func deriveSearchVerifyCommand(subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
-	dir := path.Dir(subject.sourcePath)
+	return searchVerifyWalk(searchVerifyStartDir(subject.sourcePath), subject, evidence, searchVerifyDerivations)
+}
+
+// searchVerifyStartDir is the directory a manifest walk for filePath begins in, "" for the root.
+func searchVerifyStartDir(filePath string) string {
+	dir := path.Dir(filePath)
 	if dir == "." || dir == "/" {
-		dir = ""
+		return ""
 	}
+	return dir
+}
+
+// searchVerifyWalk consults every derivation at dir and then at each ancestor up to and including
+// the root (""), and returns the first command any of them licenses.
+func searchVerifyWalk(
+	dir string,
+	subject searchVerifySubject,
+	evidence *searchVerifyEvidence,
+	derivations []func(string, searchVerifySubject, *searchVerifyEvidence) *SearchVerifyCommand,
+) *SearchVerifyCommand {
 	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
-		for _, derive := range searchVerifyDerivations {
+		for _, derive := range derivations {
 			if command := derive(dir, subject, evidence); command != nil {
 				return command
 			}
@@ -551,35 +601,15 @@ var searchVerifyDerivations = []func(string, searchVerifySubject, *searchVerifyE
 
 // deriveSearchVerifySuiteCommand is the whole-suite fallback consulted only when no narrow command
 // exists. It walks from the subject's directory towards the root exactly like the narrow derivation
-// and returns the first recognized ecosystem's canonical suite command. Unlike the narrow tier it
-// does NOT require a covering test: its whole point is the case where the payload found none.
+// and returns the first recognized ecosystem's canonical suite command. It does not require a
+// covering test; even when one exists, its manifest may not license a narrow command.
 func deriveSearchVerifySuiteCommand(subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
-	dir := path.Dir(subject.sourcePath)
-	if dir == "." || dir == "/" {
-		dir = ""
-	}
-	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
-		for _, derive := range searchVerifySuiteDerivations {
-			if command := derive(dir, evidence); command != nil {
-				return command
-			}
-		}
-		if dir == "" {
-			break
-		}
-		parent := path.Dir(dir)
-		if parent == "." || parent == "/" || parent == dir {
-			dir = ""
-			continue
-		}
-		dir = parent
-	}
-	return nil
+	return searchVerifyWalk(searchVerifyStartDir(subject.sourcePath), subject, evidence, searchVerifySuiteDerivations)
 }
 
 // searchVerifySuiteDerivations mirrors searchVerifyDerivations, language-specific before generic, so
 // a Rust crate with a convenience Makefile still yields `cargo test`, not `make test`.
-var searchVerifySuiteDerivations = []func(string, *searchVerifyEvidence) *SearchVerifyCommand{
+var searchVerifySuiteDerivations = []func(string, searchVerifySubject, *searchVerifyEvidence) *SearchVerifyCommand{
 	deriveSearchVerifySuiteCargo,
 	deriveSearchVerifySuiteGo,
 	deriveSearchVerifySuiteMaven,
@@ -592,17 +622,55 @@ var searchVerifySuiteDerivations = []func(string, *searchVerifyEvidence) *Search
 	deriveSearchVerifySuiteMake,
 }
 
-// searchVerifySuiteCommand builds a whole-suite command, labeling both the target (no covering test
-// was found) and the derivation (whole suite) so the reader knows it is unfiltered and slow.
+// searchVerifySuiteCommand builds a whole-suite command, labeling both the target (no narrow test
+// command was derivable) and the derivation (whole suite) so the reader knows it is unfiltered and slow.
 func searchVerifySuiteCommand(dir, command, derived string) *SearchVerifyCommand {
+	return searchVerifySuiteCommandLiteral(searchVerifyRunIn(dir, command), derived)
+}
+
+// searchVerifySuiteCommandLiteral is searchVerifySuiteCommand for a derivation that has already
+// decided where the command runs. Maven's reactor is the case: a module is addressed from the
+// repository root with `-pl`, so prefixing a `cd` into the module would be wrong rather than
+// merely redundant.
+func searchVerifySuiteCommandLiteral(command, derived string) *SearchVerifyCommand {
 	return &SearchVerifyCommand{
-		Command:     searchVerifyRunIn(dir, command),
-		Targets:     "whole test suite (no covering test identified)",
+		Command:     command,
+		Targets:     "whole test suite (no narrow test command derivable)",
 		DerivedFrom: derived + " (whole suite)",
 	}
 }
 
-func deriveSearchVerifySuiteCargo(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+// searchVerifySuiteApplies keeps a neighboring ecosystem manifest from selecting an unrelated suite.
+// A covering test can establish the ecosystem for native or generated sources.
+func searchVerifySuiteApplies(subject searchVerifySubject, ecosystem string) bool {
+	extensions := map[string]string{
+		"Cargo": ".rs .c .cc .cpp .cxx .h .hh .hpp .hxx .m .mm", "Maven": ".java .kt .scala .groovy", "Gradle": ".java .kt .kts .scala .groovy",
+		"Node": ".js .jsx .mjs .cjs .ts .tsx .mts .cts .vue .svelte", "Composer": ".php", "Pytest": ".py .pyw",
+		"Ruby": ".rb .rake .gemspec", "CMake": ".c .cc .cpp .cxx .h .hh .hpp .hxx .m .mm",
+	}
+	manifests := map[string]string{"Cargo": "Cargo.toml Cargo.lock build.rs", "Maven": "pom.xml", "Gradle": "build.gradle build.gradle.kts settings.gradle settings.gradle.kts", "Node": "package.json package-lock.json yarn.lock pnpm-lock.yaml bun.lock bun.lockb", "Composer": "composer.json composer.lock phpunit.xml phpunit.xml.dist", "Pytest": "pytest.ini tox.ini setup.cfg pyproject.toml", "Ruby": "Gemfile Gemfile.lock .rspec Rakefile", "CMake": "CMakeLists.txt"}
+	for _, file := range []string{subject.sourcePath, subject.testPath} {
+		if file == "" {
+			continue
+		}
+		for _, ext := range strings.Fields(extensions[ecosystem]) {
+			if strings.EqualFold(path.Ext(file), ext) {
+				return true
+			}
+		}
+		for _, manifest := range strings.Fields(manifests[ecosystem]) {
+			if path.Base(file) == manifest {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func deriveSearchVerifySuiteCargo(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	if !searchVerifySuiteApplies(subject, "Cargo") {
+		return nil
+	}
 	manifest := searchVerifyJoin(dir, "Cargo.toml")
 	content, ok := evidence.file(manifest)
 	if !ok || (!strings.Contains(content, "[package]") && !strings.Contains(content, "[workspace]")) {
@@ -611,7 +679,12 @@ func deriveSearchVerifySuiteCargo(dir string, evidence *searchVerifyEvidence) *S
 	return searchVerifySuiteCommand(dir, "cargo test", manifest)
 }
 
-func deriveSearchVerifySuiteGo(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteGo(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	// A mixed-language repository's Go suite verifies neither a non-Go source
+	// nor its non-Go covering test merely because they live below go.mod.
+	if !searchVerifyGoApplies(subject.sourcePath, evidence) && !searchVerifyGoApplies(subject.testPath, evidence) {
+		return nil
+	}
 	manifest := searchVerifyJoin(dir, "go.mod")
 	if !evidence.exists(manifest) {
 		return nil
@@ -619,15 +692,21 @@ func deriveSearchVerifySuiteGo(dir string, evidence *searchVerifyEvidence) *Sear
 	return searchVerifySuiteCommand(dir, "go test ./...", manifest+" module")
 }
 
-func deriveSearchVerifySuiteMaven(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteMaven(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	if !searchVerifySuiteApplies(subject, "Maven") {
+		return nil
+	}
 	manifest := searchVerifyJoin(dir, "pom.xml")
 	if !evidence.exists(manifest) {
 		return nil
 	}
-	return searchVerifySuiteCommand(dir, "mvn -q test", manifest)
+	return searchVerifySuiteCommandLiteral(searchVerifyMavenCommand(dir, "test", evidence), manifest)
 }
 
-func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteGradle(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	if !searchVerifySuiteApplies(subject, "Gradle") {
+		return nil
+	}
 	manifest := ""
 	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
 		if evidence.exists(searchVerifyJoin(dir, name)) {
@@ -642,10 +721,500 @@ func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *
 	if !ok {
 		return nil
 	}
-	return searchVerifySuiteCommand(wrapperDir, "./gradlew test", manifest+" + "+wrapperPath)
+	if wrapperDir == dir {
+		return searchVerifySuiteCommand(wrapperDir, "./gradlew test", manifest+" + "+wrapperPath)
+	}
+	// The wrapper lives above the build this derivation is about. Running `./gradlew test` from the
+	// wrapper's own directory would test whatever build sits THERE, because Gradle does not discover
+	// a descendant build by walking down — but WHICH command names this one is decided by the
+	// settings script, not by the directory layout.
+	//
+	// Gradle locates the settings file by walking UP from its start directory and then keeps what it
+	// found only if that file declares a project AT the start directory; otherwise it discards the
+	// settings and runs the start directory as its own empty-settings build. So `-p <dir> test` is
+	// NOT "the root build with a different default project": in an ordinary multi-project layout it
+	// is the root build when the root settings declares <dir>, and a different, sibling-less build
+	// when it does not — where `project(":core")` dependencies no longer resolve. A `build.gradle`
+	// sitting in a subdirectory says nothing about which of the two it is.
+	relative, inside := searchVerifyRelative(wrapperDir, dir)
+	if !inside {
+		return nil
+	}
+	if settingsPath, _, own := searchVerifyGradleSettings(dir, evidence); own {
+		// The directory carries its own settings script, so it IS a build root and that is the
+		// settings file Gradle finds first when started there. `-p` is the spelling for that.
+		return searchVerifySuiteCommand(
+			wrapperDir,
+			"./gradlew -p "+shellQuotePath(relative)+" test",
+			manifest+" + "+wrapperPath+" + "+settingsPath,
+		)
+	}
+	settingsPath, settings, found := searchVerifyGradleSettings(wrapperDir, evidence)
+	project := ":" + strings.ReplaceAll(relative, "/", ":")
+	if !found || !searchVerifyGradleSettingsIncludes(settings, project) {
+		// Nothing in the tree says this directory is a build Gradle can be pointed at, so there is
+		// no command to emit. Silence costs a lookup; a `-p` that quietly ran a different build
+		// would report a pass the edit never earned.
+		return nil
+	}
+	if searchVerifyGradleSettingsRemapsProject(settings, project) {
+		// The project path is declared, but the settings script moves it somewhere else on disk, so
+		// the path derived from THIS directory names a different tree. `./gradlew :lib:test` would
+		// run, and pass, about code the edit never touched — which is worse than emitting nothing.
+		return nil
+	}
+	// An included subproject is addressed by its project path from the root of the build that
+	// declares it — the documented spelling, `gradle :subproject:taskName`.
+	return searchVerifySuiteCommand(
+		wrapperDir,
+		"./gradlew "+shellQuote(project+":test"),
+		manifest+" + "+wrapperPath+" + "+settingsPath,
+	)
 }
 
-func deriveSearchVerifySuiteNode(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+// searchVerifyGradleSettings returns the settings script that makes a directory a Gradle build root,
+// with its content, or false when the directory is not one.
+func searchVerifyGradleSettings(dir string, evidence *searchVerifyEvidence) (string, string, bool) {
+	for _, name := range []string{"settings.gradle", "settings.gradle.kts"} {
+		candidate := searchVerifyJoin(dir, name)
+		if content, ok := evidence.file(candidate); ok {
+			return candidate, content, true
+		}
+	}
+	return "", "", false
+}
+
+// searchVerifyGradleSettingsIncludes reports whether a settings script declares the project path.
+//
+// It reads only LITERAL `include` arguments, in either DSL — `include ':a:b'`, `include(":a:b")`,
+// and the comma-separated and multi-line spellings of both. `includeBuild` composes a separate build
+// rather than declaring a project, and `includeFlat` names a sibling directory rather than a project
+// path, so neither answers this question; both are skipped along with any other identifier that
+// merely starts with `include`. A settings script that COMPUTES its includes reports false, and the
+// caller then emits nothing: this predicate exists to replace a guess, not to make a better one.
+func searchVerifyGradleSettingsIncludes(settings, project string) bool {
+	want := strings.TrimPrefix(project, ":")
+	if want == "" {
+		return false
+	}
+	for _, argument := range searchVerifyGradleIncludeArguments(settings) {
+		if strings.TrimPrefix(argument, ":") == want {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyGradleSettingsRemapsProject reports whether the settings script MOVES the project's
+// directory, with `project(':lib').projectDir = file('other')` or the block spelling of the same
+// assignment.
+//
+// A project path is derived here from a directory, and `include ':lib'` alone says that derivation
+// holds. A remap breaks it: `:lib` is then a different tree, and `./gradlew :lib:test` for an edit
+// in `lib/` runs, and passes, about code the edit never touched. That is worse than a command that
+// cannot run, because nothing announces it.
+//
+// The scan is bounded to the STATEMENT the matching `project(...)` call starts — extended to the
+// matching brace when one follows — so a `projectDir` assignment elsewhere in the script, about a
+// different project, is not read as this one's.
+func searchVerifyGradleSettingsRemapsProject(settings, project string) bool {
+	want := strings.TrimPrefix(project, ":")
+	if want == "" {
+		return false
+	}
+	script := searchVerifyStripScriptComments(settings)
+	for index := 0; index < len(script); {
+		character := script[index]
+		if character == '\'' || character == '"' {
+			_, width := searchVerifyScriptStringLiteral(script[index:])
+			if width == 0 {
+				index++
+				continue
+			}
+			index += width
+			continue
+		}
+		if !searchVerifyScriptIdentifierByte(character) {
+			index++
+			continue
+		}
+		start := index
+		for index < len(script) && searchVerifyScriptIdentifierByte(script[index]) {
+			index++
+		}
+		if script[start:index] != "project" {
+			continue
+		}
+		arguments, width := searchVerifyGradleCallArguments(script[index:])
+		if width == 0 {
+			continue
+		}
+		named := false
+		for _, argument := range arguments {
+			if strings.TrimPrefix(argument, ":") == want {
+				named = true
+				break
+			}
+		}
+		index += width
+		if named && searchVerifyGradleAssignsProjectDir(searchVerifyGradleStatementTail(script[index:])) {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyGradleAssignsProjectDir reports whether a statement MOVES a project's directory rather
+// than merely naming it.
+//
+// `println(project(':lib').projectDir)` reads the property; the project is still where it was, and
+// declining on a read costs a command that would have run for no reason. Only an assignment to it,
+// or the setter the assignment is sugar for, relocates the project. `==` is a comparison, not an
+// assignment, and is read as a mention.
+func searchVerifyGradleAssignsProjectDir(statement string) bool {
+	if strings.Contains(statement, "setProjectDir") {
+		return true
+	}
+	const property = "projectDir"
+	for index := 0; index < len(statement); {
+		found := strings.Index(statement[index:], property)
+		if found < 0 {
+			return false
+		}
+		index += found + len(property)
+		after := strings.TrimLeft(statement[index:], " \t\r\n")
+		if strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyGradleStatementTail returns what remains of the statement that has just been read up
+// to its call: the rest of the line, extended while the line is continued, or the matching brace
+// when the call is followed by a block.
+//
+// STRING LITERALS are stepped over whole in both, for the same reason the include walk does it: a
+// `}` or a `;` inside one is text, and ending the window at it would stop the scan before the
+// `projectDir` assignment that follows — the caller would then emit `./gradlew :lib:test` for a
+// project the settings script moved, which runs and passes about a different directory.
+func searchVerifyGradleStatementTail(rest string) string {
+	index := 0
+	for index < len(rest) && (rest[index] == ' ' || rest[index] == '\t') {
+		index++
+	}
+	if index < len(rest) && rest[index] == '{' {
+		depth := 0
+		for scan := index; scan < len(rest); {
+			switch rest[scan] {
+			case '\'', '"':
+				if width := searchVerifyGradleLiteralWidth(rest[scan:]); width > 0 {
+					scan += width
+					continue
+				}
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					return rest[:scan+1]
+				}
+			}
+			scan++
+		}
+		return rest
+	}
+	for scan := index; scan < len(rest); {
+		switch rest[scan] {
+		case '\'', '"':
+			if width := searchVerifyGradleLiteralWidth(rest[scan:]); width > 0 {
+				scan += width
+				continue
+			}
+		case ';':
+			return rest[:scan]
+		case '\n':
+			if !searchVerifyGradleStatementContinues(rest[:scan], rest[scan+1:]) {
+				return rest[:scan]
+			}
+		}
+		scan++
+	}
+	return rest
+}
+
+// searchVerifyGradleLiteralWidth reports how far one string literal reaches, or zero when the quote
+// is not closed — in which case the caller steps a single byte rather than swallowing the rest.
+func searchVerifyGradleLiteralWidth(rest string) int {
+	_, width := searchVerifyScriptStringLiteral(rest)
+	return width
+}
+
+// searchVerifyGradleStatementContinues reports whether a statement carries on past a newline: the
+// line ends on an operator or separator, or the next one opens with the `.` of a chained call, which
+// is how Kotlin spells a continued member access.
+func searchVerifyGradleStatementContinues(before, after string) bool {
+	trimmed := strings.TrimRight(before, " \t\r")
+	for _, suffix := range []string{",", "\\", ".", "=", "("} {
+		if strings.HasSuffix(trimmed, suffix) {
+			return true
+		}
+	}
+	next := strings.TrimLeft(after, " \t\r\n")
+	return strings.HasPrefix(next, ".")
+}
+
+// searchVerifyGradleIncludeArguments returns every string literal passed to an `include` call.
+//
+// It walks the script token by token rather than searching for the word, because `include` is
+// ordinary text as well as a call: `println("include ':modules:core'")` contains it, and reading
+// that as a declaration names a project the settings file never declares — the emitted
+// `./gradlew :modules:core:test` then cannot run. Comments are removed first and STRING LITERALS
+// are stepped over whole — including Groovy/Kotlin triple-quoted blocks, which span newlines — so
+// only an `include` in code position starts a call.
+func searchVerifyGradleIncludeArguments(script string) []string {
+	script = searchVerifyStripScriptComments(script)
+	var arguments []string
+	for index := 0; index < len(script); {
+		character := script[index]
+		if character == '\'' || character == '"' {
+			_, width := searchVerifyScriptStringLiteral(script[index:])
+			if width == 0 {
+				// An unterminated quote: step past it rather than swallowing the rest of the file.
+				index++
+				continue
+			}
+			index += width
+			continue
+		}
+		if !searchVerifyScriptIdentifierByte(character) {
+			index++
+			continue
+		}
+		start := index
+		for index < len(script) && searchVerifyScriptIdentifierByte(script[index]) {
+			index++
+		}
+		// Whole-identifier equality subsumes the old neighbour checks: `includeBuild`, `includeFlat`
+		// and `myinclude` are different identifiers and answer a different question.
+		if script[start:index] != "include" {
+			continue
+		}
+		found, width := searchVerifyGradleCallArguments(script[index:])
+		arguments = append(arguments, found...)
+		index += width
+	}
+	return arguments
+}
+
+// searchVerifyGradleCallArguments collects the string literals of one call's argument list and
+// reports how far it consumed, or a zero width when what follows the identifier is not a call at
+// all. Groovy allows the parentheses to be dropped, so the list ends either at the matching `)` or
+// at the end of the STATEMENT — which is the end of the line, extended while the line is continued,
+// OR a `;` before it.
+//
+// A CALL SHAPE is required first, because `include` is a legal ordinary name as well as a settings
+// method: `val include = ":modules:core"` and `def include = ':modules:core'` both bind a variable,
+// and reading the literal on the right of the `=` as an argument named a project the settings script
+// never declares — `./gradlew :modules:core:test` then fails with "Project 'modules' not found in
+// root project". An argument list starts at `(` or, in the command-expression form, at the literal
+// itself; anything else after the identifier (`=`, `.`, `:`, a newline) is a different construct.
+//
+// The semicolon is not a detail. A line is not a statement in Groovy: `include ':app'; project(':app')
+// .projectDir = file('lib')` is the ordinary spelling for an include plus a directory remap, and
+// without the `;` terminator this scanner read `'lib'` — the argument of a DIFFERENT call, on the
+// other side of the separator — as a third included project and named `./gradlew :lib:test` for a
+// project the settings file never declares. The parenthesised form already stopped at its own `)`,
+// so the two spellings of the same include disagreed about everything that followed them on the
+// line; a terminator is what makes them agree.
+func searchVerifyGradleCallArguments(rest string) ([]string, int) {
+	var arguments []string
+	index := 0
+	for index < len(rest) && (rest[index] == ' ' || rest[index] == '\t') {
+		index++
+	}
+	if index >= len(rest) {
+		return nil, 0
+	}
+	switch rest[index] {
+	case '(', '\'', '"':
+	default:
+		return nil, 0
+	}
+	parenthesised := rest[index] == '('
+	depth := 0
+	// literal reports whether every argument seen so far IS a literal, rather than a subexpression
+	// one happens to sit in. `include(if (flag) ":app" else ":other")` and its Groovy ternary name
+	// ONE project, chosen at configuration time, and collecting both records one Gradle never
+	// included — `./gradlew :other:test` then fails with "Project 'other' not found in root
+	// project". Nothing in the text says which branch is taken, so an argument list that is not a
+	// plain sequence of literals declares nothing here.
+	literal := true
+	for index < len(rest) {
+		switch character := rest[index]; character {
+		case '(':
+			depth++
+			index++
+			if depth > 1 || !parenthesised {
+				literal = false
+			}
+		case ')':
+			depth--
+			index++
+			if parenthesised && depth == 0 {
+				return searchVerifyGradleLiteralArguments(arguments, literal), index
+			}
+		case '\'', '"':
+			content, width := searchVerifyScriptStringLiteral(rest[index:])
+			if width == 0 {
+				return searchVerifyGradleLiteralArguments(arguments, literal), index + 1
+			}
+			arguments = append(arguments, content)
+			index += width
+		case ';':
+			// A command-expression argument list ends at the statement separator exactly as it ends
+			// at the newline below. Inside parentheses a `;` is somebody else's syntax.
+			if parenthesised || depth > 0 {
+				index++
+				continue
+			}
+			return searchVerifyGradleLiteralArguments(arguments, literal), index
+		case '\n':
+			if parenthesised || depth > 0 {
+				index++
+				continue
+			}
+			continued := strings.TrimRight(rest[:index], " \t\r")
+			if strings.HasSuffix(continued, ",") || strings.HasSuffix(continued, "\\") {
+				index++
+				continue
+			}
+			return searchVerifyGradleLiteralArguments(arguments, literal), index
+		default:
+			if character != ' ' && character != '\t' && character != '\r' && character != ',' {
+				literal = false
+			}
+			index++
+		}
+	}
+	return searchVerifyGradleLiteralArguments(arguments, literal), index
+}
+
+// searchVerifyGradleLiteralArguments passes the collected arguments through only when the list was a
+// plain sequence of literals. Declining costs a lookup; a project path read out of a branch that was
+// not taken costs a hard-gate command that cannot run.
+func searchVerifyGradleLiteralArguments(arguments []string, literal bool) []string {
+	if !literal {
+		return nil
+	}
+	return arguments
+}
+
+// searchVerifyScriptStringLiteral reads one string literal, returning its content and its width, or
+// a zero width when it is not closed.
+//
+// TRIPLE-quoted blocks are read whole, across newlines, which the single-quote form cannot do. Both
+// DSLs spell a multi-line string that way, and an ordinary one-line literal terminates at the
+// newline, so a block like
+//
+//	val example = """
+//	    include(":lib")
+//	"""
+//
+// left its body in code position and `include(":lib")` was read as a declaration — `./gradlew
+// :lib:test` for a project the settings script never declares. Reading the block whole also makes
+// `include(""":lib""")` work, because the delimiter is stripped and the content is the argument.
+func searchVerifyScriptStringLiteral(rest string) (string, int) {
+	quote := rest[0]
+	if len(rest) >= 3 && rest[1] == quote && rest[2] == quote {
+		delimiter := rest[:3]
+		end := strings.Index(rest[3:], delimiter)
+		if end < 0 {
+			// Unterminated: report nothing so the caller steps past a single byte rather than
+			// swallowing the rest of the file.
+			return "", 0
+		}
+		return rest[3 : 3+end], 3 + end + len(delimiter)
+	}
+	var literal strings.Builder
+	for index := 1; index < len(rest); index++ {
+		character := rest[index]
+		switch {
+		case character == '\\' && index+1 < len(rest):
+			index++
+			literal.WriteByte(rest[index])
+		case character == quote:
+			return literal.String(), index + 1
+		case character == '\n':
+			return "", 0
+		default:
+			literal.WriteByte(character)
+		}
+	}
+	return "", 0
+}
+
+// searchVerifyStripScriptComments removes `//` and `/* */` comments from a Groovy or Kotlin script,
+// leaving string literals and the line structure intact. A commented-out `include` is not an
+// include, and reading one as evidence would name a project that does not exist.
+func searchVerifyStripScriptComments(script string) string {
+	var out strings.Builder
+	out.Grow(len(script))
+	inBlock, inLine := false, false
+	var quote byte
+	for index := 0; index < len(script); index++ {
+		character := script[index]
+		switch {
+		case inBlock:
+			if character == '\n' {
+				out.WriteByte(character)
+			}
+			if character == '*' && index+1 < len(script) && script[index+1] == '/' {
+				inBlock = false
+				index++
+			}
+		case inLine:
+			if character == '\n' {
+				inLine = false
+				out.WriteByte(character)
+			}
+		case quote != 0:
+			out.WriteByte(character)
+			if character == '\\' && index+1 < len(script) {
+				index++
+				out.WriteByte(script[index])
+				continue
+			}
+			if character == quote {
+				quote = 0
+			}
+		case character == '\'' || character == '"':
+			quote = character
+			out.WriteByte(character)
+		case character == '/' && index+1 < len(script) && script[index+1] == '/':
+			inLine = true
+			index++
+		case character == '/' && index+1 < len(script) && script[index+1] == '*':
+			inBlock = true
+			index++
+		default:
+			out.WriteByte(character)
+		}
+	}
+	return out.String()
+}
+
+func searchVerifyScriptIdentifierByte(character byte) bool {
+	return character == '_' ||
+		(character >= 'a' && character <= 'z') ||
+		(character >= 'A' && character <= 'Z') ||
+		(character >= '0' && character <= '9')
+}
+
+func deriveSearchVerifySuiteNode(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	if !searchVerifySuiteApplies(subject, "Node") {
+		return nil
+	}
 	manifest := searchVerifyJoin(dir, "package.json")
 	content, ok := evidence.file(manifest)
 	if !ok {
@@ -663,10 +1232,462 @@ func deriveSearchVerifySuiteNode(dir string, evidence *searchVerifyEvidence) *Se
 	if runner == "" {
 		return nil
 	}
-	return searchVerifySuiteCommand(dir, "npm test", manifest+" "+evidenceKind)
+	if strings.TrimSpace(parsed.Scripts["test"]) == "" {
+		// `<manager> test` runs a SCRIPT, and this manifest has none: npm answers "Missing script:
+		// test", yarn "Couldn't find a script named test", pnpm the same. The dependency read above
+		// licenses a RUNNER, not a script, so the runner's own invocation is what real parity with
+		// the narrow tier looks like — the manager only decides how a script is run, and there is no
+		// script here for it to decide about.
+		//
+		// A scripts.test that EXISTS but names no known runner is a different case and keeps the
+		// manager: `echo none` is a poor verification, but it runs, and choosing between a weak
+		// command and a missing one is not this line's question.
+		return searchVerifySuiteCommand(dir, runner, manifest+" "+evidenceKind)
+	}
+	manager, managerEvidence := searchVerifyNodePackageManager(dir, parsed, evidence)
+	derived := manifest + " " + evidenceKind
+	if managerEvidence != "" {
+		derived += " + " + managerEvidence
+	}
+	return searchVerifySuiteCommand(dir, manager, derived)
 }
 
-func deriveSearchVerifySuiteComposer(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+// searchVerifyNodePackageManager reads the repository's own statement of which package manager runs
+// its scripts, and returns the invocation that runs the `test` script with it.
+//
+// `npm test` is not a portable spelling of "run this package's test script". A Yarn Plug'n'Play
+// project has no `node_modules/.bin` for npm's lifecycle to find, and a pnpm workspace's leaf
+// package is not linked the way npm expects, so the hard-gate command fails in exactly the
+// repositories that most clearly declared what to use instead. Two pieces of evidence answer it,
+// both facts about the tree: Corepack's `packageManager` field, and the lockfile — searched from
+// the manifest's own directory outward, because a workspace keeps one lockfile at its root.
+func searchVerifyNodePackageManager(
+	dir string, parsed searchVerifyNodeManifest, evidence *searchVerifyEvidence,
+) (string, string) {
+	if name, _, found := strings.Cut(strings.TrimSpace(parsed.PackageManager), "@"); found || name != "" {
+		if command, ok := searchVerifyNodeManagers[name]; ok {
+			return command, "packageManager " + name
+		}
+	}
+	if command, lockPath := searchVerifyNodeLockfileManager(dir, evidence); command != "" {
+		return command, lockPath
+	}
+	// npm is the floor, and it is reported as no extra evidence: it is what this block always
+	// emitted, so a repository that declares nothing keeps the byte-identical command it had.
+	return "npm test", ""
+}
+
+// searchVerifyNodeLockfileManager finds the lockfile that governs a package: the NEAREST one,
+// resolving a directory that holds several by manager preference.
+//
+// Proximity has to be the first question. A lockfile is a fact about the directory that holds it, so
+// the one beside the manifest is the package's own statement and an ancestor's is only the
+// workspace's default. Asking preference first — walking the whole tree for pnpm before looking for
+// yarn anywhere — made a leaf's own `package-lock.json` lose to a `pnpm-lock.yaml` several
+// directories above it, and advertised a manager that leaf never declared.
+func searchVerifyNodeLockfileManager(dir string, evidence *searchVerifyEvidence) (string, string) {
+	leaf := dir
+	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
+		// Within ONE directory there is no proximity to separate two lockfiles, so preference
+		// decides: a repository carrying both a pnpm and an npm lock is one that migrated, and the
+		// npm lock is the stale one.
+		for _, candidate := range searchVerifyNodeLockfiles {
+			lockPath := searchVerifyJoin(dir, candidate.lockfile)
+			if evidence.exists(lockPath) {
+				if dir != leaf && candidate.workspaceScoped &&
+					!searchVerifyNodeWorkspaceCovers(dir, leaf, evidence) {
+					// The lockfile governs a project this package is not in. Adopting its manager
+					// here is not a worse guess, it is an unrunnable command — see
+					// searchVerifyNodeLockfiles. Fall to the npm floor, which runs anywhere.
+					return "", ""
+				}
+				return candidate.command, lockPath
+			}
+		}
+		if dir == "" {
+			break
+		}
+		parent := path.Dir(dir)
+		if parent == "." || parent == "/" || parent == dir {
+			dir = ""
+			continue
+		}
+		dir = parent
+	}
+	return "", ""
+}
+
+// searchVerifyNodeManagers maps a `packageManager` name to the invocation that runs the package's
+// own `test` script with it. `bun test` is bun's BUILT-IN runner rather than the script, so bun is
+// spelled `bun run test` — the script is what every other entry here runs.
+var searchVerifyNodeManagers = map[string]string{
+	"npm":  "npm test",
+	"yarn": "yarn test",
+	"pnpm": "pnpm test",
+	"bun":  "bun run test",
+}
+
+// searchVerifyNodeLockfiles orders the lockfile evidence for the tie-break WITHIN one directory,
+// most specific first: npm's lockfile is listed last because a directory that also carries a yarn or
+// pnpm lock is one that migrated, and the npm lock is the stale one. The order does not outrank
+// proximity — see searchVerifyNodeLockfileManager.
+//
+// workspaceScoped marks the managers that REFUSE to run outside their own project, which is what
+// turns "the ancestor's default" from a worse guess into an unrunnable command. Yarn ≥2 resolves the
+// project by walking up to the nearest lockfile and then checks that the package it was invoked in
+// belongs to it, exiting with "The nearest package directory (…) doesn't seem to be part of the
+// project declared in (…)" when it does not — so a standalone package under an unrelated Yarn
+// project must not be handed `yarn test`. npm, pnpm and bun run the package's own script from the
+// current directory whatever the tree above says, and pnpm declares its members in
+// `pnpm-workspace.yaml`, which this reader does not parse — no evidence either way, so no decline.
+var searchVerifyNodeLockfiles = []struct {
+	lockfile        string
+	command         string
+	workspaceScoped bool
+}{
+	{lockfile: "pnpm-lock.yaml", command: "pnpm test"},
+	{lockfile: "yarn.lock", command: "yarn test", workspaceScoped: true},
+	{lockfile: "bun.lockb", command: "bun run test"},
+	{lockfile: "bun.lock", command: "bun run test"},
+	{lockfile: "package-lock.json", command: "npm test"},
+}
+
+// searchVerifyNodeWorkspaceCovers reports whether the project rooted at `root` covers the package at
+// `leaf`, read from the root manifest's own `workspaces` field in either of its two spellings (the
+// array, and the `{"packages": […]}` object Yarn 1 also accepted).
+//
+// Yarn's project is the TRANSITIVE closure of those declarations: a workspace may declare workspaces
+// of its own, so a package under `packages/app/examples/demo` is in the project of a root declaring
+// `packages/*` only if `packages/app`'s OWN manifest also declares it. A pattern matching an
+// ancestor of the leaf therefore hands the question to that ancestor's manifest rather than
+// answering it, which is the difference between reading the declarations and guessing from the path
+// shape.
+//
+// Where it cannot read, it is PERMISSIVE, because the two mistakes are not symmetric: declining
+// wrongly replaces a working `yarn test` with `npm test`, which a Plug'n'Play project cannot run at
+// all, while accepting wrongly leaves the command exactly as it was before this check existed. So a
+// manifest that will not parse and a pattern that will not compile both count as covered. A manifest
+// that reads and declares nothing reaching the leaf is not a failure to read — that is the reported
+// case, an unrelated project above a standalone package, and it declines.
+func searchVerifyNodeWorkspaceCovers(root, leaf string, evidence *searchVerifyEvidence) bool {
+	return searchVerifyNodeWorkspaceCoversWithin(root, leaf, evidence, map[string]bool{})
+}
+
+// searchVerifyNodeWorkspaceCoversWithin answers searchVerifyNodeWorkspaceCovers for one nested root,
+// once. The descent below tries every ancestor cut and each nested root cuts again, so a root is
+// reached once per way of splitting the path above it: a leaf 30 directories under manifests that
+// all declare `**/d*` was asked ~2^29 times. The answer for a root is a function of the root, the
+// fixed leaf and the manifests read under it, and a manifest's answer never changes once evidence has
+// first been asked for it (cached, recorded as missing, or refused for good once the read budget is
+// spent), so the first answer for a root is every later one.
+func searchVerifyNodeWorkspaceCoversWithin(root, leaf string, evidence *searchVerifyEvidence, decided map[string]bool) bool {
+	if covered, known := decided[root]; known {
+		return covered
+	}
+	covered := searchVerifyNodeWorkspaceCoversOnce(root, leaf, evidence, decided)
+	decided[root] = covered
+	return covered
+}
+
+func searchVerifyNodeWorkspaceCoversOnce(root, leaf string, evidence *searchVerifyEvidence, decided map[string]bool) bool {
+	relative, inside := searchVerifyRelative(root, leaf)
+	if !inside || relative == "" {
+		return false
+	}
+	content, ok := evidence.file(searchVerifyJoin(root, "package.json"))
+	if !ok {
+		// No manifest here: beside the lockfile it means Yarn has no project to belong to, and at a
+		// nested step it means this directory is not a package and so declares no workspaces.
+		return false
+	}
+	var parsed struct {
+		Workspaces json.RawMessage `json:"workspaces"`
+	}
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return true
+	}
+	patterns, readable := searchVerifyNodeWorkspacePatterns(parsed.Workspaces)
+	if !readable {
+		return true
+	}
+	segments := strings.Split(relative, "/")
+	for _, pattern := range patterns {
+		if searchVerifyNodeWorkspaceMatches(pattern, segments) {
+			return true
+		}
+	}
+	// The leaf is not declared here, but an ancestor of it may be — and that ancestor is then a
+	// workspace whose own manifest decides. The recursion shortens `relative` by at least one
+	// segment each time, so it is bounded by the leaf's depth.
+	for cut := 1; cut < len(segments); cut++ {
+		for _, pattern := range patterns {
+			if !searchVerifyNodeWorkspaceMatches(pattern, segments[:cut]) {
+				continue
+			}
+			nested := searchVerifyJoin(root, strings.Join(segments[:cut], "/"))
+			if searchVerifyNodeWorkspaceCoversWithin(nested, leaf, evidence, decided) {
+				return true
+			}
+			break
+		}
+	}
+	return false
+}
+
+// searchVerifyNodeWorkspacePatterns reads the `workspaces` field and reports whether it could be
+// read at all. An ABSENT field reads fine and declares nothing — that is the manifest saying it has
+// no workspaces, which is exactly the reported case — while a field in a shape this does not
+// recognise reports false so the caller stays permissive. Negated (`!`) patterns are dropped rather
+// than applied: honouring them could only make the check decline MORE, and declining is the side
+// with the expensive mistake.
+func searchVerifyNodeWorkspacePatterns(raw json.RawMessage) ([]string, bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err != nil {
+		var object struct {
+			Packages []string `json:"packages"`
+		}
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return nil, false
+		}
+		list = object.Packages
+	}
+	patterns := make([]string, 0, len(list))
+	for _, pattern := range list {
+		pattern = strings.Trim(strings.TrimSpace(pattern), "/")
+		if pattern == "" || strings.HasPrefix(pattern, "!") {
+			continue
+		}
+		patterns = append(patterns, pattern)
+	}
+	return patterns, true
+}
+
+// searchVerifyNodeWorkspaceMatches matches one workspaces glob against a package path, segment by
+// segment. `**` spans any number of segments; everything else is `path.Match` within one segment, so
+// `packages/*` reaches `packages/api` and not `packages/api/plugin`.
+//
+// A pattern this cannot express MATCHES, which is what keeps the check on its permissive side. Yarn
+// globs its workspaces with micromatch, whose language is larger than `path.Match`'s: brace
+// expansion (`{packages,tools}/*`) and the extglob groups are ordinary characters here, so a covered
+// package would silently fail to match and be handed `npm test` — the one outcome a Plug'n'Play
+// project cannot run. Not answering is the honest result for a pattern in a language this does not
+// read, and not answering means leaving the command as it was.
+func searchVerifyNodeWorkspaceMatches(pattern string, segments []string) bool {
+	if !strings.ContainsAny(pattern, "{}") {
+		return searchVerifyNodeWorkspaceMatchesExpanded(pattern, segments)
+	}
+	// Brace ALTERNATION is mechanically removable, and removing it is the only answer here that is
+	// not wrong for some repository: read permissively, `{packages,tools}/*` hands `yarn test` to a
+	// leaf Yarn will reject; read strictly, it hands `npm test` to a member a Plug'n'Play project
+	// cannot run that way. Expanded, both leaves get the right command.
+	//
+	// The expansion happens ONCE, here, and the results go to the brace-free matcher rather than
+	// back through this function: an expansion can still carry a brace the expander left alone — an
+	// ESCAPED one, which is a literal — and re-entering on it would not terminate.
+	expansions, expandable := searchVerifyExpandBraces(pattern)
+	if !expandable {
+		return true
+	}
+	for _, expansion := range expansions {
+		if searchVerifyNodeWorkspaceMatchesExpanded(expansion, segments) {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyNodeWorkspaceMatchesExpanded is the matcher proper, over a pattern whose brace groups
+// are already gone.
+func searchVerifyNodeWorkspaceMatchesExpanded(pattern string, segments []string) bool {
+	if searchVerifyNodeWorkspacePatternIsUnreadable(pattern) {
+		return true
+	}
+	return searchVerifyNodeWorkspaceMatchesFrom(strings.Split(pattern, "/"), segments, 0, 0, map[[2]int]bool{})
+}
+
+// searchVerifyNodeWorkspaceMatchesFrom matches patternSegments[p:] against segments[s:]. A `**`
+// tries every split of the remaining segments, so re-deriving each (p, s) state is exponential in
+// the number of `**`: sixteen of them against a sixteen-deep path is ~6e8 attempts, and the pattern
+// comes from a manifest in the repository. The answer for a state depends on nothing but (p, s), so
+// a `**` state that failed once is recorded and never retried; every state is decided at most once.
+// A success returns straight up the stack, so only failures need remembering.
+func searchVerifyNodeWorkspaceMatchesFrom(patternSegments, segments []string, p, s int, failed map[[2]int]bool) bool {
+	for p < len(patternSegments) {
+		if patternSegments[p] == "**" {
+			if p == len(patternSegments)-1 {
+				return true
+			}
+			state := [2]int{p, s}
+			if failed[state] {
+				return false
+			}
+			for skip := s; skip <= len(segments); skip++ {
+				if searchVerifyNodeWorkspaceMatchesFrom(patternSegments, segments, p+1, skip, failed) {
+					return true
+				}
+			}
+			failed[state] = true
+			return false
+		}
+		if s == len(segments) {
+			return false
+		}
+		matched, err := path.Match(patternSegments[p], segments[s])
+		if err != nil {
+			return true
+		}
+		if !matched {
+			return false
+		}
+		p, s = p+1, s+1
+	}
+	return s == len(segments)
+}
+
+// searchVerifyNodeWorkspacePatternIsUnreadable reports whether a workspaces glob uses micromatch
+// syntax `path.Match` would read as literal text: the extglob groups `?(`, `*(`, `+(`, `@(` and
+// `!(`. They would match nothing here and be mistaken for a package the workspace does not declare.
+//
+// Brace alternation used to be on this list and is no longer: it is expanded before matching, so
+// only the groups remain unreadable. That residue is genuinely rare in a `workspaces` array, and
+// the permissive answer is a defensible default for a residue that small — stated as such rather
+// than as a shrug over the whole class.
+func searchVerifyNodeWorkspacePatternIsUnreadable(pattern string) bool {
+	for _, opener := range []string{"?(", "*(", "+(", "@(", "!("} {
+		if strings.Contains(pattern, opener) {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyBraceExpansionLimit bounds the patterns one glob may expand into. Brace alternation
+// multiplies — `{a,b}` seven times over is 128 patterns — and a `workspaces` field is a hand-written
+// list, not a generator, so a glob that needs more than this is not one this is reading correctly.
+// Past the bound the pattern is left unexpanded and answered permissively, as before.
+const searchVerifyBraceExpansionLimit = 64
+
+// searchVerifyExpandBraces expands micromatch brace ALTERNATION into the plain globs `path.Match`
+// can read: `{packages,tools}/*` becomes `packages/*` and `tools/*`, nesting and several groups
+// included. It reports false for a pattern it will not answer for, and the caller then keeps the
+// permissive default rather than guessing.
+//
+// Deliberately NOT a shell brace expander. Only alternation — a group with at least one top-level
+// comma — is expanded, because that is what a `workspaces` field spells. A sequence range
+// (`{1..3}`), a single-alternative group and an unbalanced brace are all declined, which is what
+// keeps this bounded to the manifest formats rather than to bash. A backslash escapes the byte that
+// follows it, so `\{` is a literal brace and not a group.
+func searchVerifyExpandBraces(pattern string) ([]string, bool) {
+	expanded, expandable := searchVerifyExpandBracesInto(nil, pattern)
+	if !expandable || len(expanded) == 0 {
+		return nil, false
+	}
+	return expanded, true
+}
+
+// searchVerifyExpandBracesInto expands the leftmost outermost group and recurses into each
+// alternative, so the results come out in the order the pattern reads.
+func searchVerifyExpandBracesInto(expanded []string, pattern string) ([]string, bool) {
+	if len(expanded) >= searchVerifyBraceExpansionLimit {
+		return nil, false
+	}
+	open, closeAt, found := searchVerifyBraceGroup(pattern)
+	if !found {
+		if searchVerifyHasUnescapedBrace(pattern) {
+			// A brace this did not read as a group: an unbalanced one, or a stray closer.
+			return nil, false
+		}
+		return append(expanded, pattern), true
+	}
+	alternatives, alternation := searchVerifyBraceAlternatives(pattern[open+1 : closeAt])
+	if !alternation {
+		return nil, false
+	}
+	for _, alternative := range alternatives {
+		var expandable bool
+		expanded, expandable = searchVerifyExpandBracesInto(
+			expanded, pattern[:open]+alternative+pattern[closeAt+1:])
+		if !expandable {
+			return nil, false
+		}
+	}
+	return expanded, true
+}
+
+// searchVerifyBraceGroup locates the first brace group and its matching close, counting nesting so
+// the OUTERMOST group is the one expanded first. It reports false when there is no unescaped `{`,
+// and when a `{` never closes.
+func searchVerifyBraceGroup(pattern string) (int, int, bool) {
+	open, depth := -1, 0
+	for index := 0; index < len(pattern); index++ {
+		switch pattern[index] {
+		case '\\':
+			index++
+		case '{':
+			if depth == 0 {
+				open = index
+			}
+			depth++
+		case '}':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 {
+				return open, index, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// searchVerifyBraceAlternatives splits a group body on its TOP-LEVEL commas, leaving nested groups
+// intact for the next pass. A body with no top-level comma is not alternation — `{1..3}` is a range
+// and `{s}` is a literal brace in every shell that does not expand it — so it reports false and the
+// whole pattern is declined.
+func searchVerifyBraceAlternatives(body string) ([]string, bool) {
+	alternatives, start, depth := []string{}, 0, 0
+	for index := 0; index < len(body); index++ {
+		switch body[index] {
+		case '\\':
+			index++
+		case '{':
+			depth++
+		case '}':
+			depth--
+		case ',':
+			if depth == 0 {
+				alternatives = append(alternatives, body[start:index])
+				start = index + 1
+			}
+		}
+	}
+	if len(alternatives) == 0 {
+		return nil, false
+	}
+	return append(alternatives, body[start:]), true
+}
+
+// searchVerifyHasUnescapedBrace reports whether a brace survives that was not read as a group.
+func searchVerifyHasUnescapedBrace(pattern string) bool {
+	for index := 0; index < len(pattern); index++ {
+		switch pattern[index] {
+		case '\\':
+			index++
+		case '{', '}':
+			return true
+		}
+	}
+	return false
+}
+
+func deriveSearchVerifySuiteComposer(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	if !searchVerifySuiteApplies(subject, "Composer") {
+		return nil
+	}
 	if !evidence.exists(searchVerifyJoin(dir, "composer.json")) {
 		return nil
 	}
@@ -678,11 +1699,113 @@ func deriveSearchVerifySuiteComposer(dir string, evidence *searchVerifyEvidence)
 	return nil
 }
 
-func deriveSearchVerifySuitePytest(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+// searchVerifyPytestSections are the headings pytest itself reads configuration from, per file.
+// A bare mention of the word anywhere else in these files is not configuration.
+var searchVerifyPytestSections = map[string][]string{
+	"pytest.ini": {"[pytest]"},
+	"tox.ini":    {"[pytest]"},
+	"setup.cfg":  {"[tool:pytest]"},
+	// Both, per pytest's own documentation: [tool.pytest] is the native TOML form supported
+	// since pytest 9.0, [tool.pytest.ini_options] the INI-style form since 6.0. Narrowing to the
+	// second alone regressed every valid pytest 9 configuration.
+	"pyproject.toml": {"[tool.pytest]", "[tool.pytest.ini_options]"},
+}
+
+// searchVerifyHasSection reports whether `content` declares `heading` as a real, uncommented
+// section header on a line of its own. A COMMENTED heading -- "# [pytest]", "; [tool:pytest]" --
+// is something a config carries while using a different runner, and substring matching accepted
+// every one of them. An open-ended "[tool.pytest" prefix also matched headings pytest does not
+// read.
+func searchVerifyHasSection(content, heading string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		if trimmed == heading {
+			return true
+		}
+	}
+	return false
+}
+
+func searchVerifyIsPytestConfig(name, content string) bool {
+	for _, section := range searchVerifyPytestSections[name] {
+		if searchVerifyHasSection(content, section) {
+			return true
+		}
+	}
+	return name == "tox.ini" && searchVerifyToxInvokesPytest(content)
+}
+
+var searchVerifyINIKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// A tox testenv command is invocation evidence even without a [pytest] section.
+// Dependency names, descriptions and commands in other sections are not.
+func searchVerifyToxInvokesPytest(content string) bool {
+	inTestenv, inCommands := false, false
+	commandsIndent := 0
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			inTestenv = line == "[testenv]" || (strings.HasPrefix(line, "[testenv:") && strings.HasSuffix(line, "]"))
+			inCommands = false
+			continue
+		}
+		if !inTestenv {
+			continue
+		}
+		indent := len(raw) - len(strings.TrimLeft(raw, " \t"))
+		if inCommands && indent > commandsIndent {
+			// More-indented lines continue the current INI value, including '='.
+		} else if key, value, found := strings.Cut(line, "="); found && searchVerifyINIKey.MatchString(strings.TrimSpace(key)) {
+			option := strings.TrimSpace(key)
+			inCommands = option == "commands" || option == "commands_pre" || option == "commands_post"
+			commandsIndent = indent
+			line = strings.TrimSpace(value)
+		} else {
+			inCommands = false
+		}
+		if !inCommands || line == "" {
+			continue
+		}
+		// tox executes argv, not an implicit shell: 'echo x && pytest' and
+		// 'ENV=value pytest' do not invoke pytest. Never apply Node shell rules.
+		words, valid := searchVerifyShellWords(line)
+		if !valid || len(words) == 0 {
+			continue
+		}
+		if words[0] == "pytest" || (len(words) >= 3 && (words[0] == "python" || words[0] == "python3") && words[1] == "-m" && words[2] == "pytest") {
+			return true
+		}
+	}
+	return false
+}
+
+func deriveSearchVerifySuitePytest(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	if !searchVerifySuiteApplies(subject, "Pytest") {
+		return nil
+	}
 	for _, name := range searchVerifyPytestConfigs {
 		candidate := searchVerifyJoin(dir, name)
 		content, ok := evidence.file(candidate)
-		if ok && strings.Contains(content, "pytest") {
+		if !ok {
+			continue
+		}
+		// A SECTION, not a mention. `strings.Contains(content, "pytest")` fired on a keyword in
+		// setup.cfg metadata, on a project description reading "a plugin for pytest users", and
+		// on the comment "migrated off pytest in 2024; we use unittest" -- which says the
+		// opposite of what it was read to mean. setup.cfg and pyproject.toml are general
+		// manifests; the word appears in them for many reasons that are not configuration.
+		//
+		// Milder than the jest case, because pytest runs unittest suites, so a wrong detection
+		// often still works. Not always: where pytest is merely named and not installed, the
+		// derived VERIFY fails with "No module named pytest", and the agent is told to treat a
+		// failure as its own code's fault.
+		if searchVerifyIsPytestConfig(name, content) {
 			return searchVerifySuiteCommand(dir, "python -m pytest", candidate+" pytest config")
 		}
 	}
@@ -692,25 +1815,380 @@ func deriveSearchVerifySuitePytest(dir string, evidence *searchVerifyEvidence) *
 // deriveSearchVerifySuiteRuby prefers RSpec when the tree is configured for it (`.rspec`), otherwise
 // falls to `rake test` when the Rakefile names a test task — the same order the narrow Ruby
 // derivation uses, decided by the repository's own layout.
-func deriveSearchVerifySuiteRuby(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteRuby(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	if !searchVerifySuiteApplies(subject, "Ruby") {
+		return nil
+	}
 	hasGemfile := evidence.exists(searchVerifyJoin(dir, "Gemfile"))
 	hasRakefile := evidence.exists(searchVerifyJoin(dir, "Rakefile"))
 	if !hasGemfile && !hasRakefile {
 		return nil
 	}
+	bundle := searchVerifyBundlePrefix(hasGemfile)
 	if evidence.exists(searchVerifyJoin(dir, ".rspec")) {
-		return searchVerifySuiteCommand(dir, "bundle exec rspec", searchVerifyJoin(dir, ".rspec"))
+		return searchVerifySuiteCommand(dir, bundle+"rspec", searchVerifyJoin(dir, ".rspec"))
 	}
 	if hasRakefile {
 		content, _ := evidence.file(searchVerifyJoin(dir, "Rakefile"))
-		if strings.Contains(content, "test") || strings.Contains(content, "TestTask") {
-			return searchVerifySuiteCommand(dir, "bundle exec rake test", searchVerifyJoin(dir, "Rakefile")+" test task")
+		if task, ok := searchVerifyRakefileTestTask(content); ok {
+			return searchVerifySuiteCommand(
+				dir, bundle+"rake "+task, searchVerifyJoin(dir, "Rakefile")+" "+task+" task")
 		}
 	}
 	return nil
 }
 
-func deriveSearchVerifySuiteMake(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+// searchVerifyBundlePrefix decides whether the command goes through Bundler.
+//
+// `bundle exec` is not a decoration: without a Gemfile it is a guaranteed failure ("Could not
+// locate Gemfile"), and the derivation admits a tree that has only a Rakefile. Emitting it there
+// turned a runnable `rake test` into a command that cannot start — a hard gate on the one repository
+// shape the Rakefile branch exists to serve.
+func searchVerifyBundlePrefix(hasGemfile bool) string {
+	if hasGemfile {
+		return "bundle exec "
+	}
+	return ""
+}
+
+// searchVerifyRakefileDefinesTest reports whether a Rakefile DECLARES a `test` task.
+//
+// Substring-matching "test" does not: `task default: %w[test rubocop]` names `test` as a
+// prerequisite of another task, a comment mentioning tests matches, and so does the word "latest".
+// Every one of those emitted `rake test` for a Rakefile that has no such task, and rake answers
+// "Don't know how to build task 'test'" — a hard-gate command that cannot run, which is strictly
+// worse than the silence this block prefers.
+//
+// What licenses the command is a declaration, in any of the shapes Rake accepts for one: `task
+// :test`, `task(:test)`, `task "test"`, the dependency forms `task :test => :deps` and `task test:
+// :deps` with or without parentheses, `multitask :test`, or the Rake::TestTask generator, which
+// defines `:test` by default. Rejecting a shape is not free either: a Rakefile that declares
+// `task(:test)` and gets declined loses a command that would have run.
+func searchVerifyRakefileDefinesTest(content string) bool {
+	_, ok := searchVerifyRakefileTestTask(content)
+	return ok
+}
+
+// searchVerifyRakefileTestTask returns the name of the task the Rakefile declares — the name `rake`
+// has to be given, not the name the declaration spells.
+//
+// Rake SCOPES a task declared inside `namespace :foo do … end` as `foo:test`. None of the three
+// declaration patterns knows that, so every one of them licensed `rake test` for a Rakefile whose
+// only `test` task is `foo:test`, and rake answers "Don't know how to build task 'test'". That is
+// the same hard-gate failure the declaration check itself was added to stop.
+//
+// Declining the namespaced case was the other option and is the worse one: it buys the correctness
+// at the price of silence on a Rakefile that HAS a test task. Qualifying the name emits a command
+// that runs.
+//
+// A top-level declaration wins over a namespaced one when both are present — `rake test` is then a
+// real task and is the narrower answer — and among namespaced declarations the first in file order
+// is taken.
+func searchVerifyRakefileTestTask(content string) (string, bool) {
+	prefixes := searchVerifyRakeNamespacePrefixes(content)
+	task, line := "", 0
+	for _, pattern := range []*regexp.Regexp{
+		searchVerifyRakeTestTaskGeneratorPattern,
+		searchVerifyRakeTestTaskPattern,
+		searchVerifyRakeDefineTaskPattern,
+	} {
+		for _, match := range pattern.FindAllStringIndex(content, -1) {
+			// A multi-line generator call is scoped by where it BEGINS, which is the line the
+			// namespace stack was computed for.
+			at := strings.Count(content[:match[0]], "\n")
+			prefix := ""
+			if at < len(prefixes) {
+				prefix = prefixes[at]
+			}
+			if prefix == "" {
+				return "test", true
+			}
+			if task == "" || at < line {
+				task, line = prefix+"test", at
+			}
+		}
+	}
+	return task, task != ""
+}
+
+// searchVerifyRakeNamespacePrefixes returns, for each line of a Rakefile, the `foo:` / `a:b:` prefix
+// Rake would give a task declared on it.
+//
+// Ruby block structure is tracked, not guessed at: the cheap approximation — "the file mentions
+// `namespace` and the declaration is indented" — also demotes a top-level task written inside `if`
+// or `begin`, which is ordinary Rake and the exact false negative an earlier round had to correct.
+// So the scan walks lines keeping a stack of open blocks, naming each frame a `namespace` statement
+// opens and leaving every other opener anonymous.
+//
+// Every declaration pattern is anchored at a line's first non-blank byte, so the prefix a match
+// needs is the one in effect at the START of its line, which is what this records.
+//
+// It is a line scanner, not a Ruby parser, and it states its own limits rather than pretending
+// otherwise. What it does NOT read is a heredoc body, a brace-delimited block, and a `namespace`
+// written with braces.
+//
+// Two guards keep an unread construct from becoming a WRONG answer, which is the failure this whole
+// change exists to end. A Rakefile whose blocks do not balance to zero by the last line, or that
+// closes more than it opened, means the scan lost track; a `namespace` whose name is not a literal
+// — `namespace NAME do` — means the name is unknowable here. Either one makes every line report no
+// prefix, which is exactly the behaviour that predates namespace tracking: `rake test`, which fails
+// loudly on a namespaced Rakefile rather than running the wrong suite.
+func searchVerifyRakeNamespacePrefixes(content string) []string {
+	lines := strings.Split(content, "\n")
+	prefixes := make([]string, len(lines))
+	stack := []string{}
+	sound := true
+	for index, line := range lines {
+		prefix := ""
+		for _, name := range stack {
+			if name != "" {
+				prefix += name + ":"
+			}
+		}
+		prefixes[index] = prefix
+		opens, closes, readable := searchVerifyRubyLineBlocks(line)
+		if !readable {
+			sound = false
+			break
+		}
+		stack = append(stack, opens...)
+		for count := 0; count < closes; count++ {
+			if len(stack) == 0 {
+				sound = false
+				break
+			}
+			stack = stack[:len(stack)-1]
+		}
+		if !sound {
+			break
+		}
+	}
+	if !sound || len(stack) != 0 {
+		return make([]string, len(lines))
+	}
+	return prefixes
+}
+
+// searchVerifyRubyLineBlocks reports the blocks one line of Ruby opens — in order, each carrying the
+// `namespace` name it declares, or "" for every other opener — and how many it closes. It reports
+// false when it met a `namespace` whose name it could not read.
+//
+// Returning the openers as a LIST rather than a count is what makes `namespace :foo do namespace
+// :bar do` come out as two named frames. Ruby opens both blocks on that line, `rake -AT` lists
+// `foo:bar:test`, and naming only the first produced `rake foo:test` — a command rake answers with
+// "Don't know how to build task 'foo:test'". Pairing each name with the `do` that consumes it, in
+// token order, is also why a namespace opened after some other block on the same line is still
+// named.
+//
+// The scan is quote-aware rather than working on a stripped copy of the line, because the name and
+// the keywords have to be read from the same pass: `namespace "bar" do` keeps its name inside a
+// string literal, while `desc 'run to the end'` must not close a block. So a string literal yields
+// its CONTENT as a name candidate and nothing else, and a `#` outside one ends the line.
+//
+// The keyword rules are the ones a Ruby line needs and no more. `if`, `unless`, `while`, `until` and
+// `for` open a block only as the first token of the line: every one of them is also a trailing
+// MODIFIER, which opens nothing. `while`, `until` and `for` additionally admit a `do` on the same
+// line as part of the same statement, so that `do` is not counted twice. A word after `.`, `:`, `@`
+// or `$` is a method call or a symbol, not a keyword — `range.end` and `:do` close and open nothing.
+func searchVerifyRubyLineBlocks(line string) ([]string, int, bool) {
+	var opens []string
+	closes := 0
+	first, loopKeyword, naming := true, false, false
+	name := ""
+	for index := 0; index < len(line); {
+		character := line[index]
+		switch {
+		case character == '#':
+			// A comment outside a string literal: nothing after it is code.
+			index = len(line)
+		case character == '\'' || character == '"' || character == '`':
+			literal, width := searchVerifyRubyStringLiteral(line[index:])
+			index += width
+			if naming {
+				if !searchVerifyRakeNamespaceNameIsLiteral(literal) {
+					return nil, 0, false
+				}
+				name, naming = literal, false
+			}
+			first = false
+		case searchVerifyRubyWordByte(character) && !searchVerifyRubyDigit(character):
+			end := index
+			for end < len(line) && searchVerifyRubyWordByte(line[end]) {
+				end++
+			}
+			word := line[index:end]
+			quoted := byte(' ')
+			if index > 0 {
+				quoted = line[index-1]
+			}
+			symbol := quoted == ':'
+			if naming {
+				// The only thing that may follow `namespace` is its name, as a symbol or a string.
+				// Anything else — a constant, a variable, a method call — is a name this cannot
+				// know, and guessing "" would half-qualify the task.
+				if !symbol || !searchVerifyRakeNamespaceNameIsLiteral(word) {
+					return nil, 0, false
+				}
+				name, naming = word, false
+				first, index = false, end
+				continue
+			}
+			if symbol || quoted == '.' || quoted == '@' || quoted == '$' {
+				first, index = false, end
+				continue
+			}
+			switch word {
+			case "namespace":
+				naming = true
+			case "end":
+				closes++
+			case "do":
+				if loopKeyword {
+					loopKeyword = false
+					break
+				}
+				opens = append(opens, name)
+				name = ""
+			case "begin", "case", "def", "class", "module":
+				opens = append(opens, "")
+			case "if", "unless":
+				if first {
+					opens = append(opens, "")
+				}
+			case "while", "until", "for":
+				if first {
+					opens = append(opens, "")
+					loopKeyword = true
+				}
+			}
+			first = false
+			index = end
+			continue
+		default:
+			index++
+		}
+	}
+	if naming || name != "" {
+		// A `namespace` whose block does not open on this line: the name was read but nothing
+		// consumed it, so the frame it belongs to is not one this scan can place.
+		return nil, 0, false
+	}
+	return opens, closes, true
+}
+
+// searchVerifyRubyStringLiteral consumes a `'`, `"` or backtick literal and returns its content
+// along with the bytes consumed, quotes included. A backslash escapes the byte after it. An
+// unterminated literal consumes the rest of the line, which is what a line scanner can say about it.
+func searchVerifyRubyStringLiteral(line string) (string, int) {
+	quote := line[0]
+	content := make([]byte, 0, len(line))
+	for index := 1; index < len(line); index++ {
+		switch line[index] {
+		case '\\':
+			if index+1 < len(line) {
+				index++
+				content = append(content, line[index])
+			}
+		case quote:
+			return string(content), index + 1
+		default:
+			content = append(content, line[index])
+		}
+	}
+	return string(content), len(line)
+}
+
+// searchVerifyRakeNamespaceNameIsLiteral reports whether a namespace name is one this may put in a
+// command: an identifier. That is what Rake namespaces are called in practice, and it is also what
+// keeps the derived `foo:test` free of shell metacharacters. Anything else is treated as unreadable
+// rather than passed through.
+func searchVerifyRakeNamespaceNameIsLiteral(name string) bool {
+	if name == "" || searchVerifyRubyDigit(name[0]) {
+		return false
+	}
+	for index := 0; index < len(name); index++ {
+		if !searchVerifyRubyWordByte(name[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func searchVerifyRubyWordByte(character byte) bool {
+	return character == '_' ||
+		(character >= 'a' && character <= 'z') ||
+		(character >= 'A' && character <= 'Z') ||
+		searchVerifyRubyDigit(character)
+}
+
+func searchVerifyRubyDigit(character byte) bool {
+	return character >= '0' && character <= '9'
+}
+
+// searchVerifyRakeTestTaskGeneratorPattern matches a Rake::TestTask / Minitest::TestTask generator
+// call that defines the task `test`, under the same discipline as the `task` forms above:
+// line-anchored, so a comment, prose or a shell line inside another task cannot license the command.
+//
+// Substring-matching "TestTask.new" did not. `# Rake::TestTask.new` — the shape a Rakefile is left
+// in when the task is retired — counted as a declaration, and so did a NAMED generator: the name is
+// TestTask#initialize's first argument and :test is only its DEFAULT, so `Rake::TestTask.new(:spec)`
+// defines `spec` and the emitted `rake test` dies on "Don't know how to build task 'test'".
+//
+// So the name has to be `test`, in one of the two ways a generator can say so. Either it is omitted
+// and Rake's default stands — the call ends the line, or carries only empty parentheses, a `do`/`{`
+// block or a trailing comment — or it is written out as the first argument, as `:test`, `"test"`,
+// `'test'`, or the `test:` / `:test =>` dependency key. Anything else is left alone rather than
+// guessed at: a name held in a variable, or an argument list broken across lines, declines and the
+// derivation stays silent, which is the direction this block already prefers to a command that
+// cannot run.
+//
+// The namespace prefix is optional and repeatable so that `Rake::TestTask`, `Minitest::TestTask` and
+// a bare `TestTask` after `include Rake::DSL` all match, while `RSpec::Core::RakeTask.new` and a
+// project's own `MyTestTask.new` — whose default name nothing here knows — do not.
+//
+// Leading whitespace is admitted, so a generator nested in a namespace still MATCHES here — which
+// is correct, because it is a declaration. What it declares is `foo:test`, and naming the task is
+// no longer this pattern's job: `searchVerifyRakefileTestTask` qualifies every match against the
+// namespace stack, so issue #205's case emits `rake foo:test` rather than a `rake test` that does
+// not exist. This comment used to say the case was left behaving exactly as it did; it no longer
+// is.
+//
+// The name may also be written on its own line — `Rake::TestTask.new(\n  :test\n)` is one ordinary
+// way to format the call — so INSIDE the parentheses the separator spans newlines. Only there: the
+// unparenthesised spelling stays on its line, and the whole match still begins at a line's first
+// non-blank byte, so a commented-out generator, prose and an `sh` line inside another task are
+// declined for the same reason as before, whether or not they run across lines. The name itself is
+// still validated, so a multi-line `Rake::TestTask.new(\n  :spec\n)` declines exactly as its
+// single-line spelling does.
+var searchVerifyRakeTestTaskGeneratorPattern = regexp.MustCompile(
+	`(?m)^[ \t]*(?:[A-Za-z_]\w*::)*TestTask\.new` +
+		`(?:[ \t]*(?:\([ \t\r\n]*\))?[ \t]*(?:$|#|\{|do\b)` +
+		`|[ \t]*\([ \t\r\n]*(?::test\b|["']test["']|test[ \t]*:)` +
+		`|[ \t]*(?::test\b|["']test["']|test[ \t]*:))`)
+
+// searchVerifyRakeTestTaskPattern matches a `test` task DECLARATION at the start of a line, so a
+// prerequisite list (`task default: %w[test]`), a shell line inside another task (`sh 'rake test'`)
+// and prose cannot license the command.
+//
+// The name must follow `task` immediately, as the first argument, in one of the three ways Rake
+// names a task: the symbol `:test`, the string `"test"`/`'test'`, or the hash-key `test:` of the
+// `task test: :deps` dependency form. The separator admits `(` as well as whitespace, because
+// `task(:test)` is the same declaration written with parentheses — requiring whitespace there was
+// what declined valid Rakefiles. Nothing else is admitted: `:test\b` and the closing quote stop
+// `:testing` and `"test_all"`, and the hash-key form needs its colon straight after the word, so
+// `task test_helper: :compile` still does not match.
+var searchVerifyRakeTestTaskPattern = regexp.MustCompile(
+	`(?m)^[ \t]*(?:multi)?task[ \t(]+(?::test\b|["']test["']|test[ \t]*:)`)
+
+// searchVerifyRakeDefineTaskPattern matches the API the `task` keyword is sugar for. Rake::DSL#task
+// calls Rake::Task.define_task, so `Rake::Task.define_task(:test)` DECLARES the task exactly as
+// `task :test` does — it is rarer, not weaker, and declining it loses a `rake test` that would have
+// run. The `:test` argument is required by the pattern, so this widens what counts as a declaration
+// without admitting a Rakefile that has no such task.
+var searchVerifyRakeDefineTaskPattern = regexp.MustCompile(
+	`(?m)^[ \t]*(?:[A-Za-z_]\w*::)*Task\.define_task[ \t(]+(?::test\b|["']test["']|test[ \t]*:)`)
+
+func deriveSearchVerifySuiteMake(dir string, _ searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	content, ok := evidence.file(searchVerifyJoin(dir, "Makefile"))
 	if !ok {
 		return nil
@@ -896,6 +2374,18 @@ func searchVerifyTomlPackageName(content string) (string, bool) {
 // the covering test when there is one. The `-run` pattern is anchored: an unanchored name also runs
 // every test whose name contains it.
 func deriveSearchVerifyGo(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	// A covering test determines the language only when this module can target it.
+	// An outside test is ignored by the package selector below, so it must not
+	// suppress a narrow command for the edited Go package.
+	targetPath := subject.sourcePath
+	if subject.testPath != "" {
+		if _, inside := searchVerifyRelative(dir, subject.testPath); inside {
+			targetPath = subject.testPath
+		}
+	}
+	if !searchVerifyGoApplies(targetPath, evidence) {
+		return nil
+	}
 	manifest := searchVerifyJoin(dir, "go.mod")
 	if !evidence.exists(manifest) {
 		return nil
@@ -958,29 +2448,133 @@ func deriveSearchVerifyMaven(dir string, subject searchVerifySubject, evidence *
 	if !evidence.exists(manifest) {
 		return nil
 	}
-	scope := ""
-	if dir != "" {
-		// Left as shellQuote deliberately: -pl takes a Maven module selector, not a path operand,
-		// and a ./-prefixed selector is not guaranteed to resolve. A module directory whose name
-		// starts with a dash stays shell-safe but may still be read as an option by mvn itself.
-		scope = " -pl " + shellQuote(dir) + " -am"
-	}
 	if subject.testPath != "" {
 		if _, inside := searchVerifyRelative(dir, subject.testPath); inside {
 			class := searchVerifyStem(subject.testPath)
 			return &SearchVerifyCommand{
-				Command: "mvn -q" + scope + " " + shellQuote("-Dtest="+class) +
-					" -DfailIfNoTests=false test",
+				Command: searchVerifyMavenCommand(dir,
+					shellQuote("-Dtest="+class)+" -DfailIfNoTests=false test", evidence),
 				Targets:     subject.testPath,
 				DerivedFrom: manifest + " module + " + subject.testEvidence + " class",
 			}
 		}
 	}
 	return &SearchVerifyCommand{
-		Command:     "mvn -q" + scope + " test",
+		Command:     searchVerifyMavenCommand(dir, "test", evidence),
 		Targets:     "module " + searchVerifyModuleLabel(dir),
 		DerivedFrom: manifest + " module",
 	}
+}
+
+// searchVerifyMavenCommand decides WHERE a Maven build for the module at `dir` is invoked from,
+// which is the one thing `-pl` cannot express on its own.
+//
+// `-pl <module> -am` is a selector into a REACTOR, and the reactor is the root aggregator POM. Run
+// from the repository root it is exactly right: it builds the module's sibling dependencies first,
+// without which a multi-module verification fails for reasons that have nothing to do with the
+// patch. But it is only runnable when a root `pom.xml` exists — in a polyglot repository whose only
+// POM is `<dir>/pom.xml`, `mvn -pl <dir> -am test` at the root dies with "there is no POM in this
+// directory" before a single test runs, and the block advertised it as the verification command.
+//
+// Conversely, `cd <dir> && mvn test` is right for that standalone module and WRONG for a reactor
+// module: Maven then resolves the module's siblings from the local repository instead of building
+// them, so verification fails unless someone had already installed them.
+//
+// So REACTOR MEMBERSHIP is what picks between them, and it is a fact about the repository rather
+// than a guess. A root `pom.xml` merely EXISTING is not that fact: in a polyglot tree an unrelated
+// root project can sit above a standalone nested service, and `mvn -pl <dir> -am` then dies with
+// "Could not find the selected project in the reactor" — a hard-gate command that cannot run, which
+// is exactly what this block prefers silence, or a narrower command, to.
+func searchVerifyMavenCommand(dir, goals string, evidence *searchVerifyEvidence) string {
+	if dir == "" {
+		return "mvn -q " + goals
+	}
+	if searchVerifyMavenReactorDeclares(dir, evidence) {
+		// Left as shellQuote deliberately: -pl takes a Maven module selector, not a path operand,
+		// and a ./-prefixed selector is not guaranteed to resolve. A module directory whose name
+		// starts with a dash stays shell-safe but may still be read as an option by mvn itself.
+		return "mvn -q -pl " + shellQuote(dir) + " -am " + goals
+	}
+	return searchVerifyRunIn(dir, "mvn -q "+goals)
+}
+
+// searchVerifyMavenReactorDeclares reports whether the root aggregator POM's reactor CONTAINS the
+// module at `dir` — the Maven half of the question the Gradle settings-inclusion check already
+// answers for `include`.
+//
+// An aggregator names its children explicitly, in `<modules><module>…</module></modules>`, each
+// entry a path relative to the aggregator's own directory; and a child may itself be an aggregator,
+// so membership is the transitive closure of those lists rather than one lookup. A nested POM that
+// no list names is its own build and is not selectable from the root at all.
+//
+// The lists are read STRUCTURALLY rather than by substring, from the project's own `<modules>`
+// element only. Modules declared inside a `<profile>` are conditional on that profile being
+// activated, so counting them would re-open the same false accept one level down; a POM that does
+// not parse declares nothing. Both of those decline, and declining is safe here: the caller then
+// emits `cd <dir> && mvn test`, which runs.
+//
+// The walk carries no aggregator count of its own. `visited` already opens each declared directory
+// at most once, which is what makes it terminate on any POM graph including a cyclic one, and
+// `searchVerifyMaxReads` is what bounds the IO. A separate ceiling on the VISITED SET measured
+// neither: a root declaring more modules than the ceiling queued them all on its first pass and
+// stopped the walk before a single child aggregator was opened, so every module declared one level
+// down under a wide root was reported undeclared and handed `cd <dir> && mvn test` — the standalone
+// form, inside a reactor, where the module's siblings are resolved from the local repository instead
+// of being built. Breadth is not depth, and breadth costs no reads.
+func searchVerifyMavenReactorDeclares(dir string, evidence *searchVerifyEvidence) bool {
+	if dir == "" {
+		return false
+	}
+	visited := map[string]bool{"": true}
+	queue := []string{""}
+	for len(queue) > 0 {
+		aggregator := queue[0]
+		queue = queue[1:]
+		for _, module := range searchVerifyMavenModules(aggregator, evidence) {
+			if module == dir {
+				return true
+			}
+			if visited[module] {
+				continue
+			}
+			visited[module] = true
+			queue = append(queue, module)
+		}
+	}
+	return false
+}
+
+// searchVerifyMavenModules returns the repository-relative directories the POM in `dir` declares as
+// its modules. A `<module>` names a directory relative to the aggregator, and Maven also accepts the
+// POM file inside it spelled out, so both are normalised to the directory. An entry that escapes the
+// repository root is dropped rather than resolved.
+func searchVerifyMavenModules(dir string, evidence *searchVerifyEvidence) []string {
+	content, ok := evidence.file(searchVerifyJoin(dir, "pom.xml"))
+	if !ok {
+		return nil
+	}
+	var project struct {
+		Modules []string `xml:"modules>module"`
+	}
+	if err := xml.Unmarshal([]byte(content), &project); err != nil {
+		return nil
+	}
+	modules := make([]string, 0, len(project.Modules))
+	for _, module := range project.Modules {
+		module = strings.TrimSpace(module)
+		if module == "" {
+			continue
+		}
+		if strings.HasSuffix(module, ".xml") {
+			module = path.Dir(module)
+		}
+		joined := path.Clean(searchVerifyJoin(dir, module))
+		if joined == "." || joined == ".." || strings.HasPrefix(joined, "../") {
+			continue
+		}
+		modules = append(modules, joined)
+	}
+	return modules
 }
 
 func searchVerifyModuleLabel(dir string) string {
@@ -994,6 +2588,28 @@ func searchVerifyModuleLabel(dir string) string {
 // not be installed and would not be the repository's own version — and a covering test class,
 // because `:module:test` without `--tests` is the whole module and Gradle's project path is only
 // worth deriving when it buys a filter.
+//
+// A project path is not a directory path. `:lib` resolves against the projects the SETTINGS script
+// declares, and a `build.gradle` sitting in `lib/` says nothing about whether the root build
+// declares it: in a build whose settings script reads `include ':app'`, `./gradlew :lib:test`
+// answers "Project 'lib' not found in root project". So this tier asks the same question the SUITE
+// tier asks, through the same two predicates, and the two tiers now share one notion of what
+// declares a project. The three answers are the suite tier's three, with `--tests` on them:
+//
+//   - the directory carries its OWN settings script, so it is a separate build root and Gradle is
+//     pointed at it with `-p`;
+//   - the root settings script declares the project path, which is the documented
+//     `gradle :subproject:taskName` spelling;
+//   - nothing declares it, or the settings script REMAPS the project onto another tree, and the
+//     tier emits nothing.
+//
+// The remap case is the one that is not merely loud: `project(':lib').projectDir = file('other')`
+// leaves `./gradlew :lib:test` runnable, and passing, about code the edit never touched.
+//
+// A settings script that COMPUTES its includes declares nothing either predicate can read, so this
+// tier goes silent where it used to emit. That is the trade the suite tier already accepted, taken
+// here for the same reason: a command that cannot run is a hard gate on the agent's only
+// verification step, and silence leaves it free to find one.
 func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
 	manifest := ""
 	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
@@ -1011,10 +2627,6 @@ func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence 
 	if _, inside := searchVerifyRelative(dir, subject.testPath); !inside {
 		return nil
 	}
-	project := ":"
-	if dir != "" {
-		project = ":" + strings.ReplaceAll(dir, "/", ":") + ":"
-	}
 	class := searchVerifyStem(subject.testPath)
 	classArg := shellQuote(class)
 	if classArg == class {
@@ -1022,11 +2634,32 @@ func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence 
 		// byte-for-byte form while routing unsafe patterns through the same token encoder.
 		classArg = "'" + class + "'"
 	}
-	return &SearchVerifyCommand{
-		Command:     "./gradlew " + shellQuote(project+"test") + " --tests " + classArg,
-		Targets:     subject.testPath,
-		DerivedFrom: manifest + " + gradlew + " + subject.testEvidence + " class",
+	command := func(task, derived string) *SearchVerifyCommand {
+		return &SearchVerifyCommand{
+			Command:     "./gradlew " + task + " --tests " + classArg,
+			Targets:     subject.testPath,
+			DerivedFrom: derived + " + " + subject.testEvidence + " class",
+		}
 	}
+	derived := manifest + " + gradlew"
+	if dir == "" {
+		// The root project is the build. Nothing has to declare it.
+		return command(shellQuote(":test"), derived)
+	}
+	if settingsPath, _, own := searchVerifyGradleSettings(dir, evidence); own {
+		// The directory carries its own settings script, so it IS a build root and that is the
+		// settings file Gradle finds first when started there. `-p` is the spelling for that.
+		return command("-p "+shellQuotePath(dir)+" test", derived+" + "+settingsPath)
+	}
+	settingsPath, settings, found := searchVerifyGradleSettings("", evidence)
+	project := ":" + strings.ReplaceAll(dir, "/", ":")
+	if !found || !searchVerifyGradleSettingsIncludes(settings, project) {
+		return nil
+	}
+	if searchVerifyGradleSettingsRemapsProject(settings, project) {
+		return nil
+	}
+	return command(shellQuote(project+":test"), derived+" + "+settingsPath)
 }
 
 // searchVerifyNodeRunners maps a declared dependency or test script to the invocation that runs ONE
@@ -1041,6 +2674,9 @@ var searchVerifyNodeRunners = []struct {
 }
 
 type searchVerifyNodeManifest struct {
+	// PackageManager is Corepack's `"packageManager": "yarn@4.1.0"` field: the repository stating,
+	// in its own manifest, which manager runs its scripts.
+	PackageManager  string            `json:"packageManager"`
 	Scripts         map[string]string `json:"scripts"`
 	DevDependencies map[string]string `json:"devDependencies"`
 	Dependencies    map[string]string `json:"dependencies"`
@@ -1061,9 +2697,241 @@ func searchVerifyNodeRunnerFromManifest(parsed searchVerifyNodeManifest) (string
 	return "", ""
 }
 
+// searchVerifyShellStatements splits a package.json script into statements, treating quoted
+// spans as opaque and ending a statement at an unquoted comment.
+//
+// FieldsFunc on & | ; \n did neither, so separators inside quotes and comments began statements
+// the shell never runs:
+//
+//	echo ok # disabled; jest                        -> a statement "jest"
+//	echo 'disabled; jest; still disabled'           -> a statement "jest"
+//
+// Both then qualified as a jest invocation. Deliberately not a shell parser: an unterminated
+// quote returns false and the caller fails closed.
+func searchVerifyShellStatements(script string) ([]string, bool) {
+	var statements []string
+	var current strings.Builder
+	var quote rune
+	// Whether we are INSIDE a word. Tracked as state rather than read off the last raw byte,
+	// because an ESCAPED space is part of the word: in `release\ #1` the hash sits mid-word and
+	// is literal, while the byte before it is a space. Reading that byte called it a word start
+	// and swallowed the rest of the line as a comment.
+	inWord := false
+	flush := func() {
+		if trimmed := strings.TrimSpace(current.String()); trimmed != "" {
+			statements = append(statements, trimmed)
+		}
+		current.Reset()
+	}
+	runes := []rune(script)
+	for index := 0; index < len(runes); index++ {
+		char := runes[index]
+		switch {
+		case quote != 0:
+			// Inside double quotes and backticks a backslash escapes the next character, so
+			// `"foo \"bar\" baz"` is ONE quoted span: closing at the escaped quote desynced the
+			// tracking for the rest of the script and failed a valid script closed. Inside
+			// single quotes nothing is special, a backslash included.
+			if char == '\\' && quote != '\'' && index+1 < len(runes) {
+				current.WriteRune(char)
+				index++
+				current.WriteRune(runes[index])
+				continue
+			}
+			if char == quote {
+				quote = 0
+			}
+			current.WriteRune(char)
+		case char == '\'' || char == '"' || char == '`':
+			quote = char
+			current.WriteRune(char)
+			inWord = true
+		case char == '\\':
+			// The backslash and what it escapes are both word content, whitespace included.
+			current.WriteRune(char)
+			if index+1 < len(runes) {
+				index++
+				current.WriteRune(runes[index])
+			}
+			inWord = true
+		case char == '#' && !inWord:
+			// A shell comment opens only at the START OF A WORD. `echo release#1; jest` has a
+			// literal hash inside a word, and treating it as a comment swallowed a real command.
+			for index < len(runes) && runes[index] != '\n' {
+				index++
+			}
+			flush()
+		case char == '&' || char == '|' || char == ';' || char == '\n':
+			flush()
+			inWord = false
+		default:
+			current.WriteRune(char)
+			inWord = char != ' ' && char != '\t'
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	flush()
+	return statements, true
+}
+
+// searchVerifyScriptInvokesRunner reports whether `script` actually INVOKES `runner`, rather
+// than merely mentioning it somewhere.
+//
+// The predicate was strings.Contains, and a substring is not an invocation. Three scripts that
+// run no jest at all were each reported as jest:
+//
+//	"playwright test --reporter=jest-junit"   a Playwright suite naming a jest REPORTER
+//	"node scripts/jest-shim.js"               a filename
+//	"echo skipping jest for now && exit 0"    a script saying it is not running jest
+//
+// This matters more than a mis-detection usually would. The derived command is printed to the
+// agent as VERIFY, with "run it ONCE after editing; if it fails, fix the code" -- so a wrong
+// runner produces either a spurious failure the agent then "fixes" working code to satisfy, or
+// a spurious pass. It also beat better evidence: scripts.test is consulted BEFORE the declared
+// dependencies, so a substring in a string overrode an explicit devDependency.
+//
+// A runner counts when it is the HEAD of a statement, after environment assignments and the
+// usual wrappers are stepped over. Anything else -- a flag value, a path, prose -- does not.
+// searchVerifyShellWords preserves shell word boundaries through quoting and escapes.
+// It does not evaluate expansions; a quoted environment value cannot become a command.
+func searchVerifyShellWords(statement string) ([]string, bool) {
+	var words []string
+	var word strings.Builder
+	var quote byte
+	active := false
+	flush := func() {
+		if active {
+			words = append(words, word.String())
+			word.Reset()
+			active = false
+		}
+	}
+	for i := 0; i < len(statement); i++ {
+		c := statement[i]
+		if quote != 0 {
+			if c == quote {
+				// Keep substitutions opaque: `jest` is not a literal command name.
+				if quote == '`' {
+					word.WriteByte(c)
+				}
+				quote = 0
+				continue
+			}
+			if c == '\\' && (quote == '"' || quote == '`') && i+1 < len(statement) {
+				next := statement[i+1]
+				if strings.ContainsRune("\\$`\"\n", rune(next)) {
+					i++
+					if next != '\n' {
+						word.WriteByte(next)
+					}
+					continue
+				}
+			}
+			word.WriteByte(c)
+			continue
+		}
+		switch c {
+		case ' ', '\t', '\r', '\n':
+			flush()
+		case '`':
+			quote = c
+			word.WriteByte(c)
+			active = true
+		case '\'', '"':
+			quote = c
+			active = true
+		case '\\':
+			if i+1 >= len(statement) {
+				return nil, false
+			}
+			i++
+			if statement[i] != '\n' {
+				word.WriteByte(statement[i])
+				active = true
+			}
+		default:
+			word.WriteByte(c)
+			active = true
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	flush()
+	return words, true
+}
+
+func searchVerifyScriptInvokesRunner(script, runner string) bool {
+	statements, parsed := searchVerifyShellStatements(script)
+	if !parsed {
+		return false // a form we do not model: fail closed rather than guess
+	}
+	for _, statement := range statements {
+		fields, valid := searchVerifyShellWords(statement)
+		if !valid {
+			continue
+		}
+		index := 0
+		// Assignments and wrappers INTERLEAVE and must be consumed in one loop, not in two
+		// passes: `cross-env NODE_ENV=test jest` puts a wrapper before the assignment, and a
+		// fixed order missed it. A wrapper delegates to the real command; `npm`/`yarn` may be
+		// followed by a subcommand, which is stepped over too. A bare `npm test` then names no
+		// runner, which is right -- it names a script, and resolving that is not a guess to
+		// make here.
+		for index < len(fields) {
+			field := fields[index]
+			if strings.Contains(field, "=") && !strings.HasPrefix(field, "-") {
+				index++
+				continue
+			}
+			switch field {
+			case "npm", "yarn", "pnpm", "bun":
+				// A package MANAGER. Only these take `run`/`exec` and the quiet flags: after
+				// `env`, a bare `run` is just a command named run, and consuming it there
+				// accepted `env run jest` as an invocation of jest.
+				index++
+				if index < len(fields) && (fields[index] == "run" || fields[index] == "exec") {
+					index++
+				}
+				for index < len(fields) && (fields[index] == "-s" || fields[index] == "--silent") {
+					index++
+				}
+				continue
+			case "bunx":
+				index++
+				continue
+			case "npx":
+				// npx has options of its own -- moving it in with the environment wrappers
+				// newly rejected `npx --silent jest`, which had worked. Its flags are consumed
+				// here and nowhere else; `env --silent` is not the same thing and stays
+				// unmodelled.
+				index++
+				for index < len(fields) && (fields[index] == "--silent" || fields[index] == "-s" ||
+					fields[index] == "-y" || fields[index] == "--yes" ||
+					fields[index] == "-q" || fields[index] == "--quiet" ||
+					fields[index] == "--no-install") {
+					index++
+				}
+				continue
+			case "cross-env", "dotenv", "env":
+				// An environment wrapper: it prefixes a command and takes no options we model.
+				index++
+				continue
+			}
+			break
+		}
+		if index < len(fields) && fields[index] == runner {
+			return true
+		}
+	}
+	return false
+}
+
 func searchVerifyNodeRunnerFromScript(script string) (string, bool) {
 	for _, candidate := range searchVerifyNodeRunners {
-		if strings.Contains(script, candidate.name) {
+		if searchVerifyScriptInvokesRunner(script, candidate.name) {
 			return candidate.command, true
 		}
 	}
@@ -1140,7 +3008,7 @@ func deriveSearchVerifyPytest(dir string, subject searchVerifySubject, evidence 
 		if !ok {
 			continue
 		}
-		if !strings.Contains(content, "pytest") {
+		if !searchVerifyIsPytestConfig(name, content) {
 			continue
 		}
 		config = candidate
@@ -1183,16 +3051,17 @@ func deriveSearchVerifyRuby(dir string, subject searchVerifySubject, evidence *s
 	if !hasRakefile {
 		manifest = searchVerifyJoin(dir, "Gemfile")
 	}
+	bundle := searchVerifyBundlePrefix(hasGemfile)
 	switch {
 	case strings.HasPrefix(relative, "spec/") && evidence.exists(searchVerifyJoin(dir, ".rspec")):
 		return &SearchVerifyCommand{
-			Command:     searchVerifyRunIn(dir, "bundle exec rspec "+shellQuotePath(relative)),
+			Command:     searchVerifyRunIn(dir, bundle+"rspec "+shellQuotePath(relative)),
 			Targets:     subject.testPath,
 			DerivedFrom: searchVerifyJoin(dir, ".rspec") + " + " + subject.testEvidence + " path",
 		}
 	case strings.HasPrefix(relative, "test/"):
 		return &SearchVerifyCommand{
-			Command:     searchVerifyRunIn(dir, "bundle exec ruby -Itest "+shellQuotePath(relative)),
+			Command:     searchVerifyRunIn(dir, bundle+"ruby -Itest "+shellQuotePath(relative)),
 			Targets:     subject.testPath,
 			DerivedFrom: manifest + " + " + subject.testEvidence + " path under test/",
 		}
@@ -1318,6 +3187,49 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 		return []byte(rendered)
 	}
 	return []byte(rendered + searchVerifyContractNote)
+}
+
+// composeSearchVerifyExplain pipes a derived VERIFY command through the caller's `explain` filter
+// WITHOUT letting the filter decide the line's exit status.
+//
+// `<test> 2>&1 | <explain>` is a pipeline, and a pipeline's exit status in every POSIX shell is the
+// status of its LAST command. `explain` succeeds at explaining a failure, so the composed line exits
+// 0 on a failing test and any agent or harness that keys on the exit status reads a failed
+// verification as a passing one. That is the severe direction of the error: a verification tool
+// reporting success on a run that actually failed.
+//
+// `set -o pipefail` is NOT the fix here. The emitted line is run by whatever shell the caller has,
+// and the only shell this binary itself invokes is `sh -c` (see runVerifyShell). On Debian-family
+// systems /bin/sh is dash, where `set -o pipefail` is not merely absent but fatal:
+//
+//	$ dash -c 'set -o pipefail; echo REACHED'
+//	dash: 1: set: Illegal option -o pipefail   (exit 2, REACHED never prints)
+//
+// Only the test's numeric status is captured in command substitution. FD 3
+// carries that status; FD 4 carries the filter's output to the original stdout.
+// Test output streams through the pipe, including binary data and trailing newlines.
+// Both caller fragments run in subshells with the private descriptors closed, so
+// exit, exec, or descriptor use cannot bypass the wrapper's status bookkeeping.
+//
+// The reader keeps the pipe open and drains it after the filter exits. Without
+// that drain, an early-exiting filter can give the test SIGPIPE and replace its
+// real status. Draining is bounded by pipe backpressure, not by total log size.
+// The filter itself may still buffer input; this wrapper does not.
+//
+// A failing test's status takes precedence. Otherwise a filter or drain failure
+// is returned with a diagnostic. The outer subshell disables inherited errexit
+// for bookkeeping, and contains all descriptor, option, and variable changes.
+func composeSearchVerifyExplain(command, explain string) (composed string, overhead int) {
+	const (
+		prefix = "( set +e; exec 4>&1; r=$( { { ( "
+		middle = " ) 3>&- 4>&- 2>&1; printf '%s\\n' \"$?\" >&3; } | { ( "
+		suffix = " ) 3>&- 4>&-; e=$?; cat >/dev/null; d=$?; " +
+			"[ \"$e\" -eq 0 ] || exit \"$e\"; exit \"$d\"; } >&4; } 3>&1 ); e=$?; " +
+			"[ \"$r\" -ne 0 ] && exit \"$r\"; " +
+			"[ \"$e\" -eq 0 ] || echo 'VERIFY: explain filter failed' >&2; exit \"$e\" )"
+	)
+	return prefix + command + middle + explain + suffix,
+		len(prefix) + len(middle) + len(suffix) + len(explain)
 }
 
 // filePathToSlash normalizes a repository path for the string handling above. Repository paths are
@@ -1617,7 +3529,7 @@ func deriveSearchVerifyCMake(dir string, subject searchVerifySubject, evidence *
 func searchVerifyRunner(command string) string {
 	remainder := strings.TrimSpace(command)
 	for strings.HasPrefix(remainder, "cd ") {
-		separator := strings.Index(remainder, "&&")
+		separator := searchVerifyStageSeparator(remainder)
 		if separator < 0 {
 			return ""
 		}
@@ -1657,8 +3569,38 @@ func searchVerifyRunnerMissing(command string, evidence *searchVerifyEvidence) b
 	case "bundle", "bundler":
 		lock, ok := evidence.file("Gemfile.lock")
 		return !ok || !strings.Contains(lock, inner)
-	case "npx", "pnpm", "yarn":
+	case "npx":
 		return !evidence.exists("node_modules/.bin/" + inner)
+	case "npm", "pnpm", "yarn":
+		// These three run the package's own SCRIPTS by default, and a script lives in package.json,
+		// not in node_modules/.bin. The suite tier emits exactly that — `yarn test`, `pnpm test`,
+		// `npm test` — so reading `test` as a binary demanded `node_modules/.bin/test`, a file no
+		// repository has, and gated every command the emitter produced for a yarn or pnpm tree. The
+		// manager resolving on PATH is the whole of the question; only `exec` asks one of them to
+		// launch a binary, and that is the only form worth looking through.
+		if !searchVerifyNodeExecsABinary(command, runner) {
+			return false
+		}
+		return !evidence.exists("node_modules/.bin/" + inner)
+	}
+	return false
+}
+
+// searchVerifyNodeExecsABinary reports whether a package-manager invocation is the `exec` form,
+// which runs a binary, rather than the script form, which runs a package.json entry.
+func searchVerifyNodeExecsABinary(command, runner string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	for index, field := range fields {
+		if field != runner {
+			continue
+		}
+		for _, candidate := range fields[index+1:] {
+			if strings.HasPrefix(candidate, "-") {
+				continue
+			}
+			return candidate == "exec"
+		}
+		return false
 	}
 	return false
 }
@@ -1692,7 +3634,10 @@ func searchVerifyLaunchedTool(command, runner string) string {
 //
 // Gated on the project's own `enable_testing()` / `include(CTest)` exactly like the narrow twin — that
 // declaration is what makes `ctest` mean something here rather than a command invented for the reader.
-func deriveSearchVerifySuiteCMake(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+func deriveSearchVerifySuiteCMake(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	if !searchVerifySuiteApplies(subject, "CMake") {
+		return nil
+	}
 	manifest := searchVerifyJoin(dir, "CMakeLists.txt")
 	content, ok := evidence.file(manifest)
 	if !ok {
@@ -1717,7 +3662,7 @@ func searchVerifyDecorated(command *SearchVerifyCommand) string {
 	remainder := command.Command
 	head := ""
 	for strings.HasPrefix(remainder, "cd ") {
-		separator := strings.Index(remainder, "&&")
+		separator := searchVerifyStageSeparator(remainder)
 		if separator < 0 {
 			break
 		}
@@ -1725,6 +3670,38 @@ func searchVerifyDecorated(command *SearchVerifyCommand) string {
 		remainder = strings.TrimSpace(remainder[separator+2:])
 	}
 	return head + command.Prefix + " " + remainder
+}
+
+// searchVerifyStageSeparator returns the byte offset of the `&&` that ends the leading `cd <dir>`
+// stage, or -1 when there is none.
+//
+// It has to be quote-aware, and a plain strings.Index is not. searchVerifyRunIn single-quotes any
+// directory whose name is not shell-safe, so a repository laid out under `foo&&bar` emits
+// `cd 'foo&&bar' && npm test` — a correct command. Splitting it on the FIRST `&&` cuts inside the
+// quoted operand: the --verify-prefix decorator then produces `cd 'foo&& EGTOK bar' && npm test`,
+// and the runner probe reads the executable as `bar'`. Both consumers are wrong about a command
+// that was right, so the separator is found by walking the POSIX quoting this file emits — single
+// quotes, plus the backslash-escaped apostrophe shellQuote emits when it has to close, escape and
+// reopen a quoted token.
+func searchVerifyStageSeparator(command string) int {
+	quoted := false
+	for index := 0; index+1 < len(command); index++ {
+		character := command[index]
+		if !quoted && character == '\\' {
+			// A backslash outside quotes escapes the next byte; it is how shellQuote spells an
+			// apostrophe, and reading that byte as a quote would invert the state from there on.
+			index++
+			continue
+		}
+		if character == '\'' {
+			quoted = !quoted
+			continue
+		}
+		if !quoted && character == '&' && command[index+1] == '&' {
+			return index
+		}
+	}
+	return -1
 }
 
 // GUARD-AWARE DERIVATION

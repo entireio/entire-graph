@@ -1,0 +1,15 @@
+{
+  "commits": {
+    "graph": "bf9e98abc13286fe0823f9fae0b5a502ee343b57",
+    "brain": "8ddf23aeefbc374434320814f4eb099c8a408349",
+    "agents": "887356f06f517aa2f086140bcf22f91541df69ca"
+  },
+  "failure": {
+    "phase": "baseline Git preselection",
+    "query": "resolve git repository root from a linked worktree",
+    "profile": "fast",
+    "timeout_seconds": 180
+  },
+  "completed_case_count": 2,
+  "included_in_filesystem_metrics": false
+}

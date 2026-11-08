@@ -6,8 +6,8 @@ provider consumed by Entire Brain, and the ownership boundary between the two.
 Entire Graph owns everything repository-local: tree-sitter parsing and
 semantic extraction, repository indexing and its derivative caches, cache
 freshness for one requested repository view, the interactive query surface
-(`search`, `def`, `explain`, `neighbors`, `impact`), and distribution of the
-agent instruction files via `init-agents`. Entire Brain owns durable and
+(`query`, `def`, `explain`, `neighbors`, `impact`), and distribution of the
+agent instruction files via `setup`. Entire Brain owns durable and
 cross-repository state: persistence of ingested snapshots, memory that
 outlives one command, cross-project reconciliation, and the MCP/presentation
 surfaces built on top. The boundary rationale is in
@@ -77,7 +77,7 @@ reference.
 ### Indexing profiles
 
 `--profile full|fast|syntax-only` selects indexing depth. Provider snapshot
-commands (`snapshot`, `symbols`, and `edges`) default to `full`; search defaults
+commands (`snapshot`, `symbols`, and `edges`) default to `full`; `query` defaults
 to `fast` unless the caller selects a profile explicitly. The snapshot header
 reports the selected `profile`, its `profile_limits` (evidence, call
 resolution), the emitted `relation_set`, and the
@@ -305,6 +305,23 @@ Relation vocabulary:
   parser captured enough signature text to classify the reference.
 - `HANDLES_ROUTE` — a handler registers an HTTP route (path on a line carrying
   routing context: a verb/route method call or mapping decorator).
+  A Go route whose router is served under a prefix the source does not show
+  (a struct field holding a router, a `*fiber.App` or `*chi.Mux` parameter, a
+  `ServeMux` handed to a wrapper such as `otelhttp.NewHandler`) is emitted with
+  the path relative to that router, confidence lowered by 0.2 (0.66 named
+  handler, 0.5 enclosing symbol), `resolution: pattern` and a
+  `ROUTE_PREFIX_UNRESOLVED` warning code; it is not matched to `HTTP_CALLS`. A
+  router the source shows being rewritten (`http.StripPrefix`, rewrite
+  middleware, a stripping helper) or mounted where the prefix cannot be
+  composed is omitted.
+  Go receiver writes and address escapes follow lexical bindings: a shadowing
+  local or closure parameter does not invalidate an outer router with the same
+  name. If the route walk exhausts its work budget, registrations for that file
+  are omitted and `E_GO_ROUTE_BUDGET_EXCEEDED` reports the completeness loss.
+  Route masking shares that budget and masks the whole file on exhaustion.
+  Wrapped `Mount` arguments make nested router placement unknown. Losing a
+  captured middleware value's identity preserves evidence that it may rewrite
+  paths, so escaped or reassigned closures cannot invent bare routes.
 - `HANDLES_GRPC` / `HANDLES_GRAPHQL` / `HANDLES_TRPC` — service boundary edges
   from protobuf RPC declarations, GraphQL operation literals, JS/TS GraphQL
   resolver-map fields and modular resolver root objects (`Query`, `Mutation`,
@@ -340,7 +357,11 @@ Relation vocabulary:
   as Go `go` statements, JavaScript/TypeScript/Python `await`, and common
   spawn/promise patterns when the target resolves to a known symbol.
 - `FILE_CHANGES_WITH` — bounded local git co-change edge between files that
-  repeatedly changed together in recent history.
+  repeatedly changed together in recent history. When that history cannot be
+  read (for example a partial clone whose history needs a missing blob for
+  rename detection), the snapshot has none of these edges and says so with a
+  `W_COCHANGE_HISTORY_UNAVAILABLE` warning carrying Git's reason, so an empty
+  co-change answer reads as unknown rather than uncoupled.
 - `TESTS` — a test function maps to the unit it covers by naming convention
   (`TestFoo`/`testFoo` → `Foo`, `test_foo` → `foo`, `FooTest`/`FooSpec` → `Foo`)
   when the subject resolves to a non-test function/method/type.
@@ -409,12 +430,18 @@ required to read the selected repository, but the bounded metadata preflight
 rejects active `[include]` and `[includeIf]` sections before Git starts,
 including sections in `config.worktree` when `extensions.worktreeConfig`
 enables it. The same preflight parses and checks an active `core.worktree` path.
-It also rejects active partial-clone/promisor
+It also detects active partial-clone/promisor
 configuration: `extensions.partialClone`, a true `remote.*.promisor`, or any
-`remote.*.partialCloneFilter`. Git before 2.45 can inspect a local or UNC
-promisor URL before applying the transport deny-list, so partial clones are
-refused across the supported Git range rather than weakening no-egress on older
-clients.
+`remote.*.partialCloneFilter`. Such a repository is admitted only when the Git
+that runs in it is proven to honour the `GIT_NO_LAZY_FETCH=1` every provider
+subprocess sets: Git 2.45.1 or newer, or the 2.39.4+, 2.40.2+, 2.41.1+,
+2.42.2+, 2.43.4+ and 2.44.1+ backport lines of git/git@7b70e9efb18c, which check it in
+`fetch_objects()` before any lazy fetch starts. A missing promised object then
+fails locally and no fetch process is started. Every other release, including
+2.45.0 (whose rename-detection prefetch ignores the variable), can start the
+fetch and inspect a local or UNC promisor URL before applying the transport
+deny-list, so partial clones are refused on it rather than weakening no-egress.
+An unknown or unparseable Git version is refused.
 
 Command-scope configuration must set selected-path `safe.directory` entries,
 `core.fsmonitor=false`,
@@ -473,6 +500,24 @@ following bounds are enforced:
   overrides; negative removes it). Truncation is deterministic in sorted path
   order and always reported as `W_FILE_LIMIT`, naming the real count, the limit
   and the override.
+- **Cancellation** — a cancelled context, or a deadline on the caller's own
+  context, stops `snapshot`, `symbols` and `edges` cooperatively: the parse and
+  relation phases poll it, and so do the content reader they share, so work
+  stops within one in-flight file read or parse per worker. A stopped run
+  returns the context's error and never emits a summary record, so a consumer
+  can tell a stopped stream from a complete one, and nothing it produced is
+  cached or served to a later query.
+  When SIGINT/SIGTERM caused the cancellation the CLI exits with status 130/143;
+  a signal that races with a command that nevertheless completes keeps that
+  success, and an independent command error keeps its own status. There is no
+  wall-clock ceiling on indexing: a deadline that should bound a run belongs on
+  the caller's context or a supervisor, and its expiry is an error, not a
+  truncation.
+- **Truncated snapshots are never cached** — every cache writer (the record
+  cache's `ProviderRecordsCacheTransaction.Store` and all three search snapshot
+  writers) refuses a snapshot carrying `E_ANALYSIS_BUDGET_EXCEEDED`, and the
+  CLI says so on stderr. The checks live in the writers so a new call site
+  cannot reintroduce the hole.
 - **Git worktree discovery cap** — each index, eligible-worktree, or explicitly
   requested ignored-worktree listing accepts at most 1,000,000 raw
   NUL-delimited records and 256 MiB including delimiters. These listings must
@@ -560,9 +605,10 @@ reproduce every Git-only policy and excluded files can therefore be present.
 - relation support per profile (`relation_support_by_profile`): the relation
   types each indexing profile emits (`full`, `fast`, `syntax-only`).
 - heuristic relation types (`heuristic_relation_types`): relations such as
-  `HANDLES_ROUTE` and `HANDLES_TOOL` that are detected by file-path and body
-  patterns rather than per-language grammar, so they are not attributed to a
-  single language.
+  `HANDLES_ROUTE` and `HANDLES_TOOL` that are detected by file-path, body or
+  name patterns rather than per-language grammar, so they are not attributed
+  to a single language. (`HANDLES_TOOL` reads only the handler's name and
+  signature, never its body text.)
 - unsupported-but-detected language hints when available
 - whether optional local-only features are available
 - whether any feature would require network access

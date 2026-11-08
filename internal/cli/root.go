@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
@@ -28,16 +31,234 @@ type Options struct {
 	// piped input, because it is the only one whose question ("what are these names the build is
 	// complaining about") is asked by composing with another command rather than by naming a symbol.
 	Stdin io.Reader
+	// buildInfo overrides how the session replay reads this binary's build metadata. Unexported and
+	// nil in production (debug.ReadBuildInfo); tests set it to exercise specific producer identities.
+	buildInfo func() (*debug.BuildInfo, bool)
+	// streamSnapshot stands in for sem.StreamSnapshot when non-nil. It exists so
+	// tests can hand runProviderRecords a summary no build in sem produces any
+	// more -- one marked truncated -- and prove the cache refusals still hold.
+	streamSnapshot func(ctx context.Context, repo, providerVersion string, options sem.ProviderSnapshotOptions, emit func(record any) error) error
 }
 
+// SignalError reports that Execute stopped because it received a signal
+// asking the process to terminate (SIGINT/SIGTERM), rather than because the
+// command itself failed.
+//
+// signal.NotifyContext turns the signal into an ordinary context.Canceled,
+// indistinguishable from any other cancellation once it reaches Run's
+// return value — so without this, main's generic "print the error, exit 1"
+// path reported an operator's Ctrl-C the same way it reports a real command
+// failure, regressing the exit statuses (130 for SIGINT, 143 for SIGTERM) a
+// program with no signal handling at all would have had for free, and that
+// shells and supervisors already know how to interpret. Callers that care
+// can use errors.As to recover the signal and choose the conventional
+// 128+signal status instead.
+type SignalError struct {
+	Signal os.Signal
+	Err    error
+}
+
+func (e *SignalError) Error() string { return e.Err.Error() }
+func (e *SignalError) Unwrap() error { return e.Err }
+
+// Execute is the process entry point. It runs the command under a context that
+// is actually cancellable, which the provider path depends on: every phase of
+// the indexer polls ctx.Err() (see internal/sem/provider.go), so under the
+// previous context.Background() those checks could never fire and an
+// interrupted index could only be stopped by killing the process mid-write.
+//
+// The first SIGINT/SIGTERM cancels the context and restores the default signal
+// handler, so a second one still kills the process immediately. Without that
+// restore, installing a handler would make a runaway index HARDER to stop than
+// before, which is the opposite of the point.
+//
+// Signal delivery is handled with signal.Notify rather than
+// signal.NotifyContext specifically so the received signal itself survives
+// past cancellation, for SignalError below — NotifyContext's context carries
+// no record of which signal (or that one at all, versus a caller-driven
+// cancellation) caused Done to close. The signal race itself lives in
+// runUnderSignals, split out so it is testable without going through real
+// command dispatch.
 func Execute(version string, args []string) error {
-	return Run(context.Background(), Options{
-		Version: version,
-		Env:     EnvFromOS(),
-		Stdout:  os.Stdout,
-		Stderr:  os.Stderr,
-		Stdin:   os.Stdin,
-	}, args)
+	return runUnderSignals(func(ctx context.Context) error {
+		return Run(ctx, Options{
+			Version: version,
+			Env:     EnvFromOS(),
+			Stdout:  os.Stdout,
+			Stderr:  os.Stderr,
+			Stdin:   os.Stdin,
+		}, args)
+	})
+}
+
+// runUnderSignals runs run under a context canceled by the first
+// SIGINT/SIGTERM this process receives, and wraps a non-nil result in a
+// *SignalError when that signal is what stopped it.
+func runUnderSignals(run func(context.Context) error) error {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// caughtCh, not a plain variable: it is written from this goroutine and
+	// read from the one running run after it returns, and a channel handoff
+	// is what makes that safe without a separate lock. The send
+	// happens-before cancel() in program order, and cancel() closing
+	// ctx.Done() happens-before run observes it, so if run returned BECAUSE
+	// of this signal, the send below is already complete by the time the
+	// non-blocking receive after run runs.
+	caughtCh := make(chan os.Signal, 1)
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case sig := <-sigCh:
+			handleFirstSignal(sig, caughtCh, cancel, func() { signal.Stop(sigCh) })
+		case <-stopWatch:
+		}
+	}()
+
+	err := run(ctx)
+	// A signal may race with successful completion. Only attribute an error
+	// returned by run to cancellation; do not turn completed output into failure.
+	if err == nil {
+		return nil
+	}
+
+	var caught os.Signal
+	select {
+	case caught = <-caughtCh:
+	default:
+	}
+	if caught != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return &SignalError{Signal: caught, Err: err}
+		}
+		// A signal racing with an independent failure must not replace the
+		// real exit status with the conventional 130/143 cancellation codes.
+		return err
+	}
+	return err
+}
+
+// handleFirstSignal runs once, when the first SIGINT/SIGTERM is received.
+//
+// stop restores the default disposition and is called FIRST, before the handoff
+// and before cancellation. While signal.Notify is still registered the runtime
+// keeps routing signals into sigCh, and sigCh has a one-slot buffer that nobody
+// reads again -- so every signal arriving before stop returns is BUFFERED, not
+// delivered to the process. That is a second Ctrl-C on a stuck run being
+// swallowed instead of killing it. Restoring first shrinks that window to the
+// signal package's own bookkeeping; leaving it until last widened it by the
+// handoff plus cancel(), and cancel() is not free: it walks and closes every
+// child context, running each of their cancellation paths, while the terminal
+// looks unresponsive.
+//
+// The window cannot be closed entirely from here -- a signal delivered between
+// the receive and stop's effect still lands in the buffer -- so this is a
+// narrowing, not an elimination. The ordering is what is testable and what is
+// asserted.
+func handleFirstSignal(sig os.Signal, caughtCh chan<- os.Signal, cancel context.CancelFunc, stop func()) {
+	stop()
+	caughtCh <- sig
+	cancel()
+}
+
+const writeBytesChunkSize = 64 * 1024
+
+// contextChunkWriter wraps w so each Write honors ctx cancellation. Large
+// writes are chunked the same way writeBytesWithContext does, so a blocked
+// stdout pipe cannot prevent SIGINT/SIGTERM from stopping the command.
+//
+// The write itself runs on a goroutine because a write to a full pipe blocks in
+// the kernel and no context can interrupt it. Abandoning that goroutine is the
+// only way to return on cancellation, which forces two rules on this type:
+//
+//   - The goroutine must never hold the CALLER's buffer. io.Writer forbids
+//     retaining p past Write's return, and the callers here reuse theirs
+//     between calls (json.Encoder keeps one encodeState buffer; io.MultiWriter
+//     hands the same slice to every sink). An abandoned goroutine reading p
+//     while the caller refills it is a data race that writes torn records.
+//     Each chunk is therefore copied into a buffer this writer owns.
+//   - At most one goroutine may ever be abandoned per writer. Once the context
+//     is done the loop below returns at its first check without starting
+//     another, so a permanently blocked sink strands one goroutine and one
+//     scratch buffer for the rest of the process, not one per Write.
+type contextChunkWriter struct {
+	ctx context.Context
+	w   io.Writer
+	// scratch is the buffer handed to the write goroutine. Only one write is
+	// ever in flight per writer, so it is reused across chunks; on abandonment
+	// it is released rather than reused, because the goroutine that outlived
+	// the Write still owns it.
+	scratch []byte
+}
+
+func (cw *contextChunkWriter) Write(b []byte) (int, error) {
+	written := 0
+	for len(b) > 0 {
+		if err := cw.ctx.Err(); err != nil {
+			if written == 0 {
+				return 0, err
+			}
+			return written, err
+		}
+		n := writeBytesChunkSize
+		if n > len(b) {
+			n = len(b)
+		}
+		if cap(cw.scratch) < n {
+			cw.scratch = make([]byte, writeBytesChunkSize)
+		}
+		chunk := cw.scratch[:n]
+		copy(chunk, b[:n])
+		type writeResult struct {
+			n   int
+			err error
+		}
+		done := make(chan writeResult, 1)
+		go func() {
+			wrote, err := cw.w.Write(chunk)
+			done <- writeResult{wrote, err}
+		}()
+		select {
+		case <-cw.ctx.Done():
+			// The goroutine is still inside cw.w.Write and still owns chunk.
+			// Drop this writer's claim on the backing array so nothing can
+			// reuse it underneath that write.
+			cw.scratch = nil
+			return written, cw.ctx.Err()
+		case res := <-done:
+			if res.n < 0 || res.n > n {
+				return written, io.ErrShortWrite
+			}
+			written += res.n
+			if res.err != nil {
+				return written, res.err
+			}
+			if res.n < n {
+				return written, io.ErrShortWrite
+			}
+			b = b[res.n:]
+		}
+	}
+	return written, nil
+}
+
+// Unwrap exposes the sink underneath so callers that need the CONCRETE writer
+// still find it through the wrapper. isTerminal type-asserts *os.File to decide
+// `index`'s output format and whether to draw a progress bar; without this,
+// wrapping stdout would silently turn a terminal into a pipe.
+func (cw *contextChunkWriter) Unwrap() io.Writer { return cw.w }
+
+// writeBytesWithContext writes b to w in chunks, returning ctx.Err() as soon as
+// the context is canceled. A cache hit can be megabytes; a plain Write would
+// ignore SIGINT until the whole buffer is flushed.
+func writeBytesWithContext(ctx context.Context, w io.Writer, b []byte) error {
+	_, err := contextChunkWriterFor(ctx, w).Write(b)
+	return err
 }
 
 func Run(ctx context.Context, opts Options, args []string) error {
@@ -51,6 +272,23 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		opts.Stderr = io.Discard
 	}
 
+	// Every command's output goes through the cancellable writer, not just the
+	// ones that stream a graph. Execute trades the first SIGINT's "terminate the
+	// process" for "cancel this context", and that trade is only honest if every
+	// path HAS an observation point: a command that writes straight to a pipe
+	// whose reader has stalled parks inside write(2), where no cancellation can
+	// reach it, and the operator who already pressed Ctrl-C has to press it
+	// again — strictly worse than the no-handler behavior this replaced. Wrapping
+	// once here covers the paths with no long-running work of their own (help,
+	// capabilities, version, agent-guide, init-agents, snapshot-query, doctor)
+	// and the diagnostics on stderr (progress events, partial-snapshot warnings)
+	// without threading a context through each of them. The streaming commands
+	// below wrap again for their own sinks; a second wrapper only re-chunks
+	// bytes that are already 64 KiB or smaller, and its ctx check is the same
+	// check.
+	opts.Stdout = contextChunkWriterFor(ctx, opts.Stdout)
+	opts.Stderr = contextChunkWriterFor(ctx, opts.Stderr)
+
 	if len(args) == 0 {
 		printHelp(opts.Stdout)
 		return nil
@@ -61,11 +299,9 @@ func Run(ctx context.Context, opts Options, args []string) error {
 	// have a doc entry — which includes `help` itself, so `help --help` prints
 	// help's own detail view rather than the root listing. A bare `--help` has
 	// no command word and is handled above.
-	if wantsHelp(args[1:]) {
-		if _, ok := findCommandDoc(args[0]); ok {
-			renderCommandHelp(opts.Stdout, args[0])
-			return nil
-		}
+	if doc, ok := findCommandDoc(args[0]); ok && wantsHelp(doc, args[1:]) {
+		renderCommandHelp(opts.Stdout, args[0])
+		return nil
 	}
 
 	switch args[0] {
@@ -89,10 +325,16 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runProviderRecords(ctx, opts, args[1:], "symbols")
 	case "edges":
 		return runProviderRecords(ctx, opts, args[1:], "edges")
-	case "search":
+	case "query", "search":
 		return runSearch(ctx, opts, args[1:])
+	case "store":
+		return runStore(ctx, opts, args[1:])
+	case "context":
+		return runContext(ctx, opts, args[1:])
 	case "index":
 		return runIndex(ctx, opts, args[1:])
+	case "health":
+		return runHealth(ctx, opts, args[1:])
 	case "def":
 		return runDef(ctx, opts, args[1:])
 	case "explain":
@@ -109,13 +351,16 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runStats(ctx, opts, args[1:])
 	case "agent-guide":
 		return runAgentGuide(opts, args[1:])
-	case "init-agents":
-		return runInitAgents(opts, args[1:])
+	case "setup":
+		return runSetup(opts, args[1:])
+	case "hook":
+		return runHook(opts, args[1:])
 	case "version", "--version", "-v":
 		if len(args) > 1 && args[1] == "--json" {
 			return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(map[string]string{
-				"provider": sem.ProviderName,
-				"version":  opts.Version,
+				"provider":          sem.ProviderName,
+				"version":           opts.Version,
+				"identity_revision": sem.IdentityRevision,
 			})
 		}
 		fmt.Fprintln(opts.Stdout, opts.Version)
@@ -123,6 +368,11 @@ func Run(ctx context.Context, opts Options, args []string) error {
 	case "help", "--help", "-h":
 		printHelp(opts.Stdout)
 		return nil
+	case "init-agents":
+		// Removed, not aliased: the rename should propagate to scripts and docs,
+		// but the failure has to say where the command went or every caller built
+		// against an older release is left diagnosing a typo that is not one.
+		return fmt.Errorf("init-agents was folded into \"setup\"; run \"entire graph setup\" (same flags)")
 	default:
 		return fmt.Errorf("unknown command %q; run \"entire graph help\" to list commands", args[0])
 	}
@@ -341,7 +591,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		encoder.SetEscapeHTML(false) // match json.Marshal used elsewhere (no < escaping)
 		return encoder.Encode
 	}
-	encodeRecord := newRecordEncoder(opts.Stdout)
+	encodeRecord := newRecordEncoder(contextChunkWriterFor(ctx, opts.Stdout))
 	if scipEncoder != nil {
 		// The version is read inside the snapshot build, through the reader that
 		// is already validated, bounded and pinned to this snapshot's revision.
@@ -373,36 +623,26 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if filterActive && mode == "symbols" {
 		return fmt.Errorf("--to/--from/--relation filter relations; use `edges` (not `symbols`)")
 	}
-	if filterActive {
-		var matched int
-		if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
-			capture(record)
-			switch r := record.(type) {
-			case sem.RelationRecord:
-				if !relationMatches(r, flags) {
-					return nil
-				}
-				matched++
-				return encodeRecord(r)
-			case sem.FileRecord, sem.ExternalRecord, sem.SymbolRecord:
-				return nil // suppressed for a targeted edge query
-			default: // header, summary
-				return encodeRecord(record)
-			}
-		}); err != nil {
-			return err
-		}
-		warnIfPartial(opts.Stderr, flags.Worktree, summary)
-		fmt.Fprintf(opts.Stderr, "graph: %d edge(s) matched (--to=%q --from=%q --relation=%s)\n",
-			matched, flags.To, flags.From, strings.Join(flags.Relation, ","))
-		return nil
+	streamSnapshot := opts.streamSnapshot
+	if streamSnapshot == nil {
+		streamSnapshot = sem.StreamSnapshot
 	}
-
-	// Whole-graph dump (no targeted filter): serve from the committed-record
-	// cache when possible. The cache is keyed on the exact HEAD commit and tree,
-	// the mode, and output-affecting options, so an unchanged HEAD skips the
-	// expensive re-index. It is deliberately bypassed for --worktree and, by
-	// returning above, for targeted queries.
+	// Serve from the committed-record cache when possible. The cache is keyed on
+	// the exact HEAD commit and tree, the mode, and output-affecting options, so
+	// an unchanged HEAD skips the expensive re-index. It is deliberately bypassed
+	// for --worktree, whose source cannot be pinned to one tree, and for SCIP.
+	//
+	// A targeted edge query (--to/--from/--relation) reads and fills the SAME
+	// entry an unfiltered `edges` run does and filters it, because its output is
+	// exactly that stream's header, matching relations and summary. It used to
+	// take no cache at all, so `--cache-dir` was accepted and silently ignored and
+	// every "callers of X" rebuilt the whole graph.
+	cacheMode := mode
+	if filterActive {
+		cacheMode = "edges"
+	} else if compact {
+		cacheMode = "snapshot:compact-ndjson-v1"
+	}
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	useCache := !flags.DisableCache && !flags.Worktree && !scip && cacheDir != ""
 	var commit, tree string
@@ -425,17 +665,12 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			useCache = false
 		}
 	}
-	cacheMode := mode
-	if compact {
-		cacheMode = "snapshot:compact-ndjson-v1"
-	}
 	var recordsCache *sem.ProviderRecordsCacheTransaction
 	if useCache {
 		recordsCache, err = sem.BeginProviderRecordsCache(cacheContext, repo, opts.Version, commit, tree, cacheMode, cacheDir, options)
 		if err != nil {
 			// Cache setup is optional. The uncached stream below will surface any
 			// policy-input error that also prevents a correct build.
-			useCache = false
 			recordsCache = nil
 		} else {
 			// Pin matcher construction to the exact policy bytes that keyed this
@@ -443,6 +678,83 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			options = recordsCache.Options()
 		}
 	}
+	// The spool is created only on a cache miss and consumed by Store; the
+	// deferred Abandon covers every other exit (stream error, provenance
+	// refusal upstream of Store) so a failed run leaves no temporary behind.
+	var spool *sem.ProviderRecordsSpool
+	defer func() { spool.Abandon() }()
+
+	if filterActive {
+		reportMatched := func(matched int) {
+			fmt.Fprintf(opts.Stderr, "graph: %d edge(s) matched (--to=%q --from=%q --relation=%s)\n",
+				matched, flags.To, flags.From, strings.Join(flags.Relation, ","))
+		}
+		if recordsCache != nil {
+			if records, cachedSummary, hit := recordsCache.Load(); hit {
+				filtered, matched, ok := filterCachedEdgeRecords(records, flags)
+				if ok {
+					// Same wrap as the unfiltered hit below: escaping is idempotent, and an
+					// entry written before the C1 rule must not reach the terminal raw.
+					if err := writeBytesWithContext(ctx, termsafe.NewJSONWriter(opts.Stdout), filtered); err != nil {
+						return err
+					}
+					warnIfPartial(opts.Stderr, flags.Worktree, cachedSummary)
+					reportMatched(matched)
+					return nil
+				}
+			}
+		}
+		// On a miss, the unfiltered edges stream is teed into the cache entry while
+		// only the matching relations reach stdout, so the next targeted query on
+		// this tree, whatever it asks, is a hit.
+		var cacheRecord func(any) error
+		if spool = beginRecordsSpool(recordsCache, opts.Stderr); spool != nil {
+			cacheRecord = newRecordEncoder(spool)
+		}
+		var matched int
+		if err := streamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
+			capture(record)
+			if cacheRecord != nil && includeRecord("edges", record) {
+				if err := cacheRecord(record); err != nil {
+					return err
+				}
+			}
+			switch r := record.(type) {
+			case sem.RelationRecord:
+				if !relationMatches(r, flags) {
+					return nil
+				}
+				matched++
+				return encodeRecord(r)
+			case sem.FileRecord, sem.ExternalRecord, sem.SymbolRecord:
+				return nil // suppressed for a targeted edge query
+			default: // header, summary
+				return encodeRecord(record)
+			}
+		}); err != nil {
+			return err
+		}
+		warnIfPartial(opts.Stderr, flags.Worktree, summary)
+		truncated := sem.SnapshotTruncated(summary)
+		if truncated {
+			// Same refusal as the main path: a truncated index must not become
+			// the cached answer. An earlier merge of this hunk kept the warning
+			// and the Store, which printed "were not cached" and then cached.
+			// The spool is left for the deferred Abandon.
+			fmt.Fprintln(opts.Stderr, "graph: index is truncated (E_ANALYSIS_BUDGET_EXCEEDED); the matched edges are partial and were not cached")
+		}
+		reportMatched(matched)
+		if spool != nil && !truncated {
+			// Best effort: a failed cache write never fails the command, but it is
+			// said once on stderr rather than silently costing a re-parse per run.
+			if err := recordsCache.Store(spool, summary, snapshotHeader); err != nil {
+				warnf(opts.Stderr, "provider records cache not stored: %v", err)
+			}
+			spool = nil
+		}
+		return nil
+	}
+
 	if recordsCache != nil {
 		if records, cachedSummary, hit := recordsCache.Load(); hit {
 			// Replayed bytes need the same wrap the encoder below gets. This path does
@@ -450,7 +762,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			// C1 rule existed — or by any build that predates it — would stream the
 			// repository's raw control straight to the terminal on every hit. Escaping
 			// is idempotent, so a clean entry passes through unchanged.
-			if _, err := termsafe.NewJSONWriter(opts.Stdout).Write(records); err != nil {
+			if err := writeBytesWithContext(ctx, termsafe.NewJSONWriter(opts.Stdout), records); err != nil {
 				return err
 			}
 			warnIfPartial(opts.Stderr, flags.Worktree, cachedSummary)
@@ -458,13 +770,22 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		}
 	}
 
-	// On a miss, tee the serialized record stream into a buffer so we can persist it after
-	// a successful run without a second pass over the graph.
-	var recordBuf bytes.Buffer
-	if recordsCache != nil {
-		encodeRecord = newRecordEncoder(io.MultiWriter(opts.Stdout, &recordBuf))
+	// On a miss, tee the serialized record stream into the disk spool so we can
+	// persist it after a successful run without a second pass over the graph.
+	// The spool gzips to a temporary file in the cache directory, so the tee's
+	// memory stays constant whatever the graph's size: the cache is on by
+	// default, and an in-memory capture here once held the command's ENTIRE
+	// output — or, capped, silently stored nothing on exactly the large
+	// repositories the cache matters most for.
+	//
+	// The stdout side stays wrapped for cancellation: a run that is cancelled
+	// must stop writing, not drain the rest of the graph into a pipe nobody is
+	// reading. The wrapper is idempotent,
+	// so this is a no-op when opts.Stdout was already wrapped at entry.
+	if spool = beginRecordsSpool(recordsCache, opts.Stderr); spool != nil {
+		encodeRecord = newRecordEncoder(io.MultiWriter(contextChunkWriterFor(ctx, opts.Stdout), spool))
 	}
-	if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
+	if err := streamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
 		capture(record)
 		if !includeRecord(mode, record) {
 			return nil
@@ -480,11 +801,39 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	} else {
 		warnIfPartial(opts.Stderr, flags.Worktree, summary)
 	}
-	if recordsCache != nil {
-		// Best effort: a failed cache write never fails the command.
-		_ = recordsCache.Store(recordBuf.Bytes(), summary, snapshotHeader)
+	if sem.SnapshotTruncated(summary) {
+		// A truncated graph must never become the cached answer for this tree:
+		// the cache key is the tree and the graph-shaping options, so a stored
+		// truncation would be served to every later caller as if it were the
+		// complete index. The spool is left non-nil so the deferred Abandon
+		// discards it.
+		fmt.Fprintln(opts.Stderr, "graph: index is truncated (E_ANALYSIS_BUDGET_EXCEEDED); result is partial and was not cached")
+	} else if spool != nil {
+		// Best effort: a failed cache write never fails the command, but it is
+		// said once on stderr rather than silently costing a re-parse per run.
+		if err := recordsCache.Store(spool, summary, snapshotHeader); err != nil {
+			warnf(opts.Stderr, "provider records cache not stored: %v", err)
+		}
+		spool = nil
 	}
 	return nil
+}
+
+// beginRecordsSpool opens the disk spool a cold run tees its records into, or
+// returns nil (after one stderr line) when the cache cannot take them. The
+// spool writes ALWAYS report success to the io.MultiWriter that also feeds
+// stdout only in the sense that a working spool never short-writes; a spool
+// that cannot even open is dropped here so no cache failure can abort the
+// stream the command exists to produce. Its predecessor buffered the capture
+// in memory under a 64MB cap and silently stored nothing past it, so every
+// repository whose snapshot outgrew the cap re-parsed on each run.
+func beginRecordsSpool(recordsCache *sem.ProviderRecordsCacheTransaction, stderr io.Writer) *sem.ProviderRecordsSpool {
+	spool, err := recordsCache.NewSpool()
+	if err != nil {
+		warnf(stderr, "provider records cache unavailable: %v", err)
+		return nil
+	}
+	return spool
 }
 
 func scipOmissionNoteWithSummary(note sem.SCIPOmissionNote, summary *sem.SnapshotSummary) sem.SCIPOmissionNote {
@@ -532,9 +881,15 @@ func warnIfPartial(w io.Writer, worktree bool, s *sem.SnapshotSummary) {
 	if level == "" || level == "ok" {
 		return
 	}
-	fmt.Fprintf(w, "\n⚠️  graph is %s: parsed %d/%d files, %d symbols, %d relations (languages: %s).\n",
+	headline := fmt.Sprintf("⚠️  graph is %s: parsed %d/%d files, %d symbols, %d relations (languages: %s).",
 		strings.ToUpper(level), s.Stats.ParsedFiles, s.Stats.Files, s.Stats.Symbols,
 		s.Stats.Relations, strings.Join(s.Languages, ", "))
+	if sem.ShouldUseColor(w) {
+		// Loud warning tier: bright yellow, one slot above warnf's plain
+		// yellow (palette @ bc9a821d reserves "11" for the louder tier).
+		headline = "\x1b[93m" + headline + "\x1b[0m"
+	}
+	fmt.Fprintf(w, "\n%s\n", headline)
 	switch {
 	case s.Stats.Files <= 2 && !worktree:
 		fmt.Fprintf(w, "   Only %d file(s) were discovered — you may be indexing a subdirectory or an\n"+
@@ -546,6 +901,44 @@ func warnIfPartial(w io.Writer, worktree bool, s *sem.SnapshotSummary) {
 	default:
 		fmt.Fprintf(w, "   The graph is incomplete; treat query results as partial.\n")
 	}
+}
+
+// filterCachedEdgeRecords applies a targeted edge query to a cached `edges`
+// stream, which holds only the header, relations and summary (includeRecord):
+// relation lines pass when they match and everything else passes, exactly as
+// the uncached targeted stream decides. Lines are passed through as stored, so a
+// hit is byte-identical to the miss that wrote it. A line that does not decode reports !ok, and the caller
+// rebuilds rather than trusting an entry it cannot read.
+func filterCachedEdgeRecords(records []byte, flags providerFlags) ([]byte, int, bool) {
+	var filtered bytes.Buffer
+	matched := 0
+	for len(records) > 0 {
+		line := records
+		if index := bytes.IndexByte(records, '\n'); index >= 0 {
+			line, records = records[:index+1], records[index+1:]
+		} else {
+			records = nil
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var kind sem.ProviderRecord
+		if err := json.Unmarshal(line, &kind); err != nil {
+			return nil, 0, false
+		}
+		if kind.RecordType == "relation" {
+			var relation sem.RelationRecord
+			if err := json.Unmarshal(line, &relation); err != nil {
+				return nil, 0, false
+			}
+			if !relationMatches(relation, flags) {
+				continue
+			}
+			matched++
+		}
+		filtered.Write(line)
+	}
+	return filtered.Bytes(), matched, true
 }
 
 // includeRecord filters streamed records for the symbols and edges modes, which
@@ -783,7 +1176,7 @@ func runCommit(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := sem.EnsureGitMetadataSafeForSubprocess(repo); err != nil {
+	if err := requireRangeRepoRoot(ctx, repo, "commit"); err != nil {
 		return err
 	}
 	base, err := gitutil.FirstParent(ctx, repo, rev)
@@ -811,11 +1204,14 @@ func runCheckpoint(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := requireRangeRepoRoot(ctx, repo, "checkpoint"); err != nil {
+		return err
+	}
 	result, err := sem.AnalyzeCheckpoint(ctx, repo, rest[0])
 	if err != nil {
 		return err
 	}
-	return printResult(opts.Stdout, result, flags.JSON, opts.Version)
+	return printResult(ctx, opts.Stdout, result, flags.JSON, opts.Version)
 }
 
 func runAnalyze(ctx context.Context, opts Options, args []string) error {
@@ -873,15 +1269,34 @@ type diffFlags struct {
 //
 // Paths that genuinely look like flags still work: that is what the documented `-- path...`
 // separator is for.
+// diffValueFlags are the `diff`/`analyze` flags whose value is the NEXT argument: the two
+// parseCommonFlags consumes and the two the loop below does. It exists only for the separator scan
+// above, which runs before either parser and so cannot ask them.
+var diffValueFlags = map[string]bool{
+	"--repo":        true,
+	"--max-seconds": true,
+	"--base":        true,
+	"--head":        true,
+}
+
 func parseDiffFlags(args []string) (diffFlags, []string, error) {
 	parsed := diffFlags{base: "HEAD~1", head: "HEAD"}
 
 	// Split on `--` here rather than letting parseCommonFlags consume it: that function flattens
 	// everything after the separator into rest, which would leave a literal path named `--base`
 	// indistinguishable from the real flag.
+	//
+	// Skipping each value-taking flag's value is what keeps `--` a separator rather than a pattern:
+	// `diff --repo --` addresses a repository directory literally named `--`, and a raw scan cut the
+	// arguments off in front of it and failed with "--repo requires a value" — with no `--repo=--`
+	// spelling to fall back on, because these parsers accept no `=` form.
 	flagArgs, literalPaths := args, []string(nil)
-	for i, arg := range args {
-		if arg == "--" {
+	for i := 0; i < len(args); i++ {
+		if diffValueFlags[args[i]] {
+			i++
+			continue
+		}
+		if args[i] == "--" {
 			flagArgs, literalPaths = args[:i], args[i+1:]
 			break
 		}
@@ -939,7 +1354,24 @@ func runDiff(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := requireRangeRepoRoot(ctx, repo, "diff"); err != nil {
+		return err
+	}
 	return analyzeAndPrint(ctx, opts, repo, parsed.base, parsed.head, parsed.paths, parsed.common)
+}
+
+func requireRangeRepoRoot(ctx context.Context, repo, command string) error {
+	if err := sem.EnsureGitMetadataSafeForSubprocess(repo); err != nil {
+		return err
+	}
+	prefix, err := gitutil.RepoPrefix(ctx, repo)
+	if err != nil {
+		return err
+	}
+	if prefix != "" {
+		return fmt.Errorf("%s requires --repo to name the checkout root; subdirectories are not supported", command)
+	}
+	return nil
 }
 
 func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, error) {
@@ -1139,7 +1571,7 @@ func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string,
 	if err != nil {
 		return err
 	}
-	return printResult(opts.Stdout, result, flags.JSON, opts.Version)
+	return printResult(ctx, opts.Stdout, result, flags.JSON, opts.Version)
 }
 
 // diffProgressLine renders one --progress event for stderr.
@@ -1163,20 +1595,46 @@ func diffProgressLine(event sem.AnalyzeProgressEvent) string {
 	return line
 }
 
-func printResult(out io.Writer, result sem.Result, asJSON bool, producerVersion string) error {
+func printResult(ctx context.Context, out io.Writer, result sem.Result, asJSON bool, producerVersion string) error {
 	// ProducerVersion is set here, the one place a Result is rendered, rather
 	// than at each of the two callers — it needs the CLI's build-time version
 	// (Options.Version), which the sem package that builds the rest of the
 	// Result has no access to.
 	result.ProducerVersion = producerVersion
+	// The context wrapper can stop mid-stream, and sem.WriteText has no error
+	// return at all, so both render paths need somewhere for a write failure to
+	// land. Without it a canceled or broken stdout produced truncated output and
+	// a nil error, which the process then reports as exit status 0 -- a partial
+	// answer indistinguishable from a complete one.
+	sink := &errCapturingWriter{w: contextChunkWriterFor(ctx, out)}
 	if asJSON {
 		encoded, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(termsafe.NewJSONWriter(out), string(encoded))
-		return nil
+		fmt.Fprintln(termsafe.NewJSONWriter(sink), string(encoded))
+		return sink.err
 	}
-	sem.WriteText(out, result)
-	return nil
+	sem.WriteText(sink, result)
+	return sink.err
+}
+
+// errCapturingWriter keeps the first write error for a sink whose caller
+// discards it (fmt.Fprintln) or has no way to report it (sem.WriteText).
+// Subsequent writes are dropped rather than re-attempted, so one failure does
+// not turn into a burst of them against an already-broken stdout.
+type errCapturingWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (ew *errCapturingWriter) Write(b []byte) (int, error) {
+	if ew.err != nil {
+		return 0, ew.err
+	}
+	n, err := ew.w.Write(b)
+	if err != nil {
+		ew.err = err
+	}
+	return n, err
 }

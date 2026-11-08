@@ -79,37 +79,37 @@ enum Phase {
 @interface Marker {
   String value()
 }
-`)
+`, nil)
 	if status.ParseError {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
 	seen := groovyEntityIndex(t, entities)
 	wantKinds := map[string]string{
-		"Transpiler":                                       "class",
-		"Transpiler.MAX_DEPTH":                             "field",
-		"Transpiler.writer":                                "field",
-		"Transpiler.scriptName":                            "field",
-		"Transpiler.captured":                              "field",
-		"Transpiler.pending":                               "field",
-		"Transpiler.index":                                 "field",
-		"Transpiler.compileScript":                         "method",
-		"Transpiler.visitMethod":                           "method",
-		"Transpiler.tryAll":                                "method",
+		"Transpiler":               "class",
+		"Transpiler.MAX_DEPTH":     "field",
+		"Transpiler.writer":        "field",
+		"Transpiler.scriptName":    "field",
+		"Transpiler.captured":      "field",
+		"Transpiler.pending":       "field",
+		"Transpiler.index":         "field",
+		"Transpiler.compileScript": "method",
+		"Transpiler.visitMethod":   "method",
+		"Transpiler.tryAll":        "method",
 		"Transpiler.feature methods can have quoted names": "method",
-		"Visitor":                                          "interface",
-		"Visitor.visit":                                    "method",
-		"Visitor.describe":                                 "method",
-		"Nameable":                                         "trait",
-		"Nameable.name":                                    "field",
-		"Nameable.displayName":                             "method",
-		"Phase":                                            "enum",
-		"Phase.CONVERSION":                                 "field",
-		"Phase.CANONICALIZATION":                           "field",
-		"Phase.OUTPUT":                                     "field",
-		"field:Phase.number":                               "field",
-		"method:Phase.number":                              "method",
-		"Marker":                                           "interface",
-		"Marker.value":                                     "method",
+		"Visitor":                "interface",
+		"Visitor.visit":          "method",
+		"Visitor.describe":       "method",
+		"Nameable":               "trait",
+		"Nameable.name":          "field",
+		"Nameable.displayName":   "method",
+		"Phase":                  "enum",
+		"Phase.CONVERSION":       "field",
+		"Phase.CANONICALIZATION": "field",
+		"Phase.OUTPUT":           "field",
+		"field:Phase.number":     "field",
+		"method:Phase.number":    "method",
+		"Marker":                 "interface",
+		"Marker.value":           "method",
 	}
 	for name, kind := range wantKinds {
 		entity, ok := seen[name]
@@ -179,7 +179,7 @@ task integrationTest(type: Test) {
 }
 
 println greet('world')
-`)
+`, nil)
 	if status.ParseError {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
@@ -220,7 +220,7 @@ func TestGroovyEntitiesClosuresAreNotSymbols(t *testing.T) {
 
   void after() { }
 }
-`)
+`, nil)
 	if status.ParseError {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
@@ -262,7 +262,7 @@ func TestGroovyEntitiesStringsDoNotConfuseStructure(t *testing.T) {
     """
   }
 }
-`)
+`, nil)
 	if status.ParseError {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
@@ -339,7 +339,7 @@ func TestGroovyKAndRAndAbstractShapes(t *testing.T) {
     return area() * factor
   }
 }
-`)
+`, nil)
 	if status.ParseError {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
@@ -359,7 +359,7 @@ func TestGroovyParseStatusReportsUnbalancedBraces(t *testing.T) {
 	entities, status := groovyEntities(`class Broken {
   void fine() {
   }
-`)
+`, nil)
 	if !status.ParseError {
 		t.Fatalf("expected parse error for unbalanced braces, got %#v", status)
 	}

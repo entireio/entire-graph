@@ -664,7 +664,7 @@ func TestTypeScriptSameLineGraphQLResolversKeepExactNamespaceCalls(t *testing.T)
 	for _, relation := range relationsOfType(snapshot.Relations, "CALLS") {
 		from, to := byID[relation.FromID], byID[relation.ToID]
 		if from.Kind == "graphql_resolver" && to.Name == "parse" {
-			got[from.QualifiedName] = jsNamespaceBySymbolID("namespace A { export function parse() {} } namespace B { export function parse() {} } export const resolvers = { Query: { left: () => A.parse(), right: () => B.parse() } };", snapshot.Symbols, jsNamespaceScopes("namespace A { export function parse() {} } namespace B { export function parse() {} } export const resolvers = { Query: { left: () => A.parse(), right: () => B.parse() } };"))[to.ID]
+			got[from.QualifiedName] = jsNamespaceBySymbolID("namespace A { export function parse() {} } namespace B { export function parse() {} } export const resolvers = { Query: { left: () => A.parse(), right: () => B.parse() } };", snapshot.Symbols, jsNamespaceScopes(context.Background(), "namespace A { export function parse() {} } namespace B { export function parse() {} } export const resolvers = { Query: { left: () => A.parse(), right: () => B.parse() } };"))[to.ID]
 		}
 	}
 	if got["Query.left"] != "A" || got["Query.right"] != "B" {

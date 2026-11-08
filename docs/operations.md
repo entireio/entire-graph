@@ -36,7 +36,7 @@ without version linker flags reports `dev`.
 - The Entire CLI (0.10.0 or later) must be on `PATH`.
 - Git 2.36 or later must be on `PATH`; committed-tree readers use its
   single-session `cat-file --batch-command` protocol.
-- Development uses Go 1.26. Tree-sitter bindings require CGO and a working C
+- Development uses Go 1.27. Tree-sitter bindings require CGO and a working C
   compiler for the target platform.
 - Local release builds require `tar` for non-Windows archives, `zip` or `7z`
   for Windows archives, and either `sha256sum` or `shasum`. Signing additionally
@@ -52,7 +52,7 @@ the cache directory costs a rebuild, nothing else.
 
 The cache root is resolved in order: `--cache-dir`, then
 `ENTIRE_PLUGIN_DATA_DIR`, then the per-user cache directory (`entire-graph`
-under the OS user cache path). The per-user fallback applies to `search`,
+under the OS user cache path). The per-user fallback applies to `query`,
 `neighbors`, `impact`, `index`, `snapshot`, `symbols`, and `edges`. `def` and
 `explain` stop at `ENTIRE_PLUGIN_DATA_DIR`; with neither the flag nor the
 variable set they rebuild on every run. One directory is shared by every
@@ -78,18 +78,24 @@ through the same writable namespace.
 
 ### Two cache families
 
-- The **search snapshot cache** backs `search`, `neighbors`, `impact`, and
+- The **search snapshot cache** backs `query`, `neighbors`, `impact`, and
   `index`. It caches committed-tree (`--head`) queries; working-tree queries
   always bypass it.
 - The **provider records cache** backs the bulk streams (`snapshot`,
   `symbols`, `edges`). It is committed-tree only; `--worktree` streams always
   bypass it.
 
+Targeted `edges --to/--from/--relation` requests honor `--cache-dir` and reuse the
+same unfiltered `edges` entry. A hit filters its records without changing the
+matching output bytes. An unreadable entry or a record that cannot be decoded
+causes a rebuild before any cached prefix is printed; a successful bounded
+capture replaces the damaged entry. `--no-cache` bypasses both reads and writes.
+
 ### What a cache entry is keyed on
 
 A search-snapshot entry is a function of: the cache format version, the
-checkout path, the repository identity (derived from the Git remote), the
-provider version, the committed `HEAD` tree hash, the profile, the parse-size
+repository identity (derived from the Git remote; every remote-less
+`local/<name>` checkout shares one identity term), the provider version, the committed `HEAD` tree hash, the profile, the parse-size
 and file-count limits, any file-subset selection, the paths **and contents** of
 `--ignore-file`/`--include-file` inputs in caller order, and the contents of
 `.graphignore`. Change any of these and the next query builds a new entry;
@@ -99,10 +105,31 @@ term because working-tree snapshots cannot receive persistent keys.
 [ADR 0002](adr/0002-committed-tree-cache-key.md) records why the key is total
 over graph-shaping inputs.
 
+The checkout path is not a key term, so every worktree and clone at the same
+tree shares one entry. The checkout-relative scope is: a `--repo <subdir>` run
+indexes only that subtree, so it is keyed on Git's prefix for that directory
+and never shares an entry with the repository root, or with another
+subdirectory. On a hit the loader rewrites what is specific to the
+checkout serving it: `repo_root` (which `def`, `neighbors`, and `impact` read
+source through), the commit, and, for a remote-less checkout, the
+`local/<name>` namespace in every symbol and file ID.
+
 A provider-record entry binds the same graph-shaping inputs plus the exact
-commit and output mode. Exact commit identity is required because the cached
+commit and output mode, keyed on the full repository key; its header line's
+`repo_root` is restamped for the checkout replaying it. Exact commit identity is required because the cached
 opaque NDJSON header records it; unlike a structured search snapshot, that
 stream cannot be safely restamped on a same-tree cache hit.
+Full-profile record entries also bind the captured co-change evidence from the
+available local history. Full and shallow clones at one commit can expose
+different history; deepening a clone must not replay its earlier history. An
+unavailable history view remains private to that checkout. The transaction uses
+the same captured evidence for its key and build, so a history change during
+construction cannot poison another history view.
+
+A cache hit is a reuse signal, not a latency guarantee. Full-profile search
+hits refresh co-change relations from at most 256 local commits so a different
+available history cannot supply stale edges. A failed or canceled refresh is a
+miss, rather than a reported hit with silently removed history relations.
 
 ### Working-tree queries
 
@@ -123,7 +150,7 @@ is the superseded clean-tree reuse design.
 it was written. It warms exactly one cache variant: later queries reuse it
 only when they run with `--head` and matching profile, cache directory,
 ordered ignore/include inputs, and unchanged `.graphignore`. Two defaults make
-this easy to get wrong: `index` defaults to `--profile full` while `search`
+this easy to get wrong: `index` defaults to `--profile full` while `query`
 defaults to `--profile fast`, and `index` cannot warm the default
 working-tree path at all. To prewarm for the installed agent guide's
 committed-tree queries, `index`'s default profile is the right one, but the
@@ -134,14 +161,14 @@ graph for human review.
 
 ### Observing cache state
 
-- `search` (default JSON): `stats.index_cache_hit`.
+- `query` (default JSON): `stats.index_cache_hit`.
 - `impact --format text` and `neighbors --format text`: leading
   `Index: cache-hit`/`cache-miss` line.
-- `search --format agent` and `neighbors --format agent`: normally the same
+- `query --format agent` and `neighbors --format agent`: normally the same
   `Index:` header. Under a tight byte budget it compacts to `I:hit`/`I:miss`;
   an extremely small budget can omit the telemetry.
-- JSON output from `search`, `impact`, and `neighbors` includes cache fields.
-- `search --format text` and `explain`: no cache state is reported.
+- JSON output from `query`, `impact`, and `neighbors` includes cache fields.
+- `query --format text` and `explain`: no cache state is reported.
 - `def`: JSON field only.
 
 ## Updating and troubleshooting
@@ -159,11 +186,29 @@ back to the per-user cache directory.
 
 ## Reports and the status line
 
-`entire graph stats --repo .` prints one line — the estimated tokens the graph
-saved — from local session transcripts. `--verbose` restores the full report
-(graph vs exploration usage per verb and kind, billed tokens, the measured
-per-call costs, and the model's assumption); `--format json` is a machine
-contract and is unaffected by `--verbose`.
+`entire graph stats --repo .` leads with **observed follow-up** from local session
+transcripts: the next five calls after a locate result arrived classify it as a
+re-query, a read of a named file, no follow-up, censored, an error, or ineligible.
+Only result rows name located files; coverage, VERIFY and quoted source do not.
+A read shared by multiple results is a follow-up for all of them, with its span
+attributed to one result. All classes reconcile to the observed-result denominator.
+An absent follow-up is not proof of an avoided call.
+
+The signed modeled balance assumes each no-follow-up result replaced one average
+exploration result of its session, subtracts all locate-result bytes and converts
+bytes/4 to estimated tokens. It retains losses and states its credited population.
+Task quality, query equivalence and output truncation are not controlled, so this
+cannot establish causal or billed-token savings.
+
+The comparison is `unavailable` unless a session has both result types; an
+available zero can also be cancellation between positive and negative sessions.
+`--verbose` includes observed usage, transcript-reported tokens, comparison
+population and assumptions, plus the legacy unvalidated 1:1 context model.
+`--format json` remains additive and independent of `--verbose`. The status line
+continues to use `estimated_savings_est_tokens_unfloored` and
+`sessions_with_savings_comparison`; the default stats headline uses the observed
+follow-up and `modeled_balance_*` fields. Legacy positive-only savings, percentage
+and graph-first fields are retained for compatibility, not endorsed as evidence.
 
 `--since` prunes transcripts by file mtime before parsing them, and unchanged
 transcripts are memoised under the cache directory keyed on file identity plus
@@ -171,7 +216,10 @@ the binary's own identity, so repeat runs do not re-parse gigabytes of session
 log. `--no-cache` forces a full re-parse; `--cache-dir` relocates the memo.
 
 `scripts/entire-graph-statusline.sh` renders the single-session variant as a
-Claude Code status line.
+Claude Code status line: `1:1 model +N tok`, `-N tok`, `0 tok`, or `unavailable`.
+It does not fall back to positive-only estimates from older binaries. Detail
+mode adds observed counts and estimated exploration tokens, not a savings
+percentage or an inferred graph-first behavior claim.
 
 ## Release archives
 
@@ -183,6 +231,16 @@ The release script writes `dist/release-<version>/` with one archive per target
 and a `checksums.txt` manifest. Non-Windows targets use `.tar.gz`; Windows
 targets use `.zip`. `VERSION=<value>` overrides the version; otherwise the
 script uses `git describe --tags --always --dirty`.
+
+Each archive carries the binary plus `README.md`, `LICENSE`, `NOTICES`, and
+`entire-plugin.yml`. `NOTICES` is the third-party attribution for everything
+statically linked into the binary: the tree-sitter parser sources vendored
+under `internal/sem/` and the Go modules the six released platforms reach. It
+is generated by `scripts/gen-notices.sh` from those license files and the
+resolved module graph, committed to the repository, and checked for drift in
+CI; `scripts/gen-notices.sh --check` runs the same check locally. The release
+script refuses to build an archive when any of the four files is missing,
+because a published release asset cannot be corrected in place.
 
 By default the script builds the current host target. Set
 `ENTIRE_RELEASE_TARGETS` to a space-separated list of `GOOS/GOARCH` targets to
@@ -207,3 +265,99 @@ precedence and the script writes only the `.sig` file.
 The script does not publish artifacts. The GitHub `release` workflow builds and
 verifies six platform archives. A manual workflow run on a branch only validates
 them; pushing a `v*` tag also publishes the GitHub release and `checksums.txt`.
+Release notes come from the tag's `CHANGELOG.md` section when one exists, and
+fall back to auto-generated commit notes otherwise, which is the path nightly
+prereleases take.
+## Graph health
+
+`entire graph health` always reports indexing health, including `ok`. The default
+is text; `--json` (or `--format json`) returns structured data. It uses committed
+`HEAD` with the `full` profile. `--profile`, `--cache-dir`, `--ignore-file` and
+`--include-file` select the same cache variants as `index`. A missing index is
+built locally, with a build notice on stderr. `--refresh` rebuilds and invalidates
+derived query entries even when the source tree is unchanged. No source files or
+ignore rules are modified. `doctor` keeps its existing capability-check behavior.
+
+Health is shared by indexes, snapshot summaries and query summaries in
+`completeness.health` (additive schema 1.3). It includes `source_files`,
+`flagged_files`, `flagged_percentage`, `threshold_percentage`,
+`intentional_skipped_files`, `status`, and a per-language breakdown. Existing
+`stats.completeness_level` (index/health: `counts.completeness_level`) agrees with
+that status. Existing fields and full diagnostic arrays remain available.
+
+The percentage is `100 × unique flagged source files / eligible source files`.
+The inclusive degradation threshold is 5%; status comparisons use integer counts
+without rounding. A file with several diagnostic categories or failures in both
+parser phases contributes once. `E_MINIFIED` and `E_FILE_TOO_LARGE` are intentional
+skips, excluded from the numerator and reported separately. Eligible skipped
+files remain in the denominator. Unsupported recognized source and source read
+failures count even when no file record could be emitted.
+An optional diagnostic `language` preserves shebang-based classification when
+an extensionless source file cannot be read in full.
+
+Eligibility is defined centrally in `internal/sem/health.go`: recognized
+programming, template, stylesheet and interface languages count, including
+inventory-only languages and scripts identified by shebang. Documentation,
+configuration and data formats do not count: for example Markdown, JSON, YAML,
+XML, TOML, INI, HCL/Terraform, CUE, Dockerfile, Make and project manifests.
+Unknown file types are not assumed to be source. Source files under documentation
+directories still count. Files excluded by ignore/build policy are outside the
+snapshot scope. Query-selected snapshots calculate the same metric over their
+selected scope, not an unexamined whole repository; a no-hit search may reuse a
+complete cached report, or omit health when no graph was built.
+
+With zero eligible source files, the percentage is explicitly 0 and the threshold
+alone yields `ok`. Stronger guards remain, in their existing order: a majority
+unparsed yields `unsafe`; a parsed graph with zero symbols yields `degraded`;
+otherwise more than 25% flagged yields `unsafe`, and more than 25% unparsed yields
+`degraded`. The existing recorded-file
+guards also apply, including to zero-source scopes. A truly empty scope is `ok`.
+The report's threshold is therefore not the sole reason a status can be degraded.
+
+Meaningful diagnostics are retained below 5%, and relevant query warnings still
+appear. Diagnostics describe parser limitations and incomplete extraction; they
+do not establish that source code is invalid. The health command lists affected
+files, effects, and locations in diagnostic `detail` when the parser supplies
+them (timeouts and read failures may have no line/column). Its JSON additionally
+contains `diagnostic_categories` and `intentional_skips`, without removing the
+original `partial_failures` or `warnings` arrays. Language percentages cover
+eligible source; categories and diagnostic lists also retain non-source failures.
+
+`cache_freshness` is `matching_index`, `built`, or `rebuilt`; `index_cache_hit`,
+`commit`, `tree`, `profile` and `index_latency_ms` provide the underlying evidence.
+Freshness means a matching committed tree, provider, profile and indexing policy,
+not the absence of uncommitted source changes. The schema and both cache-family
+versions invalidate earlier status calculations, including local `dev` builds.
+Symbol IDs are unchanged. Caches use the platform per-user directory unless
+`--cache-dir` or `ENTIRE_PLUGIN_DATA_DIR` overrides it.
+
+### Downstream compatibility check
+
+Run `mise exec -- python3 scripts/test-brain-health.py /path/to/entire-brain`
+against the Brain version intended for deployment. It builds this Graph checkout,
+generates four synthetic snapshots, and uses a Go test overlay to exercise Brain's
+actual stream reader without editing the consumer checkout. The check covers
+schema acceptance, summary merging, retained health metadata and diagnostic
+code/detail, re-serialized snapshots, and completeness-to-trust mapping.
+It is a reader compatibility check, not a full SQLite indexing or deployment test.
+
+Schema 1.3 advertises the optional fields; it does not negotiate completeness
+policy. Brain maps provider `ok`/`degraded`/`unsafe` to `trusted`/`partial`/`low`,
+so the requested 5% boundary changes those trust labels. This is intentional.
+Brain versions that only declare an older supported minor accept 1.3 with a
+newer-minor warning; do not suppress that warning without consumer-side evidence.
+Brain also has a separately computed completeness/freshness axis: its legacy
+10% parse-error rule is not changed by this Graph release. Consumers requiring
+the same policy on that axis need a separate coordinated update.
+
+### Selective views derived from a complete cache
+
+A derived view retains the selected files and symbols, and filters the complete
+graph's resolved relations to selected endpoints (or external targets). It does
+not repeat name resolution against only the selection. An uncached selection
+may guess a same-named target or externalize an edge whose real target is not
+selected; the filtered view can omit those edges. Consequently, whole-snapshot
+parity with an uncached selection is not the contract. The tests bound dropped
+edge classes and check exact ranking on fixture queries, without proving
+universal ranking equality. This semantic choice accompanies the cache-sharing
+change and is part of its manual review.

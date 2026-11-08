@@ -136,8 +136,15 @@ func shouldUseColor(out io.Writer) bool {
 	return info.Mode()&os.ModeCharDevice != 0
 }
 
+// The SGR codes below are the entire CLI's palette, copied from the entireio/cli
+// repo: cmd/entire/cli/palette/palette.go @ bc9a821d (base16 ANSI slots with
+// semantic aliases Accent=magenta, Muted=bright black, Success/Error/Warning =
+// green/red/yellow). Base16 slots follow the user's terminal theme, so nothing
+// needs downsampling and there are no light/dark variants; body text stays
+// unstyled so it inverts with the terminal background. If these drift, re-copy
+// from that file and update this commit reference.
 func (s textStyles) title(value string) string {
-	return s.render("1;38;2;251;146;60", value)
+	return s.render("1;35", value) // bold palette.Accent (magenta)
 }
 
 func (s textStyles) file(value string) string {
@@ -145,19 +152,19 @@ func (s textStyles) file(value string) string {
 }
 
 func (s textStyles) dim(value string) string {
-	return s.render("90", value)
+	return s.render("90", value) // palette.Muted (bright black)
 }
 
 func (s textStyles) added(value string) string {
-	return s.render("32", value)
+	return s.render("32", value) // palette.Success (green)
 }
 
 func (s textStyles) removed(value string) string {
-	return s.render("31", value)
+	return s.render("31", value) // palette.Error (red)
 }
 
 func (s textStyles) changed(value string) string {
-	return s.render("33", value)
+	return s.render("33", value) // palette.Warning (yellow)
 }
 
 // render is the single sink of this renderer: every repository-derived value it

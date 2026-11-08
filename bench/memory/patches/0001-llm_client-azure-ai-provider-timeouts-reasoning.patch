@@ -1,6 +1,6 @@
 --- a/benchmarks/common/llm_client.py
 +++ b/benchmarks/common/llm_client.py
-@@ -58,21 +58,48 @@
+@@ -58,21 +58,53 @@
          self.provider = provider.lower()
          self.max_retries = max_retries
          self.limiter = AsyncLimiter(rpm, 60)
@@ -28,11 +28,18 @@
          if self.provider == "anthropic":
              self._init_anthropic(api_key)
 +        elif self.provider in ("azure_ai", "azure-ai", "foundry", "azure_foundry"):
-+            self._init_azure_ai(base_url, timeout, **kwargs)
++            self._init_azure_ai(base_url, self.timeout, **kwargs)
          elif self.provider == "azure":
-             self._init_azure(api_key, timeout, **kwargs)
+-            self._init_azure(api_key, timeout, **kwargs)
++            # Pass the RESOLVED timeout. These initializers configure their SDK
++            # client with the value they are handed, so passing the raw argument
++            # left OpenAI and classic Azure on the 120s default while LLM_TIMEOUT
++            # (documented as 600s, and load-bearing for gpt-5 reasoning models on
++            # a top-200 context) only ever reached self.timeout.
++            self._init_azure(api_key, self.timeout, **kwargs)
          else:
-             self._init_openai(api_key, base_url, timeout, **kwargs)
+-            self._init_openai(api_key, base_url, timeout, **kwargs)
++            self._init_openai(api_key, base_url, self.timeout, **kwargs)
  
      def _openai_chat_token_limit_kwargs(self, max_tokens: int) -> dict[str, Any]:
 -        """Chat Completions: gpt-5 / o-series reject ``max_tokens``; use ``max_completion_tokens``."""
@@ -52,7 +59,7 @@
          return {"max_tokens": max_tokens}
  
      def _openai_chat_temperature_kwargs(self, temperature: float) -> dict[str, Any]:
-@@ -82,6 +109,22 @@
+@@ -82,6 +114,22 @@
              return {}
          return {"temperature": temperature}
  
@@ -75,7 +82,7 @@
      def _parse_yes_no_judgment(self, raw: str) -> bool:
          """Extract the final yes/no verdict from judge output."""
          text = raw.strip()
-@@ -123,6 +166,57 @@
+@@ -123,6 +171,57 @@
              timeout=openai.Timeout(timeout, connect=10.0),
          )
  
@@ -133,7 +140,7 @@
      def _init_anthropic(self, api_key: str | None) -> None:
          import anthropic
          self._client = anthropic.AsyncAnthropic(
-@@ -169,6 +263,7 @@
+@@ -169,6 +268,7 @@
                              model=self.model,
                              messages=messages,
                              **self._openai_chat_temperature_kwargs(temperature),
@@ -141,7 +148,7 @@
                              **self._openai_chat_token_limit_kwargs(max_tokens),
                          ),
                          timeout=self.timeout,
-@@ -187,6 +282,7 @@
+@@ -187,6 +287,7 @@
              except asyncio.TimeoutError:
                  logger.warning("Generation attempt %d/%d timed out", attempt + 1, self.max_retries)
              except Exception as exc:
@@ -149,7 +156,7 @@
                  logger.warning("Generation attempt %d/%d failed: %s", attempt + 1, self.max_retries, exc)
              if attempt < self.max_retries - 1:
                  await asyncio.sleep(2 * (attempt + 1))
-@@ -270,6 +366,7 @@
+@@ -270,6 +371,7 @@
                              model=self.model,
                              messages=messages,
                              **self._openai_chat_temperature_kwargs(temperature),
@@ -157,7 +164,7 @@
                              response_format={"type": "json_object"},
                              **self._openai_chat_token_limit_kwargs(max_tokens),
                          ),
-@@ -301,6 +398,7 @@
+@@ -301,6 +403,7 @@
              except asyncio.TimeoutError:
                  logger.warning("Structured output attempt %d/%d timed out", attempt + 1, self.max_retries)
              except Exception as exc:

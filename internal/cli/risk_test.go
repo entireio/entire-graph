@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -206,5 +207,58 @@ func TestRiskEndToEndReportsGraphEvidenceAndTests(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(report.RecommendedTests, "\n"), "sample_test.go") {
 		t.Fatalf("recommended tests = %#v, want sample_test.go", report.RecommendedTests)
+	}
+}
+
+// TestBuildRiskReportPreselectsBySeverityNotNameFrequency pins which entities the
+// cap is allowed to spend the budget on.
+//
+// The per-entity impact evidence (DirectCallers, TypeConsumers) is the expensive
+// step the cap exists to bound, so the preselection cannot use it. It used
+// DependentsCount instead, which is sem's SHORT-NAME reference count
+// (internal/sem/dependents.go: referenceName -> shortEntityName). A struct field
+// named err keys the same bucket as every other err in the repository and scores
+// in the hundreds; a distinctively named exported function with real callers
+// scores low. So the cheap collision-prone signal decided who got measured by
+// the accurate one, and the entities the report exists for were cut first.
+func TestBuildRiskReportPreselectsBySeverityNotNameFrequency(t *testing.T) {
+	t.Parallel()
+	diff := sem.Result{Files: []sem.FileChange{{Path: "api/handler.go", Changes: []sem.EntityChange{
+		{Name: "Server.err", Kind: "field", Type: "body_changed", DependentsCount: 412},
+		{Name: "Client.err", Kind: "field", Type: "body_changed", DependentsCount: 383},
+		{Name: "Conn.n", Kind: "field", Type: "body_changed", DependentsCount: 290},
+		{Name: "AuthenticateRequest", Kind: "function", Type: "signature_changed", DependentsCount: 0},
+		{Name: "RevokeSessionToken", Kind: "function", Type: "removed", DependentsCount: 0},
+	}}}}
+	report := buildRiskReport(diff, sem.ProviderSnapshot{}, riskFlags{MaxEntities: 2}, nil, true, "")
+	if report.EntitiesAnalyzed != 2 {
+		t.Fatalf("analyzed %d entities, want the cap of 2", report.EntitiesAnalyzed)
+	}
+	kept := []string{}
+	for _, entry := range report.Entries {
+		kept = append(kept, entry.Name)
+	}
+	if want := []string{"RevokeSessionToken", "AuthenticateRequest"}; !slices.Equal(kept, want) {
+		t.Errorf("the cap kept %q, want %q: a short-name reference count decided which entities got measured", kept, want)
+	}
+}
+
+// TestBuildRiskReportBreaksSeverityTiesByDependentCount keeps the demoted signal
+// doing the job it is still good for. Within ONE severity band the short-name
+// count is the best cheap evidence available, and it must still order: of two
+// removals, the one the diff recorded more dependents for is measured first.
+// Without this the tiebreak could be deleted with every other test still green.
+func TestBuildRiskReportBreaksSeverityTiesByDependentCount(t *testing.T) {
+	t.Parallel()
+	diff := sem.Result{Files: []sem.FileChange{{Path: "api/handler.go", Changes: []sem.EntityChange{
+		{Name: "RarelyUsedHelper", Kind: "function", Type: "removed", DependentsCount: 1},
+		{Name: "WidelyUsedHelper", Kind: "function", Type: "removed", DependentsCount: 9},
+	}}}}
+	report := buildRiskReport(diff, sem.ProviderSnapshot{}, riskFlags{MaxEntities: 1}, nil, true, "")
+	if len(report.Entries) != 1 {
+		t.Fatalf("kept %d entries, want the cap of 1", len(report.Entries))
+	}
+	if got := report.Entries[0].Name; got != "WidelyUsedHelper" {
+		t.Errorf("kept %q, want WidelyUsedHelper: the dependent count no longer orders within a severity band", got)
 	}
 }

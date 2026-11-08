@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -398,13 +399,33 @@ class EntireMemoryClient:
             ] + (["--deep"] if os.getenv("EG_DEEP") == "1" else []),
         )
         if proc.returncode != 0:
-            logger.warning("entire-graph search rc=%s stderr=%s", proc.returncode, proc.stderr[:400])
-            return []
+            # The harness truncates exception text at 200 chars; log the whole
+            # thing here so a drop is diagnosable after the fact.
+            logger.error(
+                "entire-graph search FAILED rc=%s\n--stderr--\n%s\n--stdout--\n%s",
+                proc.returncode,
+                (proc.stderr or "")[:4000], (proc.stdout or "")[:2000],
+            )
+            # INVARIANT: mirrors cmm/graphify/bm25_client.py. A failed subprocess
+            # is an infrastructure error, not an empty retrieval. Returning []
+            # here bypassed the harness's search retry/drop accounting and
+            # recorded binary, timeout, index and validation failures as
+            # retrieval-quality misses -- a silently wrong score for this arm
+            # while the same fault was a loud drop for every competitor arm.
+            raise RuntimeError(
+                f"entire-graph search rc={proc.returncode}: "
+                f"{(proc.stderr or '').strip()[:800]}"
+            )
         try:
             payload = json.loads(proc.stdout or "{}")
         except json.JSONDecodeError as exc:
-            logger.warning("entire-graph search non-JSON output: %s", str(exc)[:200])
-            return []
+            logger.error(
+                "entire-graph search non-JSON output: %s\n--stdout--\n%s",
+                str(exc)[:200], (proc.stdout or "")[:2000],
+            )
+            raise RuntimeError(
+                f"entire-graph search produced non-JSON output: {str(exc)[:400]}"
+            ) from exc
 
         session_dates = self._session_dates.get(user_id, {})
 
@@ -655,6 +676,40 @@ class EntireMemoryClient:
         return profile or None
 
 
+# Backends the harness accepts whose adapter module is NOT part of this
+# reproduction kit. They exist in the authors' full harness; this kit ships only
+# the modules it can license and reproduce. Selecting one used to fail with a
+# bare ModuleNotFoundError from inside the factory, which reads like a broken
+# installation rather than a backend the kit does not carry.
+_UNVENDORED_BACKENDS: dict[str, tuple[str, str]] = {
+    "cognee": ("cognee_client", "CogneeClient"),
+    "graphiti": ("graphiti_client", "GraphitiClient"),
+    "letta": ("letta_client", "LettaClient"),
+    "supermemory": ("supermemory_client", "SupermemoryClient"),
+}
+
+# Backends this kit can actually construct.
+_BUNDLED_BACKENDS = ("oss", "cloud", "entire", "graphify", "cmm", "bm25")
+
+
+def _load_unvendored_client(backend: str, module_name: str, class_name: str):
+    """Import an optional adapter, or explain precisely what is missing.
+
+    Only the *absent module file* is reported as "not vendored". If the module
+    is present and its own imports fail, that ImportError is left to propagate
+    unchanged so a genuine dependency problem is not misdescribed.
+    """
+    if not Path(__file__).with_name(f"{module_name}.py").exists():
+        raise RuntimeError(
+            f"backend {backend!r} requires benchmarks/common/{module_name}.py, "
+            f"which this reproduction kit does not include. Supply that adapter "
+            f"module yourself, or choose a bundled backend: "
+            f"{', '.join(_BUNDLED_BACKENDS)}."
+        )
+    module = importlib.import_module(f".{module_name}", __package__)
+    return getattr(module, class_name)
+
+
 def make_memory_client(
     backend: str,
     *,
@@ -667,18 +722,11 @@ def make_memory_client(
     entire-graph only for ``backend == "entire"``. Used at the three run.py
     client-construction sites so every other harness stage is byte-identical
     across arms."""
-    if backend == "cognee":
-        from .cognee_client import CogneeClient
-        return CogneeClient(rpm=rpm, **kwargs)
-    if backend == "graphiti":
-        from .graphiti_client import GraphitiClient
-        return GraphitiClient(rpm=rpm, **kwargs)
-    if backend == "letta":
-        from .letta_client import LettaClient
-        return LettaClient(rpm=rpm, **kwargs)
-    if backend == "supermemory":
-        from .supermemory_client import SupermemoryClient
-        return SupermemoryClient(rpm=rpm, **kwargs)
+    if backend in _UNVENDORED_BACKENDS:
+        module_name, class_name = _UNVENDORED_BACKENDS[backend]
+        return _load_unvendored_client(backend, module_name, class_name)(
+            rpm=rpm, **kwargs
+        )
     if backend == "graphify":
         from .graphify_client import GraphifyClient
         return GraphifyClient(rpm=rpm, **kwargs)

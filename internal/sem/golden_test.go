@@ -101,7 +101,7 @@ func TestReturnFlowCallsOrderIsTotal(t *testing.T) {
 
 	body := newSymbolBody(block)
 
-	first := returnFlowCalls(body, params)
+	first := returnFlowCalls(body, params, flowSyntaxFor("Go"))
 	forwards := 0
 	for _, flow := range first {
 		if flow.EvidenceKind == "argument_forward_flow" && flow.Name == "forward" {
@@ -113,7 +113,7 @@ func TestReturnFlowCallsOrderIsTotal(t *testing.T) {
 	}
 
 	for i := 0; i < 200; i++ {
-		got := returnFlowCalls(body, params)
+		got := returnFlowCalls(body, params, flowSyntaxFor("Go"))
 		if !reflect.DeepEqual(got, first) {
 			t.Fatalf("returnFlowCalls order varies across calls: run %d got %+v want %+v", i+2, got, first)
 		}
