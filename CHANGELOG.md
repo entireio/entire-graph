@@ -23,7 +23,7 @@ auto-generated notes on
   prices; when HEAD is indexed, the graph's size as `N nodes | M edges`, the
   counts `entire graph index` reported, in full; and, when HEAD has no index,
   how many commits behind (at most 5) the nearest indexed first-parent
-  ancestor is, else `not indexed`; with no commit yet, neither. Each complete
+  ancestor is, else `not indexed`; with no commit yet, or when the index state cannot be read, neither. Each complete
   committed-tree cache entry gains a small `<key>.counts.json` beside it,
   which the status line reads; entries built earlier gain theirs the next
   time `index` runs. Outside a

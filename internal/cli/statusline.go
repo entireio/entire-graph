@@ -35,9 +35,9 @@ import (
 // of each sem.HeadIndexEntries entry, HEAD's and then each ancestor's, and the size one small read
 // of the counts file beside HEAD's entry (sem.IndexEntryCounts); the entries and HEAD's tree are
 // kept under a key read from .git without running git, so a warm render spawns no git at all. A
-// status line must never surface an error, so every
-// failure past argument parsing prints nothing and returns nil, and so does an anchor outside any
-// checkout.
+// status line must never surface an error, so every failure past argument parsing prints nothing and
+// returns nil, and so does an anchor outside any checkout, except an index read error, which drops
+// only the index state and keeps the token figures.
 
 const (
 	statuslineDefaultColumns = 120
@@ -57,8 +57,8 @@ const (
 const (
 	// statuslineNotIndexed is statuslineIndexDistance's answer when no entry exists.
 	statuslineNotIndexed = -1
-	// statuslineNoHead stands for a HEAD with no tree to index: unborn, or git refused or failed.
-	// `index` cannot fix that, so the line shows no index state and no remedy.
+	// statuslineNoHead stands for a HEAD with no tree to index: unborn, git refused or failed, or the index
+	// state could not be read. `index` cannot fix that, so the line shows no index state and no remedy.
 	statuslineNoHead = -2
 )
 
@@ -224,14 +224,15 @@ type statuslineGitRecord struct {
 	Behind  [][]sem.IndexEntry `json:"behind"`
 }
 
-// statuslineHeadState returns HEAD's tree ("" when unborn or unresolvable), its index entries and
-// its ancestors' (nearest first). When the git key (sem.HeadKeyWithoutGit plus the repo, the cache
-// dir and this binary) matches the stored record, it runs no git and skips the metadata validation,
+// statuslineHeadState returns HEAD's tree ("" when unborn, unresolvable, or when the index state
+// cannot be read), its index entries and its ancestors' (nearest first). When the git key
+// (sem.HeadKeyWithoutGit plus the repo, the cache dir and this binary) matches the stored record, it runs no git and skips the metadata validation,
 // which guards git subprocesses and has none to guard. Otherwise it takes the full path (HEAD read
 // once, then sem.HeadIndexEntries) and stores a
 // record, but only when the validation passed, HEAD resolved (or is unborn), the ancestor walk
 // succeeded and ctx was not cancelled, so a transient failure never pins an answer under an
-// unchanged key. ok is false when the render must print nothing.
+// unchanged key. An index read error returns no tree, keeps nothing and still reports ok, so only the
+// index state is dropped. ok is false when the render must print nothing.
 func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (tree string, head []sem.IndexEntry, behind [][]sem.IndexEntry, ok bool) {
 	key, headKey, unborn, keyed := "", "", false, false
 	path := ""
@@ -261,7 +262,8 @@ func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (t
 			head, behind, walkErr, err = sem.HeadIndexEntries(gitCtx, repo, version, cacheDir, commit, tree,
 				sem.MaxStoreContextAncestorDistance)
 			if err != nil {
-				return "", nil, nil, false
+				// Drop only the index state: the token figures come from the transcript.
+				return "", nil, nil, true
 			}
 			if walkErr != nil {
 				resolved = false

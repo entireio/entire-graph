@@ -890,6 +890,28 @@ func TestStatuslineShowsNoIndexStateWithoutACommit(t *testing.T) {
 	}
 }
 
+// TestStatuslineKeepsTheTokensWhenTheIndexStateCannotBeRead catches an index read error blanking the
+// whole line: with the index built and a .graphignore that is a directory, the index state cannot be
+// read, so line 1 keeps the mark and the session's figures and shows no index state or remedy.
+func TestStatuslineKeepsTheTokensWhenTheIndexStateCannotBeRead(t *testing.T) {
+	repo := statuslineRepo(t)
+	stdin := statuslineStdin(t, statuslineTranscript(t, repo), repo, "")
+	cacheDir := t.TempDir()
+	statuslineIndex(t, repo, cacheDir)
+	if err := os.Mkdir(filepath.Join(repo, ".graphignore"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := statuslineLines(runStatuslineForTest(t, 120, cacheDir, stdin))
+	if len(lines) == 0 || lines[0] == "" {
+		t.Fatalf("an unreadable index state blanked the line: %q", lines)
+	}
+	assertSegmentsInOrder(t, lines[0], "◤ entire graph", "~900 tok gross")
+	want := []string{"◤ entire graph", "~900 tok gross"}
+	if got := statuslineSegments(lines[0]); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("line 1 segments = %q, want %q", got, want)
+	}
+}
+
 // cacheFileTimes maps every regular file under dir, by its path relative to dir, to its mtime.
 func cacheFileTimes(t *testing.T, dir string) map[string]time.Time {
 	t.Helper()
