@@ -20,12 +20,14 @@ const (
 )
 
 var (
-	modkernel32Job               = syscall.NewLazyDLL("kernel32.dll")
-	procCreateJobObjectW         = modkernel32Job.NewProc("CreateJobObjectW")
-	procAssignProcessToJobObject = modkernel32Job.NewProc("AssignProcessToJobObject")
-	procSetInformationJobObject  = modkernel32Job.NewProc("SetInformationJobObject")
-	procTerminateJobObject       = modkernel32Job.NewProc("TerminateJobObject")
-	procIsProcessInJob           = modkernel32Job.NewProc("IsProcessInJob")
+	// modkernel32 is this package's one kernel32 handle, shared with
+	// console_windows.go.
+	modkernel32                  = syscall.NewLazyDLL("kernel32.dll")
+	procCreateJobObjectW         = modkernel32.NewProc("CreateJobObjectW")
+	procAssignProcessToJobObject = modkernel32.NewProc("AssignProcessToJobObject")
+	procSetInformationJobObject  = modkernel32.NewProc("SetInformationJobObject")
+	procTerminateJobObject       = modkernel32.NewProc("TerminateJobObject")
+	procIsProcessInJob           = modkernel32.NewProc("IsProcessInJob")
 )
 
 // pathOutputJob is a Windows Job Object that contains a launched process and
@@ -149,10 +151,11 @@ func (launch *pathOutputLaunch) close() {
 // suspended surrogate parent, the child cannot join the caller's console:
 // without CREATE_NO_WINDOW, a caller on a windowless console, or on a console
 // whose window is hidden, gets a child that fails to start with
-// STATUS_DLL_INIT_FAILED (0xc0000142). With it, the child starts on a windowless console of its own
-// and shows no window. The cost is one console host per path-output Git, which
-// a Ctrl-C on the caller's console does not reach; the job's kill-on-close
-// limit still ends the child when the caller exits.
+// STATUS_DLL_INIT_FAILED (0xc0000142). With it, the child starts on a
+// windowless console of its own and shows no window. The cost is one console
+// host per path-output Git, which a Ctrl-C on the caller's console does not
+// reach; the job's kill-on-close limit still ends the child when the caller
+// exits.
 func pathOutputChildSysProcAttr(original *syscall.SysProcAttr, parent syscall.Handle) syscall.SysProcAttr {
 	attributes := syscall.SysProcAttr{}
 	if original != nil {

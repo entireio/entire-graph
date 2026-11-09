@@ -4,11 +4,12 @@ package gitutil
 
 import (
 	"os/exec"
+	"sync"
 	"syscall"
 	"unsafe"
 )
 
-var procGetConsoleProcessList = syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleProcessList")
+var procGetConsoleProcessList = modkernel32.NewProc("GetConsoleProcessList")
 
 // HideConsoleWindow keeps cmd from opening a visible console window when
 // entire-graph itself has no console attached. Windows gives a console program
@@ -37,8 +38,12 @@ func HideConsoleWindow(cmd *exec.Cmd) {
 // which includes the caller, and returns 0 only when there is no console. A
 // windowless console has no window but still answers here, so it is not
 // mistaken for "no console" the way GetConsoleWindow() == 0 would be.
-func consoleAttached() bool {
+//
+// The answer is read once per process. entire-graph never allocates,
+// attaches to or frees a console, so it cannot change during a run, and
+// every Git command a run builds would otherwise repeat the call.
+var consoleAttached = sync.OnceValue(func() bool {
 	var processes [1]uint32
 	count, _, _ := procGetConsoleProcessList.Call(uintptr(unsafe.Pointer(&processes[0])), uintptr(len(processes)))
 	return count != 0
-}
+})
