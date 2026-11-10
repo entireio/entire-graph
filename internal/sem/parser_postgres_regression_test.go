@@ -232,6 +232,68 @@ func TestPostgresCopyFromStdinParses(t *testing.T) {
 	}
 }
 
+// COPY rows are data, not SQL. A lone quote, dollar-quote or comment opener in
+// a value must not open a literal or comment that hides the `\.` terminator and
+// swallows the statements after the block.
+func TestPostgresCopyDataIsNotLexedAsSQL(t *testing.T) {
+	for name, rows := range map[string]string{
+		"double quote":    "1\t12\" monitor\n2\tplain\n",
+		"single quote":    "1\tO'Brien\n",
+		"dollar quote":    "1\tcosts $$ a lot\n",
+		"line comment":    "1\tfoo -- bar\n",
+		"block comment":   "1\t/* open\n",
+		"statement text":  "1\tCREATE TABLE phantom (id int);\n2\tDO $$ BEGIN\n",
+		"crlf terminator": "1\t'x\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			terminator := "\\.\n"
+			if strings.Contains(rows, "\r") {
+				terminator = "\\.\r\n"
+			}
+			src := "CREATE TABLE before_tbl (id int);\n" +
+				"COPY public.items (id, name) FROM stdin;\n" + rows + terminator +
+				"ALTER TABLE ONLY before_tbl ADD CONSTRAINT before_pkey PRIMARY KEY (id);\n" +
+				"GRANT ALL ON TABLE before_tbl TO app;\n" +
+				"DO $$ BEGIN CREATE TABLE do_tbl (id int); END $$;\n" +
+				"CREATE TABLE after_tbl (id int);\n"
+			entities, _, status := TreeSitterParser{}.ParseWithStatus("dump.sql", src)
+			if status.ParseError {
+				t.Fatalf("parse error: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(src))
+			}
+			for _, table := range []string{"before_tbl", "do_tbl", "after_tbl"} {
+				if countEntity(entities, "table", table) != 1 {
+					t.Errorf("missing %s: %+v", table, entities)
+				}
+			}
+			if countEntity(entities, "table", "phantom") != 0 {
+				t.Errorf("COPY row became a declaration: %+v", entities)
+			}
+			masked := maskPostgresUnsupportedSyntax(src)
+			if len(masked) != len(src) || strings.Count(masked, "\n") != strings.Count(src, "\n") {
+				t.Fatal("changed source width or line count")
+			}
+		})
+	}
+}
+
+// A quoted COPY option may contain `;`, COPY inside a function body is body
+// text, and an unterminated block keeps its diagnostics instead of vanishing.
+func TestPostgresCopyStdinBoundaries(t *testing.T) {
+	src := "COPY t (a) FROM STDIN WITH (FORMAT csv, DELIMITER ';');\n1;\"x\n\\.\nCREATE TABLE after_tbl (id int);\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("opts.sql", src)
+	if status.ParseError || countEntity(entities, "table", "after_tbl") != 1 {
+		t.Errorf("quoted delimiter: %+v %+v", status, entities)
+	}
+	src = "CREATE FUNCTION f() RETURNS void AS $$\nBEGIN\nCOPY t FROM stdin;\n\\.\nEND $$ LANGUAGE plpgsql;\nCREATE TABLE after_tbl (id int);\n"
+	if got := stripSQLComments(src); got != src {
+		t.Errorf("COPY text in a function body changed:\n%s", got)
+	}
+	_, _, status = TreeSitterParser{}.ParseWithStatus("open.sql", "CREATE TABLE t (a text);\nCOPY t (a) FROM stdin;\n1\tx y z\n")
+	if !status.ParseError {
+		t.Error("unterminated COPY data accepted")
+	}
+}
+
 // CREATE PROCEDURE must yield a symbol like CREATE FUNCTION does. TimescaleDB
 // sql/ddl_api.sql and sql/maintenance_utils.sql define procedures with the
 // @extschema@ placeholder and LANGUAGE C bodies (`AS '@MODULE_PATHNAME@',

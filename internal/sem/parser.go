@@ -6958,10 +6958,41 @@ var postgresPartitionByPattern = regexp.MustCompile(`(?is)\s+partition\s+by\b[^;
 var postgresPartitionOfPattern = regexp.MustCompile(`(?is)\s+partition\s+of\b[^;]*`)
 
 // COPY is a psql/dump construct the grammar rejects. `COPY t (...) FROM stdin;`
-// is followed by tab-delimited data terminated by a `\.` line (pg_dump output);
-// mask the whole block. Other COPY statements (TO/FROM file) mask as one statement.
-var postgresCopyStdinBlockPattern = regexp.MustCompile(`(?ism)^[ \t]*copy\b[^;]*\bfrom\s+stdin\b[^;]*;.*?^\\\.[ \t]*$`)
+// is followed by tab-delimited data terminated by a `\.` line (pg_dump output).
+// The rows are data, not SQL: a lone `'`, `"`, `$$`, `--` or `/*` in a value
+// must not open a literal or comment that swallows the terminator and the
+// statements after it. stripSQLComments therefore blanks the rows and the
+// terminator before any quote-aware pass sees them; the COPY statement itself
+// (like COPY TO/FROM file) is masked as one statement.
+var postgresCopyStdinHeaderPattern = regexp.MustCompile(`(?is)^copy\b.*\bfrom\s+stdin\b.*;$`)
+var postgresCopyDataEndPattern = regexp.MustCompile(`(?m)^\\\.[ \t]*\r?$`)
 var postgresCopyStatementPattern = regexp.MustCompile(`(?im)^[ \t]*copy\b[^;]*;`)
+
+// postgresCopyStdinData returns the byte range of the inline rows, through the
+// `\.` terminator, of a `COPY ... FROM stdin;` statement whose COPY keyword is
+// content[i]. The keyword must be the first token on its line, and the caller
+// must be at statement level (outside literals and comments). An unterminated
+// block is not recognized, so its rows keep their syntax diagnostics.
+func postgresCopyStdinData(content string, i int) (start, end int, ok bool) {
+	for j := i - 1; j >= 0 && content[j] != '\n'; j-- {
+		if content[j] != ' ' && content[j] != '\t' {
+			return 0, 0, false
+		}
+	}
+	if len(content)-i < len("copy") || !strings.EqualFold(content[i:i+len("copy")], "copy") {
+		return 0, 0, false
+	}
+	// A quoted option such as DELIMITER ';' does not end the statement.
+	start = sqlStatementEnd(content, i)
+	if !postgresCopyStdinHeaderPattern.MatchString(content[i:start]) {
+		return 0, 0, false
+	}
+	terminator := postgresCopyDataEndPattern.FindStringIndex(content[start:])
+	if terminator == nil {
+		return 0, 0, false
+	}
+	return start, start + terminator[1], true
+}
 
 // Extension-template placeholders like @extschema@ / @extschema:cube@ in .sql.in
 // files are not valid SQL scalars; replace each with a same-width identifier so
@@ -7151,9 +7182,6 @@ func maskPostgresUnsupportedSyntax(content string) string {
 		replaceRangePreservingNewlines(masked, loc[0], loc[1], " (partition_dummy int)")
 	}
 	for _, loc := range postgresPartitionByPattern.FindAllStringIndex(search, -1) {
-		maskBytesPreservingNewlines(masked, loc[0], loc[1])
-	}
-	for _, loc := range postgresCopyStdinBlockPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresCopyStatementPattern.FindAllStringIndex(search, -1) {
@@ -8155,7 +8183,8 @@ func dollarQuoteTag(content string, i int) (string, bool) {
 // (preserving length and newlines so reported line numbers stay correct), while
 // leaving comment markers that appear inside single-quoted or dollar-quoted
 // literals untouched. It is used to feed the regex entity extractors source that
-// cannot match commented-out DDL.
+// cannot match commented-out DDL. Inline `COPY ... FROM stdin;` rows are blanked
+// the same way: they are data whose quote and comment characters are not SQL.
 func stripSQLComments(content string) string {
 	b := []byte(content)
 	n := len(b)
@@ -8187,6 +8216,13 @@ func stripSQLComments(content string) string {
 					return string(b)
 				}
 				i = i + len(tag) + closeRel + len(tag)
+			} else {
+				i++
+			}
+		case 'c', 'C':
+			if start, end, ok := postgresCopyStdinData(content, i); ok {
+				maskBytesPreservingNewlines(b, start, end)
+				i = end
 			} else {
 				i++
 			}
