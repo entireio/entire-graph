@@ -1,10 +1,20 @@
 package sem
 
 import (
+	"bufio"
+	"compress/gzip"
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	hashpkg "hash"
+	"io"
+	"io/fs"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // cacheEntry is an internally named artifact beneath a caller-selected cache
@@ -12,15 +22,43 @@ import (
 // lowercase SHA-256 digest produced by the corresponding cache-key function.
 // Keeping that invariant here makes the relative path non-injectable.
 //
-// Reads additionally go through os.Root. The cache directory itself is a
-// caller-owned location and may be a symlink, but no descendant symlink can
-// make an artifact read escape the directory OpenRoot actually opened.
+// Reads additionally go through os.Root. The cache directory itself is the
+// caller-selected trust boundary and may be a symlink. Writes require every
+// family and version component below that root to be a non-redirecting
+// directory, including when a link would remain inside the opened root.
 type cacheEntry struct {
 	root     string
 	relative string
 }
 
 func newCacheEntry(cacheDir, family, version, key string) (cacheEntry, error) {
+	return newDerivedCacheEntry(cacheDir, family, version, "", key)
+}
+
+// newCacheStreamEntry addresses the raw byte sidecar of a cache entry: a gzip
+// stream stored beside the `.json.gz` envelope rather than inside it. Keeping
+// bulk bytes out of the JSON envelope is what lets a producer spool them to
+// disk as they arrive instead of holding the whole stream in memory to encode
+// one field.
+func newCacheStreamEntry(cacheDir, family, version, key string) (cacheEntry, error) {
+	entry, err := newDerivedCacheEntry(cacheDir, family, version, "", key)
+	if err != nil {
+		return cacheEntry{}, err
+	}
+	entry.relative = filepath.Join(family, version, key+".stream.gz")
+	return entry, nil
+}
+
+// newDerivedCacheEntry addresses an artifact that was DERIVED from another entry
+// and is only valid while that entry is. It nests the artifact in a directory
+// named by the entry it came from, which is what makes the dependent set
+// nameable: rebuilding the parent can discard all of them with one removal
+// instead of searching the cache for entries that happen to depend on it.
+//
+// groupKey is a cache key like any other, so it is held to the same
+// non-injectable digest shape as key; an empty groupKey addresses an
+// independent, top-level entry.
+func newDerivedCacheEntry(cacheDir, family, version, groupKey, key string) (cacheEntry, error) {
 	if cacheDir == "" {
 		return cacheEntry{}, fmt.Errorf("cache directory is empty")
 	}
@@ -30,10 +68,147 @@ func newCacheEntry(cacheDir, family, version, key string) (cacheEntry, error) {
 	if !validSHA256Hex(key) {
 		return cacheEntry{}, fmt.Errorf("invalid cache key: want %d lowercase hexadecimal characters", sha256.Size*2)
 	}
+	if groupKey == "" {
+		return cacheEntry{
+			root:     cacheDir,
+			relative: filepath.Join(family, version, key+".json.gz"),
+		}, nil
+	}
+	if !validSHA256Hex(groupKey) {
+		return cacheEntry{}, fmt.Errorf("invalid derived cache group key: want %d lowercase hexadecimal characters", sha256.Size*2)
+	}
 	return cacheEntry{
 		root:     cacheDir,
-		relative: filepath.Join(family, version, key+".json.gz"),
+		relative: filepath.Join(family, version, groupKey, key+".json.gz"),
 	}, nil
+}
+
+// newCacheGenerationEntry addresses the generation marker of a cache entry: a
+// token naming the INSTANCE of that entry rather than its key. The key does not
+// change when an entry is rebuilt in place, so it cannot tell a reader that the
+// artifact it derived from has been replaced; the token can, and it is small
+// enough to read on the fast path where decoding the entry itself is exactly
+// what the derived artifact exists to avoid.
+//
+// The marker is a sibling of the entry, not a member of its derived directory,
+// so removeDerivedCacheEntries does not take it with them.
+func newCacheGenerationEntry(cacheDir, family, version, key string) (cacheEntry, error) {
+	entry, err := newDerivedCacheEntry(cacheDir, family, version, "", key)
+	if err != nil {
+		return cacheEntry{}, err
+	}
+	entry.relative = filepath.Join(family, version, key+".generation.json.gz")
+	return entry, nil
+}
+
+type cacheGenerationMarker struct {
+	Generation string `json:"generation"`
+}
+
+// readCacheGeneration returns the current generation of an entry. A marker that
+// does not exist is the pre-generation state: no rebuild has ever invalidated
+// this entry's dependents, which is the same generation every artifact derived
+// before the first one recorded, so fs.ErrNotExist answers the legacy empty
+// generation.
+//
+// Every OTHER failure is reported instead of collapsing into that same empty
+// string. An unreadable marker is not evidence that no rebuild happened; it is a
+// marker whose content is unknown, and the empty generation is precisely what a
+// pre-`--force` derivation stamped itself with. Answering it would revalidate
+// the artifact the rebuild retired and restore the silent staleness the marker
+// exists to end — so a caller that cannot read the marker must fail closed
+// rather than be told the reassuring value.
+func readCacheGeneration(cacheDir, family, version, key string) (string, error) {
+	entry, err := newCacheGenerationEntry(cacheDir, family, version, key)
+	if err != nil {
+		return "", err
+	}
+	file, err := entry.open()
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer file.Close()
+	reader, err := gzip.NewReader(file)
+	if err != nil {
+		return "", err
+	}
+	defer reader.Close()
+	var marker cacheGenerationMarker
+	if err := json.NewDecoder(reader).Decode(&marker); err != nil {
+		return "", err
+	}
+	// A marker exists only because a rebuild minted one, and every mint records a
+	// token. A marker that is present but carries the empty generation is
+	// therefore a state no producer can reach: it asserts that a rebuild happened
+	// while carrying the exact value that means none ever has. Reporting it would
+	// hand a pre-`--force` derivation back the generation it recorded and undo the
+	// invalidation just as an unreadable marker would, so this state fails closed
+	// with the rest rather than answering the one value that revalidates what the
+	// rebuild retired. Only the marker's ABSENCE still answers the legacy empty
+	// generation, because absence is the pre-generation state itself.
+	//
+	// The token's shape is deliberately not checked beyond that. It is never
+	// parsed, only compared for equality with what a derived entry recorded, so
+	// any non-empty value already fails that comparison for every artifact minted
+	// under a different one; pinning the mint format here would instead retire
+	// every existing marker the day that format changes.
+	if marker.Generation == "" {
+		return "", fmt.Errorf("cache generation marker for %s records no generation", key)
+	}
+	return marker.Generation, nil
+}
+
+// bumpCacheGeneration mints a new generation for an entry. A token only has to
+// be unique, not unguessable: it is compared for equality against what a derived
+// artifact recorded, so repeating one would resurrect exactly the artifacts a
+// rebuild set out to discard, while predicting one grants nothing.
+func bumpCacheGeneration(cacheDir, family, version, key string) error {
+	entry, err := newCacheGenerationEntry(cacheDir, family, version, key)
+	if err != nil {
+		return err
+	}
+	return entry.write("generation", cacheGenerationMarker{Generation: cacheTempNameSuffix(rand.Uint64)})
+}
+
+// removeDerivedCacheEntries discards every artifact derived from one cache
+// entry. It is the invalidation half of newDerivedCacheEntry: a rebuild that
+// replaces the parent must not leave dependents behind that are served ahead of
+// it, which is the whole point of asking for a rebuild.
+//
+// The family and version components are opened the same confined way writes
+// open them, so a redirecting component is refused here too rather than making
+// this a removal somewhere else. A cache directory that does not exist yet has
+// nothing to invalidate and is not an error.
+func removeDerivedCacheEntries(cacheDir, family, version, groupKey string) error {
+	if cacheDir == "" {
+		return nil
+	}
+	if !validCachePathComponent(family) || !validCachePathComponent(version) {
+		return fmt.Errorf("invalid cache family or version")
+	}
+	if !validSHA256Hex(groupKey) {
+		return fmt.Errorf("invalid derived cache group key: want %d lowercase hexadecimal characters", sha256.Size*2)
+	}
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(cacheDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	directory, err := openCacheDirectory(root, filepath.Join(family, version))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if err := directory.RemoveAll(groupKey); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func validCachePathComponent(value string) bool {
@@ -53,20 +228,6 @@ func validSHA256Hex(value string) bool {
 	return true
 }
 
-// writePath is intentionally separate from open: writes retain the existing atomic
-// temp-file-and-rename sequence beneath the caller-owned cache root, while reads use os.Root as
-// the file-inclusion boundary.
-//
-// Writes are deliberately NOT confined the same way. The cache directory is caller-owned and
-// operators legitimately symlink parts of it — onto a larger volume, into a shared cache, out of a
-// container's writable layer. Rejecting a symlinked component here would turn each of those into a
-// hard `persist preindex snapshot` failure, and it would buy nothing: anyone who can plant a
-// symlink inside the cache directory can write the artifact directly. Containment belongs on the
-// read side, where the file's CONTENT enters the process.
-func (entry cacheEntry) writePath() string {
-	return filepath.Join(entry.root, entry.relative)
-}
-
 func (entry cacheEntry) open() (*os.File, error) {
 	root, err := os.OpenRoot(entry.root)
 	if err != nil {
@@ -74,4 +235,280 @@ func (entry cacheEntry) open() (*os.File, error) {
 	}
 	defer root.Close()
 	return root.Open(entry.relative)
+}
+
+// write installs the gzipped JSON encoding of value at the entry, atomically, without following a
+// symlinked component below the cache root.
+//
+// The cache ROOT is caller-named, and creating and opening it resolves a symlink exactly as
+// entry.open does — so the deployments that put the cache somewhere else by linking the cache
+// directory itself (another volume, a shared cache, out of a container's writable layer) keep
+// working. Everything BELOW the root is named by this program and nothing else: two constants and
+// a SHA-256 digest. A symlink at one of those components was therefore planted by whatever owns
+// the bytes in that directory, and that is the scanned repository whenever `--cache-dir` or
+// `ENTIRE_PLUGIN_DATA_DIR` resolves inside a checkout. os.MkdirAll followed such a link and put
+// the artifact wherever it pointed.
+//
+// os.Root alone does not close that, for the same reason it does not close it for `--report`
+// (see internal/cli/outputpath.go): it stops a link LEAVING the root but follows one that stays
+// inside it, and with the cache directory at the checkout root, `.git` is inside it. Each
+// component is therefore opened first and the held directory's identity is compared with an
+// Lstat of its name. A link reports a different identity from its target, and a component swapped
+// during the open reports a different identity from its replacement; either is refused before the
+// held handle receives a write.
+//
+// Escaping descendant links never produced cache hits because entry.open already refused them.
+// In-root descendant links could previously hit, so refusing them is an intentional compatibility
+// break: a cache rooted at a checkout must not let a committed link steer derivative bytes into
+// `.git` or another repository-chosen directory. Relocation remains supported by naming the
+// backing directory as the cache root or making the root itself a symlink. Best-effort query paths
+// treat a refusal as a cache miss; the explicit `index` persist path reports it.
+//
+// This boundary covers repository-controlled path entries and identity substitutions observable
+// while a component is opened. Once admitted, a directory is used as a held filesystem capability:
+// os.Root deliberately keeps referring to that object if another process with namespace-write
+// permission moves it. Concurrent relocation by such a process is outside the cache threat model;
+// portable os.Root cannot also pin the object's lexical ancestry, and that process already has the
+// authority needed to move existing cache artifacts through the same namespace.
+func (entry cacheEntry) write(temporaryPrefix string, value any) error {
+	_, err := entry.writeValue(temporaryPrefix, value, false)
+	return err
+}
+
+// cacheDigest is the SHA-256 of an artifact's bytes as stored: the gzip stream, not the JSON.
+type cacheDigest [sha256.Size]byte
+
+// String is the one spelling of a digest everywhere it is embedded or
+// compared: lowercase hex, untruncated.
+func (d cacheDigest) String() string { return hex.EncodeToString(d[:]) }
+
+// writeDigest is write, also returning the digest of the bytes it installed. A caller that must
+// know its artifact landed intact compares that with entry.digest instead of decoding the file
+// back, which would hold a second copy of the value in memory beside the one it just wrote.
+func (entry cacheEntry) writeDigest(temporaryPrefix string, value any) (cacheDigest, error) {
+	return entry.writeValue(temporaryPrefix, value, true)
+}
+
+// writeValue hashes only explicit verified persists; interactive cache writes need no digest.
+func (entry cacheEntry) writeValue(temporaryPrefix string, value any, withDigest bool) (cacheDigest, error) {
+	directory, err := openCacheEntryDirectory(entry)
+	if err != nil {
+		return cacheDigest{}, err
+	}
+	defer directory.Close()
+
+	temporary, temporaryName, err := createRootTemp(directory, temporaryPrefix)
+	if err != nil {
+		return cacheDigest{}, err
+	}
+	removeTemporary := true
+	defer func() {
+		if removeTemporary {
+			_ = directory.Remove(temporaryName)
+		}
+	}()
+	// O_CREATE's mode is masked by the process umask; the artifact holds derivative repository
+	// content, so set the mode explicitly rather than inheriting whatever the umask allowed.
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return cacheDigest{}, err
+	}
+	// The digest covers exactly the bytes handed to the file. The gzip stream is buffered on the
+	// way in so the encoder's many small flushes do not each become a write system call.
+	var digestHash hashpkg.Hash
+	var destination io.Writer = temporary
+	if withDigest {
+		digestHash = sha256.New()
+		destination = io.MultiWriter(temporary, digestHash)
+	}
+	buffered := bufio.NewWriterSize(destination, 1<<16)
+	writer := gzip.NewWriter(buffered)
+	if err := encodeCacheValue(writer, value); err != nil {
+		_ = writer.Close()
+		_ = temporary.Close()
+		return cacheDigest{}, err
+	}
+	if err := writer.Close(); err != nil {
+		_ = temporary.Close()
+		return cacheDigest{}, err
+	}
+	if err := buffered.Flush(); err != nil {
+		_ = temporary.Close()
+		return cacheDigest{}, err
+	}
+	if err := temporary.Close(); err != nil {
+		return cacheDigest{}, err
+	}
+	// Rename, not a write through the destination: renameat replaces a symlink sitting at the
+	// artifact name instead of following it, so the one component an attacker can predict without
+	// planting a directory cannot redirect the bytes either.
+	if err := directory.Rename(temporaryName, filepath.Base(entry.relative)); err != nil {
+		return cacheDigest{}, err
+	}
+	removeTemporary = false
+	var digest cacheDigest
+	if digestHash != nil {
+		copy(digest[:], digestHash.Sum(nil))
+	}
+	return digest, nil
+}
+
+// digest streams the artifact as a reader sees it, through the same confined open, and returns
+// the SHA-256 of its bytes. Memory is one copy buffer whatever the artifact's size.
+func (entry cacheEntry) digest() (cacheDigest, error) {
+	file, err := entry.open()
+	if err != nil {
+		return cacheDigest{}, err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return cacheDigest{}, err
+	}
+	var digest cacheDigest
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
+}
+
+// openCacheEntryDirectory opens the confined directory an entry's artifacts
+// live in: it creates the cache root, walks each component through the
+// redirect checks below, and hands back the held directory. Every writer of an
+// entry-adjacent artifact (the entry itself, the records spool, the search
+// store sidecar) goes through this one walk so the symlink threat model
+// documented on writeValue covers them all.
+func openCacheEntryDirectory(entry cacheEntry) (*os.Root, error) {
+	if err := os.MkdirAll(entry.root, 0o700); err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(entry.root)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return openCacheDirectory(root, filepath.Dir(entry.relative))
+}
+
+// openCacheDirectory creates and opens each component of the entry's directory beneath root,
+// refusing a symlinked one. Descending through an opened handle rather than re-walking the path
+// means the create and the rename that follow act on the directory object this loop actually
+// checked. It does not promise lexical containment against a concurrent process that later moves
+// that object; the write threat model above states that boundary explicitly.
+func openCacheDirectory(root *os.Root, directory string) (*os.Root, error) {
+	current, err := root.OpenRoot(".")
+	if err != nil {
+		return nil, err
+	}
+	if directory == "." {
+		return current, nil
+	}
+	for _, component := range strings.Split(filepath.ToSlash(directory), "/") {
+		next, err := openCacheComponent(current, component, (*os.Root).OpenRoot)
+		_ = current.Close()
+		if err != nil {
+			return nil, err
+		}
+		current = next
+	}
+	return current, nil
+}
+
+func openCacheComponent(
+	parent *os.Root,
+	name string,
+	open func(*os.Root, string) (*os.Root, error),
+) (*os.Root, error) {
+	if err := parent.Mkdir(name, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return nil, err
+	}
+	next, err := open(parent, name)
+	if err != nil {
+		// Preserve the actionable redirect diagnostic when os.Root refuses a
+		// component that escapes the root before an identity can be held.
+		if named, lstatErr := parent.Lstat(name); lstatErr == nil {
+			if redirectErr := cacheComponentRedirectError(name, named); redirectErr != nil {
+				return nil, redirectErr
+			}
+		}
+		return nil, err
+	}
+	if err := refuseRedirectingCacheComponent(parent, name, next); err != nil {
+		_ = next.Close()
+		return nil, err
+	}
+	return next, nil
+}
+
+// refuseRedirectingCacheComponent verifies that held names the same ordinary
+// directory the parent currently exposes at name. Opening first pins the object
+// subsequent writes use; comparing that handle with Lstat closes the gap where a
+// checked component could otherwise be replaced before OpenRoot followed it.
+func refuseRedirectingCacheComponent(parent *os.Root, name string, held *os.Root) error {
+	named, err := parent.Lstat(name)
+	if err != nil {
+		return err
+	}
+	if err := cacheComponentRedirectError(name, named); err != nil {
+		return err
+	}
+	opened, err := held.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(named, opened) {
+		return fmt.Errorf("cache directory component %q changed identity while it was opened", name)
+	}
+	return nil
+}
+
+// cacheComponentRedirectError refuses a cache directory component that can send a
+// write somewhere other than the directory this loop just checked.
+//
+// The test is pathMayRedirect, not a bare ModeSymlink comparison, because the
+// mode that means "this entry redirects" is platform-specific: Windows reports a
+// symlink as ModeSymlink but a directory junction or mount point as
+// ModeIrregular, so a ModeSymlink-only check descends into a junction planted at
+// the family or version component and follows it opaquely. pathMayRedirect is the
+// same predicate the provider already applies at its other redirect boundaries.
+func cacheComponentRedirectError(name string, info os.FileInfo) error {
+	if !pathMayRedirect(info) {
+		return nil
+	}
+	return fmt.Errorf("cache directory component %q is a symlink or other redirecting entry (%s)", name, info.Mode().Type())
+}
+
+// cacheTempNameSuffix draws collision-avoidance words from an infallible
+// process-local generator. A cryptographic source is deliberately unnecessary:
+// O_EXCL is the security boundary, so predicting and occupying a candidate can
+// only make this bounded cache write retry or fail; it cannot make
+// the open follow or overwrite that entry. Avoiding crypto/rand also avoids its
+// documented irrecoverable process termination when OS entropy fails.
+func cacheTempNameSuffix(source func() uint64) string {
+	return fmt.Sprintf("%016x%016x", source(), source())
+}
+
+// createRootTemp is os.CreateTemp confined to an opened directory. The name uses a process-local
+// pseudo-random suffix opened with O_EXCL, and it keeps the visible `.<prefix>-*.json.gz` shape
+// that operator cleanup globs already match.
+func createRootTemp(directory *os.Root, prefix string) (*os.File, string, error) {
+	return createRootTempWithSource(directory, prefix, rand.Uint64)
+}
+
+func createRootTempWithSource(
+	directory *os.Root,
+	prefix string,
+	source func() uint64,
+) (*os.File, string, error) {
+	for attempt := 0; attempt < 16; attempt++ {
+		suffix := cacheTempNameSuffix(source)
+		name := "." + prefix + "-" + suffix + ".json.gz"
+		file, err := directory.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		return file, name, nil
+	}
+	return nil, "", fmt.Errorf("create temporary cache file in %s: no unused name", directory.Name())
 }

@@ -4,12 +4,32 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 )
+
+// Quoted argument contents cannot create shell operators or change the command's purpose.
+func FuzzExplorationQuotedArguments(f *testing.F) {
+	for _, payload := range []string{"file.go", "a; grep b", "$(cat secret)", "`rg needle`", "x | tail -1", "'quoted'", "x\ncat y", "a>&b"} {
+		f.Add(payload)
+	}
+	f.Fuzz(func(t *testing.T, payload string) {
+		quoted := "'" + strings.ReplaceAll(payload, "'", "'\\''") + "'"
+		for _, command := range []struct {
+			prefix string
+			want   bool
+		}{{"cat ", true}, {"git commit -m ", false}} {
+			if got := isExploringShellCommand(command.prefix + quoted); got != command.want {
+				t.Fatalf("classification of %q = %v, want %v", command.prefix+quoted, got, command.want)
+			}
+		}
+	})
+}
 
 // --- fixture helpers ---------------------------------------------------------------------
 
@@ -330,70 +350,107 @@ func TestStatsUsageDedupIsPerSession(t *testing.T) {
 	}
 }
 
+// TestStatsSavingsModelMath pins the savings model. Each credited graph locate call is priced
+// against the exploration cost this very session paid per exploration call — both sides measured
+// from the transcript — rather than against a guessed whole-file read.
 func TestStatsSavingsModelMath(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// the file the graph call points at: the counterfactual whole-file read
-	const topHitBytes = 4000
-	if err := os.WriteFile(filepath.Join(repo, "src", "app.go"), bytes.Repeat([]byte("x"), topHitBytes), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	sessions := t.TempDir()
 	now := statsTime(0)
 
-	searchResult := `{"query":"login","results":[{"rank":1,"file_path":"src/app.go","start_line":10}]}`
-	// a bulk verb must NOT be credited even though its result also names a file
-	edgesResult := `{"file_path":"src/app.go","edges":[]}`
-
+	// One locate call costing 100 bytes, and a bulk verb whose 9,000 bytes must neither be
+	// credited nor allowed to price the locate call.
 	writeTranscript(t, sessions, "s1.jsonl",
 		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --repo . --query "login"`}),
-		toolResultLine(t, now, "g1", searchResult),
+		toolResultLine(t, now, "g1", strings.Repeat("s", 100)),
 		toolUseLine(t, now, "Bash", "g2", map[string]any{"command": `entire graph edges --repo . --format ndjson`}),
-		toolResultLine(t, now, "g2", edgesResult),
+		toolResultLine(t, now, "g2", strings.Repeat("e", 9000)),
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "login"}),
+		toolResultLine(t, now, "e1", strings.Repeat("a", 500)),
+		toolUseLine(t, now, "Read", "e2", map[string]any{"file_path": "/x/a.go"}),
+		toolResultLine(t, now, "e2", strings.Repeat("b", 700)),
 	)
 
 	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
 
-	wantBytes := int64(topHitBytes - len(searchResult))
+	// exploration measured at (500+700)/2 = 600 bytes/call; the one locate call cost 100.
+	const wantBytes = int64(1*(500+700)/2 - 100)
 	if report.EstimatedSavingsBytes != wantBytes {
 		t.Fatalf("savings bytes = %d, want %d", report.EstimatedSavingsBytes, wantBytes)
 	}
 	if report.EstimatedSavingsTokens != wantBytes/4 {
 		t.Fatalf("savings tokens = %d, want %d", report.EstimatedSavingsTokens, wantBytes/4)
 	}
-	if report.CreditedGraphCalls != 1 || report.GraphCalls != 2 {
-		t.Fatalf("credited = %d of %d, want 1 of 2", report.CreditedGraphCalls, report.GraphCalls)
+	if report.GraphBytesPerLocateCall != 100 || report.ExplorationBytesPerCall != 600 {
+		t.Fatalf("measured per-call cost = graph %v / exploration %v, want 100 / 600",
+			report.GraphBytesPerLocateCall, report.ExplorationBytesPerCall)
+	}
+	if report.CreditedGraphCalls != 1 || report.GraphCalls != 2 || report.GraphLocateCalls != 1 {
+		t.Fatalf("credited = %d, graph = %d, locate = %d; want 1 / 2 / 1",
+			report.CreditedGraphCalls, report.GraphCalls, report.GraphLocateCalls)
+	}
+	if report.GraphLocateReturnedBytes != 100 {
+		t.Fatalf("locate returned bytes = %d, want 100 (the bulk verb must not be mixed in)",
+			report.GraphLocateReturnedBytes)
+	}
+	if report.SessionsWithPositiveSavings != 1 {
+		t.Fatalf("sessions with positive savings = %d, want 1", report.SessionsWithPositiveSavings)
 	}
 	if report.SavingsModel == "" || !strings.Contains(report.SavingsModel, "assumption") {
 		t.Fatalf("savings model caveat missing: %q", report.SavingsModel)
 	}
+	if report.MedianTrackedFileBytes != 0 {
+		t.Fatalf("median_tracked_file_bytes is retired and must stay 0, got %d", report.MedianTrackedFileBytes)
+	}
 }
 
+// TestStatsSavingsFlooredAtZeroWhenGraphCostsMore is the answer the tool must be willing to
+// give: a session whose graph calls returned MORE per call than the exploration they displaced
+// saved nothing. This repo's own paired A/B benchmark found graph output larger per call than
+// the baseline's, so a model that could not report 0 would be contradicting our own evidence.
 func TestStatsSavingsFlooredAtZeroWhenGraphCostsMore(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// tiny file: reading it whole would have been cheaper than the graph call
-	if err := os.WriteFile(filepath.Join(repo, "src", "tiny.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	sessions := t.TempDir()
 	now := statsTime(0)
-	result := `{"results":[{"file_path":"src/tiny.go"}],"padding":"` + strings.Repeat("p", 2000) + `"}`
 	writeTranscript(t, sessions, "s1.jsonl",
 		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "tiny"`}),
-		toolResultLine(t, now, "g1", result),
+		toolResultLine(t, now, "g1", strings.Repeat("p", 2000)),
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "tiny"}),
+		toolResultLine(t, now, "e1", strings.Repeat("m", 100)),
 	)
 
 	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
 	if report.EstimatedSavingsTokens != 0 || report.EstimatedSavingsBytes != 0 {
 		t.Fatalf("savings should floor at 0, got %d bytes / %d tokens",
 			report.EstimatedSavingsBytes, report.EstimatedSavingsTokens)
+	}
+	if report.SessionsWithPositiveSavings != 0 {
+		t.Fatalf("sessions with positive savings = %d, want 0", report.SessionsWithPositiveSavings)
+	}
+	// The measurement itself is still reported, so the 0 is auditable rather than mysterious.
+	if report.GraphBytesPerLocateCall != 2000 || report.ExplorationBytesPerCall != 100 {
+		t.Fatalf("per-call cost = graph %v / exploration %v, want 2000 / 100",
+			report.GraphBytesPerLocateCall, report.ExplorationBytesPerCall)
+	}
+}
+
+// TestStatsSavingsNeedsBothSides: with nothing to compare against, the honest answer is 0, not
+// an invented counterfactual.
+func TestStatsSavingsNeedsBothSides(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", strings.Repeat("s", 10)),
+	)
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if report.EstimatedSavingsBytes != 0 {
+		t.Fatalf("a session with no exploration to price against must save 0, got %d",
+			report.EstimatedSavingsBytes)
 	}
 }
 
@@ -408,7 +465,7 @@ func TestStatsHandlesMissingSessionsDirGracefully(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats must exit 0 when no transcripts exist, got %v", err)
 	}
-	if !strings.Contains(out.String(), "No coding-agent session transcripts") {
+	if !strings.Contains(out.String(), "no coding-agent session transcripts for this repo yet") {
 		t.Fatalf("missing graceful message:\n%s", out.String())
 	}
 
@@ -428,7 +485,7 @@ func TestStatsHandlesEmptySessionsDir(t *testing.T) {
 		[]string{"stats", "--repo", repo, "--sessions-dir", empty}); err != nil {
 		t.Fatalf("stats must exit 0 on an empty sessions dir, got %v", err)
 	}
-	if !strings.Contains(out.String(), "No sessions in this window") {
+	if !strings.Contains(out.String(), "no sessions in this window") {
 		t.Fatalf("missing empty-window message:\n%s", out.String())
 	}
 }
@@ -537,6 +594,8 @@ func TestStatsHandlesBlockShapedToolResults(t *testing.T) {
 	}
 }
 
+// TestStatsTextOutputCarriesRatioAndCaveat covers --verbose, which is where the full report
+// moved when the default became the single headline line.
 func TestStatsTextOutputCarriesRatioAndCaveat(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -551,19 +610,19 @@ func TestStatsTextOutputCarriesRatioAndCaveat(t *testing.T) {
 
 	var out bytes.Buffer
 	if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out},
-		[]string{"stats", "--repo", repo, "--sessions-dir", sessions, "--since", "all"}); err != nil {
+		[]string{"stats", "--repo", repo, "--sessions-dir", sessions, "--since", "all", "--verbose"}); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
 	for _, want := range []string{
 		"graph calls: 1",
 		"exploration calls: 1",
-		"graph-first rate: 100%",
 		"graph calls by verb",
-		"exploration calls (what the graph is meant to replace)",
-		"session tokens (billed",
-		"ESTIMATED SAVINGS",
+		"observed exploration calls",
+		"session usage tokens (reported by transcripts)",
+		"1:1 context model:",
 		"assumption, not a measurement",
+		"observed bytes per result",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text output missing %q:\n%s", want, text)
@@ -632,7 +691,6 @@ func TestIsExploringShellCommandClassification(t *testing.T) {
 		`rtk grep -n foo bar.go`,
 		`sudo find / -name "*.go"`,
 		`cat src/app.go`,
-		`ls -la | grep foo`,
 		`sed -n '1,80p' file.go`,
 		"cat a.go\nhead -5 b.go",
 	}
@@ -647,6 +705,12 @@ func TestIsExploringShellCommandClassification(t *testing.T) {
 		``,
 		`npm test`,
 		`FOO=grep make build`,
+		// `ls -la | grep foo` was pinned as exploration here. It is not: `ls` is what reads, and
+		// the grep only filters a listing that is already in context — no repository content is
+		// located by the downstream stage. Classifying any pipe segment made `go test ./... 2>&1 |
+		// tail -40` a locate call too, and 32.2% of the matches in a real corpus were
+		// pipe-downstream-only. See TestIsExploringShellCommandCountsOnlyPipelineHeads.
+		`ls -la | grep foo`,
 	}
 	for _, command := range notExplore {
 		if isExploringShellCommand(command) {
@@ -748,79 +812,6 @@ func TestHumanIntGroupsThousands(t *testing.T) {
 	for input, want := range map[int64]string{0: "0", 42: "42", 1000: "1,000", 1234567: "1,234,567", -1234: "-1,234"} {
 		if got := humanInt(input); got != want {
 			t.Fatalf("humanInt(%d) = %q, want %q", input, got, want)
-		}
-	}
-}
-
-// TestStatsMedianFallbackWhenTopHitUnresolvable pins the documented fallback: when the graph
-// result names no file that exists on disk, the counterfactual is the repo's median file size.
-func TestStatsMedianFallbackWhenTopHitUnresolvable(t *testing.T) {
-	t.Parallel()
-	repo := t.TempDir()
-	for index, size := range []int{100, 500, 900} {
-		name := filepath.Join(repo, fmt.Sprintf("f%d.txt", index))
-		if err := os.WriteFile(name, bytes.Repeat([]byte("z"), size), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	sessions := t.TempDir()
-	now := statsTime(0)
-	result := `{"results":[{"file_path":"gone/deleted.go"}]}`
-	writeTranscript(t, sessions, "s1.jsonl",
-		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
-		toolResultLine(t, now, "g1", result),
-	)
-
-	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
-	want := int64(500 - len(result)) // median of 100/500/900 minus what the call returned
-	if report.EstimatedSavingsBytes != want {
-		t.Fatalf("median-fallback savings = %d, want %d (median reported %d)",
-			report.EstimatedSavingsBytes, want, report.MedianTrackedFileBytes)
-	}
-	if report.MedianTrackedFileBytes != 500 {
-		t.Fatalf("median tracked file bytes = %d, want 500", report.MedianTrackedFileBytes)
-	}
-}
-
-func TestStatsFileSizeStaysInsideTheSelectedRepository(t *testing.T) {
-	t.Parallel()
-	repo := t.TempDir()
-	inside := filepath.Join(repo, "inside.go")
-	insideContent := []byte("package inside\n")
-	if err := os.WriteFile(inside, insideContent, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	external := filepath.Join(t.TempDir(), "outside.go")
-	if err := os.WriteFile(external, bytes.Repeat([]byte("x"), 100), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	linked := filepath.Join(repo, "linked.go")
-	linkedCreated := os.Symlink(external, linked) == nil
-	linkedDir := filepath.Join(repo, "linked-dir")
-	linkedDirCreated := os.Symlink(filepath.Dir(external), linkedDir) == nil
-
-	collector := newStatsCollector(t.Context(), repo)
-	if got := collector.fileSize("inside.go"); got != int64(len(insideContent)) {
-		t.Fatalf("in-repository file size = %d, want %d", got, len(insideContent))
-	}
-	if got := collector.fileSize(external); got != 0 {
-		t.Fatalf("out-of-repository file size = %d, want 0", got)
-	}
-	relativeExternal, err := filepath.Rel(repo, external)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := collector.fileSize(relativeExternal); got != 0 {
-		t.Fatalf("relative out-of-repository file size = %d, want 0", got)
-	}
-	if linkedCreated {
-		if got := collector.fileSize("linked.go"); got != 0 {
-			t.Fatalf("symlinked file size = %d, want 0", got)
-		}
-	}
-	if linkedDirCreated {
-		if got := collector.fileSize("linked-dir/outside.go"); got != 0 {
-			t.Fatalf("file size through an intermediate symlink = %d, want 0", got)
 		}
 	}
 }
@@ -931,5 +922,869 @@ func TestStatsTranscriptDirectoryIsNotATranscript(t *testing.T) {
 	report := runStatsJSON(t, "--repo", t.TempDir(), "--transcript", dir, "--format", "json")
 	if report.SessionsDirFound {
 		t.Fatal("a directory passed to --transcript must report sessions_dir_found=false")
+	}
+}
+
+// --- default output shape ----------------------------------------------------------------
+
+// TestStatsDefaultOutputIsOneHeadlineLine pins the reported problem: the default is the number,
+// not a report. Everything the old default printed is still one --verbose away.
+func TestStatsDefaultOutputIsOneHeadlineLine(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", strings.Repeat("s", 40)),
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "x"}),
+		toolResultLine(t, now, "e1", strings.Repeat("m", 840)),
+	)
+
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out},
+		[]string{"stats", "--repo", repo, "--sessions-dir", sessions, "--since", "all"}); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("default output must be exactly one line, got %d:\n%s", len(lines), text)
+	}
+	// The graph output names no file, so the result is INELIGIBLE and credits nothing: the 40 graph
+	// bytes are pure cost (-10 est. tokens). The 1:1 model (+200) stays one --verbose away.
+	if lines[0] != "[entire-graph] observed follow-up of 1 graph locate results (next 5 calls after delivery): re-query 0%, read named file 0%, none 0%, censored 0%, error/ineligible 100%; modeled balance -10 est. tokens if each of 0 no-follow-up results (of 1 in 1 sessions with both result types) replaced one average exploration result (assumed; not measured savings)" {
+		t.Fatalf("unexpected model headline = %q", lines[0])
+	}
+	for _, unwanted := range []string{"graph calls by verb", "session tokens (billed", "ESTIMATED SAVINGS", "assumption"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("default output leaked the verbose report (%q):\n%s", unwanted, text)
+		}
+	}
+
+	var verbose bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Stdout: &verbose, Stderr: &verbose},
+		[]string{"stats", "--repo", repo, "--sessions-dir", sessions, "--since", "all", "--verbose"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(verbose.String(), "1:1 context model: +200 est. tokens; not measured savings") {
+		t.Fatalf("--verbose must restore the full report:\n%s", verbose.String())
+	}
+}
+
+// Summary output remains plain text when terminal color settings are present.
+func TestStatsHeadlineIsPlainTextWhenOutputIsNotATerminal(t *testing.T) {
+	for _, force := range []string{"", "1"} {
+		t.Setenv("FORCE_COLOR", force)
+		var out bytes.Buffer
+		writeStatsSummary(&out, statsResponse{Sessions: 1, SessionsDirFound: true, SessionsWithSavingsComparison: 1,
+			GraphLocateDisplaced: 1, NoFollowUpRate: 1, DisplacementWindowCalls: 4,
+			ObservedNetTokens: 4, ModeledBalanceCreditedResults: 1, ComparableGraphLocateResults: 1})
+		if strings.Contains(out.String(), "\x1b[") || !strings.Contains(out.String(), "observed follow-up of 1 graph locate results") || !strings.Contains(out.String(), "modeled balance +4 est. tokens") || !strings.Contains(out.String(), "not measured savings") {
+			t.Fatalf("unexpected summary: %q", out.String())
+		}
+		out.Reset()
+		writeStatsSummary(&out, statsResponse{Sessions: 1, SessionsDirFound: true, SessionsWithSavingsComparison: 1, EstimatedSavingsTokensUnfloored: 4})
+		if strings.Contains(out.String(), "\x1b[") || !strings.Contains(out.String(), "observed follow-up: no graph locate results") {
+			t.Fatalf("legacy model must not invent observed results: %q", out.String())
+		}
+	}
+}
+
+// --- windowing / performance --------------------------------------------------------------
+
+// TestStatsPrunesTranscriptsOutsideTheWindowByMtime is the fix for the reported CPU burn: a
+// narrow --since must stop the scan from OPENING transcripts it is going to discard anyway. The
+// prune is by file mtime, which is sound in one direction only — a file last written before the
+// window opened cannot hold a record inside it — so this asserts both directions.
+func TestStatsPrunesTranscriptsOutsideTheWindowByMtime(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	recent := statsTime(-2 * time.Hour)
+	old := statsTime(-60 * 24 * time.Hour)
+
+	writeTranscript(t, sessions, "recent.jsonl",
+		toolUseLine(t, recent, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, recent, "g1", "hits"),
+	)
+	writeTranscript(t, sessions, "old.jsonl",
+		toolUseLine(t, old, "Bash", "g2", map[string]any{"command": `entire graph search --query "y"`}),
+		toolResultLine(t, old, "g2", "hits"),
+	)
+	stale := time.Now().Add(-60 * 24 * time.Hour)
+	if err := os.Chtimes(filepath.Join(sessions, "old.jsonl"), stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	windowed := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "7d")
+	if windowed.TranscriptsConsidered != 2 {
+		t.Fatalf("transcripts considered = %d, want 2", windowed.TranscriptsConsidered)
+	}
+	if windowed.Transcripts != 1 {
+		t.Fatalf("--since 7d parsed %d transcript(s); the file whose mtime is 60 days old must never be opened",
+			windowed.Transcripts)
+	}
+	if windowed.Sessions != 1 || windowed.GraphCalls != 1 {
+		t.Fatalf("--since 7d = %d sessions / %d graph calls, want 1 / 1", windowed.Sessions, windowed.GraphCalls)
+	}
+
+	all := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if all.Transcripts != 2 || all.Sessions != 2 || all.GraphCalls != 2 {
+		t.Fatalf("--since all = %d transcripts / %d sessions / %d graph calls, want 2 / 2 / 2",
+			all.Transcripts, all.Sessions, all.GraphCalls)
+	}
+}
+
+// TestStatsKeepsAWholeSessionWhenAnyOfItsTranscriptsIsRecent: pruning decides per SESSION, so a
+// freshly-written subagent transcript cannot be separated from the parent that owns it.
+func TestStatsKeepsAWholeSessionWhenAnyOfItsTranscriptsIsRecent(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	recent := statsTime(-time.Hour)
+
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, recent, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, recent, "g1", "hits"),
+	)
+	writeTranscript(t, filepath.Join(sessions, "s1", "subagents"), "agent-1.jsonl",
+		toolUseLine(t, recent, "Grep", "e1", map[string]any{"pattern": "x"}),
+		toolResultLine(t, recent, "e1", "matches"),
+	)
+	// The parent's own mtime is stale; only the subagent transcript was written recently.
+	stale := time.Now().Add(-60 * 24 * time.Hour)
+	if err := os.Chtimes(filepath.Join(sessions, "s1.jsonl"), stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "7d")
+	if report.Transcripts != 2 {
+		t.Fatalf("transcripts = %d, want 2 (a recent subagent keeps its owner in scope)", report.Transcripts)
+	}
+	if report.GraphCalls != 1 || report.ExplorationCalls != 1 {
+		t.Fatalf("graph/exploration = %d/%d, want 1/1", report.GraphCalls, report.ExplorationCalls)
+	}
+}
+
+// --- double counting ------------------------------------------------------------------------
+
+// TestStatsCountsARepeatedToolUseOnceWithinASession pins a measured defect. Claude Code replays
+// a forked subagent's history into the new transcript, so ONE tool call really does appear in
+// several of a session's files: 215 tool_use ids across 3,316 real transcripts on the machine
+// that reported this. It is one API call and must be billed once.
+func TestStatsCountsARepeatedToolUseOnceWithinASession(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	shared := strings.Repeat("m", 100)
+
+	writeTranscript(t, filepath.Join(sessions, "s1", "subagents"), "agent-1.jsonl",
+		toolUseLine(t, now, "Grep", "shared", map[string]any{"pattern": "x"}),
+		toolResultLine(t, now, "shared", shared),
+	)
+	// The forked sibling replays the same call verbatim.
+	writeTranscript(t, filepath.Join(sessions, "s1", "subagents"), "agent-2.jsonl",
+		toolUseLine(t, now, "Grep", "shared", map[string]any{"pattern": "x"}),
+		toolResultLine(t, now, "shared", shared),
+	)
+
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if report.ExplorationCalls != 1 {
+		t.Fatalf("exploration calls = %d, want 1 (one API call replayed into two transcripts)",
+			report.ExplorationCalls)
+	}
+	if report.ExplorationReturnedBytes != int64(len(shared)) {
+		t.Fatalf("exploration bytes = %d, want %d", report.ExplorationReturnedBytes, len(shared))
+	}
+}
+
+// TestStatsBillsARepeatedMessageOnceWithinASession is the usage half of the same replay: 168
+// usage-bearing message ids appeared in more than one transcript of their own session.
+func TestStatsBillsARepeatedMessageOnceWithinASession(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+
+	writeTranscript(t, filepath.Join(sessions, "s1", "subagents"), "agent-1.jsonl",
+		usageBlocksLine(t, now, "msg_shared", []any{textBlock("a")}, 1, 10, 100, 5),
+	)
+	writeTranscript(t, filepath.Join(sessions, "s1", "subagents"), "agent-2.jsonl",
+		usageBlocksLine(t, now, "msg_shared", []any{textBlock("a")}, 1, 10, 100, 5),
+	)
+
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	want := statsTokens{Input: 1, CacheWrite: 10, CacheRead: 100, Output: 5, Total: 116}
+	if report.SessionTokens != want {
+		t.Fatalf("session tokens = %+v, want %+v (one message replayed into two transcripts)",
+			report.SessionTokens, want)
+	}
+}
+
+// --- determinism ------------------------------------------------------------------------
+
+// TestStatsOutputIsByteIdenticalAcrossRuns: nothing in the report may depend on map iteration
+// order, float accumulation order, or which files happened to be cached.
+func TestStatsOutputIsByteIdenticalAcrossRuns(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	for index := 0; index < 6; index++ {
+		name := fmt.Sprintf("s%d.jsonl", index)
+		writeTranscript(t, sessions, name,
+			toolUseLine(t, now, "Bash", fmt.Sprintf("g%d", index), map[string]any{"command": `entire graph search --query "x"`}),
+			toolResultLine(t, now, fmt.Sprintf("g%d", index), strings.Repeat("s", 10+index)),
+			toolUseLine(t, now, "Bash", fmt.Sprintf("n%d", index), map[string]any{"command": `entire graph neighbors --symbol X`}),
+			toolResultLine(t, now, fmt.Sprintf("n%d", index), strings.Repeat("n", 20+index)),
+			toolUseLine(t, now, "Grep", fmt.Sprintf("e%d", index), map[string]any{"pattern": "x"}),
+			toolResultLine(t, now, fmt.Sprintf("e%d", index), strings.Repeat("m", 300+index)),
+			toolUseLine(t, now, "Read", fmt.Sprintf("r%d", index), map[string]any{"file_path": "/x/a.go"}),
+			toolResultLine(t, now, fmt.Sprintf("r%d", index), strings.Repeat("r", 700+index)),
+			usageBlocksLine(t, now, fmt.Sprintf("msg%d", index), []any{textBlock("done")}, 11, 22, 33, 44),
+		)
+	}
+
+	run := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		full := append([]string{"stats", "--repo", repo, "--sessions-dir", sessions, "--since", "all"}, args...)
+		if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out}, full); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	for _, args := range [][]string{nil, {"--verbose"}, {"--format", "json"}} {
+		first, second := run(args...), run(args...)
+		if first != second {
+			t.Fatalf("stats %v was not byte-identical across two runs:\n--- first ---\n%s\n--- second ---\n%s",
+				args, first, second)
+		}
+	}
+}
+
+// --- arithmetic ---------------------------------------------------------------------------
+
+func TestMulDivIsExactAndDoesNotOverflow(t *testing.T) {
+	t.Parallel()
+	if got := mulDiv(3, 1200, 2); got != 1800 {
+		t.Fatalf("mulDiv(3,1200,2) = %d, want 1800", got)
+	}
+	// The a*b product overflows int64 here; the quotient does not. A naive a*b/c wraps.
+	const wide = int64(1) << 40
+	if got := mulDiv(wide, wide, wide); got != wide {
+		t.Fatalf("mulDiv(2^40,2^40,2^40) = %d, want %d", got, wide)
+	}
+	// The exact boundary of the overflow guard. bits.Div64 PANICS when the high word is >= the
+	// divisor, so `hi >= c` has to be the test and not `hi > c`: here hi and c are both 1.
+	if got := mulDiv(1<<32, 1<<32, 1); got != math.MaxInt64 {
+		t.Fatalf("mulDiv(2^32,2^32,1) = %d, want MaxInt64", got)
+	}
+	// Quotient itself out of range: saturate, never wrap negative.
+	if got := mulDiv(math.MaxInt64, 4, 2); got != math.MaxInt64 {
+		t.Fatalf("mulDiv saturation = %d, want MaxInt64", got)
+	}
+	if got := mulDiv(math.MaxInt64, math.MaxInt64, 1); got != math.MaxInt64 {
+		t.Fatalf("mulDiv saturation = %d, want MaxInt64", got)
+	}
+	for _, args := range [][3]int64{{0, 5, 1}, {5, 0, 1}, {5, 5, 0}, {-1, 5, 1}} {
+		if got := mulDiv(args[0], args[1], args[2]); got != 0 {
+			t.Fatalf("mulDiv%v = %d, want 0", args, got)
+		}
+	}
+}
+
+func TestRoundToRoundsHalfAwayFromZero(t *testing.T) {
+	t.Parallel()
+	// 0.125 and 0.375 are exact in binary, so these pin the tie-breaking rule itself.
+	if got := roundTo(0.125, 2); got != 0.13 {
+		t.Fatalf("roundTo(0.125,2) = %v, want 0.13", got)
+	}
+	if got := roundTo(-0.125, 2); got != -0.13 {
+		t.Fatalf("roundTo(-0.125,2) = %v, want -0.13 (half away from zero, not toward it)", got)
+	}
+	if got := roundTo(0.5, 4); got != 0.5 {
+		t.Fatalf("roundTo(0.5,4) = %v, want 0.5", got)
+	}
+	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if got := roundTo(bad, 2); got != 0 {
+			t.Fatalf("roundTo(%v,2) = %v, want 0", bad, got)
+		}
+	}
+}
+
+// --- the JSON contract ----------------------------------------------------------------------
+
+// TestStatsJSONContractKeepsEveryPublishedKey guards the machine contract. Callers exist —
+// scripts/entire-graph-statusline.sh reads two of these on every prompt render — so keys may be
+// added but never removed or renamed.
+func TestStatsJSONContractKeepsEveryPublishedKey(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(statsResponse{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	published := []string{
+		"format_version", "provider", "repo_root", "sessions_dir", "sessions_dir_found", "since",
+		"window_start", "window_end", "sessions", "transcripts", "malformed_lines_skipped",
+		"graph_calls", "exploration_calls", "sessions_with_locate", "graph_first_sessions",
+		"graph_first_rate", "graph_calls_by_verb", "exploration_by_kind", "graph_returned_bytes",
+		"graph_returned_est_tokens", "exploration_returned_bytes", "exploration_returned_est_tokens",
+		"session_tokens", "estimated_savings_bytes", "estimated_savings_est_tokens",
+		"estimated_savings_pct_of_session_tokens", "credited_graph_calls",
+		"median_tracked_file_bytes", "savings_model",
+	}
+	for _, key := range published {
+		if _, ok := decoded[key]; !ok {
+			t.Fatalf("stats JSON dropped published key %q; the shape may only ever grow", key)
+		}
+	}
+	// The tables must serialise as arrays, never null, for a report with no data.
+	report := statsResponse{GraphByVerb: []statsCount{}, ExplorationByKind: []statsCount{}}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"graph_calls_by_verb":[]`) {
+		t.Fatalf("empty tables must encode as [], got %s", encoded)
+	}
+}
+
+// TestStatsJSONIgnoresVerbose: --verbose is a text-rendering choice and must not reshape the
+// machine output.
+func TestStatsJSONIgnoresVerbose(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", "hits"),
+	)
+	render := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		full := append([]string{"stats", "--repo", repo, "--sessions-dir", sessions,
+			"--since", "all", "--format", "json"}, args...)
+		if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out}, full); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if plain, verbose := render(), render("--verbose"); plain != verbose {
+		t.Fatalf("--verbose changed the JSON:\n%s\n%s", plain, verbose)
+	}
+}
+
+// TestStatsUnmatchedCallsDoNotDeflateThePrice: bytes are only observable on a tool_result, so
+// the per-call prices must divide by RESULTS seen, not by calls issued. Dividing by calls would
+// silently halve a price whenever a call's result was never written to the transcript.
+func TestStatsUnmatchedCallsDoNotDeflateThePrice(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", strings.Repeat("s", 100)),
+		// a second locate call whose result never landed
+		toolUseLine(t, now, "Bash", "g2", map[string]any{"command": `entire graph search --query "y"`}),
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "x"}),
+		toolResultLine(t, now, "e1", strings.Repeat("m", 800)),
+		// likewise an exploration call with no result
+		toolUseLine(t, now, "Grep", "e2", map[string]any{"pattern": "y"}),
+	)
+
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if report.GraphCalls != 2 || report.ExplorationCalls != 2 {
+		t.Fatalf("calls = %d graph / %d exploration, want 2 / 2", report.GraphCalls, report.ExplorationCalls)
+	}
+	if report.CreditedGraphCalls != 1 {
+		t.Fatalf("credited = %d, want 1 (only the call whose result was observed)", report.CreditedGraphCalls)
+	}
+	if report.GraphBytesPerLocateCall != 100 || report.ExplorationBytesPerCall != 800 {
+		t.Fatalf("per-call cost = graph %v / exploration %v, want 100 / 800",
+			report.GraphBytesPerLocateCall, report.ExplorationBytesPerCall)
+	}
+	if report.EstimatedSavingsBytes != 700 {
+		t.Fatalf("savings bytes = %d, want 700 (1 credited call x 800 - 100)", report.EstimatedSavingsBytes)
+	}
+}
+
+// TestStatsIdlessToolUsesAreAllCounted: a block with no tool_use id cannot be recognised as a
+// replay of anything, so every one of them must still be counted. Deduplicating on the empty
+// string would silently collapse them into one.
+func TestStatsIdlessToolUsesAreAllCounted(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Grep", "", map[string]any{"pattern": "x"}),
+		toolUseLine(t, now, "Grep", "", map[string]any{"pattern": "y"}),
+		toolUseLine(t, now, "Grep", "", map[string]any{"pattern": "z"}),
+	)
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if report.ExplorationCalls != 3 {
+		t.Fatalf("exploration calls = %d, want 3 (id-less calls are not deduplicable)",
+			report.ExplorationCalls)
+	}
+}
+
+// TestStatsPruneKeepsAFileWhoseMtimeIsExactlyTheCutoff pins the boundary of the mtime prune.
+// The window is inclusive at its lower edge: a file last written at exactly the cutoff instant
+// is inside it. Driving the collector directly is what makes the tie reachable at all — a cutoff
+// taken from the wall clock can never be hit by a test that only writes files.
+func TestStatsPruneKeepsAFileWhoseMtimeIsExactlyTheCutoff(t *testing.T) {
+	t.Parallel()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "x"}),
+		toolResultLine(t, now, "e1", "matches"),
+	)
+	files, err := listTranscriptFiles(sessions, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 candidate transcript, got %d", len(files))
+	}
+
+	atCutoff := newStatsCollector()
+	atCutoff.run(files, files[0].modTime)
+	if atCutoff.transcripts != 1 {
+		t.Fatalf("a transcript whose mtime equals the cutoff was pruned (%d parsed, want 1)",
+			atCutoff.transcripts)
+	}
+
+	justAfter := newStatsCollector()
+	justAfter.run(files, files[0].modTime.Add(time.Nanosecond))
+	if justAfter.transcripts != 0 {
+		t.Fatalf("a transcript one nanosecond older than the cutoff was parsed (%d, want 0)",
+			justAfter.transcripts)
+	}
+}
+
+// --- instrument repairs -----------------------------------------------------------------
+
+// runStatsRawJSON decodes the report as a bare map. It exists so a test can assert on a key
+// BEFORE the Go struct carries a field for it: a missing key then fails at runtime, which is what
+// makes these regressions provable against the pre-fix binary rather than merely uncompilable.
+func runStatsRawJSON(t *testing.T, args ...string) map[string]any {
+	t.Helper()
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out},
+		append([]string{"stats"}, args...)); err != nil {
+		t.Fatalf("stats failed: %v\n%s", err, out.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("stats json invalid: %v\n%s", err, out.String())
+	}
+	return decoded
+}
+
+func rawInt(t *testing.T, report map[string]any, key string) int64 {
+	t.Helper()
+	value, ok := report[key]
+	if !ok {
+		t.Fatalf("stats JSON has no key %q; keys present: %v", key, sortedKeys(report))
+	}
+	number, ok := value.(float64)
+	if !ok {
+		t.Fatalf("stats JSON key %q is %T, want a number", key, value)
+	}
+	return int64(number)
+}
+
+func sortedKeys(report map[string]any) []string {
+	keys := make([]string, 0, len(report))
+	for key := range report {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestStatsUnflooredSavingsKeepsTheLosses pins the one direct SIGN bias in the report.
+//
+// Savings are computed per session and the total sums max(0, saved). Wins are kept and losses are
+// discarded, so the headline can only ever move up: a corpus that lost bytes overall still reports
+// a positive saving. The floored total stays — scripts/entire-graph-statusline.sh reads it on every
+// prompt render, and its awk `number()` returns -1 for a MISSING key, so a genuine negative on that
+// key would be indistinguishable from an absent one — and the signed total is published beside it.
+//
+// Two sessions, one of each sign: s1 saves 500 B, s2 loses 1,900 B. Floored: +500. Truth: -1,400.
+func TestStatsUnflooredSavingsKeepsTheLosses(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	// s1 SAVES: exploration measured at (500+700)/2 = 600 B/call, one locate call costing 100 B.
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "a"`}),
+		toolResultLine(t, now, "g1", strings.Repeat("g", 100)),
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "a"}),
+		toolResultLine(t, now, "e1", strings.Repeat("x", 500)),
+		toolUseLine(t, now, "Read", "e2", map[string]any{"file_path": "/x/a.go"}),
+		toolResultLine(t, now, "e2", strings.Repeat("y", 700)),
+	)
+	// s2 LOSES: exploration measured at 100 B/call, one locate call costing 2,000 B.
+	writeTranscript(t, sessions, "s2.jsonl",
+		toolUseLine(t, now, "Bash", "g2", map[string]any{"command": `entire graph search --query "b"`}),
+		toolResultLine(t, now, "g2", strings.Repeat("G", 2000)),
+		toolUseLine(t, now, "Grep", "e3", map[string]any{"pattern": "b"}),
+		toolResultLine(t, now, "e3", strings.Repeat("z", 100)),
+	)
+
+	raw := runStatsRawJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+
+	// The published badge keys are unchanged: floored, and the loss-making session is not counted.
+	if got := rawInt(t, raw, "estimated_savings_bytes"); got != 500 {
+		t.Fatalf("floored savings = %d, want 500 (the badge must not change)", got)
+	}
+	if got := rawInt(t, raw, "estimated_savings_est_tokens"); got != 125 {
+		t.Fatalf("floored savings tokens = %d, want 125", got)
+	}
+	if got := rawInt(t, raw, "sessions_with_positive_savings"); got != 1 {
+		t.Fatalf("sessions with positive savings = %d, want 1", got)
+	}
+	// ...and the signed total says what the floored one cannot.
+	if got := rawInt(t, raw, "estimated_savings_bytes_unfloored"); got != -1400 {
+		t.Fatalf("unfloored savings = %d, want -1400 (+500 saved, -1900 lost)", got)
+	}
+	if got := rawInt(t, raw, "estimated_savings_est_tokens_unfloored"); got != -350 {
+		t.Fatalf("unfloored savings tokens = %d, want -350", got)
+	}
+}
+
+// TestStatsUnflooredSavingsIsAdditiveOnly: a session with only one side of the comparison
+// contributes 0 to BOTH totals. That zero means "nothing to compare against", not "a measured
+// result of zero", and conflating it with a loss would invent a counterfactual.
+func TestStatsUnflooredSavingsIsAdditiveOnly(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", strings.Repeat("s", 10)),
+	)
+	raw := runStatsRawJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if got := rawInt(t, raw, "estimated_savings_bytes_unfloored"); got != 0 {
+		t.Fatalf("unfloored savings = %d, want 0 for a session with no exploration to price against", got)
+	}
+}
+
+// TestIsExploringShellCommandCountsOnlyPipelineHeads pins the classifier's stage rule.
+//
+// Only the LEADING stage of a pipeline reads the repository; everything downstream reshapes text
+// that is already in context. Counting any pipe segment whose first word was grep/rg/head/tail/awk
+// made `go test ./... 2>&1 | tail -40` a locate call: 32.2% of a real corpus's exploration matches
+// were pipe-downstream-only.
+//
+// It is per STATEMENT, not per command: `cd internal && grep -rn foo .` is a real search, so the
+// head of every `;`/`&&`/`||`/newline-separated statement is classified, not just the first.
+func TestIsExploringShellCommandCountsOnlyPipelineHeads(t *testing.T) {
+	t.Parallel()
+	downstreamOnly := []string{
+		`go test ./... 2>&1 | tail -40`,
+		`go build ./... 2>&1 | head -20`,
+		`git log --oneline | head -5`,
+		`ls -la | grep foo`,
+		`docker ps | awk '{print $1}'`,
+		`curl -s http://x | sed -n '1,5p'`,
+	}
+	for _, command := range downstreamOnly {
+		if isExploringShellCommand(command) {
+			t.Fatalf("%q reads nothing from the repo; only its output formatting is grep-shaped", command)
+		}
+	}
+	headsThatDoRead := map[string]bool{
+		`grep -rn foo . | head -20`:             true,
+		`cd internal && grep -rn foo .`:         true,
+		`npm run lint || grep -n TODO src/x.ts`: true,
+		`go build ./... ; cat internal/x.go`:    true,
+		"go vet ./...\nrg --files internal":     true,
+		`find . -name '*.go' | xargs wc -l`:     true,
+	}
+	for command, want := range headsThatDoRead {
+		if got := isExploringShellCommand(command); got != want {
+			t.Fatalf("isExploringShellCommand(%q) = %v, want %v", command, got, want)
+		}
+	}
+}
+
+// TestIsExploringShellCommandIgnoresWrites: a write is not a locate. No redirection was parsed at
+// all before this, so `cat > file`, `cat <<'EOF' > file`, `tee` and `sed -i` all counted as
+// exploration: 4,502 calls in a real 2,690-transcript corpus, on top of what the head rule removes.
+// A heredoc BODY is data, not commands, so its lines are not classified either.
+func TestIsExploringShellCommandIgnoresWrites(t *testing.T) {
+	t.Parallel()
+	writes := []string{
+		`cat > /tmp/script.sh`,
+		`cat >> notes.md`,
+		`cat > internal/cli/x.go <<'EOF'`,
+		"cat > /tmp/run.sh <<'EOF'\ngrep -rn foo .\nfind . -name '*.go'\nEOF",
+		"cat <<EOF > /tmp/run.sh\nhead -5 a.go\nEOF",
+		`tee /tmp/out.log`,
+		`sed -i 's/a/b/' internal/cli/stats.go`,
+		`sed -i.bak 's/a/b/' x.go`,
+		`sed --in-place 's/a/b/' x.go`,
+	}
+	for _, command := range writes {
+		if isExploringShellCommand(command) {
+			t.Fatalf("%q writes a file; it is not a locate call", command)
+		}
+	}
+	reads := []string{
+		`cat internal/cli/stats.go`,
+		`cat internal/cli/stats.go 2>/dev/null`,
+		`sed -n '1,80p' internal/cli/stats.go`,
+		`grep -rn foo . > /tmp/hits.txt`,
+		`cat a.go b.go`,
+	}
+	for _, command := range reads {
+		if !isExploringShellCommand(command) {
+			t.Fatalf("%q reads the repo; it must still count as exploration", command)
+		}
+	}
+}
+
+// TestStatsDoesNotCountWritesOrPipeTailsAsExploration is the end-to-end half: the classifier fix
+// has to reach the report, not just the predicate.
+func TestStatsDoesNotCountWritesOrPipeTailsAsExploration(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "b1", map[string]any{"command": `go test ./... 2>&1 | tail -40`}),
+		toolResultLine(t, now, "b1", strings.Repeat("t", 900)),
+		toolUseLine(t, now, "Bash", "b2", map[string]any{"command": "cat > /tmp/run.sh <<'EOF'\ngrep -rn foo .\nEOF"}),
+		toolResultLine(t, now, "b2", "ok"),
+		toolUseLine(t, now, "Bash", "b3", map[string]any{"command": `grep -rn "login" internal | head -20`}),
+		toolResultLine(t, now, "b3", strings.Repeat("h", 400)),
+	)
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if report.ExplorationCalls != 1 {
+		t.Fatalf("exploration calls = %d, want 1 (only the grep); by kind %+v",
+			report.ExplorationCalls, report.ExplorationByKind)
+	}
+}
+
+// TestGraphVerbFromCommandCountsSemEdgesAndSymbols: `entire sem edges|symbols` is the structural
+// locate pair this repo's own agent instructions recommend by name, and it was counted in NEITHER
+// arm — not a graph call, and not exploration either — so a session driven entirely by it read as
+// a session that used no tool at all.
+func TestGraphVerbFromCommandCountsSemEdgesAndSymbols(t *testing.T) {
+	t.Parallel()
+	semCalls := map[string]string{
+		`entire sem edges --repo . --format ndjson`:     "edges",
+		`entire sem symbols --repo . --format ndjson`:   "symbols",
+		`cd /repo && entire sem edges --repo .`:         "edges",
+		`rtk entire sem symbols --repo . | head -20`:    "symbols",
+		`ENTIRE_REPO_ROOT=/r entire sem edges --repo .`: "edges",
+	}
+	for command, want := range semCalls {
+		got, ok := graphVerbFromCommand(command)
+		if !ok || got != want {
+			t.Fatalf("graphVerbFromCommand(%q) = %q,%v; want %q,true", command, got, ok, want)
+		}
+	}
+	notSemCalls := []string{
+		`entire sem`,
+		`cat /repos/entire/sem/edges.go`,
+		`echo "run entire sem edges first"`,
+	}
+	for _, command := range notSemCalls {
+		if got, ok := graphVerbFromCommand(command); ok {
+			t.Fatalf("graphVerbFromCommand(%q) = %q,true; want no match", command, got)
+		}
+	}
+}
+
+// TestSemGraphVerbsAreIndexable: every verb the sem form reports must already be in the closed set
+// the rest of the report indexes by, or it lands in graph_calls_by_verb under a name nothing else
+// knows — the same drift TestGraphVerbsCoverEveryCommand exists to stop.
+func TestSemGraphVerbsAreIndexable(t *testing.T) {
+	t.Parallel()
+	for verb := range semGraphVerbs {
+		if !graphVerbs[verb] {
+			t.Fatalf("semGraphVerbs[%q] is not in graphVerbs; it would be uncounted downstream", verb)
+		}
+	}
+}
+
+// TestHeredocStrippingDoesNotEatRealCommands pins the cost of getting here-document detection
+// wrong in the other direction. `<<` appears in shell commands that open no here-document at all —
+// a shift inside a quoted string, a C++ line echoed into a file — and a naive match would treat the
+// operand as a delimiter and swallow every following line up to one that happened to match it, or
+// to the end of the command. That silently DROPS locate calls, which is worse than the
+// over-counting this rewrite fixes.
+//
+// Two guards are pinned here: the delimiter must be quoted or a SHOUTING identifier found outside
+// quotes, and a body is only stripped when its terminator line is actually present.
+func TestHeredocStrippingDoesNotEatRealCommands(t *testing.T) {
+	t.Parallel()
+	stillExplores := []string{
+		// `<< 2` inside a quoted string opens nothing; the grep on the next line is a real search.
+		"echo \"count << 2\"\ngrep -rn foo .",
+		"python3 -c 'print(1 << 3)'\ncat internal/cli/stats.go",
+		// A bareword operand is not a delimiter shape, quoted or not.
+		"awk '{ print x << 2 }' f\nrg --files internal",
+		// A real opener whose body is never terminated must not swallow the rest either.
+		"cat > /tmp/x.sh <<'EOF'\ngrep -rn foo .",
+		// ...and after a CLOSED here-document, later statements are classified normally.
+		"cat > /tmp/x.sh <<'EOF'\nnoop\nEOF\ngrep -rn foo .",
+	}
+	for _, command := range stillExplores {
+		if !isExploringShellCommand(command) {
+			t.Fatalf("heredoc stripping ate a real locate call in %q", command)
+		}
+	}
+	// The body of a properly closed here-document is still data, not commands.
+	if isExploringShellCommand("cat > /tmp/x.sh <<'EOF'\ngrep -rn foo .\nEOF") {
+		t.Fatal("a closed here-document's body was classified as a locate call")
+	}
+	// And the delimiter itself is read correctly in both forms.
+	for command, want := range map[string]string{
+		"cat <<'PYEOF'":      "PYEOF",
+		"cat <<EOF":          "EOF",
+		"cat <<-EOF":         "EOF",
+		`cat <<< "here str"`: "",
+		`echo "a << b"`:      "",
+		`cout << x`:          "",
+		`shift << 2`:         "",
+	} {
+		if got := heredocDelimiter(command); got != want {
+			t.Fatalf("heredocDelimiter(%q) = %q, want %q", command, got, want)
+		}
+	}
+}
+
+// TestShellScanningHonoursQuoting pins that none of `|`, `;`, `&`, `>` or `<<` is an operator when
+// it appears inside quotes. A commit message is the everyday case — `git commit -m "fix: a; grep
+// the logs"` is one commit, and reading its message as a second statement made it a locate call —
+// and the same blindness turned a filename containing `>` into a write.
+func TestShellScanningHonoursQuoting(t *testing.T) {
+	t.Parallel()
+	notExploration := []string{
+		`git commit -m "fix: a; grep the logs"`,
+		`git commit -m 'refactor: drop the | grep pipeline'`,
+		`git commit -m "ci: keep 2>&1 & head -5 out of the gate"`,
+		`gh pr create --title "stats" --body "see cat > file and sed -i notes"`,
+		`echo "run: find . -name '*.go'"`,
+	}
+	for _, command := range notExploration {
+		if isExploringShellCommand(command) {
+			t.Fatalf("%q only MENTIONS a locate tool inside a quoted argument", command)
+		}
+	}
+	exploration := []string{
+		// A filename carrying a `>` is still a read, not a redirect.
+		`cat "odd>name.txt"`,
+		`cat 'a;b.go'`,
+		// Real operators outside quotes keep working.
+		`git commit -m "wip" && grep -rn foo internal`,
+		`grep -rn "a | b" internal`,
+	}
+	for _, command := range exploration {
+		if !isExploringShellCommand(command) {
+			t.Fatalf("%q reads the repo; quoting must not hide that", command)
+		}
+	}
+	// An unbalanced quote falls back to the unquoted reading rather than masking to end of string,
+	// which would hide every later statement.
+	if !isExploringShellCommand(`echo "unterminated; grep -rn foo .`) {
+		t.Fatal("an unbalanced quote hid a real locate call")
+	}
+}
+
+// TestShellQuoteMaskFallsBackOnUnbalancedQuotes pins the mask's own escape hatch directly.
+func TestShellQuoteMaskFallsBackOnUnbalancedQuotes(t *testing.T) {
+	t.Parallel()
+	balanced := shellQuoteMask([]rune(`echo "a; b" ; grep -rn foo .`))
+	if !balanced[6] {
+		t.Fatal("a character inside double quotes was not masked")
+	}
+	if balanced[len(balanced)-1] {
+		t.Fatal("a character outside the quotes was masked")
+	}
+	for index, masked := range shellQuoteMask([]rune(`echo "unterminated; grep -rn foo .`)) {
+		if masked {
+			t.Fatalf("an unbalanced quote masked index %d; the whole mask must fall back to false", index)
+		}
+	}
+	// A backslash escape hides the character it escapes, so `\;` is not a statement boundary.
+	escaped := shellQuoteMask([]rune(`echo a\; grep b`))
+	if !escaped[7] {
+		t.Fatal("a backslash-escaped character was not masked")
+	}
+}
+
+// TestGraphVerbFromCommandHonoursQuotingAndHeredocs keeps the two halves of the instrument
+// symmetric. Discounting a quoted `grep` on the exploration side while still counting a quoted
+// `entire graph query` on the graph side would not be imprecision, it would be bias: both errors
+// push the report the same way.
+func TestGraphVerbFromCommandHonoursQuotingAndHeredocs(t *testing.T) {
+	t.Parallel()
+	notGraphCalls := []string{
+		`git commit -m "risky; entire graph query foo"`,
+		`gh pr create --title "stats" --body "run entire graph search --query x | head"`,
+		`echo 'then & entire graph impact --symbol Foo'`,
+		// A here-document's body is a file being written, whichever tool its lines name.
+		"cat > /tmp/run.sh <<'EOF'\nentire graph search --query x\nEOF",
+	}
+	for _, command := range notGraphCalls {
+		if got, ok := graphVerbFromCommand(command); ok {
+			t.Fatalf("graphVerbFromCommand(%q) = %q,true; the invocation is quoted text or heredoc data", command, got)
+		}
+	}
+	// Real invocations behind a real operator are untouched.
+	stillGraphCalls := map[string]string{
+		`git commit -m "wip" && entire graph impact --symbol Foo`:   "impact",
+		`entire graph search --query "a | b" --repo .`:              "search",
+		"cat > /tmp/x <<'EOF'\nnoop\nEOF\nentire graph query --q x": "query",
+	}
+	for command, want := range stillGraphCalls {
+		got, ok := graphVerbFromCommand(command)
+		if !ok || got != want {
+			t.Fatalf("graphVerbFromCommand(%q) = %q,%v; want %q,true", command, got, ok, want)
+		}
+	}
+}
+
+// TestCombinedRedirectIsARedirectNotAStatementBoundary pins bash's `&>` / `&>>`. Splitting the
+// statement at that `&` hid the redirect from the write check, which only ever sees the head stage:
+// `cat &> out.log` became the bare read `cat`.
+func TestCombinedRedirectIsARedirectNotAStatementBoundary(t *testing.T) {
+	t.Parallel()
+	for _, command := range []string{
+		`cat &> /tmp/out.log`,
+		`cat &>> /tmp/out.log`,
+		`cat x.go &>/dev/null`,
+	} {
+		if stages := pipelineHeadStages(command); len(stages) != 1 {
+			t.Fatalf("pipelineHeadStages(%q) = %q; `&>` is a redirect, not a boundary", command, stages)
+		}
+		if isExploringShellCommand(command) {
+			t.Fatalf("%q redirects both streams to a file; it is a write", command)
+		}
+	}
+	// A locate tool that is not `cat`/`sed`/`tee` still reads, redirect or no redirect.
+	if !isExploringShellCommand(`grep -rn foo . &> /tmp/hits.txt`) {
+		t.Fatal("a grep whose output is redirected is still a search")
+	}
+	// A real backgrounding `&` is still a boundary.
+	if stages := pipelineHeadStages(`sleep 1 & grep -rn foo .`); len(stages) != 2 {
+		t.Fatalf("a backgrounding & must still split statements, got %q", stages)
 	}
 }

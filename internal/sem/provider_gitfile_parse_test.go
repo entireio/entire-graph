@@ -89,7 +89,11 @@ func TestGitInfoExcludePathIgnoresAGitfileGitRejects(t *testing.T) {
 			t.Parallel()
 			repo := t.TempDir()
 			writeFile(t, repo, ".git", content)
-			if got := gitInfoExcludePath(repo); got != "" {
+			got, err := gitInfoExcludePath(repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != "" {
 				t.Errorf("gitInfoExcludePath = %q, want \"\" for a gitfile git rejects", got)
 			}
 		})

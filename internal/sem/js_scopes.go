@@ -39,6 +39,12 @@ type jsScanState struct {
 	lineStarts   []int
 	contentLen   int
 	parsed       bool
+	// depthTruncated reports that a relation-phase walk stopped at
+	// maxParseWalkDepth (parser.go). The scope state stays usable — everything
+	// above the limit was collected — but it is incomplete, so the provider
+	// records it as an E_PARSE_DEPTH_EXCEEDED partial failure rather than
+	// letting a silently short scope scan look like a complete one.
+	depthTruncated bool
 }
 
 type jsNamespaceScope struct {
@@ -72,21 +78,41 @@ type jsDottedCall struct {
 // an empty state — no namespace calls are classified for that file — and a
 // non-nil error so the caller can record a partial failure instead of
 // silently degrading (a timeout wraps context.DeadlineExceeded).
-func newJSScanState(path, content string) (*jsScanState, error) {
+func newJSScanState(ctx context.Context, path, content string) (*jsScanState, error) {
+	// jsScanGrammar masks the source before any parse happens, which is the
+	// same "a later stage was reached unbudgeted" shape as the parse itself.
+	// Guard the whole scan on entry, not just the parse inside it.
+	if err := ctx.Err(); err != nil {
+		return emptyJSScanState(content), fmt.Errorf("tree-sitter scope parse stopped by caller: %w", err)
+	}
 	grammar, parseSrc := jsScanGrammar(path, content)
-	return buildJSScanState(grammar, parseSrc, content)
+	return buildJSScanState(ctx, grammar, parseSrc, content)
 }
 
 // newJSScanStateForContent serves content-only callers (no path available):
 // it prefers the TypeScript grammar and falls back to TSX when the parse
 // fails outright.
-func newJSScanStateForContent(content string) *jsScanState {
-	state, _ := buildJSScanState(treesitterts.GetLanguage(), []byte(maskTypeScriptUnsupportedSyntax(content)), content)
+func newJSScanStateForContent(ctx context.Context, content string) *jsScanState {
+	if ctx.Err() != nil {
+		return emptyJSScanState(content)
+	}
+	state, _ := buildJSScanState(ctx, treesitterts.GetLanguage(), []byte(maskTypeScriptUnsupportedSyntax(content)), content)
 	if state.parsed {
 		return state
 	}
-	state, _ = buildJSScanState(treesittertsx.GetLanguage(), []byte(content), content)
+	state, _ = buildJSScanState(ctx, treesittertsx.GetLanguage(), []byte(content), content)
 	return state
+}
+
+// emptyJSScanState is the "nothing was scanned" state every failure path
+// returns: no namespaces, no bindings, no calls, but with the line index the
+// callers' position helpers need.
+func emptyJSScanState(content string) *jsScanState {
+	return &jsScanState{
+		namespaceSet: map[string]bool{},
+		lineStarts:   jsLineStarts(content),
+		contentLen:   len(content),
+	}
 }
 
 func jsScanGrammar(path, content string) (*sitter.Language, []byte) {
@@ -111,23 +137,30 @@ func jsScanGrammar(path, content string) (*sitter.Language, []byte) {
 // timeout path deterministically.
 var jsScanParseTimeout = treeSitterParseTimeout
 
-func buildJSScanState(grammar *sitter.Language, parseSrc []byte, content string) (*jsScanState, error) {
-	state := &jsScanState{
-		namespaceSet: map[string]bool{},
-		lineStarts:   jsLineStarts(content),
-		contentLen:   len(content),
+// buildJSScanState parses under the CALLER's context. The parse budget below
+// is a cap on top of that context, not a fresh one rooted at
+// context.Background: the relation-phase scan is per file, so a scan rooted at
+// Background let every remaining file spend up to jsScanParseTimeout after the
+// caller's context was already done.
+func buildJSScanState(ctx context.Context, grammar *sitter.Language, parseSrc []byte, content string) (*jsScanState, error) {
+	state := emptyJSScanState(content)
+	if err := ctx.Err(); err != nil {
+		return state, fmt.Errorf("tree-sitter scope parse stopped by caller: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), jsScanParseTimeout)
+	parseCtx, cancel := context.WithTimeout(ctx, jsScanParseTimeout)
 	defer cancel()
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(grammar)
-	tree, err := parser.ParseCtx(ctx, nil, parseSrc)
+	tree, err := parser.ParseCtx(parseCtx, nil, parseSrc)
 	if tree != nil {
 		defer tree.Close()
 	}
 	if err != nil || tree == nil {
-		if ctx.Err() != nil {
+		if callerErr := ctx.Err(); callerErr != nil {
+			return state, fmt.Errorf("tree-sitter scope parse stopped by caller: %w", callerErr)
+		}
+		if parseCtx.Err() != nil {
 			return state, fmt.Errorf("%w: tree-sitter scope parse exceeded %s", context.DeadlineExceeded, jsScanParseTimeout)
 		}
 		if err == nil {
@@ -140,18 +173,42 @@ func buildJSScanState(grammar *sitter.Language, parseSrc []byte, content string)
 		return state, errors.New("tree-sitter scope parse produced no root node")
 	}
 	state.parsed = true
-	walker := &jsScopeWalker{src: parseSrc, state: state}
+	// Bounding the tree-sitter call bounds the PARSE. Everything below runs on
+	// the tree the parse produced, and it is not linear: the merge filter asks
+	// namespaceMergesDeclaration once per declaration, and that scans the whole
+	// namespace list, so a file with N namespaces and N declarations costs
+	// O(N^2). Measured with the real verb on one 16k-declaration TypeScript
+	// file, this ran 4.4 s past an already-expired budget. Poll the caller's
+	// context through the walk and through the post-walk passes, and return the
+	// caller's error so the relation phase records the degraded scan the same
+	// way it records a timed-out parse.
+	walker := &jsScopeWalker{src: parseSrc, state: state, budget: ctx}
 	walker.walk(root, jsScopeContext{
 		lexStart:  -1,
 		lexEnd:    len(content),
 		funcStart: -1,
 		funcEnd:   len(content),
-	})
+	}, 0)
+	if walker.stopped {
+		return emptyJSScanState(content), fmt.Errorf("tree-sitter scope walk stopped by caller: %w", ctx.Err())
+	}
+	if ctx.Err() != nil {
+		return emptyJSScanState(content), fmt.Errorf("tree-sitter scope walk stopped by caller: %w", ctx.Err())
+	}
 	for _, scope := range state.namespaces {
 		state.namespaceSet[scope.Name] = true
 	}
 	sort.Slice(state.calls, func(i, j int) bool { return state.calls[i].startByte < state.calls[j].startByte })
-	for _, declaration := range walker.declarationBindings {
+	// namespaceMergesDeclaration scans the whole namespace list for every
+	// declaration, so this loop is quadratic exactly when the file declares
+	// namespaces. Poll every iteration in that case -- the poll is cheap beside
+	// the scan it guards -- and every stride otherwise, where the loop is linear
+	// and a per-iteration poll would itself become the dominant cost.
+	mergeIsSuperlinear := len(state.namespaces) > 0
+	for index, declaration := range walker.declarationBindings {
+		if (mergeIsSuperlinear || index%jsScanPollStride == 0) && ctx.Err() != nil {
+			return emptyJSScanState(content), fmt.Errorf("tree-sitter scope walk stopped by caller: %w", ctx.Err())
+		}
 		if state.namespaceMergesDeclaration(declaration) {
 			continue
 		}
@@ -387,10 +444,50 @@ type jsScopeWalker struct {
 	// the namespace-merge filter, which needs the complete namespace list (a
 	// merging namespace may be declared later in the file).
 	declarationBindings []jsDeclarationBinding
+	// budget is the caller's context, polled every jsScanPollStride nodes so a
+	// traversal of a huge tree cannot outlive the caller's context. The parse
+	// that produced the tree is bounded; the walk over it was not.
+	budget  context.Context
+	visited int
+	stopped bool
 }
 
-func (w *jsScopeWalker) walk(node *sitter.Node, ctx jsScopeContext) {
+// jsScanPollStride is how often the scope walk and the post-walk passes consult
+// the caller's context. A context read is far more expensive than one node
+// visit, so polling per node would tax every unbudgeted index; polling per
+// stride keeps the residual at one stride of work.
+const jsScanPollStride = 512
+
+// budgetGone reports whether the caller's context has stopped, latching the
+// answer so the rest of the traversal unwinds without re-reading the context.
+func (w *jsScopeWalker) budgetGone() bool {
+	if w.stopped {
+		return true
+	}
+	if w.budget == nil {
+		return false
+	}
+	w.visited++
+	if w.visited%jsScanPollStride != 0 {
+		return false
+	}
+	if w.budget.Err() != nil {
+		w.stopped = true
+	}
+	return w.stopped
+}
+
+// walk descends the whole relation-phase parse tree, bounded by both the
+// caller's context and maxParseWalkDepth.
+func (w *jsScopeWalker) walk(node *sitter.Node, ctx jsScopeContext, depth int) {
+	if w.budgetGone() {
+		return
+	}
 	if !validNode(node) {
+		return
+	}
+	if depth >= maxParseWalkDepth {
+		w.state.depthTruncated = true
 		return
 	}
 	switch node.Type() {
@@ -436,7 +533,7 @@ func (w *jsScopeWalker) walk(node *sitter.Node, ctx jsScopeContext) {
 		w.addDottedCall(node.ChildByFieldName("constructor"), node.ChildByFieldName("arguments"))
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		w.walk(node.NamedChild(i), ctx)
+		w.walk(node.NamedChild(i), ctx, depth+1)
 	}
 }
 
@@ -595,7 +692,19 @@ func (w *jsScopeWalker) addPatternBindings(pattern *sitter.Node, scopeStart, sco
 // default-value expressions are never entered, so their identifiers cannot
 // leak in as phantom bindings.
 func jsPatternBindingNames(pattern *sitter.Node, src []byte) []string {
-	if !validNode(pattern) {
+	return jsPatternBindingNamesAt(pattern, src, 0)
+}
+
+// depth is capped at maxParseWalkDepth (parser.go). Object/array patterns nest
+// as deeply as the source writes them, and walkEntitiesScoped reaches this
+// through jsEntityParameterNames on a callable's parameter list — a separate
+// recursion from its own, started while the walk is still at the declaration,
+// so the walk's guard cannot protect it. Against the parent commit
+// `function g({a:{a:{…}}}) {}` aborts the process with `fatal error: stack
+// overflow`, frames in jsPatternBindingNames; pinned by
+// TestJSPatternBindingsAreBoundedNotFatal.
+func jsPatternBindingNamesAt(pattern *sitter.Node, src []byte, depth int) []string {
+	if !validNode(pattern) || depth >= maxParseWalkDepth {
 		return nil
 	}
 	switch pattern.Type() {
@@ -608,19 +717,19 @@ func jsPatternBindingNames(pattern *sitter.Node, src []byte) []string {
 	case "formal_parameters", "object_pattern", "array_pattern":
 		var names []string
 		for i := 0; i < int(pattern.NamedChildCount()); i++ {
-			names = append(names, jsPatternBindingNames(pattern.NamedChild(i), src)...)
+			names = append(names, jsPatternBindingNamesAt(pattern.NamedChild(i), src, depth+1)...)
 		}
 		return names
 	case "required_parameter", "optional_parameter":
-		return jsPatternBindingNames(pattern.ChildByFieldName("pattern"), src)
+		return jsPatternBindingNamesAt(pattern.ChildByFieldName("pattern"), src, depth+1)
 	case "assignment_pattern", "object_assignment_pattern":
-		return jsPatternBindingNames(pattern.ChildByFieldName("left"), src)
+		return jsPatternBindingNamesAt(pattern.ChildByFieldName("left"), src, depth+1)
 	case "pair_pattern":
-		return jsPatternBindingNames(pattern.ChildByFieldName("value"), src)
+		return jsPatternBindingNamesAt(pattern.ChildByFieldName("value"), src, depth+1)
 	case "rest_pattern":
 		var names []string
 		for i := 0; i < int(pattern.NamedChildCount()); i++ {
-			names = append(names, jsPatternBindingNames(pattern.NamedChild(i), src)...)
+			names = append(names, jsPatternBindingNamesAt(pattern.NamedChild(i), src, depth+1)...)
 		}
 		return names
 	default:
@@ -632,7 +741,10 @@ func (w *jsScopeWalker) addDottedCall(function, arguments *sitter.Node) {
 	if !validNode(function) || !validNode(arguments) || arguments.Type() != "arguments" {
 		return
 	}
-	parts := jsMemberChainParts(function, w.src)
+	parts, truncated := jsMemberChainPartsAt(function, w.src, 0)
+	if truncated {
+		w.state.depthTruncated = true
+	}
 	if len(parts) < 2 {
 		return
 	}
@@ -644,25 +756,44 @@ func (w *jsScopeWalker) addDottedCall(function, arguments *sitter.Node) {
 // (`A.B.f` -> [A B f]); any non-identifier link (calls, subscripts, `this`,
 // parenthesized receivers) disqualifies the chain.
 func jsMemberChainParts(node *sitter.Node, src []byte) []string {
+	parts, _ := jsMemberChainPartsAt(node, src, 0)
+	return parts
+}
+
+// depth is capped at maxParseWalkDepth (parser.go). A member chain is as long as
+// the source writes it (`a.b.c…z()`), and walk hands this the whole chain from
+// its head — before descending into it — so this recursion is independent of
+// walk's and reaches the stack first: with the ceiling lowered to 16 MiB a
+// 100,000-link chain aborts here while walk itself survives. Truncation reports
+// upward rather than silently returning a short path, because a partial chain
+// would resolve the call to the WRONG target; the reported chain is either
+// complete or refused.
+func jsMemberChainPartsAt(node *sitter.Node, src []byte, depth int) (parts []string, truncated bool) {
+	if depth >= maxParseWalkDepth {
+		return nil, true
+	}
 	switch node.Type() {
 	case "identifier":
-		return []string{node.Content(src)}
+		return []string{node.Content(src)}, false
 	case "member_expression":
 		property := node.ChildByFieldName("property")
 		if !validNode(property) || property.Type() != "property_identifier" {
-			return nil
+			return nil, false
 		}
 		object := node.ChildByFieldName("object")
 		if !validNode(object) {
-			return nil
+			return nil, false
 		}
-		parts := jsMemberChainParts(object, src)
+		parts, truncated := jsMemberChainPartsAt(object, src, depth+1)
+		if truncated {
+			return nil, true
+		}
 		if parts == nil {
-			return nil
+			return nil, false
 		}
-		return append(parts, property.Content(src))
+		return append(parts, property.Content(src)), false
 	default:
-		return nil
+		return nil, false
 	}
 }
 
@@ -683,8 +814,21 @@ func jsEntityParameterNames(node *sitter.Node, src []byte) []string {
 	return jsPatternBindingNames(parameters, src)
 }
 
+// jsFunctionLikeNode finds the callable node an entity's declaration wraps.
+//
+// depth is capped at maxParseWalkDepth (parser.go). It is the sibling descent to
+// jsPatternBindingNames on the very same jsEntityParameterNames call, over the
+// same attacker-supplied subtree, and is bounded with it: no input was found
+// that drives it deep (a declarator whose arrow function is buried under 1M
+// parentheses stops being classified as a callable, so this is never called),
+// but leaving one of the pair unbounded would only relocate the abort if that
+// classification ever changes.
 func jsFunctionLikeNode(node *sitter.Node) *sitter.Node {
-	if !validNode(node) {
+	return jsFunctionLikeNodeAt(node, 0)
+}
+
+func jsFunctionLikeNodeAt(node *sitter.Node, depth int) *sitter.Node {
+	if !validNode(node) || depth >= maxParseWalkDepth {
 		return nil
 	}
 	switch node.Type() {
@@ -694,7 +838,7 @@ func jsFunctionLikeNode(node *sitter.Node) *sitter.Node {
 		return node
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		if found := jsFunctionLikeNode(node.NamedChild(i)); found != nil {
+		if found := jsFunctionLikeNodeAt(node.NamedChild(i), depth+1); found != nil {
 			return found
 		}
 	}
@@ -706,8 +850,8 @@ func jsFunctionLikeNode(node *sitter.Node) *sitter.Node {
 // functions inside a namespace as ordinary, unqualified function symbols, so
 // call resolution needs the source range to distinguish same-named
 // declarations in `namespace A` and `namespace B`.
-func jsNamespaceScopes(fileContent string) []jsNamespaceScope {
-	return newJSScanStateForContent(fileContent).namespaces
+func jsNamespaceScopes(ctx context.Context, fileContent string) []jsNamespaceScope {
+	return newJSScanStateForContent(ctx, fileContent).namespaces
 }
 
 // jsCanonicalNamespaceWithPrefix resolves a dotted receiver path against the

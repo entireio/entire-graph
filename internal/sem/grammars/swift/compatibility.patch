@@ -1,0 +1,241 @@
+diff --git a/grammar.js b/grammar.js
+index 2ee959f..fa1f6bd 100644
+--- a/grammar.js
++++ b/grammar.js
+@@ -87,6 +87,7 @@ if (tree_sitter_version_supports_emoji()) {
+ module.exports = grammar({
+   name: "swift",
+   conflicts: ($) => [
++    [$._unary_expression, $.switch_statement],
+     // @Type(... could either be an annotation constructor invocation or an annotated expression
+     [$.attribute],
+     [$._attribute_argument],
+@@ -261,6 +262,7 @@ module.exports = grammar({
+     // Fake operator that will never get triggered, but follows the sequence of characters for `try!`. Tracked by the
+     // custom scanner so that it can avoid triggering `$.bang` for that case.
+     $._fake_try_bang,
++    $._directive_endif_as_semi,
+   ],
+   inline: ($) => [$._locally_permitted_modifiers],
+   rules: {
+@@ -278,7 +280,7 @@ module.exports = grammar({
+           )
+         )
+       ),
+-    _semi: ($) => choice($._implicit_semi, $._explicit_semi),
++    _semi: ($) => choice($._implicit_semi, $._explicit_semi, alias($._directive_endif_as_semi, $.directive)),
+     shebang_line: ($) => seq($._hash_symbol, "!", /[^\r\n]*/),
+     ////////////////////////////////
+     // Lexical Structure - https://docs.swift.org/swift-book/ReferenceManual/LexicalStructure.html
+@@ -1188,8 +1190,10 @@ module.exports = grammar({
+         PRECS["switch"],
+         seq(
+           "switch",
++          optional($._consume_operator),
+           field("expr", $._expression),
+           "{",
++          repeat(seq(choice($.directive, $.diagnostic), optional($._semi))),
+           repeat($.switch_entry),
+           "}"
+         )
+@@ -1719,7 +1723,7 @@ module.exports = grammar({
+       ),
+ 
+     type_constraints: ($) =>
+-      prec.right(seq($.where_keyword, sep1Opt($.type_constraint, ","))),
++      prec.right(seq($.where_keyword, sep1($.type_constraint, ","))),
+     type_constraint: ($) =>
+       choice($.inheritance_constraint, $.equality_constraint),
+     inheritance_constraint: ($) =>
+@@ -1748,7 +1752,7 @@ module.exports = grammar({
+     _class_member_declarations: ($) =>
+       seq(
+         sep1(
+-          choice($._type_level_declaration, $.directive),
++          choice($._type_level_declaration, $.directive, $.diagnostic),
+           $._class_member_separator
+         ),
+         optional($._class_member_separator)
+@@ -1822,7 +1826,7 @@ module.exports = grammar({
+     enum_class_body: ($) =>
+       seq(
+         "{",
+-        repeat(choice($.enum_entry, $._type_level_declaration, $.directive)),
++        repeat(choice($.enum_entry, $._type_level_declaration, $.directive, $.diagnostic)),
+         "}"
+       ),
+     enum_entry: ($) =>
+@@ -1877,7 +1881,7 @@ module.exports = grammar({
+       seq("{", optional($._protocol_member_declarations), "}"),
+     _protocol_member_declarations: ($) =>
+       seq(
+-        sep1(choice($._protocol_member_declaration, $.directive), $._semi),
++        sep1(choice($._protocol_member_declaration, $.directive, $.diagnostic), $._semi),
+         optional($._semi)
+       ),
+     _protocol_member_declaration: ($) =>
+@@ -2119,7 +2123,7 @@ module.exports = grammar({
+         )
+       ),
+     _locally_permitted_modifiers: ($) =>
+-      repeat1(choice($.attribute, $._locally_permitted_modifier)),
++      repeat1(choice(seq($.attribute, repeat($.directive)), $._locally_permitted_modifier)),
+     parameter_modifiers: ($) => repeat1($.parameter_modifier),
+     _modifier: ($) =>
+       choice($._non_local_scope_modifier, $._locally_permitted_modifier),
+@@ -2223,10 +2227,24 @@ module.exports = grammar({
+             sep1($.integer_literal, "."),
+             ")"
+           ),
+-          seq("canImport", "(", sep1($.simple_identifier, "."), ")"),
++          seq(
++            "canImport", "(", sep1($.simple_identifier, "."),
++            optional(seq(
++              ",", choice("_version", "_underlyingVersion"), ":",
++              choice(sep1($.integer_literal, "."), $.line_string_literal)
++            )),
++            ")"
++          ),
+           seq("targetEnvironment", "(", $.simple_identifier, ")"),
++          seq("_compiler_version", "(", $.line_string_literal, ")"),
++          seq(choice("hasFeature", "hasAttribute", "_pointerBitWidth", "_hasAtomicBitWidth", "_endian", "_runtime"), "(", $.simple_identifier, ")"),
+           $.boolean_literal,
+           $.simple_identifier,
++          // The predicate names remain ordinary -D flags unless a `(` follows.
++          alias(
++            choice("hasFeature", "hasAttribute", "_pointerBitWidth", "_hasAtomicBitWidth", "_endian", "_runtime", "_compiler_version"),
++            $.simple_identifier
++          ),
+           seq("(", $._compilation_condition, ")"),
+           seq("!", $._compilation_condition),
+           seq(
+diff --git a/src/scanner.c b/src/scanner.c
+index 6d53d68..c0cefeb 100644
+--- a/src/scanner.c
++++ b/src/scanner.c
+@@ -4,7 +4,7 @@
+ #include <string.h>
+ #include <wctype.h>
+ 
+-#define TOKEN_COUNT 34
++#define TOKEN_COUNT 35
+ 
+ enum TokenType {
+     BLOCK_COMMENT,
+@@ -40,7 +40,8 @@ enum TokenType {
+     DIRECTIVE_ELSEIF,
+     DIRECTIVE_ELSE,
+     DIRECTIVE_ENDIF,
+-    FAKE_TRY_BANG
++    FAKE_TRY_BANG,
++    DIRECTIVE_ENDIF_AS_SEMI
+ };
+ 
+ #define OPERATOR_COUNT 20
+@@ -807,14 +808,17 @@ static enum ParseDirective eat_whitespace(
+                 // This is a multiline comment. This scanner should be parsing those, so we might want to bail out and
+                 // emit it instead. However, we only want to do that if we haven't advanced through a _single_ line
+                 // comment on the way - otherwise that will get lumped into this.
+-                if (!has_seen_single_comment) {
++                // When a separator is valid, look through the comment first: returning
++                // the comment here would erase the preceding newline. mark_end stays
++                // before the comment so the next scan can emit it separately.
++                if (!has_seen_single_comment && !semi_is_valid) {
+                     lexer->mark_end(lexer);
+                     *symbol_result = multiline_comment_result;
+                     return STOP_PARSING_TOKEN_FOUND;
+                 }
+             } else if (any_comment == STOP_PARSING_END_OF_FILE) {
+                 return STOP_PARSING_END_OF_FILE;
+-            } else if (any_comment == CONTINUE_PARSING_SLASH_CONSUMED) {
++            } else if (any_comment == CONTINUE_PARSING_SLASH_CONSUMED && lexer->lookahead != '/') {
+                 // We accidentally ate a slash -- we should actually bail out, say we saw nothing, and let the next pass
+                 // take it from after the newline.
+                 return CONTINUE_PARSING_SLASH_CONSUMED;
+@@ -825,7 +829,7 @@ static enum ParseDirective eat_whitespace(
+                 // the second one of those and it means we have a single-line comment.
+                 has_seen_single_comment = true;
+                 while (lexer->lookahead != '\n' && lexer->lookahead != '\0') {
+-                    lexer->advance(lexer, true);
++                    lexer->advance(lexer, false);
+                 }
+             } else if (iswspace(lexer->lookahead)) {
+                 // We didn't see any type of comment - in fact, we saw an operator that we don't normally treat as an
+@@ -836,7 +840,16 @@ static enum ParseDirective eat_whitespace(
+             // If we skipped through some comment, we're at whitespace now, so advance.
+             while(iswspace(lexer->lookahead)) {
+                 any_comment = CONTINUE_PARSING_NOTHING_FOUND; // We're advancing, so clear out the comment
+-                lexer->advance(lexer, true);
++                lexer->advance(lexer, false);
++            }
++        }
++
++        // The check below for characters that suppress the semi only sees the first character after the newline,
++        // which here was the comment's `/`. Apply it to what follows the comment instead, except for `{`: unlike
++        // the others it can start a statement, so a commented closure after a declaration must keep its semi.
++        for (int i = 0; i < NON_CONSUMING_CROSS_SEMI_CHAR_COUNT; i++) {
++            if (NON_CONSUMING_CROSS_SEMI_CHARS[i] == lexer->lookahead && lexer->lookahead != '{') {
++                return STOP_PARSING_NOTHING_FOUND;
+             }
+         }
+ 
+@@ -906,6 +919,10 @@ const enum TokenType DIRECTIVE_SYMBOLS[DIRECTIVE_COUNT] = {
+     DIRECTIVE_ENDIF
+ };
+ 
++static bool is_identifier_continuation(int32_t c) {
++    return c == '_' || c >= 0x80 || (c >= 0 && c < 0x80 && iswalnum(c));
++}
++
+ static enum TokenType find_possible_compiler_directive(TSLexer *lexer) {
+     bool possible_directives[DIRECTIVE_COUNT];
+     for (int dir_idx = 0; dir_idx < DIRECTIVE_COUNT; dir_idx++) {
+@@ -922,8 +939,13 @@ static enum TokenType find_possible_compiler_directive(TSLexer *lexer) {
+ 
+             uint8_t expected_char = DIRECTIVES[dir_idx][str_idx];
+             if (expected_char == '\0') {
+-                full_match = dir_idx;
+-                lexer->mark_end(lexer);
++                // `#elsewhere` and `#endifx` are freestanding macros, not directives.
++                if (!is_identifier_continuation(lexer->lookahead)) {
++                    full_match = dir_idx;
++                    lexer->mark_end(lexer);
++                }
++                possible_directives[dir_idx] = false;
++                continue;
+             }
+ 
+             if (expected_char != lexer->lookahead) {
+@@ -962,7 +984,7 @@ static bool eat_raw_str_part(
+     enum TokenType *symbol_result
+ ) {
+     uint32_t hash_count = state->ongoing_raw_str_hash_count;
+-    if (!valid_symbols[RAW_STR_PART]) {
++    if (!valid_symbols[RAW_STR_PART] && !valid_symbols[DIRECTIVE_ENDIF_AS_SEMI]) {
+         return false;
+     } else if (hash_count == 0) {
+         // If this is a raw_str_part, it's the first one - look for hashes
+@@ -976,11 +998,22 @@ static bool eat_raw_str_part(
+         }
+ 
+         if (lexer->lookahead == '"') {
++            if (!valid_symbols[RAW_STR_PART]) {
++                return false;
++            }
+             advance(lexer);
+         } else if (hash_count == 1) {
+             lexer->mark_end(lexer);
+             *symbol_result = find_possible_compiler_directive(lexer);
+-            return true;
++            // Swift permits an inline closing directive after an expression.
++            // Keep this separate from DIRECTIVE_ENDIF: making the normal
++            // directive valid at every separator would suppress newlines
++            // before unrelated #if directives in eat_whitespace.
++            if (*symbol_result == DIRECTIVE_ENDIF && !valid_symbols[DIRECTIVE_ENDIF]
++                && valid_symbols[DIRECTIVE_ENDIF_AS_SEMI]) {
++                *symbol_result = DIRECTIVE_ENDIF_AS_SEMI;
++            }
++            return valid_symbols[*symbol_result];
+         } else {
+             return false;
+         }

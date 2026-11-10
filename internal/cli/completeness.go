@@ -19,10 +19,12 @@ import (
 //
 // A failure is only actionable for a query if it could have removed a fact the
 // query would have used. The unit of that relevance the graph actually knows is
-// LANGUAGE: relations do not cross language boundaries here, so a Python parse
-// error cannot hide a Rust caller. Failures outside the query's language are
-// therefore reported as one collapsed line, not itemized, and the headline says
-// whether the query's own language is clean.
+// LANGUAGE: a Python parse error cannot hide a Rust caller. Failures outside the
+// query's language are therefore reported as one collapsed line, not itemized,
+// and the headline says whether the query's own language is clean.
+//
+// The exception is that a few languages resolve into each other, so the label is
+// not always the boundary — see sameCompletenessLanguageFamily.
 
 // maxScopedDiagnostics caps how many in-scope diagnostics are itemized. In-scope
 // failures ARE actionable, so they keep the itemized treatment.
@@ -116,7 +118,13 @@ func diagnosticInScope(queryLanguage, fileLanguage, filePath string) bool {
 		// unknown, so it cannot be ruled out.
 		return true
 	}
-	return strings.EqualFold(fileLanguage, queryLanguage)
+	return sameCompletenessLanguageFamily(fileLanguage, queryLanguage)
+}
+
+// sameCompletenessLanguageFamily uses the provider's resolution compatibility
+// in both directions: a failed file can hide a caller or a callee of the query.
+func sameCompletenessLanguageFamily(left, right string) bool {
+	return sem.LanguagesMayShareRelations(left, right)
 }
 
 // rankedLanguageNames renders "Python 271, JSON 2" style breakdowns, most

@@ -35,6 +35,20 @@ func TestWriteTextColorCanBeForced(t *testing.T) {
 	}
 }
 
+func TestWriteTextTitleUsesCLIPaletteAccent(t *testing.T) {
+	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "1")
+	t.Setenv("NO_COLOR", "")
+
+	var out bytes.Buffer
+	WriteText(&out, sampleTextResult())
+	if !strings.Contains(out.String(), "\x1b[1;35mSemantic changes\x1b[0m") {
+		t.Fatalf("title should render in the CLI palette accent (bold magenta):\n%q", out.String())
+	}
+	if strings.Contains(out.String(), "38;2;") {
+		t.Fatalf("output should not contain truecolor sequences; base16 slots follow the terminal theme:\n%q", out.String())
+	}
+}
+
 func TestNoColorOverridesForcedColor(t *testing.T) {
 	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "1")
 	t.Setenv("NO_COLOR", "1")
@@ -119,6 +133,33 @@ func TestWriteTextOmitsWarningSectionWhenNone(t *testing.T) {
 	WriteText(&out, sampleTextResult())
 	if strings.Contains(out.String(), "Warnings") {
 		t.Fatalf("unexpected Warnings section:\n%s", out.String())
+	}
+}
+
+// TestDependentSuffixSilentForConfirmedAndPartial pins the "fully resolved (or merely
+// heuristic) results render exactly as before" half of the evidence-state contract: the
+// dependents suffix must carry no new text for either the zero-value state (existing Result
+// literals built before DependentsEvidence existed) or the documented default Partial state, so
+// an ordinary diff reads byte-for-byte as it always has.
+func TestDependentSuffixSilentForConfirmedAndPartial(t *testing.T) {
+	t.Parallel()
+	for _, state := range []EvidenceState{"", EvidenceConfirmed, EvidencePartial} {
+		change := EntityChange{Type: "body_changed", DependentsCount: 2, DependentsEvidence: state}
+		if got := dependentSuffix(change); got != " (2 dependents)" {
+			t.Fatalf("dependentSuffix(evidence=%q) = %q, want %q", state, got, " (2 dependents)")
+		}
+	}
+}
+
+// TestDependentSuffixFlagsRequiresVerification is the other half: a scan degraded enough to hit
+// RequiresVerification (see dependentsEvidenceState) must visibly say so, because the count may
+// be missing candidates entirely rather than merely being the scan's ordinary heuristic guess.
+func TestDependentSuffixFlagsRequiresVerification(t *testing.T) {
+	t.Parallel()
+	change := EntityChange{Type: "body_changed", DependentsCount: 2, DependentsEvidence: EvidenceRequiresVerification}
+	got := dependentSuffix(change)
+	if !strings.Contains(got, "(2 dependents)") || !strings.Contains(got, "requires_verification") {
+		t.Fatalf("dependentSuffix(evidence=requires_verification) = %q, want the count plus a requires_verification flag", got)
 	}
 }
 

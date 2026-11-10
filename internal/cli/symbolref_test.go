@@ -321,7 +321,7 @@ func TestNoFocusMatchMessageOffersAWorkingNextStep(t *testing.T) {
 	}{
 		{
 			name: "bare name", query: "Missing",
-			want: []string{`No symbols matched "Missing"`, "entire graph search"},
+			want: []string{`No symbols matched "Missing"`, "entire graph query"},
 		},
 		{
 			name: "narrowed by file", query: "Missing", file: "a.go",

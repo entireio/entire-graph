@@ -60,49 +60,49 @@ var languageMatrix = []languageFixture{
 	{
 		dir:     "cpp",
 		symbols: []string{"class:Ledger", "function:LedgerDouble"},
-		// A stack-allocated receiver (`Ledger ledger;` — C++'s default
-		// construction syntax) is not type-inferred, so `ledger.Add(amount)`
-		// resolves to nothing. `Ledger l = Ledger();` and `new Ledger()` both do
-		// resolve, so this is a hole in declaration parsing, not in C++ receiver
-		// resolution as a whole.
+		// The stack-allocated receiver (`Ledger ledger;`) is now typed, but this
+		// fixture is laid out the way C++ is normally written: the method is
+		// DECLARED in the class body and DEFINED out of line as
+		// `int Ledger::Add(...)`. Neither half yields a container-qualified
+		// `Ledger.Add` method — the in-class declaration is not extracted at
+		// all, and the out-of-line definition is emitted as a top-level
+		// `function:Add` — so the typed receiver has no method to resolve to.
+		// A class with an inline method body does resolve
+		// (TestCPlusPlusDefaultConstructedReceiverResolvesCalls), which is what
+		// isolates the remaining gap to method-symbol qualification rather than
+		// to receiver typing.
 		relations: []string{"DEFINES", "CONTAINS", "USES_TYPE"},
-		callsGap:  "a default-constructed C++ stack receiver (`Ledger ledger;`) carries no inferred type, so its method calls resolve to nothing",
+		callsGap:  "a C++ method declared in the class body and defined out of line as `Type::method` produces no container-qualified method symbol, so a typed receiver has nothing to resolve to",
+		// The cause reduces to a MISSING SYMBOL, so it is read from the
+		// fixture's own extraction rather than from a predicate over the
+		// provider: while the class's declared `Add` yields no method symbol,
+		// the typed receiver has nothing to resolve to and the gap holds.
+		//
+		// This is what keeps the entry order-independent. The commit that
+		// extracts in-class method declarations makes `method:Add` appear and
+		// retires this entry by doing so, on whatever branch it lands, without
+		// having to edit this file. Measured: on this branch the fixture yields
+		// class:Ledger, function:Add, function:LedgerDouble, method:total_ and
+		// no CALLS; with in-class declarations extracted it yields method:Add
+		// and CALLS. Naming the missing symbol rather than the missing CALLS is
+		// deliberate — it claims the cause, so a change that produced CALLS by
+		// some other route would fail here instead of quietly retiring a gap
+		// whose stated reason had not been addressed.
+		callsGapHolds: func(got languageMatrixResult) bool { return !got.symbols["method:Add"] },
 	},
 	{dir: "csharp", symbols: []string{"class:Ledger", "class:LedgerHelper", "field:Total", "method:Add", "method:Double"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "cue", symbols: []string{"field:#Ledger", "field:#Add", "field:ledger"}, relations: []string{"DEFINES", "CONTAINS"}},
 	{dir: "dart", symbols: []string{"class:Ledger", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "elixir", symbols: []string{"module:Ledger", "method:add", "method:double"}, relations: []string{"DEFINES", "CONTAINS", "CALLS"}},
 	{dir: "erlang", symbols: []string{"module:ledger", "struct:ledger", "function:add", "function:double"}, relations: []string{"DEFINES", "CALLS"}},
-	{
-		dir:     "fsharp",
-		symbols: []string{"module:Ledger", "type:Ledger", "function:add", "function:double"},
-		// F# applies functions by juxtaposition (`add ledger amount`), which no
-		// scanner reads: the dotted scanners need a `.` and the generic scanner
-		// needs `name(`. Resolving it needs an application parser.
-		relations: []string{"DEFINES", "CONTAINS", "PARAM_TYPE", "USES_TYPE"},
-		callsGap:  "F# function application by juxtaposition (`add ledger amount`) has no scanner, so idiomatic F# call sites are invisible",
-	},
+	{dir: "fsharp", symbols: []string{"module:Ledger", "type:Ledger", "function:add", "function:double"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "PARAM_TYPE", "USES_TYPE"}},
 	{dir: "go", symbols: []string{"type:Ledger", "field:Total", "method:Add", "function:LedgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "USES_TYPE", "READS_FIELD"}},
 	{dir: "groovy", symbols: []string{"class:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "haskell", symbols: []string{"type:Ledger", "function:add", "function:double"}, relations: []string{"DEFINES", "CALLS", "PARAM_TYPE", "USES_TYPE"}},
 	{dir: "hcl", symbols: []string{"block:region", "block:ledger", "block:ledger_bucket"}, relations: []string{"DEFINES", "CONFIGURES", "RESOURCE_DEPENDS_ON"}},
 	{dir: "java", symbols: []string{"class:Ledger", "field:total", "method:add", "method:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "javascript", symbols: []string{"class:Ledger", "method:constructor", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
-	{
-		dir:     "julia",
-		symbols: []string{"module:Ledgers", "struct:Ledger", "method:add", "method:double"},
-		// Idiomatic Julia wraps a package in `module ... end`, which makes every
-		// definition module-qualified and therefore emitted as a method. Bare
-		// `add(...)` — Julia's only call syntax — is excluded from resolving to a
-		// method, so a module-scoped package produces no same-file CALLS.
-		relations: []string{"DEFINES", "CONTAINS", "CONSTRUCTS", "PARAM_TYPE", "USES_TYPE"},
-		callsGap:  "a Julia definition inside `module ... end` is emitted as a method, and bare calls are barred from resolving to methods",
-		// The whole gap reduces to one rule: bare-call resolution skips method
-		// targets for Julia. Reading it here rather than restating its
-		// consequence means the fix that admits Julia retires this entry on its
-		// own, and that a wrong diagnosis is caught instead of recorded.
-		callsGapHolds: func(languageMatrixResult) bool { return !nameCallMayTargetMethod("Julia") },
-	},
+	{dir: "julia", symbols: []string{"module:Ledgers", "struct:Ledger", "method:add", "method:double"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS", "PARAM_TYPE", "USES_TYPE"}},
 	{dir: "kotlin", symbols: []string{"class:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "lua", symbols: []string{"function:new", "function:add", "function:ledger_double"}, relations: []string{"DEFINES", "CALLS"}},
 	{

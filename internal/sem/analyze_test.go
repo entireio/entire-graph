@@ -1268,7 +1268,7 @@ func TestCompareEntitiesDisambiguatesSameNameOverloads(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1296,7 +1296,7 @@ func TestCompareEntitiesDetectsSecondOverloadEdit(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(object)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1318,7 +1318,7 @@ func TestCompareEntitiesSingleEntityUnchangedBehavior(t *testing.T) {
 		{Kind: "function", Name: "validate", Signature: "validate(token, issuer)", StartLine: 1},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1344,7 +1344,7 @@ func TestCompareEntitiesAddedOverloadReportedAsAdded(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(bool)", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on stable overloads: %#v", changes)
 	}
@@ -1373,7 +1373,7 @@ func TestCompareEntitiesRemovedOverloadReported(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on stable overloads: %#v", changes)
 	}
@@ -1404,7 +1404,7 @@ func TestCompareEntitiesTrueDuplicatesEditOne(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h2", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
 	}
@@ -1431,7 +1431,7 @@ func TestCompareEntitiesDuplicateInsertionPreservesExistingBodies(t *testing.T) 
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h2", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 {
 		t.Fatalf("duplicate insertion caused survivor churn: changes=%#v removed=%#v", changes, removed)
 	}
@@ -1454,7 +1454,7 @@ func TestCompareEntitiesRepeatedDuplicateInsertionPreservesContentClass(t *testi
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h1", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 || len(added) != 1 || added[0].BodyHash != "h0" {
 		t.Fatalf("unexpected duplicate multiset diff: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1473,7 +1473,7 @@ func TestCompareEntitiesDuplicateReorderUsesBodyBeforeFingerprint(t *testing.T) 
 		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h1", Fingerprint: "shared", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("duplicate reorder must be inert: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1491,7 +1491,7 @@ func TestCompareEntitiesExactSignatureOutranksSharedFingerprint(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", Fingerprint: "shared", StartLine: 1},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(added) != 0 {
 		t.Fatalf("exact-signature survivor caused churn: changes=%#v added=%#v", changes, added)
 	}
@@ -1513,7 +1513,7 @@ func TestCompareEntitiesExactSignaturesOutrankSwappedBodies(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(string)", BodyHash: "int-body", Fingerprint: "int-body", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 || len(changes) != 2 {
 		t.Fatalf("unexpected swapped-body diff: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1537,7 +1537,7 @@ func TestCompareEntitiesRemovalAndSignatureEditMatchByFingerprint(t *testing.T) 
 		{Kind: "method", Name: "C.F", Signature: "F(object)", BodyHash: "new-body", Fingerprint: "survivor", StartLine: 1},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(added) != 0 {
 		t.Fatalf("unexpected added overloads: %#v", added)
 	}
@@ -1568,7 +1568,7 @@ func TestCompareEntitiesReorderedSignatureEditsMatchUniqueFingerprints(t *testin
 		{Kind: "method", Name: "C.F", Signature: "F(long)", BodyHash: "new-a", Fingerprint: "a", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(removed) != 0 || len(added) != 0 || len(changes) != 2 {
 		t.Fatalf("unexpected reordered edit diff: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1619,7 +1619,7 @@ func TestCompareEntitiesRemoveFirstOverloadNoCascade(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(bool)", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on surviving overloads: %#v", changes)
 	}
@@ -1648,7 +1648,7 @@ func TestCompareEntitiesMidListInsertOnlyAdded(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(bool)", StartLine: 9},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 {
 		t.Fatalf("unexpected changes on stable overloads: %#v", changes)
 	}
@@ -1677,7 +1677,7 @@ func TestCompareEntitiesReorderedOverloadsNoChanges(t *testing.T) {
 		{Kind: "method", Name: "C.F", Signature: "F(int)", BodyHash: "hi", StartLine: 5},
 	}
 
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	if len(changes) != 0 || len(removed) != 0 || len(added) != 0 {
 		t.Fatalf("reorder must be inert: changes=%#v removed=%#v added=%#v", changes, removed, added)
 	}
@@ -1921,6 +1921,103 @@ func TestAnalyzeGitRangeBudgetExceededEmitsPartialResult(t *testing.T) {
 		if !skipped[want] {
 			t.Fatalf("skipped files %v missing %q", skipped, want)
 		}
+	}
+}
+
+// TestAnalyzeGitRangeBudgetStopsInsideOnePrimeWindow pins that the budget is
+// tested per file, not per metadata window.
+//
+// The sequential parse loop tested it before every file. When the loop became a
+// worker pipeline the test moved to the top of each 128-file window, so a
+// deadline that expired inside a window let the whole rest of that window parse
+// and reported none of it as skipped. Every other budget test uses a deadline
+// that expires before the first window, which the window-level test still
+// catches, so none of them saw it.
+//
+// The deadline is crossed from the progress callback rather than by waiting on
+// real parse work: the callback knows the elapsed time the event carries, so it
+// can sleep exactly past MaxDuration and the stop lands mid-window on any host.
+func TestAnalyzeGitRangeBudgetStopsInsideOnePrimeWindow(t *testing.T) {
+	const (
+		files = analyzeMetadataPrimeFiles
+		// Large enough that tree resolution, discovery and priming 256 paths
+		// cannot spend it before the window opens, which would stop the parse at
+		// index 0 through the window-level test and prove nothing. The callback
+		// sleeps out whatever of it remains, so the run costs about this much
+		// wall clock however little of it the setup used.
+		maxDuration = 2 * time.Second
+	)
+
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	for i := range files {
+		write(t, repo, fmt.Sprintf("mod%03d.py", i), fmt.Sprintf("def handler%03d(value):\n    return value\n", i))
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+	for i := range files {
+		write(t, repo, fmt.Sprintf("mod%03d.py", i), fmt.Sprintf("def handler%03d(value, extra=None):\n    return value\n", i))
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change")
+	head := rev(t, repo, "HEAD")
+
+	slept := false
+	acceptedBeforeDeadline := 0
+	result, err := AnalyzeGitRangeWithOptions(t.Context(), repo, base, head, nil, AnalyzeOptions{
+		MaxDuration: maxDuration,
+		Progress: func(event AnalyzeProgressEvent) {
+			if slept || event.Phase != "parse" || event.FilesDone == 0 {
+				return
+			}
+			slept = true
+			// This result is already being reduced. Later buffered results
+			// must be rejected even if their workers finished before we sleep.
+			acceptedBeforeDeadline = event.FilesDone + 1
+			if remaining := maxDuration - event.Elapsed; remaining > 0 {
+				time.Sleep(remaining + 100*time.Millisecond)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("budget exhaustion must not error, got %v", err)
+	}
+
+	// The dependents scan runs whatever the budget did and reports its own
+	// early stop under the same code, so counting every W_ANALYSIS_BUDGET_EXCEEDED
+	// overcounts the skipped files by one. FilePath is what separates a per-file
+	// skip from that whole-phase warning.
+	warned := 0
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_ANALYSIS_BUDGET_EXCEEDED" && warning.FilePath != "" {
+			warned++
+		}
+	}
+	// A host slow enough to spend the budget on the files before the first
+	// forced progress event crosses the deadline on its own, and stops for the
+	// right reason without the callback ever running. Only a run that reported
+	// nothing skipped needs to distinguish the two: with the deadline crossed it
+	// is the defect, without it the test never armed itself.
+	if warned == 0 {
+		if !slept {
+			t.Fatal("no in-window parse progress event fired and no file was skipped: the deadline was never crossed, so this run proves nothing")
+		}
+		t.Fatalf("budget expired inside the window but no file was reported skipped; %d/%d files analyzed", len(result.Files), files)
+	}
+	// A stop at index 0 would mean the deadline expired before the window began,
+	// which the window-level test already covers and which would let this test
+	// pass without exercising the per-file one.
+	if warned >= files {
+		t.Fatalf("every file was reported skipped (%d), so the stop was not mid-window", warned)
+	}
+	if len(result.Files)+warned > files {
+		t.Fatalf("analyzed %d and skipped %d exceeds %d changed files", len(result.Files), warned, files)
+	}
+	if slept && len(result.Files) > acceptedBeforeDeadline {
+		t.Fatalf("accepted %d files after the ordered reduction budget expired at %d", len(result.Files), acceptedBeforeDeadline)
 	}
 }
 
@@ -2354,5 +2451,317 @@ func TestAnalyzeGitRangeRenameAcrossLanguagesReportsTheHeadLanguage(t *testing.T
 	}
 	if got := result.Files[0].Language; got != "TypeScript" {
 		t.Fatalf("language = %q, want TypeScript: the head path is what the graph indexes", got)
+	}
+}
+
+// TestAnalyzeGitRangeSkipsSymlinkTreeEntries pins that a symbolic link is never
+// analyzed as source. Git stores a symlink as a blob whose bytes are its target
+// path, so reading content alone cannot tell `alias.py` (holding "pkg/real.py")
+// apart from a one-line Python file: it used to yield a phantom module entity,
+// while `alias.go` used to report E_PARSE_ERROR against a file that is not
+// source at all.
+func TestAnalyzeGitRangeSkipsSymlinkTreeEntries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checkouts do not preserve symlink tree entries")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	write(t, repo, "pkg/real.go", "package pkg\n\nfunc Real() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	for _, link := range []struct{ name, target string }{
+		{name: "alias.py", target: "pkg/real.py"},
+		{name: "alias.go", target: "pkg/real.go"},
+	} {
+		if err := os.Symlink(link.target, filepath.Join(repo, link.name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "add symlinks")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("symlink tree entries produced entity deltas: %#v", result.Files)
+	}
+	marked := map[string]bool{}
+	for _, warning := range result.Warnings {
+		if warning.Code == "E_PARSE_ERROR" {
+			t.Fatalf("symlink reported as a parse failure: %#v", warning)
+		}
+		if warning.Code == "W_UNSUPPORTED_FILE" && strings.Contains(warning.EffectOnCompleteness, "symbolic link") {
+			marked[warning.FilePath] = true
+		}
+	}
+	for _, path := range []string{"alias.py", "alias.go"} {
+		if !marked[path] {
+			t.Fatalf("no symlink completeness marker for %s: %#v", path, result.Warnings)
+		}
+	}
+}
+
+// TestAnalyzeGitRangeSkipsDeletedSymlink covers the base side of the same
+// classification: removing a symlink must not be reported as removing source.
+func TestAnalyzeGitRangeSkipsDeletedSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checkouts do not preserve symlink tree entries")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	if err := os.Symlink("pkg/real.py", filepath.Join(repo, "alias.py")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	if err := os.Remove(filepath.Join(repo, "alias.py")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "drop symlink")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("deleted symlink produced entity deltas: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeReportsTheFileSideOfASymlinkTypeChange covers the shape
+// where a path changes TYPE. Git reports it as status `T` with one mode 100644
+// and the other 120000, and the symlink guard's two conditions are independent,
+// so a `T` entry satisfied one of them and skipped BOTH sides. The side that is
+// not a link is ordinary source: replacing a file with a link really does remove
+// its symbols, and replacing a link with a file really does add them. Skipping
+// it made a symbol that genuinely left the tree invisible in the diff.
+func TestAnalyzeGitRangeReportsTheFileSideOfASymlinkTypeChange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checkouts do not preserve symlink tree entries")
+	}
+	newRepo := func(t *testing.T) string {
+		t.Helper()
+		repo := t.TempDir()
+		git(t, repo, "init")
+		git(t, repo, "config", "user.name", "Entire Graph Test")
+		git(t, repo, "config", "user.email", "graph@example.com")
+		write(t, repo, "pkg/real.py", "def real(value):\n    return value\n")
+		return repo
+	}
+	changeNames := func(t *testing.T, result Result) (string, []string) {
+		t.Helper()
+		if len(result.Files) != 1 {
+			t.Fatalf("want exactly one changed file, got %#v", result.Files)
+		}
+		var names []string
+		for _, change := range result.Files[0].Changes {
+			names = append(names, change.Type+":"+change.Name)
+		}
+		return result.Files[0].Status, names
+	}
+
+	t.Run("regular file replaced by a symlink removes its symbols", func(t *testing.T) {
+		repo := newRepo(t)
+		write(t, repo, "alias.py", "def will_vanish(value):\n    return value\n")
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "initial")
+		base := rev(t, repo, "HEAD")
+
+		if err := os.Remove(filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("pkg/real.py", filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "replace the file with a link")
+
+		result, err := AnalyzeGitRange(context.Background(), repo, base, rev(t, repo, "HEAD"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, names := changeNames(t, result)
+		if status != "T" {
+			t.Errorf("status %q, want the type change Git reported (T)", status)
+		}
+		if len(names) != 1 || names[0] != "removed:will_vanish" {
+			t.Errorf("changes %v, want [removed:will_vanish]", names)
+		}
+		// The link side is still unanalyzable and must say so.
+		if !hasSymlinkWarning(result, "alias.py") {
+			t.Errorf("no symbolic-link warning for the head side: %#v", result.Warnings)
+		}
+	})
+
+	t.Run("symlink replaced by a regular file adds its symbols", func(t *testing.T) {
+		repo := newRepo(t)
+		if err := os.Symlink("pkg/real.py", filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "initial")
+		base := rev(t, repo, "HEAD")
+
+		if err := os.Remove(filepath.Join(repo, "alias.py")); err != nil {
+			t.Fatal(err)
+		}
+		write(t, repo, "alias.py", "def now_real(value):\n    return value\n")
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-m", "replace the link with a file")
+
+		result, err := AnalyzeGitRange(context.Background(), repo, base, rev(t, repo, "HEAD"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, names := changeNames(t, result)
+		if status != "T" {
+			t.Errorf("status %q, want the type change Git reported (T)", status)
+		}
+		if len(names) != 1 || names[0] != "added:now_real" {
+			t.Errorf("changes %v, want [added:now_real]", names)
+		}
+		if !hasSymlinkWarning(result, "alias.py") {
+			t.Errorf("no symbolic-link warning for the base side: %#v", result.Warnings)
+		}
+	})
+}
+
+func hasSymlinkWarning(result Result, path string) bool {
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_UNSUPPORTED_FILE" && warning.FilePath == path &&
+			strings.Contains(warning.Detail, "symbolic link") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAnalyzeGitRangeStillAnalyzesRegularFiles guards the classification from
+// over-reaching: an ordinary blob must keep producing its entity delta.
+func TestAnalyzeGitRangeStillAnalyzesRegularFiles(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "pkg/real.py", "def only_once(value, strict=False):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change signature")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "pkg/real.py" {
+		t.Fatalf("regular file was skipped: %#v", result.Files)
+	}
+}
+
+// TestAnalyzeGitRangeClassifiesSymlinkFromTreeModeAlone pins that the symlink
+// classification is decided by the Git tree entry mode and nothing else.
+//
+// The two tests above build real symlinks and so skip on Windows, which leaves
+// the classification untested on the one platform that cannot create them. They
+// are also blind to `core.symlinks=false`, where Git materializes a tracked
+// symlink as an ordinary file holding its target path — a checkout in which an
+// lstat-based check reports "regular file" on a machine perfectly capable of
+// making symlinks.
+//
+// This builds the symlink straight into the index with `update-index --cacheinfo
+// 120000`, so no filesystem link exists anywhere and the mode is the only
+// available signal. It runs on every platform.
+//
+// Addition and deletion are measured over separate ranges on purpose. Both
+// travel through admitChangedFiles rewrites that rebuild the entry rather than
+// forwarding it, and each rewrite has to carry its own side's mode; a single
+// range holding both would let --find-renames pair them into one "R" that keeps
+// the original entry intact and exercises neither rewrite.
+func TestAnalyzeGitRangeClassifiesSymlinkFromTreeModeAlone(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "core.symlinks", "false")
+
+	// The blob of a symlink is its target path. "pkg/real.py" parses cleanly as
+	// Python, so a content-based reader sees a module here rather than a link.
+	target := gitInput(t, repo, "pkg/real.py", "hash-object", "-w", "--stdin")
+
+	write(t, repo, "pkg/real.py", "def only_once(value):\n    return value\n")
+	git(t, repo, "add", "pkg/real.py")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+target+",gone.py")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	git(t, repo, "update-index", "--force-remove", "gone.py")
+	git(t, repo, "commit", "-m", "remove symlink")
+	removed := rev(t, repo, "HEAD")
+
+	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+target+",added.py")
+	git(t, repo, "commit", "-m", "add symlink")
+	added := rev(t, repo, "HEAD")
+
+	for _, testCase := range []struct {
+		name string
+		base string
+		head string
+		path string
+		raw  string
+	}{
+		{name: "deleted", base: base, head: removed, path: "gone.py", raw: ":120000 000000"},
+		{name: "added", base: removed, head: added, path: "added.py", raw: ":000000 120000"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			// Guard the fixture: without a 120000 tree entry of the expected
+			// status this would pass for the wrong reason.
+			raw := gitInput(t, repo, "", "diff", "--raw", "--find-renames", testCase.base, testCase.head)
+			if !strings.Contains(raw, testCase.raw) || !strings.Contains(raw, testCase.path) {
+				t.Fatalf("fixture did not produce a %s symlink tree entry for %s: %s", testCase.name, testCase.path, raw)
+			}
+
+			result, err := AnalyzeGitRange(context.Background(), repo, testCase.base, testCase.head, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range result.Files {
+				if file.Path == testCase.path {
+					t.Fatalf("symlink classified as source from mode alone: %#v", file)
+				}
+			}
+			marked := false
+			for _, warning := range result.Warnings {
+				if warning.Code == "E_PARSE_ERROR" {
+					t.Fatalf("symlink reported as a parse failure: %#v", warning)
+				}
+				if warning.Code == "W_UNSUPPORTED_FILE" &&
+					warning.FilePath == testCase.path &&
+					strings.Contains(warning.EffectOnCompleteness, "symbolic link") {
+					marked = true
+				}
+			}
+			if !marked {
+				t.Fatalf("no symlink completeness marker for %s: %#v", testCase.path, result.Warnings)
+			}
+		})
 	}
 }

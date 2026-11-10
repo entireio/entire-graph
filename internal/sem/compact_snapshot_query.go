@@ -12,8 +12,13 @@ type CompactSnapshotIndex struct {
 	Snapshot              ProviderSnapshot
 	Summary               SnapshotSummary
 	CanonicalSemanticHash string
-	symbolMatches         map[string][]int
-	relationsByFrom       map[string][]int
+	// SchemaWarnings carries the ADR 0001 tolerant-reader warnings for this
+	// artifact. An unreadable major is an error from LoadCompactSnapshot; a
+	// readable major written under a NEWER minor loads, and says so here, because
+	// the additive facts that minor introduced were not read.
+	SchemaWarnings  []ProviderWarning
+	symbolMatches   map[string][]int
+	relationsByFrom map[string][]int
 }
 
 type CompactSnapshotQuery struct {
@@ -30,7 +35,7 @@ func LoadCompactSnapshot(in io.Reader) (*CompactSnapshotIndex, error) {
 	index := &CompactSnapshotIndex{symbolMatches: map[string][]int{}, relationsByFrom: map[string][]int{}}
 	hasher := NewSnapshotSemanticHasher()
 	seenHeader, seenSummary := false, false
-	err := DecodeCompactSnapshot(in, func(record any) error {
+	warnings, err := DecodeCompactSnapshot(in, func(record any) error {
 		if err := hasher.Add(record); err != nil {
 			return err
 		}
@@ -57,6 +62,10 @@ func LoadCompactSnapshot(in io.Reader) (*CompactSnapshotIndex, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The decoder is the single place the tolerant-reader warnings are derived,
+	// so this consumes them rather than recomputing the same condition from the
+	// header a second time.
+	index.SchemaWarnings = append(index.SchemaWarnings, warnings...)
 	if !seenHeader || !seenSummary {
 		return nil, errorsNewCompactLoad()
 	}

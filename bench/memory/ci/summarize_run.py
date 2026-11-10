@@ -570,7 +570,23 @@ def audit_question_records(results_dir: str, run_id: str) -> QuestionRecordAudit
                 record_errors.append(
                     "`cutoff_results.top_200.score` must be the number 0 or 1"
                 )
-            if judgment in ("CORRECT", "WRONG") and score_valid:
+            # The judge's rationale is the only field that separates a real
+            # verdict from a judge failure. When every structured judge attempt
+            # fails the harness falls back to an empty payload, which serializes
+            # with exactly the shape of a legitimate negative verdict -- a
+            # generated answer, judgment WRONG, score 0 -- and no rationale.
+            # Accepting that shape counted a judge outage as a scored wrong
+            # answer, so the outage depressed accuracy while the run still
+            # declared itself scoreable, which is the failure this gate exists
+            # to catch. Require the payload the judge only writes when it ran.
+            reason = top_200.get("reason")
+            reason_valid = isinstance(reason, str) and bool(reason.strip())
+            if not reason_valid:
+                record_errors.append(
+                    "`cutoff_results.top_200.reason` must be a non-empty string "
+                    "recording the judge's verdict"
+                )
+            if judgment in ("CORRECT", "WRONG") and score_valid and reason_valid:
                 expected_judgment = "CORRECT" if float(score) == 1.0 else "WRONG"
                 if judgment != expected_judgment:
                     record_errors.append(

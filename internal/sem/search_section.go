@@ -127,9 +127,16 @@ func RelatedSiteKind(result SearchResult) string {
 // data/configuration, and machine-written artifacts. Vendored and example trees are
 // deliberately absent — they ARE program text, and the ranker's prior already handles the fact
 // that editing them is usually wrong.
+//
+// Fixtures are the second half of this section's own name. A `.snap`, `.golden` or `.ambr` file is
+// a machine-written RECORDING of expected output, on the same footing as a lock file: it quotes the
+// reported symptom verbatim, which is what makes it rank, and it is never the file a behavioural
+// fix edits. Leaving the class out kept those artifacts in the PRIMARY list, where an agent reads
+// the list as an edit set — and, worse, where a fixture at rank 1 anchors related-site expansion on
+// a neighbourhood that is not the change's.
 func searchDocsSectionClass(class searchFileClass) bool {
 	switch class {
-	case searchFileClassDoc, searchFileClassData, searchFileClassGenerated:
+	case searchFileClassDoc, searchFileClassData, searchFileClassGenerated, searchFileClassFixture:
 		return true
 	}
 	return false
@@ -143,10 +150,45 @@ func searchDocsSectionClass(class searchFileClass) bool {
 // the gate is "the prior demoted this class" rather than a second, independently drifting
 // list of intent words.
 func searchDocsSectionPath(q searchQuery, filePath string) bool {
-	if !searchDocsSectionClass(classifySearchFile(filePath)) {
+	class := classifySearchFile(filePath)
+	if !searchDocsSectionClass(class) {
+		return false
+	}
+	if class == searchFileClassFixture && !searchFixtureIsRecording(filePath) {
 		return false
 	}
 	return searchFileClassPrior(q, filePath) < 1
+}
+
+// searchFixtureIsRecording separates the two things `searchFileClassFixture` covers, because only
+// one of them belongs in a section whose contract is "holds no program text".
+//
+// `classifySearchFile` assigns the fixture class by DIRECTORY segment — `testdata`, `fixtures`,
+// `snapshots`, `golden`, `baselines` — which is right for the ranking prior and wrong for this
+// section. A `.snap` is a machine-written recording; `internal/sem/testdata/fixtures/go-basic/auth.go`
+// is Go, and `pkg/golden/report.go` is ordinary source that happens to sit under a directory named
+// `golden`. Labelling those "not fix sites" contradicted the section's own doc comment, made
+// `AssessSearchConfidence` report "top hit holds no program text" for a `.go` file, and excluded
+// them from related-site expansion and every enrichment block.
+//
+// So the section keeps a fixture only when it really is a RECORDING: a fixture extension, a path
+// `NonProgramTextPath` already answers for, or a file no parsed language claims.
+//
+// This is half of a pair. Returning program-text fixtures to the primary section puts them in front
+// of `searchVerifySubjectFor`, which reads primary and would adopt `testdata/case.go` as the test to
+// RUN; `searchVerifyFixtureArtifactPath` is the half that stops it.
+func searchFixtureIsRecording(filePath string) bool {
+	lower := strings.ToLower(filepath.ToSlash(filePath))
+	for _, ext := range searchFixtureExtensions {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	if NonProgramTextPath(filePath) {
+		return true
+	}
+	_, known := languageForPath(filePath)
+	return !known
 }
 
 // assignSearchSections labels non-code results for the docs-and-fixtures section, in place.
@@ -154,15 +196,23 @@ func searchDocsSectionPath(q searchQuery, filePath string) bool {
 // A payload whose hits are ALL non-code has no primary list to protect: those hits are the
 // only answer there is, so they stay primary rather than being labelled away into an empty
 // page of fix sites.
+//
+// IDEMPOTENT, deliberately: a result already carrying the docs label is counted as one rather
+// than skipped, so running the pass twice reaches the same decision — including the all-docs
+// fallback — as running it once. That is what lets the caller price the label WITH the ranking
+// (the label is bytes on every result it touches) and still take the final decision on the
+// payload that is actually going out.
 func assignSearchSections(results []SearchResult, q searchQuery) []SearchResult {
 	docs := 0
 	for index := range results {
-		if results[index].Section != searchSectionPrimary {
-			continue
-		}
-		if searchDocsSectionPath(q, results[index].FilePath) {
-			results[index].Section = searchSectionDocs
+		switch results[index].Section {
+		case searchSectionDocs:
 			docs++
+		case searchSectionPrimary:
+			if searchDocsSectionPath(q, results[index].FilePath) {
+				results[index].Section = searchSectionDocs
+				docs++
+			}
 		}
 	}
 	if docs > 0 && docs == len(results) {

@@ -6,12 +6,20 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/release.sh
+      - scripts/changelog-section.sh
+      - NOTICES
   push:
     tags:
       - "v*"
 
 permissions:
   contents: read
+
+# A tag push and a nightly's explicit dispatch can both build the same release.
+# Serialize them by release version so an existing draft is completed in place.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -40,12 +48,12 @@ jobs:
             goarch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with:
-          go-version: "1.26.x"
+          go-version: "1.27.x"
       - name: Install LLVM-MinGW for Windows ARM64
         if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
         shell: pwsh
@@ -152,7 +160,7 @@ jobs:
           if ($actualVersion -ne $env:VERSION) {
             throw "unexpected version: expected $env:VERSION, got $actualVersion"
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -169,7 +177,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: dist
@@ -194,6 +202,12 @@ jobs:
           done
           (cd dist && sha256sum entire-graph_* > checksums.txt)
           test "$(wc -l < dist/checksums.txt)" -eq 6
+      # The publish job downloads artifacts only, so the release notes need the
+      # repository checked out to read CHANGELOG.md.
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          path: source
       - name: Publish release assets
         shell: bash
         env:
@@ -202,12 +216,48 @@ jobs:
         run: |
           set -euo pipefail
           assets=(dist/entire-graph_* dist/checksums.txt)
+          # SemVer puts a `-` between the version core and a prerelease
+          # identifier, so `v1.2.3-nightly.<ts>.<sha>` and `v1.2.3-rc.1` are
+          # prereleases and `v1.2.3` is not. Build metadata follows `+` and
+          # does not affect that classification.
+          version_without_build=${VERSION%%+*}
+          prerelease=false
+          case "$version_without_build" in
+            *-*) prerelease=true ;;
+          esac
           if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$VERSION" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+            # An interrupted older nightly can leave a draft marked as a normal
+            # release. Set the prerelease channel when completing that draft.
+            edit_flags=(--draft=false --repo "$GITHUB_REPOSITORY")
+            if [ "$prerelease" = true ]; then
+              edit_flags+=(--prerelease --latest=false)
+            fi
+            gh release edit "$VERSION" "${edit_flags[@]}"
           else
-            gh release create "$VERSION" "${assets[@]}" \
-              --repo "$GITHUB_REPOSITORY" \
-              --verify-tag \
-              --generate-notes \
+            flags=(
+              --repo "$GITHUB_REPOSITORY"
+              --verify-tag
               --title "$VERSION"
+            )
+            # A tagged version with a CHANGELOG section publishes that section
+            # verbatim. Nightlies and any version not yet written up fall back
+            # to the auto-generated commit list.
+            if sh source/scripts/changelog-section.sh "$VERSION" > release-notes.md; then
+              {
+                printf '\n'
+                printf 'Verify a download against `checksums.txt`:\n\n'
+                printf '```sh\nsha256sum -c checksums.txt --ignore-missing\n```\n'
+              } >> release-notes.md
+              flags+=(--notes-file release-notes.md)
+            else
+              flags+=(--generate-notes)
+            fi
+            # A prerelease-looking TAG does not by itself mark the RELEASE as
+            # one: without these flags a nightly publishes to the normal
+            # channel and takes the "Latest" badge from the current stable.
+            if [ "$prerelease" = true ]; then
+              flags+=(--prerelease --latest=false)
+            fi
+            gh release create "$VERSION" "${assets[@]}" "${flags[@]}"
           fi

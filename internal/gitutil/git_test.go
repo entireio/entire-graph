@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -2391,8 +2392,8 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		t.Fatalf("effective GIT_NO_LAZY_FETCH=%q, want 1: a partial clone's promisor remote must never be contacted by this no-egress provider", noLazyFetch)
 	}
 	if allowProtocol != "" {
-		t.Fatalf("effective GIT_ALLOW_PROTOCOL=%q, want empty: GIT_NO_LAZY_FETCH is unrecognized before Git 2.45,"+
-			" so every transport must independently be denied regardless of the inherited environment", allowProtocol)
+		t.Fatalf("effective GIT_ALLOW_PROTOCOL=%q, want empty: some Git releases (2.45.0 and those without the 2.39.4+ ... 2.45.1"+
+			" backports) do not honour GIT_NO_LAZY_FETCH on every lazy fetch, so every transport must independently be denied regardless of the inherited environment", allowProtocol)
 	}
 	if optionalLocks != "0" {
 		t.Fatalf("effective GIT_OPTIONAL_LOCKS=%q, want 0 for read-only provider subprocesses", optionalLocks)
@@ -2900,5 +2901,245 @@ func TestFirstParentRejectsAnOptionShapedRevision(t *testing.T) {
 
 	if _, err := FirstParent(t.Context(), repo, "HEAD"); err != nil {
 		t.Fatalf("FirstParent(\"HEAD\") = %v, want a resolved parent OID", err)
+	}
+}
+
+// TestTreeEntryMetadataBatchReportsTheContextNotTheSignal pins the classification a
+// caller needs when its own deadline ends the work.
+//
+// exec.CommandContext kills the child when the context ends and Wait then reports
+// "signal: killed" -- the mechanism, not the reason. Wrapping only that message made a
+// caller's expired deadline indistinguishable from a genuine Git failure, so callers
+// testing errors.Is(err, context.DeadlineExceeded) classified their own timeout as a
+// tool error. The failure was load-dependent: on a fast host the context error usually
+// won the race and the bug stayed hidden, which is why it surfaced only on the slower
+// macOS and Windows CI runners.
+//
+// The context error is carried ALONGSIDE Git's message rather than replacing it, so the
+// stderr a reader needs is still in the text.
+func TestTreeEntryMetadataBatchReportsTheContextNotTheSignal(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", ".")
+	git(t, repo, "config", "user.email", "t@example.com")
+	git(t, repo, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "a.txt")
+	git(t, repo, "commit", "-qm", "seed")
+
+	// Already past its deadline: whichever site loses the race -- the start path or
+	// the Wait path -- must still classify as the caller's expiry.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err := treeEntryMetadataBatch(ctx, repo, "HEAD", []string{"a.txt"})
+	if err == nil {
+		t.Fatal("an expired context must surface as an error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want an error wrapping context.DeadlineExceeded, got %v", err)
+	}
+}
+
+// TestIndexReplacedNonRegularPathsHandlesAStageLikeName pins the index object spec.
+//
+// Git reads a leading "0:".."3:" as a STAGE, so addressing an entry as ":"+path made a
+// file legitimately named `0:link.go` resolve to another entry or to none. The lookup
+// then failed and the symlink was reported REPLACED, which puts it into the worktree
+// listing to be parsed as ordinary source -- the exact confusion the index consultation
+// exists to prevent. The "./" form cannot be read as a stage number.
+func TestIndexReplacedNonRegularPathsHandlesAStageLikeName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("colon is not a valid Windows filename")
+	}
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", ".")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	if err := os.WriteFile(filepath.Join(repo, "real.go"), []byte("package p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.go", filepath.Join(repo, "0:link.go")); err != nil {
+		t.Skipf("this filesystem cannot create symlinks: %v", err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-qm", "seed")
+
+	nonRegular, err := IndexNonRegularPaths(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := nonRegular["0:link.go"]; !ok {
+		t.Fatalf("a symlink named like a stage was not seen as non-regular: %v", nonRegular)
+	}
+	replaced, err := IndexReplacedNonRegularPaths(context.Background(), repo, nonRegular)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, wrong := replaced["0:link.go"]; wrong {
+		t.Fatal("an untouched symlink named like a stage was reported as replaced")
+	}
+}
+
+// TestIndexReplacedNonRegularPathsHandlesANewlineInAPath pins the batch delimiter.
+//
+// A Git pathname may hold any byte except NUL and '/', so a tracked path containing a
+// NEWLINE split into several requests under the line-delimited batch protocol and shifted
+// every later response onto the wrong path. The consequences run both ways: an untouched
+// materialized symlink can be admitted as source, and a real replacement can be hidden.
+// NUL is the one byte a pathname cannot contain.
+func TestIndexReplacedNonRegularPathsHandlesANewlineInAPath(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", ".")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	if err := os.WriteFile(filepath.Join(repo, "real.go"), []byte("package p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.go", filepath.Join(repo, "we\nird.go")); err != nil {
+		t.Skipf("this filesystem cannot create that link: %v", err)
+	}
+	if err := os.Symlink("real.go", filepath.Join(repo, "link.go")); err != nil {
+		t.Skipf("this filesystem cannot create symlinks: %v", err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-qm", "seed")
+
+	nonRegular, err := IndexNonRegularPaths(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := nonRegular["we\nird.go"]; !ok {
+		t.Fatalf("a symlink whose path holds a newline was not listed: %q", nonRegular)
+	}
+	// Nothing was touched, so nothing may be reported replaced. A desynchronized
+	// batch shows up here as a false positive on whichever path took the answer.
+	replaced, err := IndexReplacedNonRegularPaths(context.Background(), repo, nonRegular)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replaced) != 0 {
+		t.Fatalf("untouched symlinks reported as replaced: %q", replaced)
+	}
+}
+
+// TestChangedFilesReportsTreeEntryModes pins that ChangedFiles carries the base
+// and head tree entry modes. A symbolic link is stored as an ordinary blob
+// whose bytes are its target path, so mode is the only thing that tells a
+// content reader it is not source.
+func TestChangedFilesReportsTreeEntryModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checkouts do not preserve symlink tree entries")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "real.go"), []byte("package real\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "gone.go"), []byte("package gone\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	if err := os.Symlink("real.go", filepath.Join(repo, "alias.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(repo, "gone.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "real.go"), []byte("package real\n\nfunc Run() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "add symlink, delete file, edit file")
+	head := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	files, err := ChangedFiles(t.Context(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]ChangedFile{}
+	for _, file := range files {
+		byPath[file.Path] = file
+	}
+	if got := byPath["alias.go"]; got.NewMode != SymlinkMode || got.OldMode != "000000" || got.Status != "A" {
+		t.Fatalf("added symlink = %#v", got)
+	}
+	if got := byPath["gone.go"]; got.OldMode != "100644" || got.NewMode != "000000" || got.Status != "D" {
+		t.Fatalf("deleted file = %#v", got)
+	}
+	if got := byPath["real.go"]; got.OldMode != "100644" || got.NewMode != "100644" || got.Status != "M" {
+		t.Fatalf("edited file = %#v", got)
+	}
+}
+
+func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	content := "func readInt() {}\n" + strings.Repeat("func otherInt() {}\n", 1000) + "func readint() {}\nfunc Print() {}\n"
+	if err := os.WriteFile(filepath.Join(repo, "source.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	var matches []GrepMatch
+	// Exceed the Windows command-line limit without changing matching semantics.
+	patterns := make([]string, 1500)
+	for i := range patterns {
+		patterns[i] = "[[:lower:]]Int[^[:alnum:]]"
+	}
+	err := GrepIndexPatternLines(t.Context(), repo, patterns, func(match GrepMatch) error { matches = append(matches, match); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Path != "source.go" || matches[0].Text != "func readInt() {}" {
+		t.Fatalf("lost boundary context or case: %#v", matches)
+	}
+	matches = nil
+	err = GrepIndexPatternSample(t.Context(), repo, patterns, func(match GrepMatch) error { matches = append(matches, match); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 32 {
+		t.Fatalf("ordinary-term sample returned %d lines, want 32", len(matches))
+	}
+}
+
+func TestGrepTreePatternFilesPinsCommittedContent(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "source.go"), []byte("func readInt() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(repo, "source.go"), []byte("func Other() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	err := GrepTreePatternFiles(t.Context(), repo, "HEAD", []string{"readInt"}, nil, func(path string) error { paths = append(paths, path); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != "source.go" {
+		t.Fatalf("committed stream lost content or path: %#v", paths)
+	}
+}
+
+func TestGrepTreePatternFilesRejectsInvalidTreeish(t *testing.T) {
+	for _, treeish := range []string{"", "--help", "HEAD\x00other"} {
+		if err := GrepTreePatternFiles(t.Context(), t.TempDir(), treeish, []string{"needle"}, nil, func(string) error { return nil }); err == nil {
+			t.Errorf("accepted invalid treeish %q", treeish)
+		}
 	}
 }

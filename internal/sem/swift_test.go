@@ -673,3 +673,69 @@ func TestSwiftChainedReceiverCalls(t *testing.T) {
 		}
 	}
 }
+
+// Swift Testing's freestanding macros (`#expect`, `#require`) are Swift 5.9
+// macro expansions. The tree-sitter-swift 0.5.0 grammar bundled with
+// go-tree-sitter rejected them, so nearly every swift-testing test file
+// surfaced as an E_PARSE_ERROR partial failure.
+func TestSwiftTestingMacrosParse(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("ParserTests.swift", `import Testing
+
+struct ParserTests {
+    @Test func parsesValue() throws {
+        let value = try #require(Parser.parse("3"))
+        #expect(value == 3)
+    }
+}
+`)
+	if language != "Swift" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	found := false
+	for _, entity := range entities {
+		if entity.Name == "ParserTests.parsesValue" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("parsesValue missing from %#v", entities)
+	}
+}
+
+// A comparison continued onto a line that starts with `==` used to be blanked
+// for the 0.5.0 grammar. The blanking also removed the closing parens on that
+// line, which the 0.7.4 grammar then reports as a missing `)`.
+func TestSwiftLeadingOperatorContinuationParses(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("ExclusionTests.swift", `struct ExclusionTests {
+    @Test func rejectsAmbiguousName() {
+        #expect(resolve(["a"], in: paths)
+            == .ambiguous(["a": ["x/a", "y/a"]]))
+    }
+}
+`)
+	if language != "Swift" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
+// `@autoclosure() -> T?` has no space before the function type's empty
+// parameter list. Masking empty attribute calls (`@Option()`) for the 0.5.0
+// grammar also stripped that `()`, leaving an invalid parameter type.
+func TestSwiftAttributeBeforeEmptyFunctionTypeParses(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("TestUtils.swift", `public func assertNil<T>(block: @autoclosure() -> T?, _ message: String? = nil) {
+    XCTAssert(block() == nil, message ?? "")
+}
+`)
+	if language != "Swift" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}

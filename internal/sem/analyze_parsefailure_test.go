@@ -242,25 +242,25 @@ func TestAnalyzeGitRange_RenameBeforeSideParseFailureWarnsOldPath(t *testing.T) 
 // E_PARSE_TIMEOUT branch.
 func TestParseFailureWarning_CodeMapping(t *testing.T) {
 	t.Parallel()
-	e := parseFailureWarning("a.ts", ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: "d"}, true)
+	e := parseFailureWarning("a.ts", ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: "d"}, diffSuppressed)
 	if e.Code != "E_PARSE_ERROR" || e.Severity != "warning" || e.FilePath != "a.ts" || e.Detail != "d" {
 		t.Fatalf("error mapping wrong: %#v", e)
 	}
 	if e.EffectOnCompleteness != "file diff suppressed; changes omitted because the file could not be parsed" {
 		t.Fatalf("suppressed effect wrong: %q", e.EffectOnCompleteness)
 	}
-	tmo := parseFailureWarning("b.ts", ParseStatus{ParseError: true, Code: "E_PARSE_TIMEOUT", Detail: "slow"}, true)
+	tmo := parseFailureWarning("b.ts", ParseStatus{ParseError: true, Code: "E_PARSE_TIMEOUT", Detail: "slow"}, diffSuppressed)
 	if tmo.Code != "E_PARSE_TIMEOUT" {
 		t.Fatalf("timeout code wrong: %#v", tmo)
 	}
 	if tmo.EffectOnCompleteness != "file diff suppressed; changes omitted because parser time budget was exceeded" {
 		t.Fatalf("suppressed timeout effect wrong: %q", tmo.EffectOnCompleteness)
 	}
-	deg := parseFailureWarning("d.ts", ParseStatus{ParseError: true, Code: "E_PARSE_ERROR"}, false)
+	deg := parseFailureWarning("d.ts", ParseStatus{ParseError: true, Code: "E_PARSE_ERROR"}, diffKept)
 	if deg.EffectOnCompleteness != "file parsed with syntax errors on one side; diff kept but may be incomplete or contain phantom changes" {
 		t.Fatalf("degraded effect wrong: %q", deg.EffectOnCompleteness)
 	}
-	def := parseFailureWarning("c.ts", ParseStatus{ParseError: true}, true)
+	def := parseFailureWarning("c.ts", ParseStatus{ParseError: true}, diffSuppressed)
 	if def.Code != "E_PARSE_ERROR" {
 		t.Fatalf("empty code should default to E_PARSE_ERROR, got %q", def.Code)
 	}

@@ -30,6 +30,47 @@ endpoint records. Consumers should ignore unknown record types within the
 supported major schema version, and should not assume every relation target
 is a symbol.
 
+## Relation provenance (schema 1.4)
+
+Schema 1.4 adds the optional `provenance` annotation to native relation JSON and
+advertises `relation_provenance` in the snapshot header's `schema_features`.
+Existing relation fields, endpoint IDs, and their meanings are unchanged.
+Tolerant `1.x` readers ignore the new field; older artifacts may omit it.
+The labels describe the extraction method, not a calibrated probability or a
+promise that a target or behavior exists at runtime:
+
+| Label | Derivation |
+|---|---|
+| `EXTRACTED` | A non-pattern relation resolved as `exact`, `full`, `resolved`, `import_resolved`, or `package`. Here `package` means a uniquely identified same-package target, not a package-wide guess. |
+| `INFERRED` | A pattern-derived relation, or a non-pattern relation with `type_inferred` resolution. |
+| `AMBIGUOUS` | Other resolutions, including name-only/external references, empty values, and unrecognized future values. |
+
+Pattern-derived relation types are `HANDLES_ROUTE`, `HANDLES_GRPC`,
+`HANDLES_GRAPHQL`, `HANDLES_TRPC`, `HTTP_CALLS`, `EMITS`, `LISTENS_ON`,
+`HANDLES_TOOL`, `SIMILAR_TO`, and `TESTS`. They remain `INFERRED` even when the
+target resolution is `exact`: resolving the target does not change how the
+association was found. This classification is broader than
+`capabilities.heuristic_relation_types`, which lists global, language-independent
+passes. Protocol-specific RPC handlers remain in the per-language capability
+matrix; provenance does not exempt them from those extraction guards.
+
+`RelationRecord.MarshalJSON` derives the annotation from the final `type` and
+`resolution` on each serialization. It does not store a mutable label on the Go
+struct or trust a label supplied by an input artifact. Go callers use
+`EdgeProvenance(relation.Type, relation.Resolution)` to obtain the same result.
+Native `snapshot`, `edges`, cache replay, and decoded compact output therefore
+share the same annotation. The compact v1 positional relation row is unchanged:
+it stores the authoritative inputs and derives the annotation when re-exported
+as native JSON. Older compact readers may omit this newly understood annotation.
+SCIP remains a lossy navigation projection and does not encode relation
+provenance, confidence, or resolution; use native or compact output when those
+facts matter.
+
+The schema minor bump selects new raw-record and search cache keys even when
+provider version, source commit, and tree are unchanged. Older cache entries are
+rebuilt rather than replayed without the new feature. Parser identity revision,
+stable symbol IDs, and the persisted diff/checkpoint `Result` shape are unchanged.
+
 ## Streaming NDJSON
 
 The `snapshot`/`symbols`/`edges` commands stream records to stdout as they are
@@ -54,6 +95,63 @@ are not known until the whole repository has been processed, and the header
 is emitted before that so consumers can begin work immediately. The profile
 metadata is **header-only**: it is known up front and is therefore not
 repeated in the summary.
+
+**`repo_key` is the symbol-ID namespace, not a repository identity.** Remote
+URLs are checked in the provider's established compatibility order: the last
+configured `remote.origin.url` is checked first, then every non-origin remote
+URL in Git config order. The first URL in that order matching a supported
+github.com form yields `gh/<owner>/<name>`. A repository with no such URL — no
+remote, gitlab, bitbucket, self-hosted — instead yields `local/<basename>`,
+which is **not** globally unique. Two unrelated repositories whose directories
+are both named `tools` publish the same `local/tools` in their headers and in
+every symbol ID. A consumer must therefore use `repo_key` as a necessary and
+not a sufficient identity test: a mismatch proves a foreign snapshot, a match
+does not prove a native one. Pair it with `repo_root`, `commit` and `tree` — or
+with the consumer's own storage key — for identity. `graph doctor --json`
+advertises the same `repo_key` and `repo_root` before a snapshot is built, so
+the pair can be checked up front.
+
+**Symbol ID fields are not escaped, so an ID must never be split positionally.**
+An ID is `<repo_key>:<language>:<file_path>:<kind>:<qualified_name>` joined with
+`:`, and nothing escapes the fields. Two of them can carry a `:` of their own: a
+`local/<basename>` key inherits whatever the directory is called, and a file path
+may contain one on any POSIX filesystem. `local/weird:name:Python:od:d/mod.py:class:Cache`
+is a well-formed ID that splits into seven fields, not five. The trailing fields
+already do this routinely — `external:import:std::collections::HashMap`. A
+consumer that reads `split(id, ":")[2]` as the path therefore mis-attributes
+every record in such a repository, silently and without an error.
+
+The four safe reads, all of which entire-graph uses internally and pins in its
+own tests: compare a whole ID; anchor on the LAST separator for a trailing
+segment; cut at the FIRST separator only inside the `external:<kind>:<value>`
+namespace, whose kind cannot contain a `:`; and take a file path from the
+record's own `file_path` field rather than from the ID.
+
+**Symbol IDs are stable across content edits, and NOT across releases.** This
+is two separate guarantees and consumers routinely conflate them.
+
+*Within a release*, an ID is stable across ordinary content edits: it encodes no
+line numbers, so editing a body, moving a symbol down a file, or editing an
+unrelated symbol does not move it. This is the property derived data can be keyed
+on, and it is pinned by tests.
+
+*Between releases*, IDs are NOT guaranteed stable. A parser-identity correction —
+fixing a symbol that was mis-qualified, mis-classified, or should never have been
+emitted — re-keys the affected symbols by construction, and entire-graph ships
+such corrections in ordinary minor releases. Through `0.x`, expect at least one
+identity revision per minor release, affecting any language.
+
+The signal is the `identity_revision` header field, described in
+[ADR 0001](adr/0001-ga-schema-contract.md). **A consumer that persists symbol IDs
+must store `identity_revision` alongside them and re-index when it changes**;
+comparing the complete opaque string for equality is the whole protocol. A
+consumer that ignores it will silently serve IDs that no longer resolve, and
+entire-graph's own on-disk caches are namespaced by it for exactly this reason.
+
+Note that a correction moves IDs in both directions. Removing a phantom symbol
+can move a *real* symbol back to a shorter ID, because the phantom was forcing a
+`#sig:` disambiguation suffix onto it. An ID gaining or losing a `#sig:` suffix
+is therefore expected across an identity revision, not a sign of corruption.
 
 **The final `summary` record is authoritative for aggregate metadata.** It
 carries the real `languages`, `language_tiers` (each present language
@@ -90,22 +188,34 @@ with a separate cache mode, `snapshot:compact-ndjson-v1`; it is rejected for
 first line is `["h", 1, header]`, and the version appears nowhere else.
 Deterministic first-seen dictionary lines `d` precede positional `f` (file),
 `x` (external), `s` (symbol), and `r` (relation) rows; a trailing `m` summary
-is mandatory. Consumers must reject unknown versions, malformed row arity,
-non-first or duplicate headers, and missing summaries.
+is mandatory. A v1 relation row has the original 11 fields, plus an optional
+twelfth `evidence_dropped` integer when the value is nonzero. For artifacts that
+declare the current or an older supported schema minor, consumers accept either
+relation arity and reject every other one. For a newer minor in the supported
+major, consumers warn, decode each known data row's required positional prefix,
+ignore trailing additive fields, and skip unknown public data tags. The outer
+`h`, `d`, and `m` arities remain exact because they are compact-envelope control
+structure governed by the compact format version, not the record schema.
+Consumers must also reject unknown format or schema-major versions, malformed
+known field values, missing required fields, non-first or duplicate headers,
+and missing summaries.
 
 All `h`, `d`, data, and `m` bytes count as raw compact artifact bytes;
 dictionary overhead must never be subtracted. Compact output is loaded only
 through the production compact loader and queried with
 `snapshot-query --input <file> --symbol <id-or-name> [--from <stable-id>
 --relation <TYPE>] --format ndjson`, which writes deterministically ordered
-native symbol/relation records. Its decoded public projection and canonical
-semantic SHA-256 (normalized native records in record order) must equal the
-normal NDJSON snapshot. Matching only the hash is not sufficient evidence of
-losslessness.
+native symbol/relation records. For an artifact produced by the same build, its
+decoded public projection and canonical semantic SHA-256 (normalized native
+records in record order) must equal the normal NDJSON snapshot; the lossless
+preflight enforces both. A newer-minor reader instead hashes its known
+projection and carries `W_NEWER_SCHEMA_MINOR`, because intentionally skipped
+additive facts cannot equal the newer producer's full projection. Matching only
+the hash is not sufficient evidence of losslessness.
 
 ## Experimental SCIP snapshot protobuf
 
-`snapshot --format scip` is an experimental, complete-snapshot-only projection for SCIP consumers. It writes a single binary SCIP `Index` protobuf to stdout and a single JSON omission note to stderr. It is rejected for `symbols`, `edges`, targeted `--to`/`--from`/`--relation` output, and `--progress`, and it is not served from the NDJSON or compact snapshot caches. The SCIP package version is the project's own declared version, read from the root manifest (`package.json`, then `Cargo.toml`, then `pyproject.toml`'s `[project]` or `[tool.poetry]` table), falling back to `0` when none declares one -- which is the common case for Go, since `go.mod` carries a module path and not a version. It is deliberately **not** the commit: a commit there would give every symbol a new identity on every commit, so nothing downstream could match a symbol across commits, and cross-index linking (the reason SCIP has the field) could never work. Commit and worktree provenance are carried instead by the omission note's `commit` and `tree`, by `--worktree` in `ToolInfo.arguments`, and by `worktree_snapshot: true`. Note that SCIP `Metadata` has no revision field of its own -- it carries `ToolInfo`, `ProjectRoot` and an encoding -- so the note is where the revision lives, once per index rather than inside every symbol. The manifest is read from inside the snapshot build, through the same validated content reader every other manifest read uses, so it is bounded, refuses non-regular files, and is pinned to the revision the snapshot describes. A version bumped only in a dirty working tree therefore cannot reach an index that describes a commit, and the version cannot come from a different revision than the documents beside it. Consumers must therefore treat `(repo, commit)` as coming from the envelope, not from the symbol: two indexes of the same repository at different commits share symbol identities by design, and merging them into one flat store without keeping their commits distinct would conflate them. If the underlying snapshot is partial, the same stderr JSON object includes `partial_snapshot`, `completeness_level`, `warning_count`, and `partial_failure_count` instead of mixing human warning text into stderr. Unlike the NDJSON encoders, the SCIP encoder retains the complete graph until it can write the one protobuf message, because a SCIP `Index` is a single protobuf message and cannot be streamed. Its memory use therefore scales with snapshot size: measured on this repository (about 28 MB of native NDJSON, 9,770 definitions, 25,476 references) peak RSS was roughly 170 MB against roughly 115 MB for `ndjson` and roughly 119 MB for `compact-ndjson`, so about 1.5x the streaming formats. That multiplier is not a guarantee for a much larger repository, where the absolute figure is what matters; measure before exporting a monorepo.
+`snapshot --format scip` is an experimental, complete-snapshot-only projection for SCIP consumers. It writes a single binary SCIP `Index` protobuf to stdout and a single JSON omission note to stderr. It is rejected for `symbols`, `edges`, targeted `--to`/`--from`/`--relation` output, and `--progress`, and it is not served from the NDJSON or compact snapshot caches. The SCIP package version is the project's own declared version, read from the root manifest (`package.json`, then `Cargo.toml`, then `pyproject.toml`'s `[project]` or `[tool.poetry]` table), falling back to `0` when none declares one -- which is the common case for Go, since `go.mod` carries a module path and not a version. A root Cargo package may declare its version literally or inherit it from `[workspace.package]` in that same root manifest. A virtual workspace with no root `[package]` remains `0`: choosing a repository-wide value from member defaults would mislabel mixed-version or non-inheriting members until SCIP package identity becomes member-aware. The version is deliberately **not** the commit: a commit there would give every symbol a new identity on every commit, so nothing downstream could match a symbol across commits, and cross-index linking (the reason SCIP has the field) could never work. Commit and worktree provenance are carried instead by the omission note's `commit` and `tree`, by `--worktree` in `ToolInfo.arguments`, and by `worktree_snapshot: true`. Note that SCIP `Metadata` has no revision field of its own -- it carries `ToolInfo`, `ProjectRoot` and an encoding -- so the note is where the revision lives, once per index rather than inside every symbol. The manifest is read from inside the snapshot build, through the same validated content reader every other manifest read uses, so it is bounded, refuses non-regular files, and is pinned to the revision the snapshot describes. A version bumped only in a dirty working tree therefore cannot reach an index that describes a commit, and the version cannot come from a different revision than the documents beside it. Consumers must therefore treat `(repo, commit)` as coming from the envelope, not from the symbol: two indexes of the same repository at different commits share symbol identities by design, and merging them into one flat store without keeping their commits distinct would conflate them. If the underlying snapshot is partial, the same stderr JSON object includes `partial_snapshot`, `completeness_level`, `warning_count`, and `partial_failure_count` instead of mixing human warning text into stderr. Unlike the NDJSON encoders, the SCIP encoder retains the complete graph until it can write the one protobuf message, because a SCIP `Index` is a single protobuf message and cannot be streamed. Its memory use therefore scales with snapshot size: measured on this repository (about 28 MB of native NDJSON, 9,770 definitions, 25,476 references) peak RSS was roughly 170 MB against roughly 115 MB for `ndjson` and roughly 119 MB for `compact-ndjson`, so about 1.5x the streaming formats. That multiplier is not a guarantee for a much larger repository, where the absolute figure is what matters; measure before exporting a monorepo.
 
 The note also carries what SCIP itself cannot express. Its `language_tiers` repeats the header's
 per-language `semantic` / `inventory-only` classification, because every discovered file becomes a
@@ -124,9 +234,9 @@ An absent optional field means zero or false, never unknown -- the counters are 
 they are zero precisely so a clean export stays quiet. Removing a field, renaming one, or
 changing what an existing one counts is a breaking change and bumps the version to `v2`.
 
-The stderr note also reports what the encoder could not carry. `unidentified_records` counts records it could not key at all (a file with no path, a symbol or external endpoint with no id), and `unlocated_symbols` counts symbols with no file path, which are emitted but land in a synthetic document with no navigable definition location. Both are omitted from the JSON when zero, and both are provider bugs rather than expected input, but this format reports them rather than letting an incomplete index look complete.
+The stderr note also reports what the encoder could not carry. `unidentified_records` counts records it could not key at all (a file with no path, a symbol or external endpoint with no id), and `unlocated_symbols` counts symbols with no file path, which are emitted but land in a synthetic document with no navigable definition location. `missing_source_relations` reports implementation metadata or containment that could not be attached because its source symbol was absent; missing targets remain in `missing_target_relations`. These are provider bugs rather than expected input, but this format reports them rather than letting an incomplete index look complete.
 
-The protobuf contains `Metadata`, one `Document` per source path, `SymbolInformation` for native symbol definitions, definition occurrences, and reference occurrences for supported reference-like relations: `IMPORTS`, `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `EXTENDS`, `INHERITS`, `IMPLEMENTS`, `OVERRIDES`, `USES_TYPE`, `PARAM_TYPE`, `RETURNS_TYPE`, `READS_FIELD`, `WRITES_FIELD`, and `ACCESSES`. Occurrence ranges cover the complete one-based inclusive line spans supplied by Entire Graph; the export does not invent unavailable columns. Native `DEFINES` and `CONTAINS` relations are represented by symbol metadata and definition occurrences rather than emitted as relation edges. The inheritance family -- `IMPLEMENTS`, `INHERITS`, `EXTENDS`, `OVERRIDES` -- additionally becomes `SymbolInformation.relationships` with `is_implementation`, because SCIP answers "Find Implementations" from relationships and not from occurrences; `emitted_implementations` in the note counts them. A definition occurrence marks the declaration line only, with the full declaration-through-body span carried as its `enclosing_range`, so a definition does not overlap every reference inside its own body and positional lookups stay unambiguous. Other relation families are omitted from the SCIP protobuf and counted by relation type in the stderr note:
+The protobuf contains `Metadata`, one `Document` per source path, `SymbolInformation` for native symbol definitions, definition occurrences, and reference occurrences for supported reference-like relations: `IMPORTS`, `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `EXTENDS`, `INHERITS`, `IMPLEMENTS`, `OVERRIDES`, `USES_TYPE`, `PARAM_TYPE`, `RETURNS_TYPE`, `READS_FIELD`, `WRITES_FIELD`, and `ACCESSES`. Occurrence ranges cover the complete one-based inclusive line spans supplied by Entire Graph; the export does not invent unavailable columns. Well-formed native `DEFINES` and `CONTAINS` relations are represented by symbol metadata and definition occurrences rather than emitted as relation edges. Extension-member `CONTAINS` relations that disagree with `ContainerID`, and malformed structural relations that disagree with the defining file or reference a missing endpoint, cannot be represented and are reported in the note. The inheritance family -- `IMPLEMENTS`, `INHERITS`, `EXTENDS`, `OVERRIDES` -- additionally becomes `SymbolInformation.relationships` with `is_implementation`, because SCIP answers "Find Implementations" from relationships and not from occurrences; `emitted_implementations` in the note counts them. `is_reference` is added only for member-to-member relationships, where SCIP should merge the two members' references, never merely because the source happens to be callable. A definition occurrence marks the declaration line only, with the full declaration-through-body span carried as its `enclosing_range`, so a definition does not overlap every reference inside its own body and positional lookups stay unambiguous. Other relation families are omitted from the SCIP protobuf and counted by relation type in the stderr note:
 
 ```json
 {"record_type":"scip_omissions","version":"entire-graph-scip-omissions/v1","format":"scip","unsupported_relation_counts":{"DATA_FLOWS":1},"missing_target_relations":0,"missing_evidence_relations":0,"emitted_definitions":2,"emitted_references":1}
