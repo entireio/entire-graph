@@ -3,6 +3,8 @@ package sem
 import (
 	"encoding/json"
 	"strings"
+
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 // ManifestReader reads one repo-root manifest by name and reports whether it
@@ -86,61 +88,67 @@ func parsePackageJSONVersion(content string) string {
 }
 
 func parseCargoPackageVersion(content string) string {
-	return tomlTableString(content, "package", "version")
+	manifest, ok := parseTOMLDocument(content)
+	if !ok {
+		return ""
+	}
+	rootPackage, ok := tomlTable(manifest, "package")
+	if !ok {
+		// A virtual workspace has no root package. This exporter emits one SCIP
+		// package for the repository and cannot safely choose among member
+		// versions until package identity is member-aware.
+		return ""
+	}
+	if version, ok := rootPackage["version"].(string); ok {
+		return version
+	}
+	inherited, ok := rootPackage["version"].(map[string]any)
+	if !ok || len(inherited) != 1 || inherited["workspace"] != true {
+		return ""
+	}
+	workspacePackage, ok := tomlTable(manifest, "workspace", "package")
+	if !ok {
+		return ""
+	}
+	version, _ := workspacePackage["version"].(string)
+	return version
 }
 
 func parsePyProjectVersion(content string) string {
-	// PEP 621 first, then Poetry's pre-621 table, which is still widespread.
-	if version := tomlTableString(content, "project", "version"); version != "" {
-		return version
-	}
-	return tomlTableString(content, "tool.poetry", "version")
-}
-
-// tomlTableString reads a quoted string value from a top-level TOML table
-// without a TOML dependency, which this repository does not carry.
-//
-// It is deliberately conservative: it recognizes `key = "value"` inside the
-// named table and nothing else. A dynamic version, an inline table, a
-// multi-line string, or any shape it does not understand yields "", which the
-// caller reads as "not declared" and falls back from. Guessing would be worse
-// than falling back, because the value becomes part of every symbol's identity.
-func tomlTableString(content, table, key string) string {
-	inTable := false
-	for _, raw := range strings.Split(content, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") {
-			// A table header ends the previous table. Array-of-tables headers
-			// ("[[bin]]") are tables too and must end it just the same.
-			name := strings.TrimSpace(strings.Trim(line, "[]"))
-			inTable = name == table
-			continue
-		}
-		if !inTable {
-			continue
-		}
-		name, value, found := strings.Cut(line, "=")
-		if !found || strings.TrimSpace(name) != key {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		// TOML has two string forms and both are ordinary in a manifest:
-		// basic ("1.2.3") and literal ('1.2.3'). Handling only the first
-		// exported Cargo and Python projects that use the second as version
-		// "0", collapsing distinct releases into one package identity.
-		for _, quote := range []string{`"`, "'"} {
-			if !strings.HasPrefix(value, quote) {
-				continue
-			}
-			// Closing quote, not a later one in a trailing comment.
-			if end := strings.Index(value[1:], quote); end >= 0 {
-				return value[1 : 1+end]
-			}
-		}
+	manifest, ok := parseTOMLDocument(content)
+	if !ok {
 		return ""
 	}
+	// PEP 621 first, then Poetry's pre-PEP 621 table, which is still
+	// widespread. A non-string declaration is dynamic or unsupported.
+	for _, path := range [][]string{{"project"}, {"tool", "poetry"}} {
+		table, ok := tomlTable(manifest, path...)
+		if !ok {
+			continue
+		}
+		if version, ok := table["version"].(string); ok {
+			return version
+		}
+	}
 	return ""
+}
+
+func parseTOMLDocument(content string) (map[string]any, bool) {
+	var document map[string]any
+	if err := toml.Unmarshal([]byte(content), &document); err != nil {
+		return nil, false
+	}
+	return document, true
+}
+
+func tomlTable(document map[string]any, path ...string) (map[string]any, bool) {
+	current := document
+	for _, part := range path {
+		next, ok := current[part].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+	return current, true
 }

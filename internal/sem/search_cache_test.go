@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,14 +93,12 @@ func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := ProviderSnapshotOptions{Profile: ProfileSyntaxOnly}
+	selectiveOptions := options
+	selectiveOptions.OnlyFiles = []string{"target.go"}
+	persistSelectiveSnapshot(t, repo, "test-version", outsideCacheDir, selectiveOptions)
 	full, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", options, outsideCacheDir)
 	if err != nil {
 		t.Fatalf("seed complete cache: %v", err)
-	}
-	selectiveOptions := options
-	selectiveOptions.OnlyFiles = []string{"target.go"}
-	if _, _, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", selectiveOptions, outsideCacheDir, false); err != nil {
-		t.Fatalf("seed selective cache: %v", err)
 	}
 	if err := os.Symlink(filepath.Join("..", "outside", "search"), filepath.Join(cacheDir, "search")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
@@ -119,17 +118,12 @@ func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
 		t.Fatal("selective cache loader followed a symlink outside the opened root")
 	}
 
-	// Remove the selective artifact written by that best-effort miss. The full
-	// entry remains outside, so this isolates the full-cache fallback read.
-	selectiveKey, err := searchSnapshotKey(repo, full.Header.RepoKey, "test-version", full.Header.Tree, selectiveOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	outsideSelective, err := newCacheEntry(outsideCacheDir, "search", searchSnapshotCacheVersion, selectiveKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(outsideSelective.writePath()); err != nil {
+	// Remove the seeded selective artifact. The full entry remains outside, so
+	// this isolates the full-cache fallback read.
+	outsideSelective := selectiveSearchEntryPath(
+		t, outsideCacheDir, repo, full.Header.RepoKey, "test-version", full.Header.Tree, selectiveOptions,
+	)
+	if err := os.Remove(outsideSelective); err != nil {
 		t.Fatal(err)
 	}
 	if _, hit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false); err != nil {
@@ -138,34 +132,45 @@ func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
 		t.Fatal("full-cache fallback followed a symlink outside the opened root")
 	}
 
-	// Force a build so preindex reaches its separate durability read. That READ must reject the
-	// escaping symlink, because it is what decides whether outside content is treated as this
-	// cache's own. The WRITE that follows must still succeed: the cache directory is caller-owned,
-	// operators legitimately symlink parts of it, and refusing to persist there would break a
-	// working setup to defend against someone who already has write access to the directory.
+	// Force a build so preindex reaches its durable persist. The WRITE must be refused and say so:
+	// an entry this cache's readers cannot see is one preindex cannot promise, so reporting the
+	// refusal is the only honest outcome. Persisting anyway is what wrote the artifact through a
+	// symlink the repository could have planted. The verifying re-read comes after a successful
+	// write only; if it is ever reached here it must reject the escaping symlink too, because it
+	// is what decides whether outside content is treated as this cache's own.
+	verifyCalled := false
 	var persistenceReadErr error
 	forced := options
 	forced.ForceRebuild = true
-	if _, _, err := preindexProviderSnapshotWithPersistenceReader(
+	_, _, persistErr := preindexProviderSnapshotWithPersistenceVerifier(
 		t.Context(), repo, "test-version", forced, cacheDir,
-		func(entry cacheEntry) (cachedSearchSnapshot, error) {
-			cached, err := readSearchSnapshot(entry)
+		func(entry cacheEntry) (cacheDigest, error) {
+			verifyCalled = true
+			digest, err := entry.digest()
 			persistenceReadErr = err
-			return cached, err
+			return digest, err
 		},
-	); err != nil {
-		t.Fatalf("preindex refused to persist beneath a caller-owned symlinked cache dir: %v", err)
+	)
+	if persistErr == nil {
+		t.Fatal("preindex persisted through a symlink out of the cache directory")
 	}
-	if persistenceReadErr == nil {
+	if !strings.Contains(persistErr.Error(), "is a symlink") {
+		t.Fatalf("preindex failure does not name the symlinked component: %v", persistErr)
+	}
+	if verifyCalled && persistenceReadErr == nil {
 		t.Fatal("preindex persistence read followed a symlink outside the opened root")
 	}
 }
 
-// TestCacheWritesTolerateSymlinkedCacheDirectories pins the deliberate asymmetry: reads are
-// confined to the opened root, writes are not. A cache directory whose family subdirectory is a
-// symlink is a supported operator layout (a larger volume, a shared cache, an escape from a
-// container's writable layer), and the artifact must still be written and read back through it.
-func TestCacheWritesTolerateSymlinkedCacheDirectories(t *testing.T) {
+// A symlinked family subdirectory used to be tolerated on the write side, as a supported operator
+// layout: the family on a larger volume, in a shared cache, outside a container's writable layer.
+// It was never any of those things. Every one of them needs a link that LEAVES the cache
+// directory, and reads go through os.OpenRoot(cacheDir), which refuses exactly that — so the
+// artifact was written on every run and read on none. This pins both halves: the read cannot see
+// an artifact behind such a link even when one is placed there directly, and the write no longer
+// pretends otherwise. Relocating the cache is what --cache-dir is for, and a symlinked cache
+// directory itself still resolves on both sides.
+func TestCacheWritesRefuseSymlinkedFamilyDirectories(t *testing.T) {
 	parent := t.TempDir()
 	cacheDir := filepath.Join(parent, "cache")
 	backing := filepath.Join(parent, "backing")
@@ -183,17 +188,32 @@ func TestCacheWritesTolerateSymlinkedCacheDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeSearchSnapshot(entry, cachedSearchSnapshot{CacheVersion: searchSnapshotCacheVersion, Tree: "through-symlink"}); err != nil {
-		t.Fatalf("write through a caller-owned symlinked cache dir: %v", err)
+	// Place a valid artifact where the link resolves — cache/search/v1/<key> is backing/v1/<key> —
+	// by addressing that path directly, and show the reader still cannot reach it through the
+	// link. That is why the write may be refused: there was never a hit to lose.
+	behindLink, err := newCacheEntry(parent, "backing", "v1", strings.Repeat("c", 64))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(backing, "v1", strings.Repeat("c", 64)+".json.gz")); err != nil {
-		t.Fatalf("artifact did not land in the symlink target: %v", err)
+	if err := writeSearchSnapshot(behindLink, cachedSearchSnapshot{CacheVersion: searchSnapshotCacheVersion, Tree: "planted"}); err != nil {
+		t.Fatalf("seed the link target directly: %v", err)
+	}
+	if _, err := readSearchSnapshot(entry); err == nil {
+		t.Error("read reached an artifact through a symlink out of the cache directory")
+	}
+
+	if err := writeSearchSnapshot(entry, cachedSearchSnapshot{CacheVersion: searchSnapshotCacheVersion, Tree: "through-symlink"}); err == nil {
+		t.Error("write followed a symlink out of the cache directory")
 	}
 }
 
 func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
 	options := ProviderSnapshotOptions{Profile: ProfileFull}
 	snapshot := ProviderSnapshot{Header: SnapshotHeader{
+		// Real snapshots always stamp the schema they were built under (see
+		// newProviderSnapshot); the cache validator now requires it, so a
+		// hand-built header has to carry it too.
+		SchemaVersion:   SchemaVersion,
 		RepoKey:         "github.com/example/repo",
 		Commit:          "old-commit",
 		Tree:            "tree",
@@ -223,6 +243,7 @@ func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
 func TestValidateBuiltSearchSnapshotPinsGraphProvenanceButNotCommit(t *testing.T) {
 	options := ProviderSnapshotOptions{Profile: ProfileFull}
 	want := SnapshotHeader{
+		SchemaVersion:   SchemaVersion,
 		Provider:        ProviderName,
 		ProviderVersion: "test-version",
 		RepoKey:         "github.com/example/repo",
@@ -248,6 +269,8 @@ func TestValidateBuiltSearchSnapshotPinsGraphProvenanceButNotCommit(t *testing.T
 		name   string
 		mutate func(*SnapshotHeader)
 	}{
+		{"schema version missing", func(header *SnapshotHeader) { header.SchemaVersion = "" }},
+		{"schema version foreign", func(header *SnapshotHeader) { header.SchemaVersion = "9.9" }},
 		{"repository key", func(header *SnapshotHeader) { header.RepoKey = "github.com/example/other" }},
 		{"tree", func(header *SnapshotHeader) { header.Tree = "other-tree" }},
 		{"provider", func(header *SnapshotHeader) { header.Provider = "other-provider" }},
@@ -267,7 +290,7 @@ func TestValidateBuiltSearchSnapshotPinsGraphProvenanceButNotCommit(t *testing.T
 
 func TestSearchSnapshotMatchesSelectionPinsRepositoryIdentityAndTree(t *testing.T) {
 	selection := searchFileSelection{repoKey: "github.com/example/repo", tree: "tree"}
-	snapshot := ProviderSnapshot{Header: SnapshotHeader{RepoKey: selection.repoKey, Tree: selection.tree}}
+	snapshot := ProviderSnapshot{Header: SnapshotHeader{SchemaVersion: SchemaVersion, RepoKey: selection.repoKey, Tree: selection.tree}}
 	if !searchSnapshotMatchesSelection(snapshot, selection) {
 		t.Fatal("matching snapshot and selection rejected")
 	}
@@ -361,7 +384,7 @@ func TestSelectiveSearchSnapshotUsesCachedSymbolByteRanges(t *testing.T) {
 	for _, symbol := range selective.Symbols {
 		symbolsByID[symbol.ID] = symbol
 	}
-	namespaces := jsNamespaceBySymbolID(source, selective.Symbols, jsNamespaceScopes(source))
+	namespaces := jsNamespaceBySymbolID(source, selective.Symbols, jsNamespaceScopes(context.Background(), source))
 	if len(calls) != 1 || symbolsByID[calls[0].FromID].Name != "run" || symbolsByID[calls[0].ToID].Name != "parse" || namespaces[calls[0].ToID] != "A.B" || calls[0].Resolution != "exact" {
 		t.Fatalf("cached selective namespace calls = %#v, want only exact run -> A.B.parse", calls)
 	}
@@ -421,17 +444,27 @@ export function helperFunction(): string { return "helper"; }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(cached, uncached) {
-		t.Fatalf("cached selective snapshot differs from uncached OnlyFiles build:\ncached=%#v\nuncached=%#v", cached, uncached)
+	// The derived view FILTERS the complete graph rather than re-resolving it
+	// against the selection (selectiveSearchSnapshotFromFull), so it carries the
+	// same records and failures as an uncached OnlyFiles build but only the
+	// relations both graphs agree on: the edges an OnlyFiles build externalizes
+	// (here ./helper's import and Helper's superclass) are dropped, not
+	// externalized. TestSelectiveDerivationFiltersCompleteGraph pins that contract.
+	if !reflect.DeepEqual(cached.Files, uncached.Files) || !reflect.DeepEqual(cached.Symbols, uncached.Symbols) ||
+		!reflect.DeepEqual(cached.Header.PartialFailures, uncached.Header.PartialFailures) {
+		t.Fatalf("cached selective snapshot selected different records than an uncached OnlyFiles build:\ncached=%#v\nuncached=%#v", cached, uncached)
+	}
+	uncachedRelations := map[string]bool{}
+	for _, relation := range uncached.Relations {
+		uncachedRelations[relationKey(relation)] = true
+	}
+	for _, relation := range cached.Relations {
+		if !uncachedRelations[relationKey(relation)] {
+			t.Fatalf("cached selective snapshot carries a relation an uncached OnlyFiles build lacks: %#v", relation)
+		}
 	}
 
 	assertSelectiveSnapshotAccounting(t, cached)
-	if !hasExternalID(cached.Externals, "external:import:./helper") {
-		t.Fatalf("cross-boundary import was not externalized: %#v", cached.Externals)
-	}
-	if !hasExternalID(cached.Externals, "external:type:Helper") {
-		t.Fatalf("cross-boundary superclass was not externalized: %#v", cached.Externals)
-	}
 	for _, relation := range cached.Relations {
 		if strings.Contains(relation.ToID, ":src/helper.ts:") {
 			t.Fatalf("selective snapshot retained a relation to an unselected symbol: %#v", relation)
@@ -511,15 +544,6 @@ func assertSelectiveSnapshotAccounting(t *testing.T, snapshot ProviderSnapshot) 
 	}
 }
 
-func hasExternalID(externals []ExternalRecord, id string) bool {
-	for _, external := range externals {
-		if external.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
 func TestPreindexProviderSnapshotServesSelectiveSearch(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -562,11 +586,9 @@ func NeedleTarget() bool { return true }
 		Profile:   ProfileSyntaxOnly,
 		OnlyFiles: []string{"target/needle.go"},
 	}
-	selectiveKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, selectiveProviderOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selectivePath := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, selectiveKey+".json.gz")
+	selectivePath := selectiveSearchEntryPath(
+		t, cacheDir, repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, selectiveProviderOptions,
+	)
 	cached, err := SearchRepository(t.Context(), repo, "test-version", "NeedleTarget preindex request", options)
 	if err != nil {
 		t.Fatal(err)
@@ -583,8 +605,8 @@ func NeedleTarget() bool { return true }
 	if cached.Stats.QueryFilesRead == 0 || cached.Stats.QueryBytesRead == 0 || cached.Stats.QueryFilesRead >= len(preindexed.Files) {
 		t.Fatalf("query content reads were not bounded to candidate scope: %#v", cached.Stats)
 	}
-	if _, statErr := os.Stat(selectivePath); statErr != nil {
-		t.Fatalf("warm search did not persist the per-query selective graph cache at %s: %v", selectivePath, statErr)
+	if _, statErr := os.Stat(selectivePath); !os.IsNotExist(statErr) {
+		t.Fatalf("warm search persisted its derived selective view at %s: %v", selectivePath, statErr)
 	}
 	if len(cached.Results) == 0 || cached.Results[0].SymbolName != "NeedleTarget" {
 		t.Fatalf("preindexed search lost target: %#v", cached.Results)
@@ -675,7 +697,12 @@ func helper() {}
 	}
 }
 
-func TestWarmSelectiveSearchPersistsAndReusesPerQueryCache(t *testing.T) {
+// A warm selective search derives its graph from the complete preindex and does
+// not write that view back: deriving it again is cheaper than the write, so an
+// identical repeat derives again, still a cache hit with the same results. A
+// selection the search had to BUILD, with no complete snapshot to derive from,
+// is still persisted, and it serves the next identical search.
+func TestWarmSelectiveSearchRederivesInsteadOfPersisting(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -704,11 +731,9 @@ func NeedleTarget() bool { return true }
 		Profile:   ProfileSyntaxOnly,
 		OnlyFiles: []string{"target/needle.go"},
 	}
-	selectiveKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, selectiveOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selectivePath := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, selectiveKey+".json.gz")
+	selectivePath := selectiveSearchEntryPath(
+		t, cacheDir, repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, selectiveOptions,
+	)
 
 	options := SearchOptions{
 		Profile:         ProfileSyntaxOnly,
@@ -727,31 +752,26 @@ func NeedleTarget() bool { return true }
 	if len(first.Results) == 0 || first.Results[0].SymbolName != "NeedleTarget" {
 		t.Fatalf("first warm search lost target: %#v", first.Results)
 	}
-	persisted, statErr := os.Stat(selectivePath)
-	if statErr != nil {
-		t.Fatalf("first warm search did not persist the per-query selective entry at %s: %v", selectivePath, statErr)
+	if _, statErr := os.Stat(selectivePath); !os.IsNotExist(statErr) {
+		t.Fatalf("first warm search persisted its derived selective view at %s: %v", selectivePath, statErr)
 	}
 
 	second, err := SearchRepository(t.Context(), repo, "test-version", query, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !second.Stats.IndexCacheHit {
-		t.Fatalf("second warm search missed the selective cache: %#v", second.Stats)
+	if !second.Stats.IndexCacheHit || second.Stats.FilesIndexed != 1 {
+		t.Fatalf("second warm search did not derive from the complete preindex: %#v", second.Stats)
 	}
 	if !reflect.DeepEqual(second.Results, first.Results) {
-		t.Fatalf("selective cache entry changed retrieval:\nfirst=%#v\nsecond=%#v", first.Results, second.Results)
+		t.Fatalf("re-deriving the selective view changed retrieval:\nfirst=%#v\nsecond=%#v", first.Results, second.Results)
 	}
-	reused, statErr := os.Stat(selectivePath)
-	if statErr != nil {
-		t.Fatalf("second warm search lost the selective entry: %v", statErr)
-	}
-	if !reused.ModTime().Equal(persisted.ModTime()) {
-		t.Fatalf("second warm search re-derived and rewrote the selective entry: first=%v second=%v", persisted.ModTime(), reused.ModTime())
+	if _, statErr := os.Stat(selectivePath); !os.IsNotExist(statErr) {
+		t.Fatalf("second warm search persisted its derived selective view: %v", statErr)
 	}
 
-	// With the complete preindex entry gone, re-derivation is impossible: only
-	// the persisted per-query entry can keep the third identical search a hit.
+	// With the complete preindex entry gone, nothing can be derived: the third
+	// search builds its selection, and that BUILT selection is persisted.
 	fullKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, ProviderSnapshotOptions{
 		Profile: ProfileSyntaxOnly,
 	})
@@ -765,11 +785,24 @@ func NeedleTarget() bool { return true }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !third.Stats.IndexCacheHit {
-		t.Fatalf("persisted selective entry was not reused after preindex removal: %#v", third.Stats)
+	if third.Stats.IndexCacheHit {
+		t.Fatalf("search with no complete entry and no persisted selection reported a cache hit: %#v", third.Stats)
 	}
 	if !reflect.DeepEqual(third.Results, first.Results) {
-		t.Fatalf("persisted selective entry changed retrieval:\nfirst=%#v\nthird=%#v", first.Results, third.Results)
+		t.Fatalf("building the selection changed retrieval:\nfirst=%#v\nthird=%#v", first.Results, third.Results)
+	}
+	if _, statErr := os.Stat(selectivePath); statErr != nil {
+		t.Fatalf("the built selection was not persisted at %s: %v", selectivePath, statErr)
+	}
+	fourth, err := SearchRepository(t.Context(), repo, "test-version", query, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fourth.Stats.IndexCacheHit {
+		t.Fatalf("persisted built selection was not reused: %#v", fourth.Stats)
+	}
+	if !reflect.DeepEqual(fourth.Results, first.Results) {
+		t.Fatalf("persisted built selection changed retrieval:\nfirst=%#v\nfourth=%#v", first.Results, fourth.Results)
 	}
 }
 
@@ -796,9 +829,10 @@ func helper() {}
 	}, cacheDir); err != nil {
 		t.Fatal(err)
 	}
-	full, hit, err := loadCachedCompleteSearchSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+	binding, hit, err := loadCachedCompleteSearchSnapshotBinding(t.Context(), repo, "test-version", ProviderSnapshotOptions{
 		Profile: ProfileFull,
 	}, cacheDir)
+	full := binding.snapshot
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -820,7 +854,7 @@ func helper() {}
 	if _, deriveErr := selectiveSearchSnapshotFromFull(t.Context(), repo, "test-version", selectiveOptions, full); deriveErr == nil {
 		t.Fatal("stale complete snapshot no longer fails derivation; fixture does not simulate a provenance mismatch")
 	}
-	snapshot, cacheHit, err := loadOrDeriveSelectiveSearchSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false, full)
+	snapshot, cacheHit, err := loadOrDeriveSelectiveSearchSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false, binding)
 	if err != nil {
 		t.Fatalf("warm derivation failure was not treated as soft: %v", err)
 	}
@@ -1101,11 +1135,11 @@ func TestPreindexWarmCacheHitDoesNotRevalidatePersistedSnapshot(t *testing.T) {
 	}
 
 	persistenceReads := 0
-	warm, cacheHit, err := preindexProviderSnapshotWithPersistenceReader(
+	warm, cacheHit, err := preindexProviderSnapshotWithPersistenceVerifier(
 		t.Context(), repo, "test-version", options, cacheDir,
-		func(entry cacheEntry) (cachedSearchSnapshot, error) {
+		func(entry cacheEntry) (cacheDigest, error) {
 			persistenceReads++
-			return readSearchSnapshot(entry)
+			return entry.digest()
 		},
 	)
 	if err != nil {
@@ -1278,10 +1312,10 @@ func IdentitySensitiveTarget() bool { return true }
 		t.Fatal("full preindex with the old repository key was reported as usable")
 	}
 
-	assertNewRepoKeyResult := func(name string, response SearchResponse) {
+	assertNewRepoKeyResult := func(name string, response SearchResponse, wantHit bool) {
 		t.Helper()
-		if response.Stats.IndexCacheHit {
-			t.Fatalf("%s search reported the old repository-key cache as a hit: %#v", name, response.Stats)
+		if response.Stats.IndexCacheHit != wantHit {
+			t.Fatalf("%s search cache hit = %v, want %v: %#v", name, response.Stats.IndexCacheHit, wantHit, response.Stats)
 		}
 		for _, result := range response.Results {
 			if result.SymbolName != "IdentitySensitiveTarget" {
@@ -1296,12 +1330,23 @@ func IdentitySensitiveTarget() bool { return true }
 	}
 
 	selective, err := SearchRepository(t.Context(), repo, "test-version", "IdentitySensitiveTarget repository identity", SearchOptions{
-		Profile: ProfileSyntaxOnly, TopK: 5, MaxIndexedFiles: 1, CacheDir: cacheDir,
+		// The default pool, shrunk to the fixture: an explicit MaxIndexedFiles bounds
+		// cold parsing and would not persist the complete snapshot asserted below.
+		Profile: ProfileSyntaxOnly, TopK: 5, defaultIndexedFilesForTest: 1, CacheDir: cacheDir,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertNewRepoKeyResult("selective", selective)
+	assertNewRepoKeyResult("selective", selective, false)
+
+	// The cold selective query persisted a complete snapshot under the NEW key,
+	// so the complete search below is a hit on that entry, never on the old one:
+	// the symbol IDs it returns carry the new namespace.
+	if renamed, hit, err := loadCachedCompleteSearchSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileSyntaxOnly,
+	}, cacheDir); err != nil || !hit || renamed.Header.RepoKey != "gh/acme/renamed" {
+		t.Fatalf("cold selective query did not persist a complete snapshot under the new key: hit=%v key=%q err=%v", hit, renamed.Header.RepoKey, err)
+	}
 
 	full, err := SearchRepository(t.Context(), repo, "test-version", "IdentitySensitiveTarget repository identity", SearchOptions{
 		Profile: ProfileSyntaxOnly, TopK: 5, IndexAllFiles: true, CacheDir: cacheDir,
@@ -1309,7 +1354,7 @@ func IdentitySensitiveTarget() bool { return true }
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertNewRepoKeyResult("full", full)
+	assertNewRepoKeyResult("full", full, true)
 }
 
 func TestSearchRejectsPreindexWhenRepoKeyChangesAfterCacheLoad(t *testing.T) {

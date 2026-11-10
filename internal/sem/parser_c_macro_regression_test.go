@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -256,8 +257,12 @@ int tail_fn(void)
 	if countEntity(entities, "struct", "Curl_addrinfo") == 0 {
 		t.Errorf("struct Curl_addrinfo missing: %+v", entities)
 	}
-	if countEntity(entities, "struct", "FOO") == 0 {
-		t.Errorf("struct tag FOO must not be blanked: %+v", entities)
+	// `struct FOO bar` names a tag, it does not define one, so it is correctly
+	// not a symbol. Assert the mask guard directly on the masked source instead:
+	// the declarator heuristics must not mistake the tag for an attribute macro
+	// and blank it.
+	if masked := maskCUnsupportedSyntax(src); !strings.Contains(masked, "struct FOO bar") {
+		t.Errorf("struct tag FOO must not be blanked:\n%s", masked)
 	}
 	if countEntity(entities, "function", "tail_fn") != 1 {
 		t.Errorf("tail_fn missing: %+v", entities)

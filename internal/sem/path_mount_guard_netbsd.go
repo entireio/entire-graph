@@ -13,11 +13,7 @@ import (
 const maxNetBSDMountTableRows = 100_000
 
 func newPathMountGuard(root, trustedBase string) (pathMountGuard, error) {
-	mountPoints, err := readNetBSDMountPoints()
-	if err != nil {
-		return pathMountGuard{}, err
-	}
-	return makePathMountGuard(root, trustedBase, mountPoints), nil
+	return readPathMountGuard(root, trustedBase, readNetBSDMountPoints)
 }
 
 // Getvfsstat reads the kernel's mount inventory without looking up any

@@ -14,11 +14,7 @@ const (
 )
 
 func newPathMountGuard(root, trustedBase string) (pathMountGuard, error) {
-	mountPoints, err := readBSDMountPoints()
-	if err != nil {
-		return pathMountGuard{}, err
-	}
-	return makePathMountGuard(root, trustedBase, mountPoints), nil
+	return readPathMountGuard(root, trustedBase, readBSDMountPoints)
 }
 
 func readBSDMountPoints() (map[string]struct{}, error) {

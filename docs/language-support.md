@@ -58,6 +58,20 @@ Current generated counts:
 - Zig
 - Zsh
 
+Every language in this list has a minimal fixture under
+`internal/sem/testdata/langmatrix/` and is asserted by
+`TestLanguageExtractionMatrix` to extract real symbols and relations. A grammar
+that loads and parses without error but yields nothing is invisible in
+aggregate symbol counts, so the per-language assertion is the only thing that
+catches it. `TestLanguageMatrixCoversEverySemanticLanguage` keeps that fixture
+set in lockstep with the registry, and `TestDocumentedLanguageListsMatchTheRegistry`
+keeps both lists on this page in lockstep with the registry.
+
+Languages that advertise `CALLS` but extract none from their fixture's
+idiomatic call site are pinned in `languageMatrix` with the reason. That list is
+enforced in both directions: a language going dark fails, and so does a fix
+landing without the audited gap being retired.
+
 Protocol Buffers support covers proto3 and legacy proto2 declarations,
 including files that omit the syntax declaration, proto2 field labels, and
 groups. Compatibility parsing preserves original source locations, signatures,

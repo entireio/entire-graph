@@ -1,5 +1,5 @@
 @AGENTS.md
 
-<!-- entire-graph:begin -->
-<!-- Entire Graph instructions are inherited through AGENTS.md. -->
-<!-- entire-graph:end -->
+<!-- entire-agent:begin -->
+<!-- Entire agent instructions are inherited through AGENTS.md. -->
+<!-- entire-agent:end -->

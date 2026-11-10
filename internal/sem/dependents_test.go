@@ -632,6 +632,36 @@ func TestAddDependentCountsBudgetExpiredWarnsAndKeepsResult(t *testing.T) {
 	if got := result.Files[0].Changes[0].DependentsCount; got != 0 {
 		t.Fatalf("dependents count under expired budget = %d, want 0", got)
 	}
+	// The scan itself hit a real limit (see dependentsEvidenceState), not merely the scan's
+	// ordinary token-matching imprecision: some candidate files were never counted at all, so
+	// the 0 above must not be read as a confirmed "nothing depends on this".
+	if got := result.Files[0].Changes[0].DependentsEvidence; got != EvidenceRequiresVerification {
+		t.Fatalf("dependents evidence under expired budget = %q, want %q", got, EvidenceRequiresVerification)
+	}
+}
+
+// TestAddDependentCountsCleanScanIsPartialNotConfirmed pins the OTHER half of the same
+// contract: a scan that completes with no warnings at all is still a token-level heuristic (it
+// can miss a caller reached through an alias, reflection, or a generated binding), so it must
+// never claim Confirmed -- only a scan that additionally hit a real limit escalates further, to
+// RequiresVerification (see TestAddDependentCountsBudgetExpiredWarnsAndKeepsResult above).
+func TestAddDependentCountsCleanScanIsPartialNotConfirmed(t *testing.T) {
+	repo, head := newDependentsTestRepo(t)
+
+	result := Result{Files: []FileChange{{
+		Path:    "auth.py",
+		Status:  "M",
+		Changes: []EntityChange{{Type: "body_changed", Kind: "function", Name: "Foo"}},
+	}}}
+	if err := addDependentCountsWithProgress(context.Background(), repo, head, &result, dependentsScanOptions{}); err != nil {
+		t.Fatalf("clean scan must not error, got %v", err)
+	}
+	if got := result.Files[0].Changes[0].DependentsCount; got != 2 {
+		t.Fatalf("dependents count = %d, want 2 (see newDependentsTestRepo)", got)
+	}
+	if got := result.Files[0].Changes[0].DependentsEvidence; got != EvidencePartial {
+		t.Fatalf("dependents evidence on a clean scan = %q, want %q", got, EvidencePartial)
+	}
 }
 
 type deepDependentFile struct {
@@ -953,5 +983,49 @@ func TestBuildReferenceIndexReportsPerFileProgress(t *testing.T) {
 	}
 	if last.done != last.total || last.total != first.total || last.path != "" {
 		t.Fatalf("last progress event = %#v, want total/total with empty path", last)
+	}
+}
+
+func TestBuildReferenceIndexBudgetRejectsBufferedResults(t *testing.T) {
+	const files = 128
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	for i := range files {
+		write(t, repo, fmt.Sprintf("caller%03d.py", i), "def caller(value):\n    return Foo(value)\n")
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "callers")
+	head := rev(t, repo, "HEAD")
+	const budget = 2 * time.Second
+	deadline := time.Now().Add(budget)
+	crossed := false
+	index, warnings, err := buildReferenceIndexWithProgress(t.Context(), repo, head, map[string]struct{}{"Foo": {}}, dependentsScanOptions{
+		deadline: deadline,
+		budget:   budget,
+		progress: func(done, total int, path string) {
+			if done == 100 && path != "" {
+				crossed = true
+				// Let already-admitted workers finish while the reducer is
+				// paused, then cross the deadline before reducing their results.
+				if remaining := time.Until(deadline); remaining > 0 {
+					time.Sleep(remaining + 100*time.Millisecond)
+				}
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !crossed {
+		t.Fatal("budget expired before the test reached the in-flight result boundary")
+	}
+	if got := len(index["Foo"]); got != 101 {
+		t.Fatalf("counted %d dependents, want only the 101 accepted at the deadline", got)
+	}
+	want := dependentsBudgetWarning(101, files, budget)
+	if len(warnings) != 1 || warnings[0] != want {
+		t.Fatalf("warnings = %#v, want %#v", warnings, want)
 	}
 }

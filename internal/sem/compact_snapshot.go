@@ -33,6 +33,10 @@ type CompactSnapshotEncoder struct {
 	dictionaryBytes int64
 	wroteHeader     bool
 	wroteSummary    bool
+	// summaryLineLimit overrides compactSnapshotSummaryLineCeiling. It exists so
+	// the ceiling can be exercised without materializing half a gigabyte, and is
+	// zero (meaning the ceiling) everywhere else.
+	summaryLineLimit int
 }
 
 func NewCompactSnapshotEncoder(out io.Writer) *CompactSnapshotEncoder {
@@ -59,7 +63,7 @@ func (encoder *CompactSnapshotEncoder) Encode(record any) error {
 			return errors.New("compact snapshot header must be first")
 		}
 		encoder.wroteSummary = true
-		return encoder.writeLine([]any{"m", typed})
+		return encoder.writeSummaryLine([]any{"m", typed})
 	case FileRecord:
 		if !encoder.wroteHeader {
 			return errors.New("compact snapshot header must be first")
@@ -108,6 +112,56 @@ func (encoder *CompactSnapshotEncoder) writeData(row []any, base int) error {
 
 func (encoder *CompactSnapshotEncoder) writeLine(value any) error {
 	return encoder.encoder.Encode(value)
+}
+
+// writeSummaryLine writes the summary and refuses to emit one past the ceiling
+// the decoder reads back.
+//
+// The summary is the one line whose length is not a property of the format, so
+// the two sides have to agree on a number somewhere. Agreeing here makes the
+// ceiling an INVARIANT of the artifact rather than a decoder policy: a snapshot
+// this build writes is a snapshot this build reads, whatever listing cap either
+// side was configured with. Refusing at encode time is also the failure a caller
+// can act on — the alternative is a file written successfully and unreadable
+// later, which is the defect this whole area exists to remove.
+//
+// The limit is enforced by the writer rather than by measuring a copy first, so
+// the summary is never held twice.
+func (encoder *CompactSnapshotEncoder) writeSummaryLine(value any) error {
+	limit := encoder.summaryLineLimit
+	if limit <= 0 {
+		limit = compactSnapshotSummaryLineCeiling
+	}
+	bounded := &boundedSummaryWriter{out: encoder.out, limit: limit}
+	lineEncoder := json.NewEncoder(bounded)
+	lineEncoder.SetEscapeHTML(false)
+	return lineEncoder.Encode(value)
+}
+
+// boundedSummaryWriter passes writes through until they would take the summary
+// past limit, and refuses the write that would.
+type boundedSummaryWriter struct {
+	out     io.Writer
+	limit   int
+	written int
+}
+
+func (writer *boundedSummaryWriter) Write(payload []byte) (int, error) {
+	if writer.written+len(payload) > writer.limit {
+		return 0, fmt.Errorf(
+			"compact snapshot summary is %d bytes, past the %d-byte limit the decoder reads back",
+			writer.written+len(payload), writer.limit,
+		)
+	}
+	written, err := writer.out.Write(payload)
+	writer.written += written
+	if err == nil && written != len(payload) {
+		// An io.Writer may report a short write with no error. The summary
+		// closes the artifact, so a truncated one is a snapshot no reader can
+		// finish.
+		return written, io.ErrShortWrite
+	}
+	return written, err
 }
 
 func compactJSONLine(value any) ([]byte, error) {
@@ -183,6 +237,12 @@ func (encoder *CompactSnapshotEncoder) relationRow(record RelationRecord) compac
 		}
 	}
 	row := []any{"r", fromID, toID, relationType, record.Confidence, reason, relationScope, resolution, targetKind, evidence, warnings}
+	// Optional trailing field. Emitted only when something was actually dropped,
+	// so the row stays byte-identical for the overwhelming majority of relations.
+	// Compact v1 readers accept either the original 11 fields or this 12th field.
+	if record.EvidenceDropped > 0 {
+		row = append(row, record.EvidenceDropped)
+	}
 	return encoder.dataRow(row, base)
 }
 
@@ -209,11 +269,14 @@ type SCIPOmissionNote struct {
 	MissingEvidenceRelations  int            `json:"missing_evidence_relations"`
 	EmittedDefinitions        int            `json:"emitted_definitions"`
 	EmittedReferences         int            `json:"emitted_references"`
-	WorktreeSnapshot          bool           `json:"worktree_snapshot,omitempty"`
-	PartialSnapshot           bool           `json:"partial_snapshot,omitempty"`
-	CompletenessLevel         string         `json:"completeness_level,omitempty"`
-	WarningCount              int            `json:"warning_count,omitempty"`
-	PartialFailureCount       int            `json:"partial_failure_count,omitempty"`
+	// MissingSourceRelations counts relations whose resolved target needs a
+	// local source symbol to carry the SCIP relationship, but has none.
+	MissingSourceRelations int    `json:"missing_source_relations,omitempty"`
+	WorktreeSnapshot       bool   `json:"worktree_snapshot,omitempty"`
+	PartialSnapshot        bool   `json:"partial_snapshot,omitempty"`
+	CompletenessLevel      string `json:"completeness_level,omitempty"`
+	WarningCount           int    `json:"warning_count,omitempty"`
+	PartialFailureCount    int    `json:"partial_failure_count,omitempty"`
 	// UnidentifiedRecords counts records the encoder could not key and
 	// therefore did not carry into the index: a file with no path, or a symbol
 	// or external endpoint with no id. Such a record is a provider bug rather
@@ -424,6 +487,7 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 	}
 	encoder.note.UnsupportedRelationCounts = map[string]int{}
 	encoder.note.MissingTargetRelations = 0
+	encoder.note.MissingSourceRelations = 0
 	encoder.note.MissingEvidenceRelations = 0
 	encoder.note.EmittedDefinitions = 0
 	encoder.note.EmittedReferences = 0
@@ -547,6 +611,39 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 	for _, relation := range encoder.relations {
 		relationType := strings.ToUpper(relation.Type)
 		if relationType == "DEFINES" || relationType == "CONTAINS" {
+			// These are normally redundant: EnclosingSymbol carries CONTAINS,
+			// while a symbol's document and definition occurrence carry DEFINES.
+			// That only holds when the relation agrees with the corresponding
+			// native metadata. Extension members -- a method attached to a
+			// receiver declared elsewhere -- produce a CONTAINS whose parent is
+			// NOT the symbol's container, and that membership is in no other
+			// field, so skipping it silently made the note report a completeness
+			// the protobuf did not have.
+			// The child is the structural target for both relation families. A
+			// missing one cannot be represented by the symbol metadata or a
+			// definition occurrence, and must not be misclassified as an
+			// unsupported-but-present relation.
+			child, ok := encoder.symbols[relation.ToID]
+			if !ok {
+				encoder.note.MissingTargetRelations++
+				continue
+			}
+			if relationType == "CONTAINS" {
+				if _, ok := encoder.symbols[relation.FromID]; !ok {
+					encoder.note.MissingSourceRelations++
+					continue
+				}
+				if child.ContainerID != relation.FromID {
+					encoder.note.UnsupportedRelationCounts[relationType]++
+				}
+				continue
+			}
+			// A native DEFINES source is the repository-scoped file id derived
+			// from the child's path. Anything else describes membership that the
+			// SCIP definition occurrence does not prove.
+			if child.FilePath == "" || relation.FromID != fileID(header.RepoKey, child.FilePath) {
+				encoder.note.UnsupportedRelationCounts[relationType]++
+			}
 			continue
 		}
 		if !scipReferenceRelation(relationType) {
@@ -554,8 +651,15 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 			continue
 		}
 		target := symbols[relation.ToID]
+		targetKind := ""
+		if record, ok := encoder.symbols[relation.ToID]; ok {
+			targetKind = record.Kind
+		}
 		if target == "" {
 			target = externals[relation.ToID]
+			if record, ok := encoder.externals[relation.ToID]; ok {
+				targetKind = record.Kind
+			}
 		}
 		if target == "" {
 			encoder.note.MissingTargetRelations++
@@ -567,13 +671,25 @@ func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
 			// reference occurrences meant the navigation they exist for
 			// returned nothing, and because the types count as supported the
 			// loss was not reported either.
-			if info := infos[relation.FromID]; info != nil {
+			source, sourceExists := encoder.symbols[relation.FromID]
+			if info := infos[relation.FromID]; sourceExists && info != nil {
+				// is_reference is not "this is a reference"; it tells a consumer
+				// to MERGE the related symbol's references into this one's. That
+				// is right for a member override -- Find References on the base
+				// method should reach the override's callers -- and wrong for a
+				// type relationship, where it makes Find References on a base
+				// type report every subtype's definition as a reference to it. Both
+				// endpoints must be members; an unknown or mismatched target kind
+				// fails closed.
+				memberLevel := methodLikeSCIPKind(source.Kind) && methodLikeSCIPKind(targetKind)
 				info.Relationships = append(info.Relationships, &scippb.Relationship{
 					Symbol:           target,
 					IsImplementation: true,
-					IsReference:      true,
+					IsReference:      memberLevel,
 				})
 				encoder.note.EmittedImplementations++
+			} else {
+				encoder.note.MissingSourceRelations++
 			}
 		}
 		emitted := false
@@ -978,121 +1094,362 @@ func shortDigest(value string) string {
 
 // DecodeCompactSnapshot validates and decodes records incrementally. It retains
 // only the string dictionary; callers that need materialization use the loader.
-func DecodeCompactSnapshot(in io.Reader, emit func(any) error) error {
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+// DecodeCompactSnapshot streams a compact snapshot, calling emit for each
+// record, and RETURNS the ADR 0001 tolerant-reader warnings rather than
+// discarding them.
+//
+// The newer-minor signal used to be computed here and thrown away, so every
+// caller that needed it had to re-derive it by calling
+// CheckReadableSchemaVersion on the header a second time — which
+// LoadCompactSnapshot did, and which a direct caller could simply forget, with
+// nothing to remind it. Clause 3 of the ADR makes that warning mandatory for a
+// reader, so a decoder that computes it and drops it is handing every caller
+// the same bug to rediscover.
+//
+// The warnings are returned rather than emitted through the record stream on
+// purpose: emit feeds SnapshotSemanticHasher and the preflight's public
+// projection, both of which type-switch over the record kinds, so a warning
+// pushed through that channel would change the canonical semantic hash and
+// break the projection comparison. A warning is metadata ABOUT the stream, not
+// a record in it.
+func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarning, error) {
+	var warnings []ProviderWarning
+	reader := bufio.NewReaderSize(in, 64*1024)
 	dictionary := []string{""}
 	known := map[string]bool{"": true}
 	seenHeader, seenSummary := false, false
+	tolerateSchemaAdditions := false
 	lineNumber := 0
-	for scanner.Scan() {
+	for {
+		// The summary is the one record that grows with the corpus, so it is the
+		// one record read straight off the stream rather than materialized as a
+		// line first: decodeCompactSummaryLine never holds the raw bytes beside
+		// the struct it builds, and never pays an append's doubling on the way.
+		// The tag is the first thing on a line, so peeking it routes the record
+		// before a byte is consumed — but the prefix comes from the artifact, so
+		// take that route only where a summary is legal at all: after a validated
+		// header, and before any summary.
+		if seenHeader && !seenSummary {
+			if compactSnapshotLineIsSummary(reader) {
+				summary, err := decodeCompactSummaryLine(reader, compactSnapshotSummaryLineCeiling)
+				if err != nil {
+					return warnings, err
+				}
+				lineNumber++
+				seenSummary = true
+				if err := emit(summary); err != nil {
+					return warnings, err
+				}
+				continue
+			}
+		}
+		line, readErr := readCompactSnapshotLine(reader, compactSnapshotRecordLineBytes)
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return warnings, fmt.Errorf("compact snapshot scan: %w", readErr)
+		}
 		lineNumber++
-		line := scanner.Bytes()
 		if len(line) == 0 {
-			return fmt.Errorf("compact snapshot line %d is blank", lineNumber)
+			return warnings, fmt.Errorf("compact snapshot line %d is blank", lineNumber)
 		}
 		if seenSummary {
-			return fmt.Errorf("compact snapshot has record after summary at line %d", lineNumber)
+			return warnings, fmt.Errorf("compact snapshot has record after summary at line %d", lineNumber)
 		}
 		var fields []json.RawMessage
 		if err := json.Unmarshal(line, &fields); err != nil {
-			return fmt.Errorf("compact snapshot line %d: %w", lineNumber, err)
+			return warnings, fmt.Errorf("compact snapshot line %d: %w", lineNumber, err)
 		}
 		if len(fields) == 0 {
-			return fmt.Errorf("compact snapshot line %d has no tag", lineNumber)
+			return warnings, fmt.Errorf("compact snapshot line %d has no tag", lineNumber)
 		}
 		var tag string
 		if err := json.Unmarshal(fields[0], &tag); err != nil {
-			return fmt.Errorf("compact snapshot line %d tag: %w", lineNumber, err)
+			return warnings, fmt.Errorf("compact snapshot line %d tag: %w", lineNumber, err)
 		}
 		switch tag {
 		case "h":
 			if seenHeader || lineNumber != 1 || len(fields) != 3 {
-				return fmt.Errorf("compact snapshot header must be first and have arity 3")
+				return warnings, fmt.Errorf("compact snapshot header must be first and have arity 3")
 			}
 			var version int
 			if err := json.Unmarshal(fields[1], &version); err != nil {
-				return fmt.Errorf("compact snapshot header version: %w", err)
+				return warnings, fmt.Errorf("compact snapshot header version: %w", err)
 			}
 			if version != CompactSnapshotFormatVersion {
-				return fmt.Errorf("unsupported compact snapshot version %d", version)
+				return warnings, fmt.Errorf("unsupported compact snapshot version %d", version)
 			}
 			var header SnapshotHeader
 			if err := json.Unmarshal(fields[2], &header); err != nil {
-				return fmt.Errorf("compact snapshot header: %w", err)
+				return warnings, fmt.Errorf("compact snapshot header: %w", err)
 			}
+			// The envelope version above pins the ARRAY ENCODING; the header's
+			// schema_version pins the RECORD SHAPE, and the two move
+			// independently. ADR 0001 makes the major the compatibility
+			// boundary, so an artifact from another major — or one that does not
+			// declare a placeable version at all — is refused here rather than
+			// decoded into this build's structs, where every field the other
+			// major named differently would silently arrive as a zero value.
+			newerMinor, err := CheckReadableSchemaVersion(header.SchemaVersion)
+			if err != nil {
+				return warnings, fmt.Errorf("compact snapshot header: %w", err)
+			}
+			if newerMinor {
+				warnings = append(warnings, newerSchemaMinorWarning(header.SchemaVersion))
+			}
+			tolerateSchemaAdditions = newerMinor
 			seenHeader = true
 			if err := emit(header); err != nil {
-				return err
+				return warnings, err
 			}
 		case "d":
 			if !seenHeader || seenSummary || len(fields) != 3 {
-				return fmt.Errorf("compact snapshot dictionary has invalid placement or arity")
+				return warnings, fmt.Errorf("compact snapshot dictionary has invalid placement or arity")
 			}
 			var base int
 			var stringsToAdd []string
 			if err := json.Unmarshal(fields[1], &base); err != nil {
-				return fmt.Errorf("compact snapshot dictionary base: %w", err)
+				return warnings, fmt.Errorf("compact snapshot dictionary base: %w", err)
 			}
 			if err := json.Unmarshal(fields[2], &stringsToAdd); err != nil {
-				return fmt.Errorf("compact snapshot dictionary values: %w", err)
+				return warnings, fmt.Errorf("compact snapshot dictionary values: %w", err)
 			}
 			if base != len(dictionary) {
-				return fmt.Errorf("compact snapshot dictionary base %d does not equal %d", base, len(dictionary))
+				return warnings, fmt.Errorf("compact snapshot dictionary base %d does not equal %d", base, len(dictionary))
 			}
 			if len(stringsToAdd) == 0 {
-				return errors.New("compact snapshot dictionary update is empty")
+				return warnings, errors.New("compact snapshot dictionary update is empty")
 			}
 			for _, value := range stringsToAdd {
 				if value == "" {
-					return errors.New("compact snapshot dictionary repeats empty string")
+					return warnings, errors.New("compact snapshot dictionary repeats empty string")
 				}
 				if known[value] {
-					return fmt.Errorf("compact snapshot dictionary duplicates %q", value)
+					return warnings, fmt.Errorf("compact snapshot dictionary duplicates %q", value)
 				}
 				known[value] = true
 				dictionary = append(dictionary, value)
 			}
 		case "f", "x", "s", "r":
 			if !seenHeader {
-				return errors.New("compact snapshot data requires header")
+				return warnings, errors.New("compact snapshot data requires header")
 			}
-			record, err := decodeCompactData(tag, fields, dictionary)
+			record, err := decodeCompactData(tag, fields, dictionary, tolerateSchemaAdditions)
 			if err != nil {
-				return fmt.Errorf("compact snapshot line %d: %w", lineNumber, err)
+				return warnings, fmt.Errorf("compact snapshot line %d: %w", lineNumber, err)
 			}
 			if err := emit(record); err != nil {
-				return err
+				return warnings, err
 			}
 		case "m":
 			if !seenHeader || len(fields) != 2 {
-				return fmt.Errorf("compact snapshot summary has invalid placement or arity")
+				return warnings, fmt.Errorf("compact snapshot summary has invalid placement or arity")
 			}
 			var summary SnapshotSummary
 			if err := json.Unmarshal(fields[1], &summary); err != nil {
-				return fmt.Errorf("compact snapshot summary: %w", err)
+				return warnings, fmt.Errorf("compact snapshot summary: %w", err)
 			}
 			seenSummary = true
 			if err := emit(summary); err != nil {
-				return err
+				return warnings, err
 			}
 		default:
-			return fmt.Errorf("unknown compact snapshot tag %q", tag)
+			if seenHeader && tolerateSchemaAdditions && tag != "" {
+				// ADR 0001 permits a newer minor to add optional record kinds.
+				// Their compact tags are not meaningful to this build, so skip
+				// the whole row while retaining the mandatory newer-minor warning.
+				continue
+			}
+			return warnings, fmt.Errorf("unknown compact snapshot tag %q", tag)
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("compact snapshot scan: %w", err)
-	}
 	if !seenHeader {
-		return errors.New("compact snapshot is missing header")
+		return warnings, errors.New("compact snapshot is missing header")
 	}
 	if !seenSummary {
-		return errors.New("compact snapshot is missing summary")
+		return warnings, errors.New("compact snapshot is missing summary")
 	}
-	return nil
+	return warnings, nil
 }
 
-func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string) (any, error) {
+// compactSnapshotRecordLineBytes bounds every compact line;
+// compactSnapshotSummaryLineCeiling is the larger allowance the summary gets,
+// and compactSnapshotSummaryLinePrefix is how the summary is recognised before
+// its line is read.
+//
+// The summary is the ONE line whose length is not a property of the format. The
+// encoder writes it as a single JSON value carrying an entry per partial
+// failure, so it grows with the corpus while every other line — a header, a
+// dictionary update, a file, an external, a symbol, a relation — is one record
+// and does not. A 16 MiB cap on the summary left about 80 bytes per entry at the
+// default listing cap, below the encoder's own floor, which is why
+// snapshot-query failed with "bufio.Scanner: token too long" on snapshots this
+// build had just written.
+//
+// The ceiling is enforced on BOTH sides — writeSummaryLine refuses to emit past
+// it — so it is an invariant of the artifact rather than a decoder policy. A
+// decoder-side bound derived from configuration cannot be: the process that
+// reads a snapshot need not share the listing cap of the process that wrote it,
+// so the same artifact would be readable on one machine and not another.
+//
+// Measured: 90,000 partial failures encode to 24.4 MB, about 270 bytes an entry,
+// so the ceiling holds roughly two million of them — an order of magnitude past
+// what a repository at the default listing cap can produce even if every file
+// fails. Past that the encoder fails loudly, which is a caller's error to act on
+// rather than a file that writes successfully and cannot be read back.
+//
+// The allowance is reachable only after a validated header, at a position where
+// a summary is legal, once per decode: the prefix that selects it comes from the
+// artifact, so it must not be the only thing in front of the larger buffer.
+const (
+	compactSnapshotRecordLineBytes    = 16 * 1024 * 1024
+	compactSnapshotSummaryLineCeiling = 128 * 1024 * 1024
+	// compactSnapshotTagPeekBytes is how far compactSnapshotLineIsSummary looks
+	// for the record tag. The encoder writes it at offset one; the window is
+	// generous enough for any whitespace a reformatter might insert ahead of it.
+	compactSnapshotTagPeekBytes = 4096
+)
+
+// compactSnapshotLineIsSummary reports whether the next line's record tag is the
+// summary's, WITHOUT consuming anything.
+//
+// It reads the tag rather than matching a byte prefix. The encoder emits no
+// whitespace, but the format is JSON and `[ "m" , {…}]` is the same record; a
+// prefix match sent such a line down the ordinary path and refused a valid
+// summary over the record cap.
+func compactSnapshotLineIsSummary(reader *bufio.Reader) bool {
+	head, _ := reader.Peek(compactSnapshotTagPeekBytes)
+	index := 0
+	skipBlanks := func() {
+		for index < len(head) && (head[index] == ' ' || head[index] == '\t') {
+			index++
+		}
+	}
+	skipBlanks()
+	if index >= len(head) || head[index] != '[' {
+		return false
+	}
+	index++
+	skipBlanks()
+	if index+2 >= len(head) || head[index] != '"' || head[index+1] != 'm' || head[index+2] != '"' {
+		return false
+	}
+	index += 3
+	skipBlanks()
+	return index < len(head) && head[index] == ','
+}
+
+// decodeCompactSummaryLine decodes the summary record directly from the stream.
+//
+// It is the answer to the one line whose length is not a property of the format:
+// materializing it first meant holding the raw bytes AND the struct they build,
+// with an append's doubling on top. Decoding through encoding/json's streaming
+// decoder holds only what it is parsing, and limit — enforced by an
+// io.LimitedReader, so nothing past it is ever read — bounds even that.
+//
+// The summary closes the artifact, so anything after it is a record after the
+// summary, which compactSnapshotTrailingIsEmpty reports without buffering it.
+func decodeCompactSummaryLine(reader *bufio.Reader, limit int) (SnapshotSummary, error) {
+	var summary SnapshotSummary
+	decoder := json.NewDecoder(io.LimitReader(reader, int64(limit)))
+	token, err := decoder.Token()
+	if err != nil {
+		return summary, compactSummaryStreamError(err, limit)
+	}
+	if delimiter, ok := token.(json.Delim); !ok || delimiter != '[' {
+		return summary, errors.New("compact snapshot summary has invalid placement or arity")
+	}
+	var tag string
+	if err := decoder.Decode(&tag); err != nil {
+		return summary, compactSummaryStreamError(err, limit)
+	}
+	if tag != "m" {
+		return summary, fmt.Errorf("compact snapshot summary tag %q", tag)
+	}
+	if err := decoder.Decode(&summary); err != nil {
+		return summary, compactSummaryStreamError(err, limit)
+	}
+	token, err = decoder.Token()
+	if err != nil {
+		return summary, compactSummaryStreamError(err, limit)
+	}
+	if delimiter, ok := token.(json.Delim); !ok || delimiter != ']' {
+		return summary, errors.New("compact snapshot summary has invalid placement or arity")
+	}
+	if err := compactSnapshotTrailingIsEmpty(io.MultiReader(decoder.Buffered(), reader)); err != nil {
+		return summary, err
+	}
+	return summary, nil
+}
+
+// compactSummaryStreamError names the two ways the stream can end early: a
+// truncated artifact, and one whose summary is past the limit, which the
+// LimitedReader presents the same way.
+func compactSummaryStreamError(err error, limit int) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("compact snapshot summary is truncated or exceeds %d bytes: %w", limit, err)
+	}
+	return fmt.Errorf("compact snapshot summary: %w", err)
+}
+
+// compactSnapshotTrailingIsEmpty reports whether only whitespace follows, in
+// fixed-size reads, so a large trailing blob costs no memory to reject.
+func compactSnapshotTrailingIsEmpty(reader io.Reader) error {
+	buffer := make([]byte, 32*1024)
+	for {
+		read, err := reader.Read(buffer)
+		for _, character := range buffer[:read] {
+			switch character {
+			case ' ', '\t', '\n', '\r':
+			default:
+				return errors.New("compact snapshot has record after summary")
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+// readCompactSnapshotLine returns the next line of a compact snapshot with its
+// line ending removed, and io.EOF once the reader is exhausted. A line longer
+// than limit is refused rather than accumulated; a non-positive limit accepts
+// any length.
+func readCompactSnapshotLine(reader *bufio.Reader, limit int) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if limit > 0 && len(line)+len(chunk) > limit {
+			return nil, fmt.Errorf("compact snapshot line exceeds %d bytes", limit)
+		}
+		line = append(line, chunk...)
+		switch {
+		case err == nil:
+			return trimCompactSnapshotLineEnding(line), nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			// A final line with no trailing newline is still a record; only an
+			// exhausted reader with nothing buffered ends the stream.
+			if len(line) == 0 {
+				return nil, io.EOF
+			}
+			return trimCompactSnapshotLineEnding(line), nil
+		default:
+			return nil, err
+		}
+	}
+}
+
+func trimCompactSnapshotLineEnding(line []byte) []byte {
+	return bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
+}
+
+func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string, tolerateTrailingFields bool) (any, error) {
 	stringAt := func(position int) (string, error) {
 		var index int
 		if err := json.Unmarshal(fields[position], &index); err != nil {
@@ -1106,7 +1463,7 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 	integerAt := func(position int) (int, error) { var value int; return value, json.Unmarshal(fields[position], &value) }
 	switch tag {
 	case "f":
-		if len(fields) != 6 {
+		if len(fields) < 6 || (!tolerateTrailingFields && len(fields) != 6) {
 			return nil, fmt.Errorf("file record arity %d, want 6", len(fields))
 		}
 		id, e1 := stringAt(1)
@@ -1119,7 +1476,7 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 		}
 		return FileRecord{RecordType: "file", ID: id, Path: path, Blob: blob, Language: language, Bytes: size}, nil
 	case "x":
-		if len(fields) != 12 {
+		if len(fields) < 12 || (!tolerateTrailingFields && len(fields) != 12) {
 			return nil, fmt.Errorf("external record arity %d, want 12", len(fields))
 		}
 		values := make([]string, 8)
@@ -1139,7 +1496,7 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 		}
 		return ExternalRecord{RecordType: "external", ID: values[0], Kind: values[1], Value: values[2], FilePath: values[3], StartLine: start, EndLine: end, Signature: values[4], Language: values[5], External: external, SourceSymbol: values[6], SourceDetails: values[7]}, nil
 	case "s":
-		if len(fields) != 14 {
+		if len(fields) < 14 || (!tolerateTrailingFields && len(fields) != 14) {
 			return nil, fmt.Errorf("symbol record arity %d, want 14", len(fields))
 		}
 		values := make([]string, 10)
@@ -1168,8 +1525,8 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 		}
 		return SymbolRecord{RecordType: "symbol", ID: values[0], StableIDVersion: values[1], Kind: values[2], Name: values[3], QualifiedName: values[4], FilePath: values[5], StartLine: start, EndLine: end, Signature: values[6], BodyHash: values[7], Language: values[8], ContainerID: values[9], Aliases: aliases}, nil
 	case "r":
-		if len(fields) != 11 {
-			return nil, fmt.Errorf("relation record arity %d, want 11", len(fields))
+		if len(fields) < 11 || (!tolerateTrailingFields && len(fields) != 11 && len(fields) != 12) {
+			return nil, fmt.Errorf("relation record arity %d, want 11 or 12", len(fields))
 		}
 		values := make([]string, 7)
 		for i, position := range []int{1, 2, 3, 5, 6, 7, 8} {
@@ -1189,7 +1546,7 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 		}
 		evidence := make([]Evidence, len(rawEvidence))
 		for i, raw := range rawEvidence {
-			if len(raw) != 5 {
+			if len(raw) < 5 || (!tolerateTrailingFields && len(raw) != 5) {
 				return nil, fmt.Errorf("evidence arity %d, want 5", len(raw))
 			}
 			var err error
@@ -1226,7 +1583,16 @@ func decodeCompactData(tag string, fields []json.RawMessage, dictionary []string
 				warnings[i] = dictionary[index]
 			}
 		}
-		return RelationRecord{RecordType: "relation", FromID: values[0], ToID: values[1], Type: values[2], Confidence: confidence, Reason: values[3], RelationScope: values[4], Resolution: values[5], TargetKind: values[6], Evidence: evidence, WarningCodes: warnings}, nil
+		evidenceDropped := 0
+		if len(fields) >= 12 {
+			if err := json.Unmarshal(fields[11], &evidenceDropped); err != nil {
+				return nil, err
+			}
+			if evidenceDropped < 0 {
+				return nil, fmt.Errorf("evidence_dropped %d must be non-negative", evidenceDropped)
+			}
+		}
+		return RelationRecord{RecordType: "relation", FromID: values[0], ToID: values[1], Type: values[2], Confidence: confidence, Reason: values[3], RelationScope: values[4], Resolution: values[5], TargetKind: values[6], Evidence: evidence, WarningCodes: warnings, EvidenceDropped: evidenceDropped}, nil
 	}
 	return nil, fmt.Errorf("unknown compact data tag %q", tag)
 }

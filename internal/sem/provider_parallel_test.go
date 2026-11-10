@@ -134,6 +134,50 @@ func TestStreamSnapshotParallelEmissionIsRepeatable(t *testing.T) {
 	}
 }
 
+func TestStreamSnapshotCancellationNeverEmitsSummary(t *testing.T) {
+	for _, workers := range []int{1, 8} {
+		for _, at := range []string{"after-parse", "during-relations", "after-relations"} {
+			t.Run(fmt.Sprintf("%d-workers/%s", workers, at), func(t *testing.T) {
+				repo := t.TempDir()
+				// All relations are local: no external-record loop may rescue
+				// cancellation that the relation scanner observes internally.
+				writeFile(t, repo, "local.go", "package sample\nfunc Local() {}\n")
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				canceled, summarized := false, false
+				err := streamSnapshotWithWorkerCount(ctx, repo, "test-version", ProviderSnapshotOptions{
+					Worktree: true,
+					Profile:  ProfileFull,
+					Progress: func(event ProgressEvent) {
+						if (at == "after-parse" && event.Phase == BuildPhaseParse && event.FilesDone == event.FilesTotal) ||
+							(at == "after-relations" && event.Phase == BuildPhaseRelations) {
+							canceled = true
+							cancel()
+						}
+					},
+				}, workers, func(record any) error {
+					switch record := record.(type) {
+					case RelationRecord:
+						if at == "during-relations" && record.Type == "DEFINES" {
+							canceled = true
+							cancel()
+						}
+					case SnapshotSummary:
+						summarized = true
+					}
+					return nil
+				})
+				if !canceled {
+					t.Fatal("test never reached the cancellation point")
+				}
+				if !errors.Is(err, context.Canceled) || summarized {
+					t.Fatalf("error = %v, emitted summary = %v; want context.Canceled and no summary", err, summarized)
+				}
+			})
+		}
+	}
+}
+
 func repositoryFilePaths(t *testing.T, repo string) []string {
 	t.Helper()
 	var paths []string
@@ -195,7 +239,7 @@ func TestProviderFilePipelineReducerFailureJoinsWorkers(t *testing.T) {
 	var active atomic.Int32
 	var processed atomic.Int32
 	wantErr := errors.New("stop reducer")
-	err := runProviderFilePipeline(t.Context(), paths, 8,
+	err := runProviderFilePipeline(t.Context(), nil, paths, 8,
 		func(_ context.Context, index int, path string) providerFileResult {
 			active.Add(1)
 			defer active.Add(-1)
@@ -223,7 +267,7 @@ func TestProviderFilePipelineReducerFailureJoinsWorkers(t *testing.T) {
 func TestProviderFilePipelineReducesInOriginalOrder(t *testing.T) {
 	paths := []string{"a.go", "b.go", "c.go", "d.go"}
 	var reduced []int
-	err := runProviderFilePipeline(t.Context(), paths, 4,
+	err := runProviderFilePipeline(t.Context(), nil, paths, 4,
 		func(_ context.Context, index int, path string) providerFileResult {
 			time.Sleep(time.Duration(len(paths)-index) * time.Millisecond)
 			return providerFileResult{index: index, path: path}
@@ -256,7 +300,7 @@ func TestProviderFilePipelineCancellationJoinsWorkers(t *testing.T) {
 	var startedOnce sync.Once
 	done := make(chan error, 1)
 	go func() {
-		done <- runProviderFilePipeline(ctx, paths, 4,
+		done <- runProviderFilePipeline(ctx, nil, paths, 4,
 			func(_ context.Context, index int, path string) providerFileResult {
 				active.Add(1)
 				startedOnce.Do(func() { close(started) })
@@ -296,7 +340,7 @@ func TestProviderFilePipelineBoundsOutstandingResults(t *testing.T) {
 	releaseFirst := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- runProviderFilePipeline(t.Context(), paths, workers,
+		done <- runProviderFilePipeline(t.Context(), nil, paths, workers,
 			func(ctx context.Context, index int, path string) providerFileResult {
 				started.Add(1)
 				if index == 0 {

@@ -11,9 +11,9 @@ authoritative in `entire graph capabilities --json`.
 | Document | Purpose |
 | --- | --- |
 | [Root README](../README.md) | What Entire Graph is, installation, activation, and the first agent task |
-| [Agent activation](agents.md) | `init-agents` file effects, rerun and marker behavior, client notes, verification, and recovery |
+| [Agent activation](agents.md) | `setup` file effects, rerun and marker behavior, client notes, verification, and recovery |
 | [Command reference](commands.md) | Task-grouped manual and automation surface, with the defaults that matter |
-| [Search results and ranking](search.md) | What `search` returns and how to read it |
+| [Search results and ranking](search.md) | What `query` returns and how to read it |
 | [Operations](operations.md) | Installation channels, cache locations and keys, prewarming, reports, and release archives |
 | [Trust and security](trust-and-security.md) | What the tool reads, writes, executes, and sends over the network |
 | [Language support](language-support.md) | Current semantic and inventory-only language matrix |
@@ -23,6 +23,8 @@ authoritative in `entire graph capabilities --json`.
 
 | Document | Purpose |
 | --- | --- |
+| [Contributing](../CONTRIBUTING.md) | Build prerequisites, the checks CI runs, and what a change to dependencies or benchmark numbers additionally requires |
+| [Changelog](../CHANGELOG.md) | User-visible changes per release; a tagged release publishes its section as the release notes |
 | [Semantic provider requirements](semantic-provider-requirements.md) | Provider responsibilities, ownership boundary with Entire Brain, profiles, relations, warnings, and limits |
 | [Snapshot format](snapshot-format.md) | Streaming NDJSON contract, compact artifact, and schema compatibility rules |
 | [Entire Brain and Entire Graph boundaries](brain-and-graph-boundaries.md) | Ownership decisions and explicit non-goals |
@@ -35,10 +37,8 @@ authoritative in `entire graph capabilities --json`.
 
 Completed plans, superseded references, branch diaries, and point-in-time proof
 logs are listed in the [archive](archive/README.md). Archived documents are kept
-for provenance and are not normative. One internal process document remains
-active until its work completes: the
-[README improvement plan](readme-plan.md), which tracks the root README
-revision and will move to the archive when done.
+for provenance and are not normative. Internal working drafts are not listed
+here and are not normative either.
 
 ## Sources of truth
 

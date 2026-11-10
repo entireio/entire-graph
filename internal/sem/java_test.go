@@ -75,6 +75,7 @@ public class AnnotatedConverterFactory {
 
 public final class SimpleService {
   public static void main(String... args) {
+	new ForeignBuilder().run();
     Retrofit retrofit =
         new Retrofit.Builder()
             .baseUrl(API_URL)
@@ -82,6 +83,15 @@ public final class SimpleService {
             .build();
   }
 }
+`)
+	// This Go declaration shares the Java spelling, but Java cannot construct it.
+	// The fluent-constructor resolver must not turn the name match into a CALLS
+	// edge merely because the workspace has no Java ForeignBuilder.
+	writeFile(t, repo, "foreign/builder.go", `package foreign
+
+type ForeignBuilder struct{}
+
+func (ForeignBuilder) run() {}
 `)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
@@ -112,6 +122,11 @@ public final class SimpleService {
 	for _, target := range []string{"BuiltInFactories.createDefaultCallAdapterFactories", "BuiltInFactories.createDefaultConverterFactories"} {
 		if _, ok := calls["Builder.build->"+target]; !ok {
 			t.Fatalf("typed-local receiver call to %s not resolved: %#v", target, calls)
+		}
+	}
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && lastSegment(r.FromID) == "SimpleService.main" && strings.Contains(r.ToID, "foreign/builder.go") {
+			t.Fatalf("Java constructor chain resolved to a foreign Go type: %#v", r)
 		}
 	}
 }

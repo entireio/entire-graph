@@ -1,7 +1,14 @@
 /entire-graph
 /dist/
+__pycache__/
+*.py[cod]
 
 # Benchmark working data: cloned external repos must never enter our commits.
 /bench/.cache/
 # Per-run benchmark reports are local-only working data, not version-controlled.
 /bench/results/
+
+# Claude Code checks out nested worktrees of this repo here. They are untracked
+# copies of the repository itself, so leaving them visible makes the tree look
+# dirty to tools that gate on a clean worktree.
+.claude/worktrees/

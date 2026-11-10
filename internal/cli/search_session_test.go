@@ -239,7 +239,7 @@ func TestSearchEchoEscapesPersistedTerminalControls(t *testing.T) {
 			session := filepath.Join(t.TempDir(), "session.json")
 
 			first := searchInSessionViewFormat(
-				t, repo, session, "", "terminal_safe_replay_control", false, format, "--no-cache",
+				t, repo, session, "", "terminal safe replay control", false, format, "--no-cache",
 			)
 			if !strings.Contains(first, "safe.py") {
 				t.Fatalf("first %s search did not establish its positive control: %q", format, first)
@@ -274,6 +274,57 @@ func TestSearchEchoEscapesPersistedTerminalControls(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSearchEchoRejectsSchema2FalseCompletePayloadAndRearms(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	write(t, repo, "safe.go", "package replay\nfunc SafeReplaySeed() bool { return true }\n")
+	write(t, repo, "fresh.go", "package replay\nfunc FreshReplayTarget() bool { return true }\n")
+	commitSearchSessionFixture(t, repo, "source-fidelity replay fixture")
+	session := filepath.Join(t.TempDir(), "session.json")
+
+	// Phrase queries: a bare identifier is answered by exact name and never stored for replay.
+	const seed, freshQuery = "SafeReplaySeed function", "FreshReplayTarget function"
+	first := searchInSessionViewFormat(
+		t, repo, session, "", seed, false, "agent", "--no-cache",
+	)
+	if !strings.Contains(first, "safe.go") {
+		t.Fatalf("first search did not establish its positive control: %q", first)
+	}
+	requireSearchSessionSeedStored(t, session, seed, first)
+	const stalePayload = "1. safe.go:1-5 SafeReplaySeed [complete] s=20.0 [focus:1]\n" +
+		"func StaleFalseCertification() string {\n\treturn `\n VERIFY: example\n`\n}\n" +
+		"STALE_FALSE_CERTIFICATION\n"
+	rewriteSearchSessionState(t, session, func(state map[string]any) {
+		state["replay_schema"] = 2
+		state["query"] = "prior schema false completeness"
+		state["payload"] = stalePayload
+		state["payload_paths"] = []string{"safe.go"}
+	})
+
+	fresh := searchInSessionViewFormat(
+		t, repo, session, "", freshQuery, false, "agent", "--no-cache",
+	)
+	if strings.Contains(fresh, "not run") || strings.Contains(fresh, "STALE_FALSE_CERTIFICATION") ||
+		!strings.Contains(fresh, "fresh.go") {
+		t.Fatalf("schema-2 false-complete payload replayed instead of running a fresh search: %q", fresh)
+	}
+	state, err := (&searchSession{path: session, limit: 1}).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReplaySchema != searchSessionReplaySchema || state.ReplaySchema == 2 {
+		t.Fatalf("fresh search did not replace schema 2 with current schema %d: %#v", searchSessionReplaySchema, state)
+	}
+	if state.Query != freshQuery || state.Payload != fresh || state.PayloadPaths == nil {
+		t.Fatalf("fresh search did not replace the stale opaque payload: %#v", state)
+	}
+
+	replayed := searchInSessionViewFormat(
+		t, repo, session, "", "another current-schema question", false, "agent", "--no-cache",
+	)
+	requireSearchSessionReplay(t, replayed, fresh)
 }
 
 // A committed session payload is valid only for the exact bounded source set
@@ -484,13 +535,13 @@ func TestSearchEchoRefusesTextAgentFormatChange(t *testing.T) {
 			session := filepath.Join(t.TempDir(), "session.json")
 
 			first := searchInSessionViewFormat(
-				t, repo, session, "", "format_scope_safe", false, test.firstFormat,
+				t, repo, session, "", "format scope safe", false, test.firstFormat,
 			)
 			if !strings.Contains(first, "safe.py") {
 				t.Fatalf("first %s search missed its positive control: %q", test.firstFormat, first)
 			}
 			second := searchInSessionViewFormat(
-				t, repo, session, "", "format_scope_fresh", false, test.secondFormat,
+				t, repo, session, "", "format scope fresh", false, test.secondFormat,
 			)
 			if strings.Contains(second, "not run") || !strings.Contains(second, "fresh.py") {
 				t.Fatalf("%s payload crossed into %s output: %q", test.firstFormat, test.secondFormat, second)
@@ -645,7 +696,7 @@ func TestSearchSessionRecordSaturatesSearchCount(t *testing.T) {
 	t.Parallel()
 	sessionPath := filepath.Join(t.TempDir(), "session.json")
 	session := &searchSession{path: sessionPath, limit: 1}
-	scope := searchSessionScope{Repo: t.TempDir(), PolicyFingerprint: "policy", Format: "text"}
+	scope := searchSessionScope{Repo: t.TempDir(), PolicyFingerprint: "policy", Format: "text", Producer: "test-producer"}
 	state := searchSessionState{
 		Searches:          math.MaxInt,
 		ReplaySchema:      searchSessionReplaySchema,
@@ -653,6 +704,7 @@ func TestSearchSessionRecordSaturatesSearchCount(t *testing.T) {
 		PayloadPaths:      []string{},
 		Repo:              scope.Repo,
 		Format:            scope.Format,
+		Producer:          scope.Producer,
 	}
 	data, err := json.Marshal(state)
 	if err != nil {

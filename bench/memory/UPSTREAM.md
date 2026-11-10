@@ -46,8 +46,8 @@ upstream's, untouched, and therefore identical for every arm.
 | file | upstream md5 | harness md5 | patch |
 |---|---|---|---|
 | `benchmarks/common/llm_client.py` | `6a5da3c1d05dbf6a78cd364b59fc7a09` | `592bbcc560b15b88aabb2c9d0280380f` | `patches/0001-llm_client-azure-ai-provider-timeouts-reasoning.patch` |
-| `benchmarks/common/mem0_client.py` | `44e367847d94be3a90cdfa1d21aebe96` | `041f93a130c1a91d1b81f67622555b8c` | `patches/0002-mem0_client-optional-date-injection.patch` |
-| `benchmarks/locomo/run.py` | `f791a93df6257fe869ec6687865f8457` | `41158a8eb87cdeeb53d23c3ad845b7bc` | `patches/0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch` |
+| `benchmarks/common/mem0_client.py` | `44e367847d94be3a90cdfa1d21aebe96` | `bb763cabd9e586cf9aa2699c67f96358` | `patches/0002-mem0_client-optional-date-injection.patch` |
+| `benchmarks/locomo/run.py` | `f791a93df6257fe869ec6687865f8457` | `c3331bce8631d07cf69ae94cb82f821c` | `patches/0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch` |
 | `docker/mem0/main.py` | `e4e1e6076c9016bc37de6715ea29e67a` | `3fe9a40ba1cc8b494daadee2b977f411` | `patches/0004-docker-mem0-server-topk-fix-and-ingest-usage-metering.patch` |
 | `requirements.txt` | `13815b8f1ba4ecc628a44fc963a67679` | `51c617883adf40e4ca22b79533f4662a` | `patches/0006-requirements-bm25-deps.patch` |
 
@@ -69,14 +69,25 @@ What each patch does:
   cannot consume the entire budget and return empty content; adds optional `reasoning_effort`
   passthrough that self-disables if the endpoint rejects it. Every inference change is
   question-blind and applies identically to all arms.
-- **0002 `mem0_client.py`** — optional observation-date injection into the first ingest message,
-  gated off by default behind `MEM0_DATE_INJECT=1`. Not enabled in the published runs.
+- **0002 `mem0_client.py`** — two changes. Optional observation-date injection into the first
+  ingest message, gated off by default behind `MEM0_DATE_INJECT=1` and not enabled in the
+  published runs. And, **always active**, `_search_oss` and `_search_cloud` now raise
+  `SEARCH_EXHAUSTED` instead of returning `[]` once their own retries are spent: upstream
+  swallowed the failure, so the caller could not tell an infrastructure failure from an empty
+  index and scored it as a capability miss. Every other adapter already raises (README §3.2);
+  this is the same guard applied to the one client that was missed.
 - **0003 `benchmarks/locomo/run.py`** — registers the new backends; adds bounded retry around
   `search()` for transient failures only (deterministic 4xx still surface as bugs); **records the
   `search_dropped` flag in the per-question record** — upstream discarded it in the LoCoMo runner
   while already recording it in the LongMemEval runner, so retry-exhausted retrievals were being
-  scored as capability misses; adds ingest-phase timing output; wires `runmeta` provenance capture
-  and the `FAIR_MODE` guard; splits `--max-workers` (conversations) from a new `--question-workers`.
+  scored as capability misses. The drop is counted from an explicit
+  signal — patch 0002 makes mem0 raise `SEARCH_EXHAUSTED` — so `[]` keeps meaning a genuine
+  zero-match retrieval. Inferring a drop from emptiness instead would retry a valid query and then
+  count it against the denominator, corrupting the accounting from the other direction; adds ingest-phase timing output; wires `runmeta` provenance capture
+  and the `FAIR_MODE` guard; splits `--max-workers` (conversations) from a new
+  `--question-workers`, both validated as `>= 1` because either at zero caps a semaphore that
+  then blocks every task forever; and rejects `HARNESS_SEARCH_RETRIES < 1`, which would run no
+  search at all and mark every question dropped.
 - **0004 `docker/mem0/main.py`** — the mem0 `top_k` fix described in `README.md` §3.1 (one line,
   at upstream line 233 / patched-container line 351), plus ingest token-usage metering for the
   cost table and optional Anthropic OAuth-bearer wiring. The metering and OAuth wiring are
@@ -93,7 +104,7 @@ dependency in the patched upstream `requirements.txt` to one exact version and r
 published for that release. Its source `requirements.txt` must have MD5
 `51c617883adf40e4ca22b79533f4662a` (Git blob
 `9f246fa9aee1d635304a2f151a80996ef4a499fb`); the committed lock has SHA-256
-`be938c7db3329662071487394ca123e04581322229fbe405bb1103bcc624203f`.
+`b98ca100cbd6b7295aaaf2018e9ce117d24b2c61dd83881a2dad0dff8dc283fd`.
 
 Regenerate it only after reconstructing the pinned harness and applying patches `0001` through
 `0004` plus `0006` as above. From that reconstructed harness checkout:
@@ -135,13 +146,13 @@ Written by us; no upstream code involved.
 | `benchmarks/common/graphify_client.py` | 364 |
 | `benchmarks/common/cmm_client.py` | 418 |
 | `benchmarks/common/graphify_mem_bridge.py` | 184 |
-| `benchmarks/common/runmeta.py` | 136 |
-| `benchmarks/common/test_runmeta.py` | 53 |
+| `benchmarks/common/runmeta.py` | 726 |
+| `benchmarks/common/test_runmeta.py` | 914 |
 | `benchmarks/common/bm25_client.py` | 369 |
 | `benchmarks/common/test_bm25_client.py` | 40 |
 | `benchmarks/common/entra_auth.py` | 94 |
 | `benchmarks/common/test_entra_auth.py` | 166 |
-| `requirements-lock-py312.txt` | 1418 |
+| `requirements-lock-py312.txt` | 1519 |
 
 ### Ours but not vendored
 
@@ -161,6 +172,6 @@ description.
 | codebase-memory-mcp ("cmm", DeusData) | upstream release | v0.9.0, plus `patches/0005` |
 | graphify | `https://github.com/Graphify-Labs/graphify` | [`v0.9.43`](https://github.com/Graphify-Labs/graphify/releases/tag/v0.9.43) — `graphify_client.py` imports the real package (`extractors.markdown.extract_markdown`, `serve._score_query`) from a local checkout at `GRAPHIFY_SOURCE`, default `~/memarms/inputs/repos/graphify`; genuinely runs graphify, not a reimplementation. **Not a confirmed exact pin**: the checkout itself no longer exists to check directly, so this is the release that was current for the 2026-08-14 measurement window (published 19:17 UTC that day, superseded by v0.9.44 the next day). The already-published commit citation for the same checkout path (`docs/benchmarks.md`, `c9641bf1caaf41d64ce8a4a421f041939feecca3`) does not resolve against the public repo, so it isn't cited here. |
 | letta | `https://github.com/letta-ai/letta` | [`0.16.8`](https://github.com/letta-ai/letta/releases/tag/0.16.8) — recovered from an in-repo debugging comment (`run.env`, ENV FIX 2026-08-08) citing `letta/settings.py:314` and `letta/server/db.py:30-31` behavior specific to that release; the live install it describes no longer exists to re-verify against directly |
-| supermemory | `https://github.com/supermemoryai/supermemory` | [`server-v0.0.7-rc.2`](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) — the binary path recorded in the harness config, corroborated independently by `FAIR-CONFIG.md`'s service-state table (§B12) naming the same build |
+| supermemory | `https://github.com/supermemoryai/supermemory` | [`server-v0.0.7-rc.2`](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) — the binary path recorded in the harness config, corroborated independently by `FAIR-CONFIG.md`'s service-state table (§B12) naming the same build. **Run as patched, not stock:** a 2-byte binary capability-flag patch plus a wire-level parameter adapter (sha256 verified against the official release manifest before and after) were required to reach the shared extraction model, and a content-derived `custom_id` was added so retries survived its own dedup. These modifications are not vendored as patch files — see `LOCOMO-COMPARISON.md` § ‡ |
 | BM25 | `https://github.com/dorianbrown/rank_bm25` | [`0.2.2`](https://github.com/dorianbrown/rank_bm25/releases/tag/0.2.2) (`requirements.txt` pins `>=0.2.2`; the package has had no release since 2022-02-16, so this floor resolves unambiguously) |
 | Azure Identity for Python | `https://github.com/Azure/azure-sdk-for-python/tree/main/sdk/identity/azure-identity` | `1.25.3`; PyPI wheel SHA-256 `f4d0b956a8146f30333e071374171f3cfa7bdb8073adb8c3814b65567aa7447c` |

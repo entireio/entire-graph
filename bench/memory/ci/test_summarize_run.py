@@ -211,6 +211,33 @@ class SummarizeRunTest(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("top_200.generated_answer` must be a non-empty string", output)
 
+    def test_judge_failure_fallback_is_not_counted_as_a_verdict(self) -> None:
+        # Every structured judge attempt failing yields ``{}``, which is
+        # serialized with exactly the shape of a real negative verdict -- a
+        # generated answer, judgment WRONG, score 0 -- and an empty rationale.
+        # Counting that as a scored wrong answer lets a partial judge outage
+        # depress accuracy while the run still declares itself scoreable.
+        for name, mutate in (
+            ("empty reason", lambda top: top.__setitem__("reason", "")),
+            ("blank reason", lambda top: top.__setitem__("reason", "  ")),
+            ("absent reason", lambda top: top.pop("reason")),
+            ("non-string reason", lambda top: top.__setitem__("reason", 0)),
+        ):
+            with self.subTest(name):
+                self.write_aggregate(correct=2, accuracy=2 / 3 * 100)
+                self.write_records([5, 6, 7], scores=[1, 0, 1])
+                record = self.read_record(1)
+                mutate(record["cutoff_results"]["top_200"])
+                self.write_record(1, record)
+
+                status, output = self.run_summary()
+
+                self.assertEqual(status, 1)
+                self.assertIn("valid top_200 judgments: **2/3**", output)
+                self.assertIn(
+                    "top_200.reason` must be a non-empty string", output
+                )
+
     def test_memories_evaluated_must_match_retrieved_context(self) -> None:
         self.write_aggregate()
         self.write_records([5, 6, 7])
