@@ -95,15 +95,15 @@ jobs:
         with: { go-version: "1.27.x" }
       - run: go build ./...
 
+  # Linux is the only target still tested as one job. Windows and macOS are
+  # sharded below; their aggregate jobs keep the "test (<os>)" check names.
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
         include:
           - os: ubuntu-latest
             runner: depot-ubuntu-24.04-8
-          - os: macos-latest
-            runner: macos-latest
     # The explicit name keeps matrix.runner out of the default display name:
     # "test (<os>)" is a required check on main.
     name: test (${{ matrix.os }})
@@ -114,7 +114,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
-      # Keep the named package budget consistent with the Windows shard policy.
+      # Keep the named package budget consistent with the shard policy.
       - run: go test -timeout 30m ./...
 
   windows-test-prepare:
@@ -134,7 +134,7 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - name: Validate the Windows sharding harness
+      - name: Validate the sharding harness
         run: python -B -m unittest discover -s tools/ci-bench/windows-production/tests -p "test_*.py" -v
       - name: Compile once and inventory default-runnable roots
         shell: pwsh
@@ -336,6 +336,240 @@ jobs:
           for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT" "$VET_RESULT" "$VERIFY_RESULT"; do
             if [ "$result" != success ]; then
               echo "A required Windows test component ended with: $result" >&2
+              exit 1
+            fi
+          done
+
+  # macOS runs the same sharding harness as Windows, for darwin/arm64, so the
+  # slowest leg no longer sets CI wall time as one 17-20 minute job.
+  #
+  # Capacity: these jobs stay on GitHub-hosted macos-latest (see the Depot note
+  # on the build matrix), where concurrent macOS jobs are capped per account, as
+  # low as five on some plans, and this workflow already runs macOS build,
+  # statusline, and prompt-context-hook jobs. The shard count is therefore four,
+  # not Windows' eight: four shards plus the non-heavy job is five. Change it in
+  # tools/ci-bench/windows-production/settings.darwin-arm64.json together with
+  # max-parallel below.
+  macos-test-prepare:
+    name: test (macos-latest) / compile and plan
+    runs-on: macos-latest
+    timeout-minutes: 30
+    outputs:
+      shard-matrix: ${{ steps.shard-matrix.outputs.value }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Validate the sharding harness
+        shell: bash
+        run: python -B -m unittest discover -s tools/ci-bench/windows-production/tests -p "test_*.py" -v
+      - name: Compile once and inventory default-runnable roots
+        shell: bash
+        run: |
+          python -B tools/ci-bench/windows-production/prepare.py \
+            --target darwin/arm64 \
+            --repository "$PWD" \
+            --output "$RUNNER_TEMP/macos-test-bundle" \
+            --settings tools/ci-bench/windows-production/settings.darwin-arm64.json \
+            --weights tools/ci-bench/windows-production/historical-weights.darwin-arm64.json \
+            --expected-repository-sha '${{ github.sha }}'
+      - name: Export the authoritative shard matrix
+        id: shard-matrix
+        shell: bash
+        run: |
+          matrix="$(python -B -c '
+          import json, sys
+          plan = json.load(open(sys.argv[1], encoding="utf-8"))
+          indexes = [shard["index"] for shard in plan["shards"]]
+          if not indexes or len(indexes) != plan["shardCount"]:
+              raise SystemExit("plan shard indexes do not match shardCount")
+          print(json.dumps(indexes, separators=(",", ":")))
+          ' "$RUNNER_TEMP/macos-test-bundle/plan.json")"
+          echo "value=$matrix" >> "$GITHUB_OUTPUT"
+      # The artifact ZIP drops POSIX modes, so the test binaries arrive without
+      # their execute bit; the shard runner restores it after matching each binary's
+      # SHA-256 to the plan.
+      - name: Upload immutable macOS test bundle
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-test-bundle
+          path: ${{ runner.temp }}/macos-test-bundle
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  macos-test-shards:
+    name: test (macos-latest) / shard ${{ matrix.shard }}
+    needs: macos-test-prepare
+    runs-on: macos-latest
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: ${{ fromJSON(needs.macos-test-prepare.outputs.shard-matrix) }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos-test-bundle
+          path: ${{ runner.temp }}/macos-test-bundle
+      - name: Execute the assigned compiled roots
+        shell: bash
+        run: |
+          python -B tools/ci-bench/windows-production/run_shard.py \
+            --target darwin/arm64 \
+            --repository "$PWD" \
+            --bundle "$RUNNER_TEMP/macos-test-bundle" \
+            --output "$RUNNER_TEMP/macos-test-shard-${{ matrix.shard }}" \
+            --shard-index '${{ matrix.shard }}' \
+            --expected-repository-sha '${{ github.sha }}'
+      - name: Upload shard evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-test-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/macos-test-shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 3
+
+  macos-test-other:
+    name: test (macos-latest) / non-heavy packages
+    needs: macos-test-prepare
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos-test-bundle
+          path: ${{ runner.temp }}/macos-test-bundle
+      - name: Run every target-macOS non-heavy package once
+        shell: bash
+        run: |
+          python -B tools/ci-bench/windows-production/run_other.py \
+            --target darwin/arm64 \
+            --repository "$PWD" \
+            --bundle "$RUNNER_TEMP/macos-test-bundle" \
+            --output "$RUNNER_TEMP/macos-test-other" \
+            --expected-repository-sha '${{ github.sha }}'
+      - name: Upload non-heavy package evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-test-other
+          path: ${{ runner.temp }}/macos-test-other
+          if-no-files-found: error
+          retention-days: 3
+
+  # The harness compiles and runs with -vet=off, and lint vets only the files Go
+  # selects on Linux. Files selected only on darwin (the *_darwin and *_bsd
+  # sources and tests, and the !linux fallbacks) were vetted solely by the
+  # former monolithic `go test ./...`, so they keep a native vet here. It needs
+  # no bundle and runs beside compile-and-plan, before the shards occupy the
+  # macOS runners.
+  macos-test-vet:
+    name: test (macos-latest) / vet
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          cache-dependency-path: go.sum
+      - run: go vet ./...
+
+  macos-test-verify:
+    name: test (macos-latest) / coverage and integrity
+    needs: [macos-test-prepare, macos-test-shards, macos-test-other]
+    if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos-test-bundle
+          path: ${{ runner.temp }}/macos-test-bundle
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: macos-test-shard-*
+          path: ${{ runner.temp }}/macos-test-shards
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos-test-other
+          path: ${{ runner.temp }}/macos-test-other
+      - name: Verify exact root, package, process, and artifact coverage
+        run: |
+          python -B tools/ci-bench/windows-production/verify_results.py \
+            --target darwin/arm64 \
+            --bundle "${{ runner.temp }}/macos-test-bundle" \
+            --shard-results "${{ runner.temp }}/macos-test-shards" \
+            --other-results "${{ runner.temp }}/macos-test-other" \
+            --output "${{ runner.temp }}/macos-test-verification.json"
+      - name: Upload verification report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-test-verification
+          path: ${{ runner.temp }}/macos-test-verification.json
+          if-no-files-found: error
+          retention-days: 3
+
+  # Keep the former matrix check identity stable: "test (macos-latest)" is a
+  # required check on main.
+  macos-test:
+    name: test (macos-latest)
+    needs:
+      [macos-test-prepare, macos-test-shards, macos-test-other, macos-test-vet, macos-test-verify]
+    if: always()
+    runs-on: depot-ubuntu-24.04-4
+    steps:
+      - name: Require every macOS test component
+        env:
+          PREPARE_RESULT: ${{ needs.macos-test-prepare.result }}
+          SHARDS_RESULT: ${{ needs.macos-test-shards.result }}
+          OTHER_RESULT: ${{ needs.macos-test-other.result }}
+          VET_RESULT: ${{ needs.macos-test-vet.result }}
+          VERIFY_RESULT: ${{ needs.macos-test-verify.result }}
+        run: |
+          for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT" "$VET_RESULT" "$VERIFY_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "A required macOS test component ended with: $result" >&2
               exit 1
             fi
           done
