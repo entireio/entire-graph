@@ -33,7 +33,7 @@ H = "tools/ci-bench/windows-production"
 
 CHECKOUT = "actions/checkout@v7.0.1"
 SETUP_GO = "actions/setup-go@v7.0.0"
-SETUP_PYTHON = "actions/setup-python@v7.0.0"
+SETUP_PYTHON = "actions/setup-python@v7.1.0"
 UPLOAD = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
 DOWNLOAD = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
 CACHE = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
