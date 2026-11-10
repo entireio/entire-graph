@@ -147,49 +147,99 @@ func TestAgentExactNameRowsPolicy(t *testing.T) {
 // ordinary answer is the same function with the exact-name answer switched off; every query below
 // is rendered both ways at every budget from 1 byte to past the roomiest payload, and at the
 // unbounded budget 0.
-func TestAgentSearchNonExactQueriesAreByteIdentical(t *testing.T) {
-	t.Parallel()
-	queries := []string{
-		"test that the object count cap wrapper still lets encoded objects be read back",
-		"resolve message ref", "resolveMessageRef translator", "resolveMessage", "resolvemessageref",
-		"ResolveMessageRef", "Helper", "helper3", "Helper3 Helper4", "recv3.Helper3", "Helper3()",
-		"where is the retry budget computed", "compute", "UnknownIdentifier", "handler compute input",
-		"", "  ", "func Helper3", "Helper3,", "\"Helper3\"",
+//
+// The sweep is divided between top-level tests so CI can place them on different shards: the
+// timing fixture is one test, and the costlier exact-name fixture is three (the densely swept
+// queries in two halves, then the rest). Every fixture still meets every query at the same budgets.
+var exactNameNonExactQueries = []string{
+	"test that the object count cap wrapper still lets encoded objects be read back",
+	"resolve message ref", "resolveMessageRef translator", "resolveMessage", "resolvemessageref",
+	"ResolveMessageRef", "Helper", "helper3", "Helper3 Helper4", "recv3.Helper3", "Helper3()",
+	"where is the retry budget computed", "compute", "UnknownIdentifier", "handler compute input",
+	"", "  ", "func Helper3", "Helper3,", "\"Helper3\"",
+}
+
+// exactNameNonExactDenseQueries are swept at every budget; see the stride below.
+var exactNameNonExactDenseQueries = []string{"resolveMessage", "ResolveMessageRef", "recv3.Helper3", "UnknownIdentifier"}
+
+// exactNameNonExactSparseQueries is every query that is not densely swept, in table order. It
+// fails if a dense query is missing from the table, so the three parts always cover the table.
+func exactNameNonExactSparseQueries(t *testing.T) []string {
+	t.Helper()
+	dense := map[string]bool{}
+	for _, query := range exactNameNonExactDenseQueries {
+		dense[query] = true
 	}
-	dense := map[string]bool{"resolveMessage": true, "ResolveMessageRef": true, "recv3.Helper3": true, "UnknownIdentifier": true}
-	fixtures := []sem.SearchResponse{exactNameFixture("resolveMessageRef", 1, 4), timingDeterminismResponse()}
-	for _, fixture := range fixtures {
-		roomy := len(renderAgentSearchForTest(t, fixture, 1<<20, false))
-		for _, query := range queries {
-			response := fixture
-			response.Query = query
-			// Every budget for the queries nearest the gate (a partial name, a case mismatch, a
-			// qualified name, an identifier matching nothing); a stride that is prime to every
-			// block width for the rest, which keeps the whole corpus affordable.
-			stride := 13
-			if dense[query] {
-				stride = 1
-			}
-			stride *= exactNameSweepScale()
-			for budget := 0; budget <= roomy+64; budget += stride {
-				want := renderAgentSearchForTest(t, response, budget, false)
-				got := renderAgentSearchForTest(t, response, budget, true)
-				if got != want {
-					t.Fatalf("query %q, budget %d: output changed for a non-exact query\n--- before ---\n%s\n--- after ---\n%s",
-						query, budget, want, got)
-				}
+	var sparse []string
+	for _, query := range exactNameNonExactQueries {
+		if !dense[query] {
+			sparse = append(sparse, query)
+		}
+	}
+	if len(sparse)+len(exactNameNonExactDenseQueries) != len(exactNameNonExactQueries) {
+		t.Fatalf("the dense queries are not %d distinct entries of the query table", len(exactNameNonExactDenseQueries))
+	}
+	return sparse
+}
+
+func exactNameNonExactSweep(t *testing.T, fixture sem.SearchResponse, queries []string) {
+	t.Helper()
+	dense := map[string]bool{}
+	for _, query := range exactNameNonExactDenseQueries {
+		dense[query] = true
+	}
+	roomy := len(renderAgentSearchForTest(t, fixture, 1<<20, false))
+	for _, query := range queries {
+		response := fixture
+		response.Query = query
+		// Every budget for the queries nearest the gate (a partial name, a case mismatch, a
+		// qualified name, an identifier matching nothing); a stride that is prime to every
+		// block width for the rest, which keeps the whole corpus affordable.
+		stride := 13
+		if dense[query] {
+			stride = 1
+		}
+		stride *= exactNameSweepScale()
+		for budget := 0; budget <= roomy+64; budget += stride {
+			want := renderAgentSearchForTest(t, response, budget, false)
+			got := renderAgentSearchForTest(t, response, budget, true)
+			if got != want {
+				t.Fatalf("query %q, budget %d: output changed for a non-exact query\n--- before ---\n%s\n--- after ---\n%s",
+					query, budget, want, got)
 			}
 		}
 	}
+}
+
+func TestAgentSearchNonExactQueriesAreByteIdenticalOnExactNameFixturePartialAndCaseQueries(t *testing.T) {
+	t.Parallel()
+	exactNameNonExactSweep(t, exactNameFixture("resolveMessageRef", 1, 4), exactNameNonExactDenseQueries[:2])
+}
+
+func TestAgentSearchNonExactQueriesAreByteIdenticalOnExactNameFixtureQualifiedAndUnknownQueries(t *testing.T) {
+	t.Parallel()
+	exactNameNonExactSweep(t, exactNameFixture("resolveMessageRef", 1, 4), exactNameNonExactDenseQueries[2:])
+}
+
+func TestAgentSearchNonExactQueriesAreByteIdenticalOnExactNameFixtureOtherQueries(t *testing.T) {
+	t.Parallel()
+	exactNameNonExactSweep(t, exactNameFixture("resolveMessageRef", 1, 4), exactNameNonExactSparseQueries(t))
+}
+
+func TestAgentSearchNonExactQueriesAreByteIdenticalOnTimingFixture(t *testing.T) {
+	t.Parallel()
+	exactNameNonExactSweep(t, timingDeterminismResponse(), exactNameNonExactQueries)
 }
 
 // LOCATED NEVER GETS WORSE. For every exact row and every budget from 1 byte to past the roomiest
 // ordinary payload: if the ordinary answer showed the row's declaration line, the exact answer shows
 // it too. The sweep must also find budgets where the exact answer shows a declaration the ordinary
 // one did not (study 3's 2 KiB misses) and where it is strictly smaller, or it proves nothing.
-func TestAgentSearchExactNameNeverLocatesLess(t *testing.T) {
-	t.Parallel()
-	layouts := [][]int{{1}, {2}, {10}, {2, 6, 9}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}}
+//
+// The five layouts are swept by three top-level tests (one exact row, three, ten) so CI can place
+// them on different shards.
+func exactNameNeverLocatesLessSweep(t *testing.T, layouts ...[]int) {
+	t.Helper()
 	for _, ranks := range layouts {
 		response := exactNameFixture("resolveMessageRef", ranks...)
 		exactRows, _ := agentExactNameRows(orderAgentSearchResults(response.Results), response.Query)
@@ -232,6 +282,21 @@ func TestAgentSearchExactNameNeverLocatesLess(t *testing.T) {
 			t.Errorf("ranks %v: no budget where the exact answer shows a declaration the ordinary one hid", ranks)
 		}
 	}
+}
+
+func TestAgentSearchExactNameNeverLocatesLessOneExactRow(t *testing.T) {
+	t.Parallel()
+	exactNameNeverLocatesLessSweep(t, []int{1}, []int{2}, []int{10})
+}
+
+func TestAgentSearchExactNameNeverLocatesLessThreeExactRows(t *testing.T) {
+	t.Parallel()
+	exactNameNeverLocatesLessSweep(t, []int{2, 6, 9})
+}
+
+func TestAgentSearchExactNameNeverLocatesLessTenExactRows(t *testing.T) {
+	t.Parallel()
+	exactNameNeverLocatesLessSweep(t, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
 }
 
 // The exact answer is bounded however roomy the cap: one row is at most exactNameRowBytes, the
