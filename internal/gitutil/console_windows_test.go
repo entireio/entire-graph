@@ -34,8 +34,9 @@ const (
 	// all, like an entire-graph status line render that Claude Code starts
 	// without one.
 	detachedProcess = 0x00000008
-	// createNewConsole is CREATE_NEW_CONSOLE: the new process gets a console of
-	// its own, the kind a terminal gives a program.
+	// createNewConsole is CREATE_NEW_CONSOLE: the new process gets, and owns, a
+	// console of its own. A program run from a terminal inherits the terminal's
+	// console instead.
 	createNewConsole = 0x00000010
 )
 
@@ -146,10 +147,13 @@ func TestSubprocessConsoles(t *testing.T) {
 	}{
 		// A status line render started without a console.
 		{"without a console", &syscall.SysProcAttr{CreationFlags: detachedProcess}, false},
-		// An agent's shell: a console with no window.
+		// A windowless console the caller owns: what a parent that starts
+		// entire-graph with CREATE_NO_WINDOW (Node's spawn with windowsHide,
+		// for one) gives it.
 		{"with a windowless console", &syscall.SysProcAttr{CreationFlags: createNoWindow}, true},
-		// A terminal's kind of console, with its window hidden so the test does
-		// not flash one. A console with a visible window is not covered here.
+		// A console the caller owns, with its window hidden so the test does not
+		// flash one. A console with a visible window, and one inherited from a
+		// shell or terminal, are not covered here.
 		{"with a hidden-window console", &syscall.SysProcAttr{CreationFlags: createNewConsole, HideWindow: true}, true},
 	} {
 		t.Run(caller.name, func(t *testing.T) {
