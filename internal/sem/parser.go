@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	goast "go/ast"
 	goparser "go/parser"
 	gotoken "go/token"
 	"path/filepath"
@@ -239,7 +240,9 @@ type ParseStatus struct {
 	// was recovered from errors and facts inside the construct may be missing,
 	// so every consumer still reports the file; GrammarGap tells them to report
 	// a grammar limitation rather than a file that failed to parse. Only Go sets
-	// it, with go/parser as the reference.
+	// it, with go/parser as the reference, and only while the recovered tree
+	// still yields every top-level function, method and type go/parser found
+	// (goDeclarationsLost): a file that lost a declaration keeps E_PARSE_ERROR.
 	GrammarGap bool
 	Code       string
 	Detail     string
@@ -249,13 +252,116 @@ type ParseStatus struct {
 // the bundled tree-sitter Go grammar reports syntax errors in.
 const GoGrammarGapCode = "W_GO_GRAMMAR_GAP"
 
-// goSourceIsValid reports whether the Go toolchain's parser accepts src as a Go
-// source file. It checks syntax only, which is the question a grammar gap asks.
-// The caller runs it only for Go files tree-sitter already rejected, and the
-// input is bounded by the parser's byte cap.
-func goSourceIsValid(src []byte) bool {
-	_, err := goparser.ParseFile(gotoken.NewFileSet(), "", src, goparser.SkipObjectResolution)
-	return err == nil
+// goReferenceParse parses src with the Go toolchain's parser and reports
+// whether it accepts src as a Go source file. It checks syntax only, which is
+// the question a grammar gap asks. The caller runs it only for Go files
+// tree-sitter already rejected, and the input is bounded by the parser's byte
+// cap.
+func goReferenceParse(src []byte) (*goast.File, bool) {
+	file, err := goparser.ParseFile(gotoken.NewFileSet(), "", src, goparser.SkipObjectResolution)
+	if err != nil {
+		return nil, false
+	}
+	return file, true
+}
+
+// goDeclarationsLost names the top-level functions, methods and defined types
+// go/parser found in a file that have no entity in the tree-sitter recovery. A
+// grammar gap is only a warning while the recovered tree still yields every
+// declaration; once one is missing, a symbol the graph should hold is gone and
+// the file must stay a counted partial failure.
+//
+// Declarations are matched as a multiset on the names the Go entity walk
+// assigns (a function by name, a method as Receiver.Name, a type by name), so
+// two init functions need two entities. Type aliases are skipped: the entity
+// walk does not emit them from a clean parse either. A naming mismatch can only
+// err towards reporting a loss, which keeps the pre-existing E_PARSE_ERROR.
+func goDeclarationsLost(file *goast.File, entities []Entity) []string {
+	recovered := map[string]int{}
+	for _, entity := range entities {
+		switch entity.Kind {
+		case "function", "type":
+			recovered[entity.Kind+" "+entity.Name]++
+		case "method":
+			// The entity walk keeps a generic receiver's type arguments
+			// (G[K].Method); go/parser's receiver is compared by base name.
+			name := entity.Name
+			if dot := strings.LastIndex(name, "."); dot >= 0 {
+				receiver := name[:dot]
+				if bracket := strings.Index(receiver, "["); bracket >= 0 {
+					receiver = receiver[:bracket]
+				}
+				name = strings.TrimPrefix(receiver, "*") + name[dot:]
+			}
+			recovered["method "+name]++
+		}
+	}
+	var lost []string
+	claim := func(kind, name string) {
+		key := kind + " " + name
+		if recovered[key] > 0 {
+			recovered[key]--
+			return
+		}
+		lost = append(lost, name)
+	}
+	for _, decl := range file.Decls {
+		switch decl := decl.(type) {
+		case *goast.FuncDecl:
+			if decl.Recv == nil || len(decl.Recv.List) == 0 {
+				claim("function", decl.Name.Name)
+				continue
+			}
+			if receiver := goReceiverTypeName(decl.Recv.List[0].Type); receiver != "" {
+				claim("method", receiver+"."+decl.Name.Name)
+			}
+		case *goast.GenDecl:
+			if decl.Tok != gotoken.TYPE {
+				continue
+			}
+			for _, spec := range decl.Specs {
+				if typeSpec, ok := spec.(*goast.TypeSpec); ok && !typeSpec.Assign.IsValid() {
+					claim("type", typeSpec.Name.Name)
+				}
+			}
+		}
+	}
+	return lost
+}
+
+// goReceiverTypeName returns the base type name of a method receiver: T for T,
+// *T, T[K] and *T[K, V].
+func goReceiverTypeName(expr goast.Expr) string {
+	for {
+		switch typed := expr.(type) {
+		case *goast.Ident:
+			return typed.Name
+		case *goast.StarExpr:
+			expr = typed.X
+		case *goast.ParenExpr:
+			expr = typed.X
+		case *goast.IndexExpr:
+			expr = typed.X
+		case *goast.IndexListExpr:
+			expr = typed.X
+		default:
+			return ""
+		}
+	}
+}
+
+// goDeclarationsLostDetail is the suffix a lost-declaration file adds to its
+// E_PARSE_ERROR detail, bounded so one large file cannot flood a header.
+func goDeclarationsLostDetail(lost []string) string {
+	const shown = 5
+	names := lost
+	suffix := ""
+	if len(names) > shown {
+		names = names[:shown]
+		suffix = fmt.Sprintf(" and %d more", len(lost)-shown)
+	}
+	return "; go/parser accepts the file, but the bundled tree-sitter Go grammar recovered no symbol for " +
+		strings.Join(names, ", ") + suffix
 }
 
 func (TreeSitterParser) Parse(path, content string) ([]Entity, string) {
@@ -667,12 +773,19 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 			if stopped(stop) {
 				return nil, spec.language, parseStoppedStatus(ctx, "go syntax check")
 			}
-			if goSourceIsValid(src) {
-				status = ParseStatus{
-					ParseError: true,
-					GrammarGap: true,
-					Code:       GoGrammarGapCode,
-					Detail:     status.Detail + "; go/parser accepts the file",
+			if file, valid := goReferenceParse(src); valid {
+				if lost := goDeclarationsLost(file, entities); len(lost) > 0 {
+					// Valid Go, but the recovery dropped declarations: symbols
+					// are known to be missing, so this stays a counted
+					// E_PARSE_ERROR rather than a grammar-gap warning.
+					status.Detail += goDeclarationsLostDetail(lost)
+				} else {
+					status = ParseStatus{
+						ParseError: true,
+						GrammarGap: true,
+						Code:       GoGrammarGapCode,
+						Detail:     status.Detail + "; go/parser accepts the file",
+					}
 				}
 			}
 		}

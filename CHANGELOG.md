@@ -64,8 +64,11 @@ auto-generated notes on
   partial failure. When `go/parser` accepts the file, snapshots, search and
   `diff` report a `W_GO_GRAMMAR_GAP` warning naming it instead: it does not
   count against completeness, and its effect says facts inside the construct the
-  grammar could not parse may be missing. Go that `go/parser` rejects keeps
-  `E_PARSE_ERROR`. Records and search caches are versioned so a cached
+  grammar could not parse may be missing. The downgrade applies only while the
+  recovered tree still yields every top-level function, method and type
+  `go/parser` finds: a valid file whose recovery lost a declaration keeps its
+  counted `E_PARSE_ERROR` partial failure, with the lost names in `detail`. Go
+  that `go/parser` rejects keeps `E_PARSE_ERROR`. Records and search caches are versioned so a cached
   `E_PARSE_ERROR` for such a file is not replayed.
 - Partial clones (`--filter=blob:none`, or any repository with a promisor
   remote) are no longer refused outright when the Git that runs in them is

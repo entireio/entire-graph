@@ -422,7 +422,10 @@ the provider reports a `W_GO_GRAMMAR_GAP` warning naming it instead of an
 completeness; its effect says that facts inside the construct the grammar could
 not parse may be missing. The same decision reaches the snapshot, search and
 `diff` paths, including the `diff` dependents scan. Go that `go/parser` rejects
-keeps `E_PARSE_ERROR`.
+keeps `E_PARSE_ERROR`. So does valid Go whose recovery lost a declaration: when
+`go/parser` finds a top-level function, method or defined type the recovered
+tree has no symbol for, a fact is known to be missing, so the file stays a
+counted `E_PARSE_ERROR` partial failure whose `detail` names what was lost.
 
 ## Git Subprocess Configuration Boundary
 

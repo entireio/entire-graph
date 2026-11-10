@@ -239,3 +239,138 @@ func TestDiffReportsGoGrammarGapAsWarning(t *testing.T) {
 		t.Fatalf("invalid Go: want E_PARSE_ERROR, got %+v", result.Warnings)
 	}
 }
+
+// goGrammarGapLostSource is valid Go 1.26 whose new(expr) wraps a function
+// literal. The bundled grammar's recovery swallows the declaration that
+// follows it, so lostAfterNew has no entity although go/parser sees it.
+const goGrammarGapLostSource = `package demo
+
+func keptBeforeNew() {}
+
+var f = new(func() int { return 1 }())
+
+func lostAfterNew() {}
+`
+
+// A grammar gap is only a warning while the recovered tree still yields every
+// declaration. When go/parser sees a function, method or type the recovery has
+// no entity for, a symbol is known to be missing and the status must stay the
+// counted E_PARSE_ERROR.
+func TestParseStatusKeepsParseErrorWhenGrammarGapLosesDeclarations(t *testing.T) {
+	t.Parallel()
+
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("lost.go", goGrammarGapLostSource)
+	names := map[string]bool{}
+	for _, entity := range entities {
+		names[entity.Name] = true
+	}
+	if names["lostAfterNew"] {
+		t.Fatal("the bundled grammar now recovers lostAfterNew; this fixture no longer loses a declaration")
+	}
+	if !names["keptBeforeNew"] {
+		t.Fatalf("keptBeforeNew missing: %v", names)
+	}
+	if !status.ParseError || status.GrammarGap || status.Code != "E_PARSE_ERROR" {
+		t.Fatalf("valid Go with a lost declaration reported as %+v, want a counted E_PARSE_ERROR", status)
+	}
+	if !strings.Contains(status.Detail, "go/parser accepts the file") || !strings.Contains(status.Detail, "recovered no symbol for lostAfterNew") {
+		t.Fatalf("detail does not name the lost declaration: %q", status.Detail)
+	}
+}
+
+func TestGoDeclarationsLost(t *testing.T) {
+	t.Parallel()
+
+	const src = `package demo
+
+type T struct{}
+
+type G[K comparable] struct{}
+
+type Alias = int
+
+func (t *T) Method() {}
+
+func (G[K]) Generic() {}
+
+func init() {}
+
+func init() {}
+
+func Free() {}
+`
+	file, ok := goReferenceParse([]byte(src))
+	if !ok {
+		t.Fatal("fixture is not valid Go")
+	}
+	// The entities a clean parse of this exact file produces lose nothing, so
+	// the comparison agrees with the entity walk's own naming.
+	clean, _, status := TreeSitterParser{}.ParseWithStatus("demo.go", src)
+	if status.ParseError {
+		t.Fatalf("fixture does not parse cleanly: %+v", status)
+	}
+	if lost := goDeclarationsLost(file, clean); len(lost) != 0 {
+		t.Fatalf("clean parse reported lost declarations: %v", lost)
+	}
+	if lost := goDeclarationsLost(file, nil); !reflect.DeepEqual(lost, []string{"T", "G", "T.Method", "G.Generic", "init", "init", "Free"}) {
+		t.Fatalf("empty recovery lost = %v", lost)
+	}
+	// One init entity does not stand in for two declarations, and a function
+	// does not stand in for a method of the same name.
+	partial := []Entity{
+		{Kind: "type", Name: "T"},
+		{Kind: "type", Name: "G"},
+		{Kind: "function", Name: "T.Method"},
+		{Kind: "method", Name: "G.Generic"},
+		{Kind: "function", Name: "init"},
+		{Kind: "function", Name: "Free"},
+	}
+	if lost := goDeclarationsLost(file, partial); !reflect.DeepEqual(lost, []string{"T.Method", "init"}) {
+		t.Fatalf("partial recovery lost = %v", lost)
+	}
+	if detail := goDeclarationsLostDetail([]string{"a", "b", "c", "d", "e", "f", "g"}); !strings.HasSuffix(detail, "recovered no symbol for a, b, c, d, e and 2 more") {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
+// In a snapshot the two cases part ways: the fully recovered file is a
+// W_GO_GRAMMAR_GAP warning outside completeness, and the file that lost a
+// declaration stays in partial_failures, the completeness counts and health.
+func TestSnapshotKeepsGoGrammarGapWithLostDeclarationsAsPartialFailure(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "demo.go", goGrammarGapSource)
+	writeFile(t, repo, "lib.go", goGrammarGapLib)
+	writeFile(t, repo, "lost.go", goGrammarGapLostSource)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "grammar gap fixture")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(context.Background(), repo, "test", ProviderSnapshotOptions{Profile: ProfileFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed []string
+	for _, failure := range snapshot.Header.PartialFailures {
+		failed = append(failed, failure.Code+" "+failure.FilePath)
+		if failure.FilePath == "lost.go" && (failure.EffectScope != EffectScopeFile || !strings.Contains(failure.Detail, "lostAfterNew")) {
+			t.Fatalf("lost.go failure = %+v", failure)
+		}
+	}
+	if !reflect.DeepEqual(failed, []string{"E_PARSE_ERROR lost.go"}) {
+		t.Fatalf("partial failures = %v, want only the file that lost a declaration", failed)
+	}
+	var gaps []string
+	for _, warning := range snapshot.Header.Warnings {
+		if warning.Code == GoGrammarGapCode {
+			gaps = append(gaps, warning.FilePath)
+		}
+	}
+	if !reflect.DeepEqual(gaps, []string{"demo.go"}) {
+		t.Fatalf("grammar-gap warnings = %v, want only the fully recovered file", gaps)
+	}
+	if goHealth := snapshot.Header.Completeness.Health.Languages["Go"]; goHealth.FlaggedFiles != 1 {
+		t.Fatalf("Go health = %+v, want the file that lost a declaration flagged", goHealth)
+	}
+}
