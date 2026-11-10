@@ -218,3 +218,67 @@ $body$ LANGUAGE plpgsql;
 		t.Fatalf("quoted text hid or invented declarations: %+v", entities)
 	}
 }
+
+// Only PL/pgSQL bodies embed SQL. Comments and strings of another language
+// must not be projected as declarations, wherever LANGUAGE is written.
+func TestPostgresDoOtherLanguageBodyIsNotProjected(t *testing.T) {
+	body := "\n# create table phantom (id int);\nplpy.execute(\"CREATE TABLE dynamic_tbl (id int)\")\n"
+	for _, src := range []string{
+		"DO LANGUAGE plpython3u $$" + body + "$$;\n",
+		"DO $$" + body + "$$ LANGUAGE plpython3u;\n",
+		"DO $py$" + body + "$py$ LANGUAGE 'plpython3u';\n",
+	} {
+		src += "CREATE TABLE after_tbl (id int);\n"
+		entities, _, status := (TreeSitterParser{}).ParseWithStatus("py.sql", src)
+		if status.ParseError {
+			t.Errorf("parse error: %s\n%s", status.Detail, src)
+		}
+		if len(entities) != 1 || countEntity(entities, "table", "after_tbl") != 1 {
+			t.Errorf("non-SQL body projected: %+v\n%s", entities, src)
+		}
+	}
+}
+
+// Realistic guarded and dynamic blocks: static DDL is kept, dynamic SQL in
+// strings is not, and a `$` inside a custom-tagged body does not end it.
+func TestPostgresDoRealisticBodies(t *testing.T) {
+	src := `CREATE TABLE before_tbl (id int);
+DO $fn$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'mood') THEN
+    CREATE TYPE mood AS ENUM ('sad', 'ok');
+  END IF;
+  RAISE NOTICE 'costs $5 and $ more; CREATE TABLE in_string (id int);';
+  EXECUTE format('CREATE TABLE %I (id int)', 'dyn');
+  EXECUTE 'CREATE INDEX dyn_idx ON dyn (id)';
+  CREATE TABLE IF NOT EXISTS guarded_tbl (id bigint GENERATED ALWAYS AS IDENTITY (START WITH 10 CACHE 20), v text CHECK (v <> ');' AND v <> '--'));
+  CREATE UNIQUE INDEX IF NOT EXISTS guarded_idx ON guarded_tbl (id);
+  CREATE OR REPLACE FUNCTION nested_fn() RETURNS trigger AS $body$
+  BEGIN
+    RETURN NEW;
+  END;
+  $body$ LANGUAGE plpgsql;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END
+$fn$ LANGUAGE plpgsql;
+/* it's a "block comment */
+CREATE TABLE after_tbl (id int);
+`
+	entities, _, status := (TreeSitterParser{}).ParseWithStatus("guarded.sql", src)
+	if status.ParseError {
+		t.Fatalf("parse error: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(src))
+	}
+	for _, want := range [][2]string{{"table", "before_tbl"}, {"table", "guarded_tbl"}, {"index", "guarded_idx"}, {"function", "nested_fn"}, {"table", "after_tbl"}} {
+		if countEntity(entities, want[0], want[1]) != 1 {
+			t.Errorf("missing %s %s: %+v", want[0], want[1], entities)
+		}
+	}
+	for _, phantom := range []string{"in_string", "dyn", "%I"} {
+		if countEntity(entities, "table", phantom) != 0 {
+			t.Errorf("phantom %s: %+v", phantom, entities)
+		}
+	}
+	if countEntity(entities, "index", "dyn_idx") != 0 {
+		t.Errorf("dynamic index projected: %+v", entities)
+	}
+}

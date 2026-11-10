@@ -7001,8 +7001,8 @@ var postgresExtschemaPlaceholderPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0
 
 const postgresDoLanguageName = `(?:[a-z_][a-z0-9_$]*|'[^']+'|"[^"]+")`
 
-var postgresDoPrefixPattern = regexp.MustCompile(`(?i)\bdo\s+(language\s+` + postgresDoLanguageName + `\s+)?`)
-var postgresDoSuffixPattern = regexp.MustCompile(`(?i)^\s*(language\s+` + postgresDoLanguageName + `\s*)?;`)
+var postgresDoPrefixPattern = regexp.MustCompile(`(?i)\bdo\s+(?:language\s+(` + postgresDoLanguageName + `)\s+)?`)
+var postgresDoSuffixPattern = regexp.MustCompile(`(?i)^\s*(?:language\s+(` + postgresDoLanguageName + `)\s*)?;`)
 var postgresDoDDLPattern = regexp.MustCompile(`(?i)\bcreate\s+(?:or\s+replace\s+)?(?:(?:unlogged|temporary|temp|unique)\s+)?(?:table|index|view|materialized\s+view|type|schema|function|procedure|trigger|policy)\b`)
 var postgresDropTriggerPattern = regexp.MustCompile(`(?is)\bdrop\s+trigger\b[^;]*;`)
 var postgresDropPolicyPattern = regexp.MustCompile(`(?is)\bdrop\s+policy\b[^;]*;`)
@@ -7239,9 +7239,21 @@ func maskPostgresDoBlocks(masked []byte) {
 		if suffix == nil || (loc[2] >= 0 && suffix[2] >= 0) {
 			continue
 		}
+		// The search view blanks a quoted language name; read it from content.
+		language := "plpgsql"
+		if loc[2] >= 0 {
+			language = content[loc[2]:loc[3]]
+		} else if suffix[2] >= 0 {
+			language = content[tail+suffix[2] : tail+suffix[3]]
+		}
+		maskBytesPreservingNewlines(masked, loc[0], tail+suffix[1])
+		// Only PL/pgSQL embeds SQL statements. A Python or Perl body is not SQL:
+		// its comments and strings would project declarations that never run.
+		if !strings.EqualFold(strings.Trim(language, `'"`), "plpgsql") {
+			continue
+		}
 		body := stripSQLComments(content[bodyStart:bodyEnd])
 		bodySearch := maskSQLLiteralContentsForSearch(body)
-		maskBytesPreservingNewlines(masked, loc[0], tail+suffix[1])
 		end := 0
 		for _, ddl := range postgresDoDDLPattern.FindAllStringIndex(bodySearch, -1) {
 			if ddl[0] < end || !postgresClauseKeywordStart(bodySearch, ddl[0]) {
