@@ -38,7 +38,7 @@ UPLOAD = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
 DOWNLOAD = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
 CACHE = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 UNIT_TESTS = f'python -B -m unittest discover -s {H}/tests -p "test_*.py" -v'
-AGGREGATE_RUNNER = "depot-ubuntu-24.04-4"
+AGGREGATE_RUNNER = "ubuntu-latest"
 
 # One row per sharded target: everything that differs between them.
 TARGETS = {
@@ -51,10 +51,10 @@ TARGETS = {
         "target": None,
         "shell": "pwsh",
         "runners": {
-            "prepare": "depot-windows-2025-8",
-            "shards": "depot-windows-2025-8",
-            "other": "depot-windows-2025-4",
-            "vet": "depot-windows-2025-4",
+            "prepare": "windows-latest",
+            "shards": "windows-latest",
+            "other": "windows-latest",
+            "vet": "windows-latest",
         },
         "bundleCompression": 0,
         "cachePlatform": "Windows-x64",

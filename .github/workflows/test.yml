@@ -141,9 +141,16 @@ jobs:
   #     packages that take under a minute, so it gets the same 35.
   #   - compile-and-plan and vet have no package budget; 15 and 10 minutes are
   #     several times their cold-cache worst case (about four and three).
+  # Runners: the Windows test chain and both aggregate jobs run on GitHub-hosted
+  # runners. Depot's Windows machines ran the tests about 1.5 times faster, but
+  # each job waited 80 to 90 seconds for a runner and the chain pays that twice
+  # (compile and plan, then a shard). Over five interleaved pairs of runs the
+  # hosted chain finished about 95 seconds earlier (median 409 s against 494 s
+  # after trigger). The aggregates are hosted for the same reason: they sit at
+  # the tail of the chain and waited up to 185 s for a Depot runner.
   windows-test-prepare:
     name: test (windows-latest) / compile and plan
-    runs-on: depot-windows-2025-8
+    runs-on: windows-latest
     timeout-minutes: 15
     outputs:
       shard-matrix: ${{ steps.shard-matrix.outputs.value }}
@@ -237,7 +244,7 @@ jobs:
   windows-test-shards:
     name: test (windows-latest) / shard ${{ matrix.shard }}
     needs: windows-test-prepare
-    runs-on: depot-windows-2025-8
+    runs-on: windows-latest
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -285,7 +292,7 @@ jobs:
   windows-test-other:
     name: test (windows-latest) / non-heavy packages
     needs: windows-test-prepare
-    runs-on: depot-windows-2025-4
+    runs-on: windows-latest
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7.0.1
@@ -330,7 +337,7 @@ jobs:
 
   windows-test-vet:
     name: test (windows-latest) / vet
-    runs-on: depot-windows-2025-4
+    runs-on: windows-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
@@ -352,7 +359,7 @@ jobs:
     needs:
       [windows-test-prepare, windows-test-shards, windows-test-other, windows-test-vet]
     if: always()
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
@@ -620,7 +627,7 @@ jobs:
     needs:
       [macos-test-prepare, macos-test-shards, macos-test-other]
     if: always()
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
@@ -683,7 +690,7 @@ jobs:
   # harness unit tests to fail, so a guarantee cannot silently lose its test. It
   # takes about a minute and nothing waits for it.
   harness-mutation-check:
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
