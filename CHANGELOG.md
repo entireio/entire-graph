@@ -49,9 +49,12 @@ auto-generated notes on
 - `query --format agent` labels coverage `degraded` (compact `!D`) only when a
   partial failure can remove a code fact: one not confined to a single file
   (repo-ignore shortfalls, a spent analysis budget), or one in a source file.
-  Failures confined to data, configuration or documentation files (JSON, YAML,
-  TOML, XML, Markdown and the like) now give `Coverage: notice` (`!N`); they are
-  still counted and listed. A repository whose only failures were minified JSON
+  Failures confined to data, configuration or documentation files the graph
+  extracts nothing from (JSON, TOML, XML, Markdown and the like) now give
+  `Coverage: notice` (`!N`); they are still counted and listed. Configuration
+  formats in the semantic tier of `capabilities --json` (HCL/Terraform, YAML,
+  CUE) still give `degraded`, because a failure there loses resources and
+  relations. A repository whose only failures were minified JSON
   fixtures no longer opens every answer with `Coverage: degraded`.
 
 ### Fixed
