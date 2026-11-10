@@ -1,0 +1,57 @@
+{
+  "cli_version": "0.12.2",
+  "checkpoint_id": "d1e39666faa8",
+  "strategy": "manual-commit",
+  "branch": "remove/verify-command",
+  "checkpoints_count": 6,
+  "files_touched": [
+    "docs/commands.md",
+    "docs/trust-and-security.md",
+    "internal/cli/help.go",
+    "internal/cli/help_test.go",
+    "internal/cli/index.go",
+    "internal/cli/outputpath.go",
+    "internal/cli/outputpath_test.go",
+    "internal/cli/preflight.go",
+    "internal/cli/root.go",
+    "internal/cli/stats.go",
+    "internal/sem/search_verify.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d1/e39666faa8/0/metadata.json",
+      "transcript": "/d1/e39666faa8/0/full.jsonl",
+      "compact_transcript": "/d1/e39666faa8/0/transcript.jsonl",
+      "content_hash": "/d1/e39666faa8/0/content_hash.txt",
+      "prompt": "/d1/e39666faa8/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 224,
+    "cache_creation_tokens": 465582,
+    "cache_read_tokens": 18719381,
+    "output_tokens": 85553,
+    "api_call_count": 112,
+    "subagent_tokens": {
+      "input_tokens": 44,
+      "cache_creation_tokens": 206711,
+      "cache_read_tokens": 620438,
+      "output_tokens": 9635,
+      "api_call_count": 18
+    }
+  },
+  "redaction": {
+    "replacements": 17,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 12,
+      "key_context": 9,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}

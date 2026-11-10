@@ -1,0 +1,122 @@
+{
+  "cli_version": "0.12.2",
+  "checkpoint_id": "d1e39666faa8",
+  "session_id": "2c7645d3-0059-4b82-95cb-e32bc0725510",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-10T21:46:00.11549Z",
+  "branch": "remove/verify-command",
+  "checkpoints_count": 6,
+  "files_touched": [
+    "docs/commands.md",
+    "docs/trust-and-security.md",
+    "internal/cli/help.go",
+    "internal/cli/help_test.go",
+    "internal/cli/index.go",
+    "internal/cli/outputpath.go",
+    "internal/cli/outputpath_test.go",
+    "internal/cli/preflight.go",
+    "internal/cli/root.go",
+    "internal/cli/stats.go",
+    "internal/sem/search_verify.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "0c13b111525d",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 224,
+    "cache_creation_tokens": 465582,
+    "cache_read_tokens": 18719381,
+    "output_tokens": 85553,
+    "api_call_count": 112,
+    "subagent_tokens": {
+      "input_tokens": 44,
+      "cache_creation_tokens": 206711,
+      "cache_read_tokens": 620438,
+      "output_tokens": 9635,
+      "api_call_count": 18
+    }
+  },
+  "redaction": {
+    "replacements": 17,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 12,
+      "key_context": 9,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01Jf9EKemTRXS5oJZhPc8yqL",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "review-pr"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "0c13b111525d",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 31,
+        "end": 32,
+        "entry_ids": [
+          "ecbcb0b9-7f90-45e8-b9d7-e76bbccbd6f6"
+        ],
+        "tool_use_id": "toolu_01Jf9EKemTRXS5oJZhPc8yqL"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Jf9EKemTRXS5oJZhPc8yqL"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: review-pr",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_019N4ogY7GyANgX8i5jcrqCQ",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "0c13b111525d",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 205,
+        "end": 206,
+        "entry_ids": [
+          "84adc43f-4a49-49cd-98dd-ff7485314102"
+        ],
+        "tool_use_id": "toolu_019N4ogY7GyANgX8i5jcrqCQ"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_019N4ogY7GyANgX8i5jcrqCQ"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 6
+  }
+}
