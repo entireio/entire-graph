@@ -50,7 +50,7 @@ const (
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
 	//
-	// Revision 8: Rust is parsed by the vendored tree-sitter-rust v0.24.2
+	// Revision 9: Rust is parsed by the vendored tree-sitter-rust v0.24.2
 	// grammar, regenerated at ABI 14, instead of the older one bundled with
 	// go-tree-sitter.
 	//
@@ -84,7 +84,7 @@ const (
 	// `C.helper` (kind "method"). This re-keys every Python nested-callable
 	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
 	// real same-named members.
-	IdentityRevision     = "8"
+	IdentityRevision     = "9"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
