@@ -141,6 +141,7 @@ auto-generated notes on
 - Improved snapshot, search, and analyze performance and substantially reduced memory allocation, and made `stats` return a fast, single-line answer instead of a full rescan.
 - Stats leads with observed follow-up rates and a signed modeled balance; the statusline retains its explicitly unvalidated 1:1 context model. Both retain losses and distinguish unavailable comparisons from zero; legacy JSON fields remain compatible.
 - Aligned Graph's trail runners with Brain's and hardened CI with Windows test sharding and safer nightly prerelease publishing.
+- Swift now uses vendored tree-sitter-swift 0.7.4 with compatibility fixes for conditional attributes, ownership switches, multiline generic constraints and compiler diagnostics in type bodies. Swift Testing macros (`#expect`/`#require`) and `nonisolated(unsafe)` declarations parse, and three obsolete preprocessing masks are removed. The parser identity revision is bumped to rebuild cached snapshots.
 
 ### Fixed
 

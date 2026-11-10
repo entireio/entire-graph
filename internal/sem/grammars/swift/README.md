@@ -1,0 +1,40 @@
+# Swift grammar
+
+Based on tree-sitter-swift 0.7.4, commit
+`82bb3a533e0801fd2bbaa11dc49676e10bf41948`.
+The license is copied from upstream. The parser and its headers are
+generated at ABI 14 with tree-sitter-cli **0.24.7** after applying
+[compatibility.patch](compatibility.patch) to upstream's `grammar.js` and `src/scanner.c`.
+
+The patch preserves syntax that regressed in the grammar upgrade:
+
+- Ownership operators immediately after `switch` cannot capture the switch
+  body as a trailing closure.
+- Conditional directives can follow attributes before their declaration.
+  Both branches remain in the syntax tree; no build configuration is assumed.
+- Conditional compilation recognizes versioned `canImport`, feature and internal
+  platform predicates, switch-case directives and inline closing directives.
+- A comma in a generic constraint list continues that list across a newline.
+- Compiler diagnostics are valid within class, enum and protocol bodies.
+- The scanner looks through block comments when deciding whether a newline
+  separates statements, while retaining operator continuations.
+
+The manifest's `local_build` entry records the patch, generator version and
+arguments, so regenerating needs Node.js (`npx`) and one command from the
+repository root:
+
+```sh
+go run ./cmd/grammar-refresh -lang swift -ref 0.7.4-with-generated-files
+```
+
+At the recorded commit this reuses tree-sitter-cli 0.24.7 and reproduces the
+vendored files exactly, including the `tree_sitter/` headers, which come from
+that generator rather than upstream's committed copies. A newer ref uses the latest
+tree-sitter-cli and stops if the patch no longer applies; reconcile the patch,
+then run it again. No generation or download occurs when building or running
+Graph. Update the identity revision whenever the resulting parser changes.
+
+Regression coverage lives in `internal/sem/swift_grammar_regression_test.go`;
+`swift_test.go` also protects the newer Swift Testing macro support.
+See [VALIDATION.md](VALIDATION.md) for the baseline comparison and reproduction
+commands.
