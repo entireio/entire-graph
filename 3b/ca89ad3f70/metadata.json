@@ -1,0 +1,84 @@
+{
+  "cli_version": "0.13.1",
+  "checkpoint_id": "3bca89ad3f70",
+  "strategy": "manual-commit",
+  "branch": "review-fix/389",
+  "checkpoints_count": 12,
+  "files_touched": [
+    "CHANGELOG.md",
+    "docs/adr/0001-ga-schema-contract.md",
+    "docs/semantic-provider-requirements.md",
+    "docs/snapshot-format.md",
+    "internal/cli/root_test.go",
+    "internal/sem/diagnostic_scope.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go",
+    "internal/sem/result_shape_contract_test.go",
+    "internal/sem/testdata/fixtures/csharp-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/csharp-fields.ndjson.golden",
+    "internal/sem/testdata/fixtures/csharp-oo.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-async.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-clones.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-fields.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-tests.ndjson.golden",
+    "internal/sem/testdata/fixtures/go-types.ndjson.golden",
+    "internal/sem/testdata/fixtures/java-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/java-fields.ndjson.golden",
+    "internal/sem/testdata/fixtures/java-oo.ndjson.golden",
+    "internal/sem/testdata/fixtures/julia-r-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/multilang-relations.ndjson.golden",
+    "internal/sem/testdata/fixtures/php-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/php-oo.ndjson.golden",
+    "internal/sem/testdata/fixtures/python-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/python-imports.ndjson.golden",
+    "internal/sem/testdata/fixtures/python-oo.ndjson.golden",
+    "internal/sem/testdata/fixtures/rust-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/rust-oo.ndjson.golden",
+    "internal/sem/testdata/fixtures/services-config.ndjson.golden",
+    "internal/sem/testdata/fixtures/terraform-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-events.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-fields.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-http.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-imports.ndjson.golden",
+    "internal/sem/testdata/fixtures/typescript-oo.ndjson.golden"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3b/ca89ad3f70/0/metadata.json",
+      "transcript": "/3b/ca89ad3f70/0/full.jsonl",
+      "compact_transcript": "/3b/ca89ad3f70/0/transcript.jsonl",
+      "content_hash": "/3b/ca89ad3f70/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0,
+    "subagent_tokens": {
+      "input_tokens": 44,
+      "cache_creation_tokens": 51482,
+      "cache_read_tokens": 1498251,
+      "output_tokens": 29108,
+      "api_call_count": 22
+    }
+  },
+  "redaction": {
+    "replacements": 0,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}
