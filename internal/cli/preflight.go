@@ -69,7 +69,6 @@ var preflightParsers = map[string]func(version string, args []string) error{
 	"def":       func(_ string, args []string) error { _, err := parseDefFlags(args); return err },
 	"impact":    func(_ string, args []string) error { _, err := parseImpactFlags(args); return err },
 	"neighbors": func(_ string, args []string) error { _, err := parseNeighborFlags(args); return err },
-	"verify":    func(_ string, args []string) error { _, err := parseVerifyFlags(args); return err },
 }
 
 // preflightCommands is the sorted command list, for the error a caller gets when it names something
