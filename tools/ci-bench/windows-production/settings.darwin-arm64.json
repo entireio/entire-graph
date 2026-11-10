@@ -1,0 +1,31 @@
+{
+  "schema": "entire-graph.windows-ci.settings.v1",
+  "target": "darwin/arm64",
+  "shardCount": 4,
+  "defaultWeightSeconds": 1.0,
+  "timeout": "30m",
+  "commandLineLimit": 262144,
+  "shuffle": "off",
+  "testParallel": null,
+  "goMaxProcs": null,
+  "heavyPackages": [
+    {
+      "argument": "./internal/sem",
+      "importPath": "github.com/entireio/entire-graph/internal/sem",
+      "binaryName": "sem.test",
+      "expectedTestMainDeclarations": []
+    },
+    {
+      "argument": "./internal/cli",
+      "importPath": "github.com/entireio/entire-graph/internal/cli",
+      "binaryName": "cli.test",
+      "expectedTestMainDeclarations": []
+    },
+    {
+      "argument": "./internal/gitutil",
+      "importPath": "github.com/entireio/entire-graph/internal/gitutil",
+      "binaryName": "gitutil.test",
+      "expectedTestMainDeclarations": []
+    }
+  ]
+}
