@@ -99,6 +99,29 @@ written without the field are rebuilt rather than replayed. Parser identity
 revision and stable symbol IDs are unchanged; the persisted `Result` gains the
 field on its `warnings` only.
 
+### Coverage level in `query --format agent`
+
+The `Coverage:` line (compact `!N` / `!D`) has two levels, decided by
+`sem.PartialFailureAffectsCode`. It reads `degraded` when at least one partial
+failure can have removed a code fact:
+
+- its `effect_scope` is `snapshot` (a repo-ignore shortfall, a spent analysis
+  budget), or
+- it is confined to a source file, or to a file whose language cannot be
+  resolved.
+
+It reads `notice` when every failure is confined to a data, configuration or
+documentation file (JSON, YAML, TOML, XML, Markdown and the like). "Source" is
+the policy health accounting uses for `completeness.health`. There is no
+percentage threshold: one syntax error in one source file gives `degraded`.
+Every failure is still counted on the line and listed at either level.
+
+Known gap, tracked as a follow-up: configuration formats are exempt as a
+whole, including those in the semantic tier of `capabilities --json`. A parse
+failure in a Terraform `.tf` file, a Compose or Kubernetes YAML manifest, or a
+CUE file therefore gives `notice`, although the graph extracts resources and
+relations from such files.
+
 ## Streaming NDJSON
 
 The `snapshot`/`symbols`/`edges` commands stream records to stdout as they are

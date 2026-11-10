@@ -2047,8 +2047,12 @@ func writeAgentSearchPayload(out interface{ Write([]byte) (int, error) }, respon
 		payload = []byte(fmt.Sprintf("Index: cache-%s\n", cacheState))
 	}
 	if len(compactDiagnostics) > 0 {
+		// The same level decision as the full coverage line: this rung used to
+		// print !D for any partial failure, so a payload too small for the line
+		// called a repository of minified JSON degraded while the roomy form of
+		// the same response said notice.
 		marker := "!N"
-		if len(response.PartialFailures) > 0 {
+		if agentFailuresDegradeCoverage(response.PartialFailures) {
 			marker = "!D"
 		}
 		// The exclusion count degrades WITH the marker rather than being dropped

@@ -52,7 +52,14 @@ auto-generated notes on
   Failures confined to data, configuration or documentation files (JSON, YAML,
   TOML, XML, Markdown and the like) now give `Coverage: notice` (`!N`); they are
   still counted and listed. A repository whose only failures were minified JSON
-  fixtures no longer opens every answer with `Coverage: degraded`.
+  fixtures no longer opens every answer with `Coverage: degraded`. The marker a
+  very small `--max-context-bytes` budget falls back to follows the same rule;
+  it used to print `!D` for any partial failure. Known gap, tracked as a
+  follow-up: configuration formats are exempt as a whole, so a parse failure in
+  a file the graph does extract facts from (Terraform `.tf`, Compose or
+  Kubernetes YAML, CUE) also gives `notice`.
+- A `query` that matches nothing when no graph is built or cached now reports
+  an explicit `completeness.health.status: ok` instead of omitting `health`.
 
 ### Fixed
 

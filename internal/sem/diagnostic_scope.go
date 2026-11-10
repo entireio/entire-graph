@@ -87,6 +87,14 @@ func DiagnosticEffectScope(code, filePath string) string {
 // so this answer and completeness.health agree on which files are source. A file
 // whose language cannot be resolved is treated as source, since it cannot be
 // ruled out.
+//
+// Known gap, not fixed here: sourceFileLanguage classes every configuration
+// format as non-source, including the ones the capabilities registry lists as
+// semantic-tier. The graph does extract facts from Terraform/HCL, Compose and
+// Kubernetes YAML, and CUE, so a failure confined to such a file can lose
+// resources and relations and still answers false here. Treating the whole
+// format as source is not the fix: with no threshold, any failing YAML
+// lockfile or CI workflow would then degrade coverage.
 func PartialFailureAffectsCode(failure PartialFailure) bool {
 	if DiagnosticEffectScope(failure.Code, failure.FilePath) != EffectScopeFile {
 		return true
