@@ -34,18 +34,43 @@ import (
 )
 
 const (
-	// SchemaVersion 1.4 adds optional derived relation provenance; 1.3 added
-	// source-file health accounting; 1.2 added
+	// SchemaVersion 1.5 adds the optional `dependents_evidence` field on
+	// EntityChange (persisted Result payload — diff/analyze/checkpoint), which
+	// states whether a dependents_count value is a heuristic estimate or one
+	// degraded further by a scan limit. 1.4 added optional derived relation
+	// provenance; 1.3 added source-file health accounting; 1.2 added
 	// optional parser identity metadata.
 	// Schema 1.1 added the snapshot fields introduced
 	// alongside boundary source locations (the `external` flag on external records
 	// and the per-symbol source-location fields). The shape is backward compatible
 	// for tolerant readers; the bump lets consumers detect the new fields.
-	SchemaVersion         = "1.4"
+	SchemaVersion         = "1.5"
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
+	//
+	// Revision 8: recover PostgreSQL identity columns, named CHECK constraints,
+	// and DO blocks with LANGUAGE clauses while preserving static declarations.
+	// Stop treating identifier prefixes as constraints. Invalidate cached partial
+	// snapshots so previously excluded migrations are indexed for unchanged trees.
+	//
+	// Revision 7: repair Swift 0.7.4 conditional attributes, ownership switches,
+	// multiline constraints, type-body and switch-prefix diagnostics, comment
+	// lookahead, compilation conditions and directive-prefixed macros. Recovered
+	// declarations and relations must invalidate snapshots built by the unpatched
+	// grammar.
+	//
+	// Revision 6: Swift is parsed by the vendored tree-sitter-swift v0.7.4
+	// grammar instead of go-tree-sitter's 0.5.0 one. Files that failed to parse
+	// before (freestanding macros such as `#expect`, newer syntax) now yield
+	// different declarations, and the caches are keyed on the source tree, so
+	// revision-5 records must not be served for them.
+	//
+	// Revision 5: Julia declaration headers replace body-laden signatures.
+	// Same-name overload IDs hash the signature, so their #sig: suffixes change
+	// even for unchanged source. Consumers must refresh snapshots and recompute
+	// persisted entity deltas under the corrected parser rules.
 	//
 	// Revision 4: the same correction for Swift, Kotlin, Rust and PHP, whose
 	// nested callables are local functions / block-scoped items / namespace
@@ -60,7 +85,7 @@ const (
 	// `C.helper` (kind "method"). This re-keys every Python nested-callable
 	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
 	// real same-named members.
-	IdentityRevision     = "4"
+	IdentityRevision     = "8"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
@@ -106,6 +131,17 @@ var relationTypes = []string{
 	"DATA_FLOWS",
 	"FILE_CHANGES_WITH",
 }
+
+// heuristicRelationTypes are relation kinds the graph documents as pattern/heuristic matches
+// rather than resolved code relationships (routing tables, event names, near-clone detection,
+// and the like — see CapabilityReport.HeuristicRelationTypes). Declared once here and reused
+// by both Capabilities() and RelationEvidenceState (evidence.go) so the two readings of "this
+// relation kind is not ground truth" cannot drift apart.
+var heuristicRelationTypes = []string{
+	"HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "HANDLES_TOOL", "SIMILAR_TO", "TESTS",
+}
+
+var heuristicRelationTypeSet = relationTypeSet(heuristicRelationTypes...)
 
 // ooRelationSupport lists the additional (non-structural) relation types the
 // provider can extract for each language, used by the capabilities matrix.
@@ -794,7 +830,7 @@ func Capabilities() CapabilityReport {
 		SupportedRelationTypes:          append([]string(nil), relationTypes...),
 		RelationSupportByLanguage:       relationSupportByLanguage(),
 		RelationSupportByProfile:        relationSupportByProfile(),
-		HeuristicRelationTypes:          []string{"HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "HANDLES_TOOL", "SIMILAR_TO", "TESTS"},
+		HeuristicRelationTypes:          append([]string(nil), heuristicRelationTypes...),
 		OptionalLocalOnlyFeatures: map[string]bool{
 			"stable_symbol_ids":          true,
 			"semantic_diff":              true,
@@ -3883,8 +3919,8 @@ func resolveJuliaSameContainerMethodCallTargets(name string, from SymbolRecord, 
 	}
 	parameters := symbolFlowParameterNames(from)
 	if !from.parameterNamesKnown {
-		// A short-form signature includes its RHS; stop at the first balanced
-		// argument list so calls on the RHS are not mistaken for parameters.
+		// Stop at the first balanced argument list so parentheses in a
+		// `::T` return annotation or `where` clause are not read as parameters.
 		if open := strings.Index(from.Signature, "("); open >= 0 {
 			if close := matchingParen(from.Signature, open); close > open {
 				parameters = parameterNames(from.Signature[:close+1])
@@ -6167,7 +6203,11 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 					}
 				}
 			}
-			if needsDataFlow && callableSymbol {
+			// A module body cannot hand a value back to a caller and a module has
+			// no parameters to forward, so every flow found in a module's block
+			// (which spans its members) belongs to a member function, and that
+			// member already emits it.
+			if needsDataFlow && callableSymbol && from.Kind != "module" {
 				// Several flows can describe one edge: `f(a, b, c)` forwards three
 				// caller parameters into the same callee, and relation identity is
 				// from+to+type, so all three land on one record. Collect every flow

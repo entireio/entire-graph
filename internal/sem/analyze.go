@@ -1966,7 +1966,14 @@ func similarity(a, b Entity) float64 {
 	if a.BodyHash != "" && a.BodyHash == b.BodyHash {
 		return 0.97
 	}
-	return jaccard(a.Signature, b.Signature)
+	left, right := a.Signature, b.Signature
+	if a.similaritySource != "" {
+		left = a.similaritySource
+	}
+	if b.similaritySource != "" {
+		right = b.similaritySource
+	}
+	return jaccard(left, right)
 }
 
 func jaccard(a, b string) float64 {

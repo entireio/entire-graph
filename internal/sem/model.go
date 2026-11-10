@@ -16,6 +16,11 @@ type Entity struct {
 	EndLine     int    `json:"end_line"`
 	BodyHash    string `json:"body_hash"`
 	Fingerprint string `json:"fingerprint"`
+	// similaritySource preserves body evidence when Signature is shortened for
+	// display and type analysis (currently Julia declaration headers). Rename
+	// and move fallback matching use it only when exact hashes do not match.
+	// Private parse metadata keeps full definitions out of the frozen schema.
+	similaritySource string
 	// Local marks a callable defined inside another function (a nested/closure
 	// def). It is still a real symbol, but it is only callable from within its
 	// enclosing function, so call resolution must not name-match it across scopes.
@@ -70,19 +75,28 @@ type Entity struct {
 }
 
 type EntityChange struct {
-	Type            string  `json:"type"`
-	Kind            string  `json:"kind"`
-	Name            string  `json:"name"`
-	OldName         string  `json:"old_name,omitempty"`
-	NewName         string  `json:"new_name,omitempty"`
-	OldSignature    string  `json:"old_signature,omitempty"`
-	NewSignature    string  `json:"new_signature,omitempty"`
-	OldPath         string  `json:"old_path,omitempty"`
-	NewPath         string  `json:"new_path,omitempty"`
-	BeforeStartLine int     `json:"before_start_line,omitempty"`
-	AfterStartLine  int     `json:"after_start_line,omitempty"`
-	DependentsCount int     `json:"dependents_count"`
-	Similarity      float64 `json:"similarity,omitempty"`
+	Type            string `json:"type"`
+	Kind            string `json:"kind"`
+	Name            string `json:"name"`
+	OldName         string `json:"old_name,omitempty"`
+	NewName         string `json:"new_name,omitempty"`
+	OldSignature    string `json:"old_signature,omitempty"`
+	NewSignature    string `json:"new_signature,omitempty"`
+	OldPath         string `json:"old_path,omitempty"`
+	NewPath         string `json:"new_path,omitempty"`
+	BeforeStartLine int    `json:"before_start_line,omitempty"`
+	AfterStartLine  int    `json:"after_start_line,omitempty"`
+	DependentsCount int    `json:"dependents_count"`
+	// DependentsEvidence states how much DependentsCount can be trusted. The scan
+	// behind it is always a token-level heuristic (see dependentsEvidenceState in
+	// dependents.go) — it can undercount a caller reached only through an alias,
+	// reflection, or a generated binding whose text never spells the changed
+	// name — so this defaults to "partial" even on a clean scan, and escalates to
+	// "requires_verification" when the scan itself hit a limit (a time budget, an
+	// unreadable or too-large candidate file, or a parse failure) that means some
+	// candidate files were never counted at all.
+	DependentsEvidence EvidenceState `json:"dependents_evidence"`
+	Similarity         float64       `json:"similarity,omitempty"`
 	// Reconciliation carries explicit identity-continuity metadata when a
 	// delete+add pair was reconciled to a single change: RENAMED (same file),
 	// MOVED (across files), or RECONCILED_FROM. Empty for ordinary changes.

@@ -55,7 +55,8 @@ import (
 // pre-disclosure entry would hand them a header without
 // W_COCHANGE_HISTORY_UNAVAILABLE. The sidecar sits beside the entry under this
 // version's directory, so the bump orphans stale stores as well.
-const searchSnapshotCacheVersion = "search-snapshot-v28-" + IdentityRevision
+// v29 retires body-laden Julia signatures and module DATA_FLOWS edges.
+const searchSnapshotCacheVersion = "search-snapshot-v29-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`

@@ -50,7 +50,8 @@ import (
 // reason is not, and need not be, in the key), so without the bump this build
 // replays its summary, which lacks W_COCHANGE_HISTORY_UNAVAILABLE: the silent
 // drop the warning exists to end.
-const providerRecordsCacheVersion = "provider-records-v23-" + IdentityRevision
+// v24 retires body-laden Julia signatures and module DATA_FLOWS edges.
+const providerRecordsCacheVersion = "provider-records-v24-" + IdentityRevision
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+commit+tree+mode+profile+
