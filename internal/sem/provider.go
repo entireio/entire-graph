@@ -54,6 +54,11 @@ const (
 	// grammar, regenerated at ABI 14, instead of the older one bundled with
 	// go-tree-sitter.
 	//
+	// Revision 8: recover PostgreSQL identity columns, named CHECK constraints,
+	// and DO blocks with LANGUAGE clauses while preserving static declarations.
+	// Stop treating identifier prefixes as constraints. Invalidate cached partial
+	// snapshots so previously excluded migrations are indexed for unchanged trees.
+	//
 	// Revision 7: repair Swift 0.7.4 conditional attributes, ownership switches,
 	// multiline constraints, type-body and switch-prefix diagnostics, comment
 	// lookahead, compilation conditions and directive-prefixed macros. Recovered
