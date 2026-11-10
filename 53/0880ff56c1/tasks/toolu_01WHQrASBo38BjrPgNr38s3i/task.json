@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_01WHQrASBo38BjrPgNr38s3i",
+  "agent_id": "a466634bfbccb8abe",
+  "task_description": "Review PR 389 effect_scope",
+  "token_usage": {
+    "input_tokens": 18,
+    "cache_creation_tokens": 94637,
+    "cache_read_tokens": 569487,
+    "output_tokens": 12585,
+    "api_call_count": 9
+  },
+  "started_at": "2026-11-10T10:20:57.303902+01:00",
+  "completed_at": "2026-11-10T10:23:23.579021+01:00"
+}

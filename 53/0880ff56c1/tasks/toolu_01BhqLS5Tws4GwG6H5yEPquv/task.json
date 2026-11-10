@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_01BhqLS5Tws4GwG6H5yEPquv",
+  "agent_id": "a0ce306ccdf8df35f",
+  "task_description": "Review PR 397 cache prune",
+  "token_usage": {
+    "input_tokens": 18,
+    "cache_creation_tokens": 70539,
+    "cache_read_tokens": 431229,
+    "output_tokens": 8623,
+    "api_call_count": 9
+  },
+  "started_at": "2026-11-10T10:20:57.272806+01:00",
+  "completed_at": "2026-11-10T10:22:55.904606+01:00"
+}

@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_01XLvjQyyqLXtNaX5s2jvo41",
+  "agent_id": "a4951472a1dc9be7f",
+  "task_description": "Review PR 249 gradle verify",
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 70861,
+    "cache_read_tokens": 263114,
+    "output_tokens": 6300,
+    "api_call_count": 6
+  },
+  "started_at": "2026-11-10T10:20:57.280405+01:00",
+  "completed_at": "2026-11-10T10:22:26.625564+01:00"
+}

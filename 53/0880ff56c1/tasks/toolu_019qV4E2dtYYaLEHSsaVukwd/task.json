@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_019qV4E2dtYYaLEHSsaVukwd",
+  "agent_id": "ab15330fda6ceb5db",
+  "task_description": "Review PR 398 F# patch",
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 73018,
+    "cache_read_tokens": 271497,
+    "output_tokens": 8781,
+    "api_call_count": 6
+  },
+  "started_at": "2026-11-10T10:20:57.264189+01:00",
+  "completed_at": "2026-11-10T10:22:53.690036+01:00"
+}

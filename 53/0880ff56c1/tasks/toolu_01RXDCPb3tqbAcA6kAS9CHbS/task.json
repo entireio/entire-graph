@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_01RXDCPb3tqbAcA6kAS9CHbS",
+  "agent_id": "a8363cf13bed471a3",
+  "task_description": "Review PR 391 postgres parsing",
+  "token_usage": {
+    "input_tokens": 24,
+    "cache_creation_tokens": 107422,
+    "cache_read_tokens": 810480,
+    "output_tokens": 27725,
+    "api_call_count": 12
+  },
+  "started_at": "2026-11-10T10:20:57.270861+01:00",
+  "completed_at": "2026-11-10T10:26:51.28751+01:00"
+}

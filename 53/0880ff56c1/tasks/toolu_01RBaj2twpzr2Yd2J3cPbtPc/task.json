@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_01RBaj2twpzr2Yd2J3cPbtPc",
+  "agent_id": "a5d41a4ddc306eab7",
+  "task_description": "Review PR 399 rust grammar",
+  "token_usage": {
+    "input_tokens": 22,
+    "cache_creation_tokens": 89427,
+    "cache_read_tokens": 706209,
+    "output_tokens": 12719,
+    "api_call_count": 11
+  },
+  "started_at": "2026-11-10T10:20:57.308503+01:00",
+  "completed_at": "2026-11-10T10:23:35.228666+01:00"
+}

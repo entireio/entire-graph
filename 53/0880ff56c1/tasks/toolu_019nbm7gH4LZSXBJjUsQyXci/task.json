@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_019nbm7gH4LZSXBJjUsQyXci",
+  "agent_id": "a4ce305836a699e95",
+  "task_description": "Review PR 392 agentsetup guide",
+  "token_usage": {
+    "input_tokens": 16,
+    "cache_creation_tokens": 72026,
+    "cache_read_tokens": 419756,
+    "output_tokens": 8348,
+    "api_call_count": 8
+  },
+  "started_at": "2026-11-10T10:20:57.284482+01:00",
+  "completed_at": "2026-11-10T10:22:42.267997+01:00"
+}
