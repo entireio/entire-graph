@@ -71,9 +71,9 @@ provider version, source commit, and tree are unchanged. Older cache entries are
 rebuilt rather than replayed without the new feature. Parser identity revision,
 stable symbol IDs, and the persisted diff/checkpoint `Result` shape are unchanged.
 
-## Diagnostic effect scope (schema 1.5)
+## Diagnostic effect scope (schema 1.6)
 
-Schema 1.5 adds the optional `effect_scope` field to every warning and partial
+Schema 1.6 adds the optional `effect_scope` field to every warning and partial
 failure: in snapshot headers and summaries, in search, index and relation-verb
 responses, and in the `warnings` of `diff`, `commit` and `checkpoint` results.
 The snapshot header advertises it as `partial_failure_effect_scope` in
@@ -91,7 +91,7 @@ file-confined and the record names a file. Some snapshot-scoped codes name a
 path anyway, as an example rather than a bound: the repo-ignore shortfalls,
 `W_REPO_IGNORED_SOURCE`, `W_INDEX_POLICY_CHANGED` and `W_MOVE_AMBIGUOUS`. A
 test fails when any code in the source has no classification. An absent field
-means a producer older than 1.5: read it as unknown, not as `file`.
+means a producer older than 1.6: read it as unknown, not as `file`.
 
 `effect_on_semantic_completeness` is unchanged and stays the human explanation.
 The schema minor bump selects new raw-record and search cache keys, so entries

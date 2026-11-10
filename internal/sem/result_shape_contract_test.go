@@ -894,7 +894,7 @@ func resultWireShapeDigest() string {
 func TestResultWireShapeIsBoundToTheSchemaVersion(t *testing.T) {
 	t.Parallel()
 	const (
-		pinnedSchemaVersion = "1.5"
+		pinnedSchemaVersion = "1.6"
 		pinnedShapeDigest   = "08b731a7fabb0c18"
 	)
 	if SchemaVersion != pinnedSchemaVersion || resultWireShapeDigest() != pinnedShapeDigest {

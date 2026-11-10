@@ -34,7 +34,8 @@ import (
 )
 
 const (
-	// SchemaVersion 1.5 adds the optional `dependents_evidence` field on
+	// SchemaVersion 1.6 adds the optional effect_scope on warnings and partial
+	// failures. 1.5 added the optional `dependents_evidence` field on
 	// EntityChange (persisted Result payload — diff/analyze/checkpoint), which
 	// states whether a dependents_count value is a heuristic estimate or one
 	// degraded further by a scan limit. 1.4 added optional derived relation
@@ -44,7 +45,7 @@ const (
 	// alongside boundary source locations (the `external` flag on external records
 	// and the per-symbol source-location fields). The shape is backward compatible
 	// for tolerant readers; the bump lets consumers detect the new fields.
-	SchemaVersion         = "1.5"
+	SchemaVersion         = "1.6"
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
 	// IdentityRevision is a global, opaque revision of parser identity rules across
@@ -338,7 +339,7 @@ type ProviderWarning struct {
 	FilePath             string `json:"file_path,omitempty"`
 	EffectOnCompleteness string `json:"effect_on_semantic_completeness"`
 	// EffectScope is the machine-readable bound on what this diagnostic can
-	// affect: EffectScopeFile or EffectScopeSnapshot (schema 1.5). It is
+	// affect: EffectScopeFile or EffectScopeSnapshot (schema 1.6). It is
 	// always DiagnosticEffectScope(Code, FilePath), stamped where diagnostics
 	// leave the provider (see withWarningEffectScopes).
 	EffectScope string `json:"effect_scope,omitempty"`
@@ -351,7 +352,7 @@ type PartialFailure struct {
 	FilePath             string `json:"file_path,omitempty"`
 	Language             string `json:"language,omitempty"`
 	EffectOnCompleteness string `json:"effect_on_semantic_completeness"`
-	// EffectScope: see ProviderWarning.EffectScope (schema 1.5).
+	// EffectScope: see ProviderWarning.EffectScope (schema 1.6).
 	EffectScope string `json:"effect_scope,omitempty"`
 	Detail      string `json:"detail,omitempty"`
 }

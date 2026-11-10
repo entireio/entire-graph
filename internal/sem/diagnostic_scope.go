@@ -1,7 +1,7 @@
 package sem
 
 // Effect scopes say how far the loss a diagnostic reports can reach. They are
-// published as effect_scope on every warning and partial failure (schema 1.5),
+// published as effect_scope on every warning and partial failure (schema 1.6),
 // because a consumer deciding whether to trust an answer needs that bound and
 // the only other place it lived was effect_on_semantic_completeness, which is
 // prose.
