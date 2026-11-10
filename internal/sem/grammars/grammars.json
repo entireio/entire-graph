@@ -76,8 +76,14 @@
       "tree_sitter/parser.h"
     ],
     "abi": 14,
-    "note": "this revision was chosen as upstream's last ABI-14 generation; since the parser is now regenerated (tree-sitter-cli 0.24.6 matches the vendored files), it can be upgraded to a newer revision if desired. fsharp/scanner-header.patch adds upstream's common/scanner.h as src/scanner.h and points scanner.c's include at it",
+    "note": "this revision was chosen as upstream's last ABI-14 generation; since the parser is now regenerated (tree-sitter-cli 0.24.6 matches the vendored files), it can be upgraded to a newer revision if desired. scanner.h is upstream's common/scanner.h, copied from the revision being vendored, and fsharp/scanner-header.patch points scanner.c's include at it; if upstream moves that header or changes the include, the refresh fails and local_build needs updating",
     "local_build": {
+      "copy": [
+        {
+          "from": "common/scanner.h",
+          "to": "src/scanner.h"
+        }
+      ],
       "patch": "fsharp/scanner-header.patch",
       "tree_sitter_cli": "0.24.6"
     }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -34,12 +35,24 @@ type Grammar struct {
 }
 
 // LocalBuild is how grammar-refresh turns the upstream checkout into the
-// vendored files: Patch (relative to the grammars directory) is applied
-// first, then the parser is regenerated when TreeSitterCLI is set.
+// vendored files: Copy runs first, then Patch (relative to the grammars
+// directory) is applied, then the parser is regenerated when TreeSitterCLI
+// is set.
 type LocalBuild struct {
-	Patch         string   `json:"patch,omitempty"`
-	TreeSitterCLI string   `json:"tree_sitter_cli,omitempty"`
-	GenerateArgs  []string `json:"generate_args,omitempty"`
+	Copy          []FileCopy `json:"copy,omitempty"`
+	Patch         string     `json:"patch,omitempty"`
+	TreeSitterCLI string     `json:"tree_sitter_cli,omitempty"`
+	GenerateArgs  []string   `json:"generate_args,omitempty"`
+}
+
+// FileCopy places a file the upstream repository keeps outside the grammar
+// directory where vendor looks for it. From is relative to the repository
+// root and To to the grammar directory, like a patch's paths. The file is
+// read from the checkout being vendored, never from a saved copy, so a new
+// revision brings its own version of it.
+type FileCopy struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 // abiError is a generated parser.c the go-tree-sitter runtime cannot load.
@@ -189,9 +202,20 @@ func loadManifest(path string) ([]Grammar, error) {
 		}
 		return nil, err
 	}
+	// An unknown key is an error, not something to drop: the tool rewrites
+	// the whole manifest, so a key it does not understand would be ignored on
+	// the way in and deleted on the way out.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
 	var grammars []Grammar
-	if err := json.Unmarshal(data, &grammars); err != nil {
+	if err := dec.Decode(&grammars); err != nil {
+		if strings.Contains(err.Error(), `unknown field "local_changes"`) {
+			return nil, fmt.Errorf("%s: %w; local_changes is no longer supported, so record the grammar's differences from upstream in its local_build block (copy, patch) and remove the key", path, err)
+		}
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("%s: unexpected data after the grammar list", path)
 	}
 	return grammars, nil
 }

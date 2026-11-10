@@ -14,8 +14,10 @@
 //
 // The vendored src/parser.c must be within the ABI range the go-tree-sitter
 // runtime loads (minABI-maxABI). A manifest entry's local_build block, or
-// -generate, builds it instead of copying it: the entry's patch is applied to
-// the checkout, then `npx tree-sitter-cli@<version> generate <args>` runs
+// -generate, builds it instead of copying it: the entry's copy list places
+// upstream files kept outside the grammar directory (read from the checkout,
+// so a new revision brings its own), the entry's patch is applied to the
+// checkout, then `npx tree-sitter-cli@<version> generate <args>` runs
 // (default --abi maxABI), which needs Node.js. The recorded revision
 // regenerates with the recorded version; a new revision uses @latest and
 // records the version it ran. -tree-sitter-cli pins one, which is the fix if
@@ -123,6 +125,16 @@ func refresh(o options) error {
 		}
 	}
 	generating := wantsGeneration(existing, o)
+	if build != nil {
+		for _, c := range build.Copy {
+			if !filepath.IsLocal(c.From) || !filepath.IsLocal(c.To) {
+				return fmt.Errorf("invalid copy %q -> %q for %s in %s: both must be relative paths inside the repository", c.From, c.To, lang, manifestPath)
+			}
+			if !generating && !vendoredDirectly(filepath.ToSlash(filepath.Clean(c.To))) {
+				return fmt.Errorf("copy to %s reaches the vendored grammar only through a regenerated parser; set local_build.tree_sitter_cli for %s in %s, or pass -generate", c.To, lang, manifestPath)
+			}
+		}
+	}
 	if patchFile != "" && !generating {
 		// #357 vendored a Swift parser built from a hand-applied grammar.js
 		// patch, and nothing in the tree said the two were connected. The tool
@@ -161,6 +173,13 @@ func refresh(o options) error {
 	revision, err := gitOutput(tmp, "rev-parse", "HEAD")
 	if err != nil {
 		return err
+	}
+	if build != nil {
+		for _, c := range build.Copy {
+			if err := copyUpstreamFile(tmp, subdir, c); err != nil {
+				return fmt.Errorf("%s at %s: %w", url, ref, err)
+			}
+		}
 	}
 	if patchFile != "" {
 		if err := applyPatch(tmp, subdir, patchFile); err != nil {
@@ -217,6 +236,29 @@ func git(dir string, args ...string) error {
 	cmd.Dir = dir
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// copyUpstreamFile copies c.From (relative to the checkout) to c.To (relative
+// to the grammar at subdir). It fails rather than guess when the revision no
+// longer has the source, or already ships a file at the destination: either
+// way the manifest entry no longer describes this upstream.
+func copyUpstreamFile(checkout, subdir string, c FileCopy) error {
+	src := filepath.Join(checkout, c.From)
+	if info, err := os.Lstat(src); err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("copy %s: not a regular file at this revision; update local_build.copy", c.From)
+	}
+	dst := filepath.Join(checkout, subdir, c.To)
+	if _, err := os.Lstat(dst); err == nil {
+		return fmt.Errorf("copy %s: this revision already has %s; update local_build.copy", c.From, filepath.ToSlash(filepath.Join(subdir, c.To)))
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o644)
 }
 
 // applyPatch applies patchFile to the grammar at subdir inside checkout; the
