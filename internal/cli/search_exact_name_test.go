@@ -162,10 +162,8 @@ var exactNameNonExactQueries = []string{
 // exactNameNonExactDenseQueries are swept at every budget; see the stride below.
 var exactNameNonExactDenseQueries = []string{"resolveMessage", "ResolveMessageRef", "recv3.Helper3", "UnknownIdentifier"}
 
-// exactNameNonExactSparseQueries is every query that is not densely swept, in table order. It
-// fails if a dense query is missing from the table, so the three parts always cover the table.
-func exactNameNonExactSparseQueries(t *testing.T) []string {
-	t.Helper()
+// exactNameNonExactSparseQueries is every query that is not densely swept, in table order.
+func exactNameNonExactSparseQueries() []string {
 	dense := map[string]bool{}
 	for _, query := range exactNameNonExactDenseQueries {
 		dense[query] = true
@@ -175,9 +173,6 @@ func exactNameNonExactSparseQueries(t *testing.T) []string {
 		if !dense[query] {
 			sparse = append(sparse, query)
 		}
-	}
-	if len(sparse)+len(exactNameNonExactDenseQueries) != len(exactNameNonExactQueries) {
-		t.Fatalf("the dense queries are not %d distinct entries of the query table", len(exactNameNonExactDenseQueries))
 	}
 	return sparse
 }
@@ -213,22 +208,22 @@ func exactNameNonExactSweep(t *testing.T, fixture sem.SearchResponse, queries []
 
 func TestAgentSearchNonExactQueriesAreByteIdenticalOnExactNameFixturePartialAndCaseQueries(t *testing.T) {
 	t.Parallel()
-	exactNameNonExactSweep(t, exactNameFixture("resolveMessageRef", 1, 4), exactNameNonExactDenseQueries[:2])
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchNonExactQueriesAreByteIdenticalOnExactNameFixtureQualifiedAndUnknownQueries(t *testing.T) {
 	t.Parallel()
-	exactNameNonExactSweep(t, exactNameFixture("resolveMessageRef", 1, 4), exactNameNonExactDenseQueries[2:])
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchNonExactQueriesAreByteIdenticalOnExactNameFixtureOtherQueries(t *testing.T) {
 	t.Parallel()
-	exactNameNonExactSweep(t, exactNameFixture("resolveMessageRef", 1, 4), exactNameNonExactSparseQueries(t))
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchNonExactQueriesAreByteIdenticalOnTimingFixture(t *testing.T) {
 	t.Parallel()
-	exactNameNonExactSweep(t, timingDeterminismResponse(), exactNameNonExactQueries)
+	exactNameRunSweepPart(t)
 }
 
 // LOCATED NEVER GETS WORSE. For every exact row and every budget from 1 byte to past the roomiest
@@ -237,7 +232,9 @@ func TestAgentSearchNonExactQueriesAreByteIdenticalOnTimingFixture(t *testing.T)
 // one did not (study 3's 2 KiB misses) and where it is strictly smaller, or it proves nothing.
 //
 // The five layouts are swept by three top-level tests (one exact row, three, ten) so CI can place
-// them on different shards.
+// them on different shards; exactNameSweepParts declares which test sweeps which layout.
+var exactNameNeverLocatesLessLayouts = [][]int{{1}, {2}, {10}, {2, 6, 9}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}}
+
 func exactNameNeverLocatesLessSweep(t *testing.T, layouts ...[]int) {
 	t.Helper()
 	for _, ranks := range layouts {
@@ -286,17 +283,17 @@ func exactNameNeverLocatesLessSweep(t *testing.T, layouts ...[]int) {
 
 func TestAgentSearchExactNameNeverLocatesLessOneExactRow(t *testing.T) {
 	t.Parallel()
-	exactNameNeverLocatesLessSweep(t, []int{1}, []int{2}, []int{10})
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameNeverLocatesLessThreeExactRows(t *testing.T) {
 	t.Parallel()
-	exactNameNeverLocatesLessSweep(t, []int{2, 6, 9})
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameNeverLocatesLessTenExactRows(t *testing.T) {
 	t.Parallel()
-	exactNameNeverLocatesLessSweep(t, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+	exactNameRunSweepPart(t)
 }
 
 // The exact answer is bounded however roomy the cap: one row is at most exactNameRowBytes, the

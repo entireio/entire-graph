@@ -73,21 +73,10 @@ var exactNameLangCases = []exactNameLangCase{
 		snippet: "\tRetry int `json:\"retry\"`\n}\n\nfunc retry(n int) error {\n\treturn attempt(n)\n}\n"},
 }
 
-// exactNameSweptLangs names every language that has its own top-level sweeps (the per-language
-// Anchors and NeverDropsVerify tests). A case in a language missing from this list would be swept
-// by nothing, which TestAgentSearchExactNameSweepsCoverEveryLanguageCase turns into a failure.
-var exactNameSweptLangs = []string{"go", "java", "cs", "py", "rs", "ts"}
-
-// exactNameCasesFor returns the cases of one swept language, in table order.
+// exactNameCasesFor returns the cases of one language, in table order. Which top-level test
+// sweeps which language is declared once, in exactNameSweepParts.
 func exactNameCasesFor(t *testing.T, lang string) []exactNameLangCase {
 	t.Helper()
-	swept := false
-	for _, known := range exactNameSweptLangs {
-		swept = swept || known == lang
-	}
-	if !swept {
-		t.Fatalf("language %q is not in exactNameSweptLangs", lang)
-	}
 	var cases []exactNameLangCase
 	for _, c := range exactNameLangCases {
 		if c.lang == lang {
@@ -98,29 +87,6 @@ func exactNameCasesFor(t *testing.T, lang string) []exactNameLangCase {
 		t.Fatalf("language %q has no cases; its sweep would test nothing", lang)
 	}
 	return cases
-}
-
-// The per-language sweeps partition exactNameLangCases: every case belongs to exactly one swept
-// language, and every swept language has a case.
-func TestAgentSearchExactNameSweepsCoverEveryLanguageCase(t *testing.T) {
-	t.Parallel()
-	total := 0
-	seen := map[string]bool{}
-	for _, lang := range exactNameSweptLangs {
-		if seen[lang] {
-			t.Fatalf("language %q is listed twice; its cases would be swept twice", lang)
-		}
-		seen[lang] = true
-		total += len(exactNameCasesFor(t, lang))
-	}
-	if total != len(exactNameLangCases) {
-		for _, c := range exactNameLangCases {
-			if !seen[c.lang] {
-				t.Errorf("case %s is in language %q, which no sweep covers", c.name, c.lang)
-			}
-		}
-		t.Fatalf("the per-language sweeps cover %d of %d cases", total, len(exactNameLangCases))
-	}
 }
 
 // exactNameLangResponse puts c's declaration at each of ranks (1-based) of the ten-row fixture.
@@ -164,7 +130,8 @@ func exactNameLineShown(payload, path, text string) bool {
 //
 // The sweep is dense and is the slowest thing in the package, so each language is its own
 // top-level test: together they run exactly the cases and budgets the single test ran, and CI can
-// place them on different shards. exactNameSweptLangs keeps the set complete.
+// place them on different shards. exactNameSweepParts declares the split and its guard keeps it
+// complete.
 func exactNameAnchorSweep(t *testing.T, lang string) {
 	t.Helper()
 	for _, c := range exactNameCasesFor(t, lang) {
@@ -223,32 +190,32 @@ func exactNameAnchorSweep(t *testing.T, lang string) {
 
 func TestAgentSearchExactNameAnchorsOnTheSignatureGo(t *testing.T) {
 	t.Parallel()
-	exactNameAnchorSweep(t, "go")
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameAnchorsOnTheSignatureJava(t *testing.T) {
 	t.Parallel()
-	exactNameAnchorSweep(t, "java")
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameAnchorsOnTheSignatureCSharp(t *testing.T) {
 	t.Parallel()
-	exactNameAnchorSweep(t, "cs")
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameAnchorsOnTheSignaturePython(t *testing.T) {
 	t.Parallel()
-	exactNameAnchorSweep(t, "py")
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameAnchorsOnTheSignatureRust(t *testing.T) {
 	t.Parallel()
-	exactNameAnchorSweep(t, "rs")
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameAnchorsOnTheSignatureTypeScript(t *testing.T) {
 	t.Parallel()
-	exactNameAnchorSweep(t, "ts")
+	exactNameRunSweepPart(t)
 }
 
 // A symbol whose snippet never names it within the bounded search (an index span that starts on
@@ -403,47 +370,47 @@ func exactNameVerifySweepLang(t *testing.T, lang string) {
 
 func TestAgentSearchExactNameNeverDropsVerifyTenExactRows(t *testing.T) {
 	t.Parallel()
-	exactNameVerifySweep(t, "ten-exact-rows", exactNameFixture("resolveMessageRef", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameNeverDropsVerifyLongBodiesOddBudgets(t *testing.T) {
 	t.Parallel()
-	exactNameVerifySweepBudgets(t, "long-bodies", exactNameFixtureBody("resolveMessageRef", 40, 2, 6, 9), 1, 2)
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameNeverDropsVerifyLongBodiesEvenBudgets(t *testing.T) {
 	t.Parallel()
-	exactNameVerifySweepBudgets(t, "long-bodies", exactNameFixtureBody("resolveMessageRef", 40, 2, 6, 9), 0, 2)
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameNeverDropsVerifyGo(t *testing.T) {
 	t.Parallel()
-	exactNameVerifySweepLang(t, "go")
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameNeverDropsVerifyJava(t *testing.T) {
 	t.Parallel()
-	exactNameVerifySweepLang(t, "java")
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameNeverDropsVerifyCSharp(t *testing.T) {
 	t.Parallel()
-	exactNameVerifySweepLang(t, "cs")
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameNeverDropsVerifyPython(t *testing.T) {
 	t.Parallel()
-	exactNameVerifySweepLang(t, "py")
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameNeverDropsVerifyRust(t *testing.T) {
 	t.Parallel()
-	exactNameVerifySweepLang(t, "rs")
+	exactNameRunSweepPart(t)
 }
 
 func TestAgentSearchExactNameNeverDropsVerifyTypeScript(t *testing.T) {
 	t.Parallel()
-	exactNameVerifySweepLang(t, "ts")
+	exactNameRunSweepPart(t)
 }
 
 // THE OMISSION LINE SAYS WHAT WAS LEFT OUT, AND ONLY THAT.
