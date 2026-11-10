@@ -294,8 +294,13 @@ class FakeDarwinGo:
         self.tool_directory = tool_directory
         self.environment = environment
         self.test_calls = []
+        self.list_calls = []
+        self.listing = b"TestA\nTestB\nBenchmarkC\n"
 
     def __call__(self, argv, **kwargs):
+        if argv[1:] == ["-test.paniconexit0", "-test.list=."]:
+            self.list_calls.append((list(argv), dict(kwargs)))
+            return subprocess.CompletedProcess(argv, 0, self.listing, b"")
         if argv[:1] == ["git"] and "rev-parse" in argv:
             return subprocess.CompletedProcess(argv, 0, REPOSITORY_SHA + "\n", "")
         if argv[:1] == ["git"] and "status" in argv:

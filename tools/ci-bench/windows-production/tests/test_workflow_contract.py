@@ -349,7 +349,9 @@ def aggregate_job(prefix, target):
         f'  --bundle "${{{{ runner.temp }}}}/{prefix}-test-bundle" \\\n'
         f'  --shard-results "${{{{ runner.temp }}}}/{prefix}-test-shards" \\\n'
         f'  --other-results "${{{{ runner.temp }}}}/{prefix}-test-other" \\\n'
-        f'  --output "${{{{ runner.temp }}}}/{prefix}-test-verification.json"\n'
+        f'  --output "${{{{ runner.temp }}}}/{prefix}-test-verification.json" \\\n'
+        # The one input that is not evidence: the commit this run is for.
+        "  --expected-repository-sha '${{ github.sha }}'\n"
     )
     report = upload(
         "Upload verification report",
@@ -464,6 +466,13 @@ def differences(expected, actual, where):
     return []
 
 
+EXPECTED_MUTATION_CHECK_JOB = {
+    "runs-on": AGGREGATE_RUNNER,
+    "timeout-minutes": 15,
+    "steps": [checkout(), setup_python(), {"run": f"python -B {H}/mutation_check.py"}],
+}
+
+
 def contract_failures(text):
     """Every way the workflow text departs from the contract; empty when it holds."""
     try:
@@ -491,6 +500,12 @@ def contract_failures(text):
             failures.append(f"jobs.{name}: missing")
         else:
             failures += differences(job, jobs[name], f"jobs.{name}")
+    if "harness-mutation-check" not in jobs:
+        failures.append("jobs.harness-mutation-check: missing")
+    else:
+        failures += differences(
+            EXPECTED_MUTATION_CHECK_JOB, jobs["harness-mutation-check"], "jobs.harness-mutation-check"
+        )
     if "test" not in jobs:
         failures.append("jobs.test: missing")
     else:
@@ -545,7 +560,7 @@ def per_target_mutations(prefix):
     target = TARGETS[prefix]
     aggregate, prepare, shards, other = (f"{prefix}-test{suffix}" for suffix in ("", "-prepare", "-shards", "-other"))
     planned = f"        if: ${{{{ always() && needs.{prefix}-test-prepare.result == 'success' }}}}\n"
-    verify_tail = f'            --output "${{{{ runner.temp }}}}/{prefix}-test-verification.json"\n'
+    verify_tail = "            --expected-repository-sha '${{ github.sha }}'\n"
     first_result = f'"${target["components"][0].upper()}_RESULT" '
     last_component = target["components"][-1]
     # The leading newline anchors the job-level key, not a step's deeper `if`.
@@ -588,6 +603,11 @@ def per_target_mutations(prefix):
     yield "shard job timeout raised", replace_in_job(shards, "    timeout-minutes: 35\n", "    timeout-minutes: 105\n")
     yield "verifier escapes with || true", replace_in_job(
         aggregate, verify_tail, verify_tail.rstrip("\n") + " || true\n"
+    )
+    yield "verifier loses its commit anchor", replace_in_job(
+        aggregate,
+        f'--output "${{{{ runner.temp }}}}/{prefix}-test-verification.json" \\\n' + verify_tail,
+        f'--output "${{{{ runner.temp }}}}/{prefix}-test-verification.json"\n',
     )
     yield "verifier deleted", replace_in_job(
         aggregate,
@@ -666,6 +686,10 @@ def workflow_mutations():
             "\n  bm25-adapter:\n",
             "\n  macos-test-verify:\n    runs-on: depot-ubuntu-24.04-4\n    steps:\n      - run: exit 0\n\n  bm25-adapter:\n",
         )),
+        ("harness mutation check may fail", replace_once(
+            "      - run: python -B tools/ci-bench/windows-production/mutation_check.py\n",
+            "      - run: python -B tools/ci-bench/windows-production/mutation_check.py || true\n",
+        )),
         ("an anchor the reader cannot parse", replace_once("permissions:\n", "permissions: &p\n")),
     ]
     return mutations
@@ -682,7 +706,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(contract_failures(self.text), [])
 
     def test_every_fail_open_edit_is_reported(self):
-        self.assertGreater(len(MUTATIONS), 60)
+        self.assertGreater(len(MUTATIONS), 70)
         for label, mutate in MUTATIONS:
             with self.subTest(mutation=label):
                 mutated = mutate(self.text)

@@ -384,7 +384,8 @@ jobs:
             --bundle "${{ runner.temp }}/windows-test-bundle" \
             --shard-results "${{ runner.temp }}/windows-test-shards" \
             --other-results "${{ runner.temp }}/windows-test-other" \
-            --output "${{ runner.temp }}/windows-test-verification.json"
+            --output "${{ runner.temp }}/windows-test-verification.json" \
+            --expected-repository-sha '${{ github.sha }}'
       - name: Upload verification report
         if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -652,7 +653,8 @@ jobs:
             --bundle "${{ runner.temp }}/macos-test-bundle" \
             --shard-results "${{ runner.temp }}/macos-test-shards" \
             --other-results "${{ runner.temp }}/macos-test-other" \
-            --output "${{ runner.temp }}/macos-test-verification.json"
+            --output "${{ runner.temp }}/macos-test-verification.json" \
+            --expected-repository-sha '${{ github.sha }}'
       - name: Upload verification report
         if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -674,6 +676,23 @@ jobs:
               exit 1
             fi
           done
+
+  # The sharding harness is what decides that every test ran. This applies each
+  # listed fail-open edit of it (accept a root that never ran, skip a hash
+  # check, drop an anchor from a run expression, ...) to a copy and requires the
+  # harness unit tests to fail, so a guarantee cannot silently lose its test. It
+  # takes about a minute and nothing waits for it.
+  harness-mutation-check:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -B tools/ci-bench/windows-production/mutation_check.py
 
   bm25-adapter:
     runs-on: depot-ubuntu-24.04-4

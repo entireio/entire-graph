@@ -198,6 +198,14 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
     target_environment = checked_target_environment(go, repository, environment, target)
     if target_environment != plan.get("targetEnvironment"):
         raise RuntimeError("runner target Go environment differs from the plan")
+    # This job's own view of the target's package set. The packages it runs come
+    # from the bundle; recording what `go list` says here lets the verifier
+    # notice a package the compile-and-plan job never inventoried.
+    listed_packages = sorted(
+        line.strip()
+        for line in checked_output([go, "list", "./..."], repository, environment, "go list ./...").splitlines()
+        if line.strip()
+    )
     require_tracked_worktree_clean(repository, environment, "tracked worktree precondition")
 
     metadata.update(
@@ -209,6 +217,7 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
             "planSha256": sha256_file(plan_path),
             "packageInventorySha256": sha256_file(package_path),
             "expectedPackages": packages,
+            "listedPackages": listed_packages,
             "packageCount": len(packages),
             "timeout": timeout,
             "shuffle": "off",

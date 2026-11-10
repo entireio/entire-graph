@@ -155,7 +155,7 @@ def classify_listing(lines: Iterable[str], label: str) -> tuple[list[dict[str, s
             benchmarks.append(name)
         else:
             kind = next((prefix for prefix in ROOT_PREFIXES if name.startswith(prefix)), None)
-            if kind is None or any(character.isspace() for character in name):
+            if kind is None or any(character.isspace() for character in name) or "/" in name:
                 unexpected.append(name)
             else:
                 roots.append({"name": name, "kind": kind})

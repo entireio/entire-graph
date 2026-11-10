@@ -61,6 +61,45 @@ aggregate job. Measured with twelve shards per target:
   The cache is content-addressed, so a stale or missing entry costs time, never
   correctness.
 
+## What the verifier trusts
+
+The verifier is told one thing that is not evidence: the commit CI ran for
+(`--expected-repository-sha`, `github.sha` in the workflow). Evidence rewritten
+consistently for another commit is refused.
+
+The bundle's inventory is not the only witness of what exists to be run. Each
+shard asks its own copy of each test binary for `-test.list` and records the
+names; the verifier requires every shard's listing to name exactly the plan's
+roots. The non-heavy job records its own `go list ./...`; the verifier requires
+it to equal the bundled package inventory. A root or package that
+compile-and-plan failed to inventory therefore fails verification even though
+the bundle agrees with itself. What remains trusted is `go list`, the test
+binary's own `-test.list`, and that the binaries (pinned by SHA-256 from
+compile-and-plan to every shard) were built from the checked-out commit.
+
+A run expression is checked the way `go test` applies it: `-test.run` searches
+each name, so only the expression's own `^` and `$` stop `TestA` from also
+selecting `TestAB`.
+
+## Mutation check
+
+`mutation_check.py` holds a list of fail-open edits of the harness: accept a
+root that never ran, skip a hash comparison, ignore an exit code, drop an
+anchor from a run expression, and so on. It applies each to a temporary copy,
+runs the harness unit tests against it, and fails unless every edit is caught.
+An edit that survives means a guarantee has no test; an edit whose anchor text
+is gone means the list is stale. It runs in CI as `harness-mutation-check`
+(about a minute, off the critical path) and locally with
+
+```sh
+python3 -B tools/ci-bench/windows-production/mutation_check.py
+```
+
+`tests/test_verifier_guarantees.py` and `tests/test_runner_guarantees.py` hold
+one test per guarantee, each on a tiny synthetic bundle and for both targets:
+start from evidence that verifies, change one thing, and require the verifier
+or runner to name it.
+
 ## Workflow contract
 
 `tests/test_workflow_contract.py` parses `.github/workflows/test.yml` and

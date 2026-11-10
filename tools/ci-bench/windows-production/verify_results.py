@@ -257,7 +257,14 @@ def validate_plan(
             except re.error as error:
                 failures.append(f"plan shard {position} {package} has invalid regex: {error}")
                 continue
-            selected = {name for name in root_details[package] if compiled.fullmatch(name)}
+            # Selection as `go test` performs it: a search, anchored only by the expression.
+            try:
+                selected = {
+                    name for name in root_details[package] if plan_shards.run_regex_selects(expression, name)
+                }
+            except ValueError as error:
+                failures.append(f"plan shard {position} {package} has an unusable regex: {error}")
+                continue
             if selected != set(names):
                 regex_mismatches.append(f"shard {position} {package}")
         if shard.get("rootCount") != counted_roots:
@@ -391,6 +398,18 @@ def verify_shards(
                 failures.append(f"shard {index} {package} binary hash differs from plan")
             if invocation.get("rootCount") != len(expected.get("roots", [])):
                 failures.append(f"shard {index} {package} root count differs from plan")
+            # The shard's own listing of its binary must name exactly the roots the
+            # plan was made from: every runnable root, and nothing but benchmarks besides.
+            listed = invocation.get("listedNames")
+            if not isinstance(listed, list) or any(not isinstance(name, str) for name in listed):
+                failures.append(f"shard {index} {package} omitted its own listing of the compiled binary")
+            else:
+                runnable = {name for name in listed if name.startswith(plan_shards.ROOT_KINDS)}
+                stray = [name for name in listed if not name.startswith((*plan_shards.ROOT_KINDS, "Benchmark"))]
+                if runnable != set(root_details.get(package, {})) or stray or len(listed) != len(set(listed)):
+                    failures.append(
+                        f"shard {index} {package} binary lists a different root set than the plan"
+                    )
             if invocation.get("workingDirectoryRelative") != expected.get(
                 "packageDirectoryRelative"
             ):
@@ -571,6 +590,9 @@ def verify_other(
     expected_packages = sorted(
         row["importPath"] for row in package_inventory["packages"] if not row["heavy"]
     )
+    all_packages = sorted(row["importPath"] for row in package_inventory["packages"])
+    if metadata.get("listedPackages") != all_packages:
+        failures.append("non-heavy job's own go list differs from the bundled package inventory")
     if metadata.get("expectedPackages") != expected_packages:
         failures.append(
             f"non-heavy metadata package list differs from target-{target.host_label} inventory"
@@ -666,6 +688,17 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     plan = read_json(plan_path)
     if not isinstance(plan, dict):
         raise ValueError("plan is not an object")
+    # The one fact that does not come from the evidence: the commit CI ran for.
+    # Everything else is compared with the plan, so evidence rewritten
+    # consistently for another commit is refused here.
+    expected_sha = getattr(args, "expected_repository_sha", None)
+    if not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+        raise ValueError("expected repository SHA must be 40 lowercase hexadecimal characters")
+    if plan.get("repositorySha") != expected_sha:
+        failures.append("plan repository SHA differs from the expected commit")
+    for inventory in inventories:
+        if inventory["repositorySha"] != expected_sha:
+            failures.append(f"compiled inventory of {inventory['importPath']} is for another commit")
     settings = plan_shards.load_settings(settings_path)
     if plan_shards.settings_target(settings) is not target:
         failures.append(f"bundled settings target is not exactly {target.description}")
@@ -817,6 +850,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--shard-results", type=Path, required=True)
     parser.add_argument("--other-results", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--expected-repository-sha", required=True)
     parser.add_argument("--target", default=targets.DEFAULT.name, choices=sorted(targets.TARGETS))
     return parser.parse_args(argv)
 

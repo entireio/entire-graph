@@ -178,6 +178,8 @@ class VerifyResultsTests(unittest.TestCase):
                         "binaryName": assignment["binaryName"],
                         "binarySha256": assignment["binarySha256"],
                         "rootCount": len(assignment["roots"]),
+                        # What the shard's own copy of the binary listed.
+                        "listedNames": ["BenchmarkNo", "ExampleB", "FuzzC", "TestA"],
                         target.command_line_metric: 1000,
                         **argument_area,
                         "exitCode": 0,
@@ -240,6 +242,8 @@ class VerifyResultsTests(unittest.TestCase):
                 "planSha256": plan_hash,
                 "packageInventorySha256": package_hash,
                 "expectedPackages": ["example/no-tests", "example/other"],
+                # What `go list ./...` said in the non-heavy job itself.
+                "listedPackages": ["example/heavy", "example/no-tests", "example/other"],
                 "packageCount": 2,
                 "timeout": "30m",
                 "shuffle": "off",
@@ -261,6 +265,8 @@ class VerifyResultsTests(unittest.TestCase):
             str(other_root),
             "--output",
             str(output),
+            "--expected-repository-sha",
+            repository_sha,
         ]
         if not windows:
             arguments += ["--target", target.name]

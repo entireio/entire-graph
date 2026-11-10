@@ -328,6 +328,7 @@ def load_inventories(
                 not isinstance(name, str)
                 or not name
                 or any(character.isspace() for character in name)
+                or "/" in name
                 or kind not in ROOT_KINDS
                 or _root_kind(name) != kind
                 or name in names
@@ -411,10 +412,25 @@ def _render_trie(node: _Trie) -> str:
     return "(" + body + ")?" if node.terminal else body
 
 
+def run_regex_selects(expression: str, name: str) -> bool:
+    """Whether `-test.run=expression` selects the top-level root `name`.
+
+    Go splits the expression on `/` into one pattern per subtest level and
+    SEARCHES each level's name for its pattern; nothing anchors it unless the
+    expression does. A plan expression has a single level, so a `/` in it is
+    refused rather than interpreted.
+    """
+    if "/" in expression:
+        raise ValueError(f"run expression addresses subtests: {expression!r}")
+    return re.search(expression, name) is not None
+
+
 def compressed_run_regex(names: Iterable[str]) -> str:
     ordered = sorted(set(names))
     if not ordered:
         raise ValueError("cannot create a run regex for no roots")
+    if any("/" in name for name in ordered):
+        raise ValueError("a root name contains '/', which -test.run reads as a subtest separator")
     root = _Trie()
     for name in ordered:
         node = root

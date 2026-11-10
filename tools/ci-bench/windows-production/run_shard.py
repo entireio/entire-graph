@@ -181,6 +181,35 @@ def ensure_executable(binary: Path, target: targets.Target) -> bool:
     return True
 
 
+def list_binary_names(
+    binary: Path, package_directory: Path, environment: dict[str, str], package: str
+) -> list[str]:
+    """Everything the compiled test binary itself lists, as this runner sees it.
+
+    The plan was made from a listing taken in the compile-and-plan job. Each
+    shard asks its copy of the binary again, with the same launch contract,
+    and records the raw names; the verifier requires every shard's listing to
+    name exactly the plan's roots, so the bundle's inventory is no longer the
+    only witness of what the binary contains.
+    """
+    completed = subprocess.run(
+        [str(binary), "-test.paniconexit0", "-test.list=."],
+        cwd=package_directory,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0 or completed.stderr:
+        raise RuntimeError(
+            f"listing the compiled roots of {package} exited {completed.returncode} or wrote to stderr"
+        )
+    names = [line.strip() for line in completed.stdout.decode("utf-8").splitlines() if line.strip()]
+    if len(names) != len(set(names)):
+        raise RuntimeError(f"the compiled binary of {package} lists a root more than once")
+    return sorted(names)
+
+
 def shard_command_arguments(
     package: str,
     binary: Path,
@@ -401,6 +430,7 @@ def run(
                 target, [go, *command_arguments], direct_environment, f"launch of {package}"
             )
             executable_bit_restored = ensure_executable(binary, target)
+            listed_names = list_binary_names(binary, package_directory, direct_environment, package)
             prefix = f"shard {args.shard_index} assignment {position + 1}/{len(assignments)}"
             detail = f"package={json.dumps(package)} roots={len(roots)}"
             print(f"{prefix} start {detail}", file=sys.stderr, flush=True)
@@ -450,6 +480,7 @@ def run(
                 "binaryName": binary_name,
                 "binarySha256": actual_binary_hash,
                 "rootCount": len(roots),
+                "listedNames": listed_names,
                 target.command_line_metric: command_units,
                 "durationSeconds": round(duration, 6),
                 "exitCode": completed.returncode,
