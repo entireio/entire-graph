@@ -55,8 +55,33 @@ aggregate job. Measured with twelve shards per target:
   differ in speed by up to forty percent from one job to the next, which is
   what is left of the spread between shards.
 - compile-and-plan is fast only while its Go build cache holds compiled test
-  packages. On macOS that job has a cache key of its own for that reason
-  (22 s to compile instead of 117 s).
+  packages (22 s to compile on macOS instead of 117 s). That job therefore
+  keeps a build cache of its own: every push to main saves a fresh entry under
+  its commit, every run restores the newest, and pull requests only restore.
+  The cache is content-addressed, so a stale or missing entry costs time, never
+  correctness.
+
+## Workflow contract
+
+`tests/test_workflow_contract.py` parses `.github/workflows/test.yml` and
+compares every job on both targets' test path, key by key and step by step,
+with the jobs it builds from one table. An edit that could let a required
+check pass without the tests having passed (an aggregate that no longer runs
+`if: always()`, a `continue-on-error`, a disabling `if`, an `|| true`, a
+hardcoded shard matrix, a job dropped from `needs`, a removed trigger) changes
+the parsed structure and fails the test; its `MUTATIONS` table applies each
+such edit to the real file and requires that it is reported. Changing the test
+path means changing that table in the same commit.
+
+CI runners have no YAML library, so `tests/workflow_yaml.py` reads the subset
+of YAML the workflow is written in and refuses anything else with the line
+number. Where Ruby is installed, a test checks that it parses the workflow
+exactly as Ruby's YAML parser does.
+
+Job timeouts follow from the harness's 30-minute package timeout: a shard or
+the non-heavy job is cut at 35 minutes, so a hung test is normally reported by
+the test binary's own timeout and goroutine dump, and a hang cannot hold a
+required check much longer than that.
 
 ## Semantics
 

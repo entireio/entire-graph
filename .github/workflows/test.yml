@@ -9,6 +9,15 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that pull request's superseded run; its
+# checks belong to the old head commit, so they can never read as passing on the
+# new one. Every other run (a push to main, a manual dispatch) gets a group of
+# its own and always completes: a shared group would let a newer run on main
+# replace an older one that is still waiting.
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   locate-benchmark-guards:
     runs-on: depot-ubuntu-24.04-4
@@ -117,20 +126,65 @@ jobs:
       # Keep the named package budget consistent with the shard policy.
       - run: go test -timeout 30m ./...
 
+  # Job timeouts on the sharded targets (Windows here, macOS below) bound how
+  # long a hang can hold a required check without ever killing a slow but
+  # passing run:
+  #   - A shard launches its packages' test binaries one after another, each
+  #     with the harness's 30-minute `-test.timeout`, the same package budget as
+  #     `go test -timeout 30m ./...`. A hung test is therefore reported by the
+  #     test binary itself, with its goroutine dump, after 30 minutes. The job
+  #     timeout of 35 leaves room for setup and the packages that ran first, so
+  #     the dump is normally what fails the shard, and a second hanging package
+  #     cannot add another 30 minutes. A whole shard takes two to four minutes
+  #     today, so 35 is about ten times the slowest one measured.
+  #   - The non-heavy job runs `go test` with the same 30-minute budget for
+  #     packages that take under a minute, so it gets the same 35.
+  #   - compile-and-plan and vet have no package budget; 15 and 10 minutes are
+  #     several times their cold-cache worst case (about four and three).
   windows-test-prepare:
     name: test (windows-latest) / compile and plan
     runs-on: depot-windows-2025-8
-    timeout-minutes: 30
+    timeout-minutes: 15
     outputs:
       shard-matrix: ${{ steps.shard-matrix.outputs.value }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      # Build cache for this job only. setup-go's own cache is keyed on go.sum
+      # alone, is saved once by whichever job finishes first, and is never
+      # refreshed, so it drifts away from the code and may never have held
+      # compiled test packages. Instead: every push to main saves a fresh entry
+      # under its commit, and every run restores the newest one, falling back to
+      # an older go.sum, then to any entry of this job, then to a setup-go entry
+      # (same two directories, so the archive is compatible; that key format is
+      # setup-go's, and if it changes this merely compiles cold). Pull requests
+      # only restore, so they do not pile up entries. Go's build cache is
+      # content-addressed: a stale or missing entry costs time, never
+      # correctness.
       - uses: actions/setup-go@v7.0.0
+        id: setup-go
         with:
           go-version: "1.27.x"
-          cache-dependency-path: go.sum
+          cache: false
+      - name: Locate the Go caches
+        id: go-caches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "modcache=$(go env GOMODCACHE)" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "buildcache=$(go env GOCACHE)" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Restore the newest compile-and-plan build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go-caches.outputs.modcache }}
+            ${{ steps.go-caches.outputs.buildcache }}
+          key: test-prepare-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            test-prepare-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+            test-prepare-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-
+            setup-go-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
@@ -169,12 +223,22 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
+      # Saved after the bundle is uploaded. Shards wait for this job to finish, so
+      # on main this costs them the few seconds the save takes.
+      - name: Save the build cache for later runs
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go-caches.outputs.modcache }}
+            ${{ steps.go-caches.outputs.buildcache }}
+          key: test-prepare-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
   windows-test-shards:
     name: test (windows-latest) / shard ${{ matrix.shard }}
     needs: windows-test-prepare
     runs-on: depot-windows-2025-8
-    timeout-minutes: 105
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       max-parallel: 16
@@ -191,7 +255,7 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
@@ -222,7 +286,7 @@ jobs:
     name: test (windows-latest) / non-heavy packages
     needs: windows-test-prepare
     runs-on: depot-windows-2025-4
-    timeout-minutes: 40
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -234,7 +298,7 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
@@ -267,7 +331,7 @@ jobs:
   windows-test-vet:
     name: test (windows-latest) / vet
     runs-on: depot-windows-2025-4
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -298,17 +362,17 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
         with:
           pattern: windows-test-shard-*
           path: ${{ runner.temp }}/windows-test-shards
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
         with:
           name: windows-test-other
@@ -359,23 +423,46 @@ jobs:
   macos-test-prepare:
     name: test (macos-latest) / compile and plan
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     outputs:
       shard-matrix: ${{ steps.shard-matrix.outputs.value }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      # setup-go keys its build cache on these files and the first job to finish
-      # saves it. Naming the settings file as well gives this job a key no other
-      # job shares, so the cache it restores holds compiled test packages rather
-      # than whatever a build-only job saved.
+      # Build cache for this job only. setup-go's own cache is keyed on go.sum
+      # alone, is saved once by whichever job finishes first, and is never
+      # refreshed, so it drifts away from the code and may never have held
+      # compiled test packages. Instead: every push to main saves a fresh entry
+      # under its commit, and every run restores the newest one, falling back to
+      # an older go.sum, then to any entry of this job, then to a setup-go entry
+      # (same two directories, so the archive is compatible; that key format is
+      # setup-go's, and if it changes this merely compiles cold). Pull requests
+      # only restore, so they do not pile up entries. Go's build cache is
+      # content-addressed: a stale or missing entry costs time, never
+      # correctness.
       - uses: actions/setup-go@v7.0.0
+        id: setup-go
         with:
           go-version: "1.27.x"
-          cache-dependency-path: |
-            go.sum
-            tools/ci-bench/windows-production/settings.darwin-arm64.json
+          cache: false
+      - name: Locate the Go caches
+        id: go-caches
+        shell: bash
+        run: |
+          echo "modcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "buildcache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+      - name: Restore the newest compile-and-plan build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go-caches.outputs.modcache }}
+            ${{ steps.go-caches.outputs.buildcache }}
+          key: test-prepare-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            test-prepare-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+            test-prepare-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-
+            setup-go-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
@@ -414,12 +501,22 @@ jobs:
           if-no-files-found: error
           compression-level: 1
           retention-days: 3
+      # Saved after the bundle is uploaded. Shards wait for this job to finish, so
+      # on main this costs them the few seconds the save takes.
+      - name: Save the build cache for later runs
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go-caches.outputs.modcache }}
+            ${{ steps.go-caches.outputs.buildcache }}
+          key: test-prepare-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
   macos-test-shards:
     name: test (macos-latest) / shard ${{ matrix.shard }}
     needs: macos-test-prepare
     runs-on: macos-latest
-    timeout-minutes: 105
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       max-parallel: 12
@@ -436,7 +533,7 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-test-bundle
           path: ${{ runner.temp }}/macos-test-bundle
@@ -463,7 +560,7 @@ jobs:
     name: test (macos-latest) / non-heavy packages and vet
     needs: macos-test-prepare
     runs-on: macos-latest
-    timeout-minutes: 40
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -475,7 +572,7 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-test-bundle
           path: ${{ runner.temp }}/macos-test-bundle
@@ -532,17 +629,17 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
         with:
           name: macos-test-bundle
           path: ${{ runner.temp }}/macos-test-bundle
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
         with:
           pattern: macos-test-shard-*
           path: ${{ runner.temp }}/macos-test-shards
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
         with:
           name: macos-test-other
