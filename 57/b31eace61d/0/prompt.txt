@@ -1,0 +1,12 @@
+<task-notification>
+<task-id>a8385096397520a56</task-id>
+<tool-use-id>toolu_01EsKRw6Z5Bf3xNvonefGPbU</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-m1-Projects-entire-graph/92bc2a98-aded-4d3d-a987-db22b9a68b40/tasks/a8385096397520a56.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix PRs 392 and 390" is waiting on its own background work</summary>
+<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>
+<result>This agent has not reported yet: it is waiting on its own background work and will deliver its report through SubagentHandback when that finishes.
+</result>
+<usage><subagent_tokens>72081</subagent_tokens><tool_uses>24</tool_uses><duration_ms>291561</duration_ms></usage>
+<worktree><worktreePath>/Users/m1/Projects/entire-graph/.claude/worktrees/agent-a8385096397520a56</worktreePath><worktreeBranch>worktree-agent-a8385096397520a56</worktreeBranch></worktree>
+</task-notification>
