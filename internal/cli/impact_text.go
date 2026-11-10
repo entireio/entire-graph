@@ -85,6 +85,12 @@ func writeImpactOverview(out io.Writer, response impactResponse) {
 	if note := valueReferenceNote(response.Warnings, focus.Name); note != "" {
 		fmt.Fprintf(out, "- %s\n", note)
 	}
+	// Same reason as the note above: it qualifies the counts beside them and sits
+	// above every section, so the bounded renderer's caps reach it last. The
+	// requires_verification token is what consumers match, so it stays verbatim.
+	if response.EvidenceState == sem.EvidenceRequiresVerification && response.EvidenceNote != "" {
+		fmt.Fprintf(out, "- Evidence: requires_verification -- %s\n", response.EvidenceNote)
+	}
 	for _, coupling := range []struct {
 		count int
 		name  string

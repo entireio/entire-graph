@@ -12,6 +12,9 @@ import (
 	"strings"
 )
 
+// The ABI range the go-tree-sitter runtime loads. maxABI is also what
+// grammars are generated for. TestABIRangeMatchesRuntime fails when a
+// go-tree-sitter upgrade changes the range, so this is the one place to edit.
 const (
 	minABI = 13
 	maxABI = 14
@@ -28,8 +31,25 @@ type Grammar struct {
 	ABI       int      `json:"abi"`
 	// LocalChanges marks vendored files that differ from upstream at Revision
 	// in ways a refresh would discard. Note says how to reapply them.
-	LocalChanges bool   `json:"local_changes,omitempty"`
-	Note         string `json:"note,omitempty"`
+	LocalChanges bool        `json:"local_changes,omitempty"`
+	Note         string      `json:"note,omitempty"`
+	LocalBuild   *LocalBuild `json:"local_build,omitempty"`
+}
+
+// LocalBuild is how grammar-refresh turns the upstream checkout into the
+// vendored files: Patch (relative to the grammars directory) is applied
+// first, then the parser is regenerated when TreeSitterCLI is set.
+type LocalBuild struct {
+	Patch         string   `json:"patch,omitempty"`
+	TreeSitterCLI string   `json:"tree_sitter_cli,omitempty"`
+	GenerateArgs  []string `json:"generate_args,omitempty"`
+}
+
+// abiError is a generated parser.c the go-tree-sitter runtime cannot load.
+type abiError struct{ abi int }
+
+func (e abiError) Error() string {
+	return fmt.Sprintf("grammar is ABI %d, but the go-tree-sitter runtime accepts ABI %d-%d; regenerate it with `tree-sitter generate --abi %d` and vendor the result", e.abi, minABI, maxABI, maxABI)
 }
 
 var languageVersionPattern = regexp.MustCompile(`(?m)^#define LANGUAGE_VERSION (\d+)\s*$`)
@@ -59,7 +79,7 @@ func vendor(repoRoot, subdir, destDir string) ([]string, int, error) {
 		return nil, 0, err
 	}
 	if abi < minABI || abi > maxABI {
-		return nil, 0, fmt.Errorf("grammar is ABI %d, but the go-tree-sitter runtime accepts ABI %d-%d; regenerate it with `tree-sitter generate --abi 14` and vendor the result", abi, minABI, maxABI)
+		return nil, 0, abiError{abi}
 	}
 
 	sources := map[string]string{"parser.c": filepath.Join(grammarRoot, "src", "parser.c")}

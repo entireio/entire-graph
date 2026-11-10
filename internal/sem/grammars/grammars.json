@@ -26,7 +26,10 @@
       "tree_sitter/parser.h"
     ],
     "abi": 14,
-    "note": "upstream v0.23.5 is ABI 15; parser.c was regenerated with tree-sitter-cli 0.24.7 --abi 14, so grammar-refresh refuses this ref"
+    "note": "upstream v0.23.5 is ABI 15, so parser.c is regenerated at ABI 14",
+    "local_build": {
+      "tree_sitter_cli": "0.24.7"
+    }
   },
   {
     "language": "dart",
@@ -166,8 +169,11 @@
       "tree_sitter/parser.h"
     ],
     "abi": 14,
-    "local_changes": true,
-    "note": "grammar.js and src/scanner.c patched with swift/compatibility.patch; parser.c regenerated with tree-sitter-cli 0.24.7 --abi 14. See swift/README.md; a verbatim refresh must reapply this patch."
+    "note": "swift/compatibility.patch preserves syntax that regressed in the 0.7.4 upgrade; see swift/README.md",
+    "local_build": {
+      "patch": "swift/compatibility.patch",
+      "tree_sitter_cli": "0.24.7"
+    }
   },
   {
     "language": "zig",
