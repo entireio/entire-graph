@@ -177,7 +177,7 @@ jobs:
     timeout-minutes: 105
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 12
       matrix:
         shard: ${{ fromJSON(needs.windows-test-prepare.outputs.shard-matrix) }}
     steps:
@@ -278,32 +278,43 @@ jobs:
           cache-dependency-path: go.sum
       - run: go vet ./...
 
-  windows-test-verify:
-    name: test (windows-latest) / coverage and integrity
-    needs: [windows-test-prepare, windows-test-shards, windows-test-other]
-    if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
+  # The aggregate keeps the former matrix check identity: "test (windows-latest)" is a
+  # required check on main. It also runs the verifier itself rather than waiting
+  # for a separate verify job, which saves one runner start at the end of the
+  # critical path. The verifier runs whenever the plan exists, so a failed shard
+  # still gets a coverage report; the last step then requires every component.
+  windows-test:
+    name: test (windows-latest)
+    needs:
+      [windows-test-prepare, windows-test-shards, windows-test-other, windows-test-vet]
+    if: always()
     runs-on: depot-ubuntu-24.04-4
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+          sparse-checkout: tools/ci-bench/windows-production
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@v8
+        if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
       - uses: actions/download-artifact@v8
+        if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
         with:
           pattern: windows-test-shard-*
           path: ${{ runner.temp }}/windows-test-shards
       - uses: actions/download-artifact@v8
+        if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
         with:
           name: windows-test-other
           path: ${{ runner.temp }}/windows-test-other
       - name: Verify exact root, package, process, and artifact coverage
+        if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
         run: |
           python -B tools/ci-bench/windows-production/verify_results.py \
             --bundle "${{ runner.temp }}/windows-test-bundle" \
@@ -311,31 +322,22 @@ jobs:
             --other-results "${{ runner.temp }}/windows-test-other" \
             --output "${{ runner.temp }}/windows-test-verification.json"
       - name: Upload verification report
-        if: always()
+        if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-test-verification
           path: ${{ runner.temp }}/windows-test-verification.json
           if-no-files-found: error
           retention-days: 3
-
-  # Keep the former matrix check identity stable for required-check migration.
-  windows-test:
-    name: test (windows-latest)
-    needs:
-      [windows-test-prepare, windows-test-shards, windows-test-other, windows-test-vet, windows-test-verify]
-    if: always()
-    runs-on: depot-ubuntu-24.04-4
-    steps:
       - name: Require every Windows test component
+        if: always()
         env:
           PREPARE_RESULT: ${{ needs.windows-test-prepare.result }}
           SHARDS_RESULT: ${{ needs.windows-test-shards.result }}
           OTHER_RESULT: ${{ needs.windows-test-other.result }}
           VET_RESULT: ${{ needs.windows-test-vet.result }}
-          VERIFY_RESULT: ${{ needs.windows-test-verify.result }}
         run: |
-          for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT" "$VET_RESULT" "$VERIFY_RESULT"; do
+          for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT" "$VET_RESULT"; do
             if [ "$result" != success ]; then
               echo "A required Windows test component ended with: $result" >&2
               exit 1
@@ -418,7 +420,7 @@ jobs:
     timeout-minutes: 105
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 12
       matrix:
         shard: ${{ fromJSON(needs.macos-test-prepare.outputs.shard-matrix) }}
     steps:
@@ -508,32 +510,43 @@ jobs:
         shell: bash
         run: go vet ./...
 
-  macos-test-verify:
-    name: test (macos-latest) / coverage and integrity
-    needs: [macos-test-prepare, macos-test-shards, macos-test-other]
-    if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
+  # The aggregate keeps the former matrix check identity: "test (macos-latest)" is a
+  # required check on main. It also runs the verifier itself rather than waiting
+  # for a separate verify job, which saves one runner start at the end of the
+  # critical path. The verifier runs whenever the plan exists, so a failed shard
+  # still gets a coverage report; the last step then requires every component.
+  macos-test:
+    name: test (macos-latest)
+    needs:
+      [macos-test-prepare, macos-test-shards, macos-test-other]
+    if: always()
     runs-on: depot-ubuntu-24.04-4
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+          sparse-checkout: tools/ci-bench/windows-production
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@v8
+        if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
         with:
           name: macos-test-bundle
           path: ${{ runner.temp }}/macos-test-bundle
       - uses: actions/download-artifact@v8
+        if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
         with:
           pattern: macos-test-shard-*
           path: ${{ runner.temp }}/macos-test-shards
       - uses: actions/download-artifact@v8
+        if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
         with:
           name: macos-test-other
           path: ${{ runner.temp }}/macos-test-other
       - name: Verify exact root, package, process, and artifact coverage
+        if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
         run: |
           python -B tools/ci-bench/windows-production/verify_results.py \
             --target darwin/arm64 \
@@ -542,31 +555,21 @@ jobs:
             --other-results "${{ runner.temp }}/macos-test-other" \
             --output "${{ runner.temp }}/macos-test-verification.json"
       - name: Upload verification report
-        if: always()
+        if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-test-verification
           path: ${{ runner.temp }}/macos-test-verification.json
           if-no-files-found: error
           retention-days: 3
-
-  # Keep the former matrix check identity stable: "test (macos-latest)" is a
-  # required check on main.
-  macos-test:
-    name: test (macos-latest)
-    needs:
-      [macos-test-prepare, macos-test-shards, macos-test-other, macos-test-verify]
-    if: always()
-    runs-on: depot-ubuntu-24.04-4
-    steps:
       - name: Require every macOS test component
+        if: always()
         env:
           PREPARE_RESULT: ${{ needs.macos-test-prepare.result }}
           SHARDS_RESULT: ${{ needs.macos-test-shards.result }}
           OTHER_RESULT: ${{ needs.macos-test-other.result }}
-          VERIFY_RESULT: ${{ needs.macos-test-verify.result }}
         run: |
-          for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT" "$VERIFY_RESULT"; do
+          for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT"; do
             if [ "$result" != success ]; then
               echo "A required macOS test component ended with: $result" >&2
               exit 1

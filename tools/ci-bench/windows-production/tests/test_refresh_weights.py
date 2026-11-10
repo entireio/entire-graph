@@ -18,7 +18,9 @@ import targets  # noqa: E402
 COMMIT = "c" * 40
 
 
-def write_shard(root, index, events, target=targets.DARWIN_ARM64, shard_count=2, **overrides):
+def write_shard(
+    root, index, events, target=targets.DARWIN_ARM64, shard_count=2, process_seconds=(10.0,), **overrides
+):
     directory = root / f"{target.goos}-test-shard-{index}"
     directory.mkdir(parents=True)
     metadata = {
@@ -29,6 +31,7 @@ def write_shard(root, index, events, target=targets.DARWIN_ARM64, shard_count=2,
         "targetEnvironment": target.environment,
         "shardIndex": index,
         "shardCount": shard_count,
+        "invocations": [{"durationSeconds": seconds} for seconds in process_seconds],
     }
     metadata.update(overrides)
     (directory / "shard-metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
@@ -100,6 +103,52 @@ class RefreshWeightsTests(unittest.TestCase):
         self.assertIn("CI run 123", metadata["source"])
         self.assertIn("darwin/arm64", metadata["source"])
 
+    def test_parallel_roots_are_divided_by_their_measured_overlap(self):
+        # Serial roots took 10 s; the process took 30 s; so 60 s of t.Parallel roots
+        # overlapped three at a time and each adds a third of its elapsed time.
+        write_shard(
+            self.evidence,
+            0,
+            [
+                terminal("p", "TestSerial", 10.0),
+                {"Action": "pause", "Package": "p", "Test": "TestParallelA"},
+                {"Action": "cont", "Package": "p", "Test": "TestParallelA"},
+                terminal("p", "TestParallelA", 45.0),
+                {"Action": "pause", "Package": "p", "Test": "TestSerial/sub"},
+            ],
+            process_seconds=(20.0, 5.0),
+        )
+        write_shard(
+            self.evidence,
+            1,
+            [
+                {"Action": "pause", "Package": "p", "Test": "TestParallelB"},
+                terminal("p", "TestParallelB", 15.0),
+            ],
+            process_seconds=(5.0,),
+        )
+        code, stderr = self.run_script()
+        self.assertEqual(code, 0, stderr)
+        weights, metadata = plan_shards.load_weights(self.output)
+        self.assertEqual(
+            weights,
+            {("p", "TestSerial"): 10.0, ("p", "TestParallelA"): 15.0, ("p", "TestParallelB"): 5.0},
+        )
+        self.assertIn("(3.00)", metadata["source"])
+
+    def test_overlap_is_never_below_one(self):
+        # A process slower than its roots (startup, TestMain) must not inflate weights.
+        write_shard(
+            self.evidence,
+            0,
+            [{"Action": "pause", "Package": "p", "Test": "TestA"}, terminal("p", "TestA", 4.0)],
+            shard_count=1,
+            process_seconds=(60.0,),
+        )
+        self.assertEqual(self.run_script()[0], 0)
+        weights, _ = plan_shards.load_weights(self.output)
+        self.assertEqual(weights, {("p", "TestA"): 4.0})
+
     def test_output_is_deterministic_and_one_row_per_line(self):
         self.complete_evidence()
         self.assertEqual(self.run_script("--minimum-seconds", "1")[0], 0)
@@ -132,6 +181,10 @@ class RefreshWeightsTests(unittest.TestCase):
             "another target": lambda: (
                 write_shard(self.evidence, 0, [terminal("p", "TestA", 1.0)], target=targets.WINDOWS_AMD64),
                 write_shard(self.evidence, 1, [terminal("p", "TestB", 1.0)], target=targets.WINDOWS_AMD64),
+            ),
+            "no process duration": lambda: (
+                write_shard(self.evidence, 0, [terminal("p", "TestA", 1.0)], process_seconds=()),
+                write_shard(self.evidence, 1, [terminal("p", "TestB", 1.0)]),
             ),
             "no evidence": lambda: self.evidence.mkdir(),
         }

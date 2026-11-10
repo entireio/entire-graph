@@ -1,7 +1,7 @@
 {
   "schema": "entire-graph.windows-ci.settings.v1",
   "target": "darwin/arm64",
-  "shardCount": 8,
+  "shardCount": 12,
   "defaultWeightSeconds": 0.05,
   "timeout": "30m",
   "commandLineLimit": 262144,

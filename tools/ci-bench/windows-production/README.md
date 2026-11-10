@@ -21,7 +21,7 @@ the host platform, `go env`, and every artifact.
 | --- | --- | --- |
 | Settings | `settings.json` | `settings.darwin-arm64.json` |
 | Weights | `historical-weights.json` | `historical-weights.darwin-arm64.json` |
-| Shards | 8 | 8 |
+| Shards | 12 | 12 |
 | Test binaries | `*.test.exe` | `*.test` |
 | Command budget | 30000 UTF-16 units | 262144 argv bytes |
 | Budget record | `commandLineUtf16Units` | `commandLineArgvBytes` |
@@ -98,6 +98,11 @@ bytes are.
 
 ## Verification
 
+The verifier runs inside each target's aggregate job (the required check
+`test (<os>)`), whenever the plan exists, and the job's last step then requires
+every component job to have succeeded. Running it there rather than in a job
+of its own saves one runner start at the end of the critical path.
+
 The verifier has no monolithic reference run. It instead fails closed unless
 the plan is a disjoint, complete partition of the compiled inventories; every
 planned root has exactly one top-level `run` and one successful terminal
@@ -119,10 +124,17 @@ standard ephemeral hosted runners.
 ## Historical weights
 
 Weights are per target and only balance shards; they never decide what runs.
-A weight is a root's top-level elapsed time on the real CI runner. Roots below
-half a second are not recorded and use `defaultWeightSeconds`, which is set to
-their measured mean (0.05 s) so that the thousands of quick roots do not
-outweigh the slow ones.
+A weight estimates what a root adds to its shard's wall time on the real CI
+runner. For a serial root that is its top-level elapsed time. Roots that call
+`t.Parallel()` overlap inside one test process, so their elapsed time is
+divided by the overlap the evidence shows: parallel elapsed over the process
+wall time left after the serial roots (about 2.1 on the three-core hosted macOS
+runner and 2.3 on Windows). Without that, a shard full of serial
+`internal/sem` roots was planned as equal to one full of parallel
+`internal/cli` sweeps and took half as long again. Roots below half a second
+are not recorded and use `defaultWeightSeconds`, which is set to their measured
+mean (0.05 s) so that the thousands of quick roots do not outweigh the slow
+ones.
 
 Refresh the weights from a green run whenever the shards drift apart, or after
 adding or splitting a slow test:
@@ -141,10 +153,9 @@ python3 -B $H/refresh_weights.py --target windows/amd64 --run "$RUN" \
 of the named target (a missing shard, a nonzero exit, two commits, or a root
 with more than one terminal event), so a partial download cannot skew a plan.
 
-A shard cannot be shorter than its slowest root, and summed weights overstate
-roots that call `t.Parallel()`, which overlap inside one shard. When one root
-approaches half of a shard's time, split it into several top-level tests that
-together make the same assertions; the planner can then spread them.
+A shard cannot be shorter than its slowest root. When one root approaches half
+of a shard's time, split it into several top-level tests that together make
+the same assertions; the planner can then spread them.
 
 ## Running a target locally
 
@@ -155,7 +166,7 @@ H=tools/ci-bench/windows-production; O=$(mktemp -d); SHA=$(git rev-parse HEAD)
 python3 -B $H/prepare.py --target darwin/arm64 --repository "$PWD" --output "$O/bundle" \
   --settings $H/settings.darwin-arm64.json --weights $H/historical-weights.darwin-arm64.json \
   --expected-repository-sha "$SHA"
-for i in $(seq 0 7); do
+for i in $(seq 0 11); do
   python3 -B $H/run_shard.py --target darwin/arm64 --repository "$PWD" --bundle "$O/bundle" \
     --output "$O/shards/macos-test-shard-$i" --shard-index $i --expected-repository-sha "$SHA"
 done

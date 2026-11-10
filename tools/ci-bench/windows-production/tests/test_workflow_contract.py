@@ -16,7 +16,7 @@ SHARDED_TARGETS = {
         "check": "test (windows-latest)",
         "settings": "settings.json",
         "weights": "historical-weights.json",
-        "shardCount": 8,
+        "shardCount": 12,
         "target": None,
         "shell": "pwsh",
         "runners": ("depot-windows-2025-8", "depot-windows-2025-4"),
@@ -26,7 +26,6 @@ SHARDED_TARGETS = {
             "shards": "shard ${{ matrix.shard }}",
             "other": "non-heavy packages",
             "vet": "vet",
-            "verify": "coverage and integrity",
         },
         # Where the native `go vet ./...` runs.
         "vetJob": "vet",
@@ -35,7 +34,7 @@ SHARDED_TARGETS = {
         "check": "test (macos-latest)",
         "settings": "settings.darwin-arm64.json",
         "weights": "historical-weights.darwin-arm64.json",
-        "shardCount": 8,
+        "shardCount": 12,
         "target": "darwin/arm64",
         "shell": "bash",
         "runners": ("macos-latest",),
@@ -46,16 +45,17 @@ SHARDED_TARGETS = {
             "prepare": "compile and plan",
             "shards": "shard ${{ matrix.shard }}",
             "other": "non-heavy packages and vet",
-            "verify": "coverage and integrity",
         },
         "vetJob": "other",
     },
 }
+# The job that runs each harness script, as a suffix of "<target>-test". The
+# verifier runs in the aggregate job itself, which is the required check.
 SCRIPTS = {
-    "prepare": "prepare.py",
-    "shards": "run_shard.py",
-    "other": "run_other.py",
-    "verify": "verify_results.py",
+    "-prepare": "prepare.py",
+    "-shards": "run_shard.py",
+    "-other": "run_other.py",
+    "": "verify_results.py",
 }
 
 
@@ -107,6 +107,12 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn(f"    name: {expected['check']}\n", aggregate)
                 self.assertEqual(workflow.count(f"    name: {expected['check']}\n"), 1)
                 self.assertIn("    if: always()\n", aggregate)
+                self.assertIn("    timeout-minutes: 10\n", aggregate)
+                # The component check is the last step and runs whatever the verifier did.
+                require = aggregate[aggregate.index("      - name: Require every "):]
+                self.assertIn("        if: always()\n", require)
+                self.assertNotIn("      - ", require[len("      - "):])
+                self.assertNotIn("continue-on-error", aggregate)
                 components = expected["components"]
                 jobs = [f"{name}-test-{component}" for component in components]
                 self.assertIn(f"      [{', '.join(jobs)}]\n", aggregate)
@@ -143,25 +149,30 @@ class WorkflowContractTests(unittest.TestCase):
         for name, expected in SHARDED_TARGETS.items():
             with self.subTest(target=name):
                 shard_block = job_block(workflow, f"{name}-test-shards")
-                verify_block = job_block(workflow, f"{name}-test-verify")
+                verify_block = job_block(workflow, f"{name}-test")
+                self.assertEqual(workflow.count(f"  {name}-test-verify:\n"), 0)
                 self.assertIn("timeout-minutes: 105", shard_block)
                 self.assertIn("fail-fast: false", shard_block)
                 self.assertIn(f"max-parallel: {expected['shardCount']}\n", shard_block)
                 self.assertIn("cache-dependency-path: go.sum", shard_block)
                 self.assertNotIn("cache: false", shard_block)
-                self.assertIn(
-                    f"needs: [{name}-test-prepare, {name}-test-shards, {name}-test-other]", verify_block
+                # The three downloads, the verifier and its report run whenever the plan
+                # exists, even after a failed shard, so a failure still gets a report.
+                self.assertEqual(
+                    verify_block.count(
+                        f"if: ${{{{ always() && needs.{name}-test-prepare.result == 'success' }}}}\n"
+                    ),
+                    5,
                 )
-                self.assertIn(f"needs.{name}-test-prepare.result == 'success'", verify_block)
-                self.assertIn("always()", verify_block)
+                self.assertEqual(verify_block.count("        if: "), 6)
                 self.assertNotIn(f"needs.{name}-test-shards.result == 'success'", verify_block)
 
     def test_each_component_runs_its_script_for_its_own_target(self):
         workflow = workflow_text()
         for name, expected in SHARDED_TARGETS.items():
             with self.subTest(target=name):
-                for component, script in SCRIPTS.items():
-                    block = job_block(workflow, f"{name}-test-{component}")
+                for suffix, script in SCRIPTS.items():
+                    block = job_block(workflow, f"{name}-test{suffix}")
                     self.assertEqual(block.count(f"python -B {HARNESS_PATH}/{script}"), 1)
                     for other_script in set(SCRIPTS.values()) - {script}:
                         self.assertNotIn(other_script, block)
@@ -171,7 +182,7 @@ class WorkflowContractTests(unittest.TestCase):
                     else:
                         self.assertEqual(block.count(f"--target {expected['target']}"), 1)
                         self.assertEqual(block.count("--target"), 1)
-                    if component != "verify":
+                    if suffix:
                         self.assertIn("--expected-repository-sha '${{ github.sha }}'", block)
                 prepare = job_block(workflow, f"{name}-test-prepare")
                 self.assertIn(f"--settings {HARNESS_PATH}/{expected['settings']}", prepare)
@@ -219,7 +230,7 @@ class WorkflowContractTests(unittest.TestCase):
                 other = job_block(workflow, f"{name}-test-other")
                 self.assertIn(f"          name: {name}-test-bundle\n", other)
                 self.assertIn(f"          name: {name}-test-other\n", other)
-                verify = job_block(workflow, f"{name}-test-verify")
+                verify = job_block(workflow, f"{name}-test")
                 self.assertIn(f"          name: {name}-test-bundle\n", verify)
                 self.assertIn(f"          pattern: {name}-test-shard-*\n", verify)
                 self.assertIn(f"          name: {name}-test-other\n", verify)
@@ -239,7 +250,7 @@ class WorkflowContractTests(unittest.TestCase):
         for name, expected in SHARDED_TARGETS.items():
             with self.subTest(target=name):
                 foreign_shell = "bash" if expected["shell"] == "pwsh" else "pwsh"
-                for component in set(expected["components"]) - {"verify"}:
+                for component in expected["components"]:
                     block = job_block(workflow, f"{name}-test-{component}")
                     runner = re.search(r"^    runs-on: (.+)$", block, flags=re.MULTILINE).group(1)
                     self.assertIn(runner, expected["runners"])
@@ -247,9 +258,10 @@ class WorkflowContractTests(unittest.TestCase):
                     if component != "vet":
                         self.assertIn(f"shell: {expected['shell']}", block)
                         self.assertIn("timeout-minutes:", block)
-                # Verification and the aggregate need no native runner.
-                for job in (f"{name}-test-verify", f"{name}-test"):
-                    self.assertIn("    runs-on: depot-ubuntu-24.04-4\n", job_block(workflow, job))
+                # Verification, in the aggregate job, needs no native runner and only the harness.
+                aggregate = job_block(workflow, f"{name}-test")
+                self.assertIn("    runs-on: depot-ubuntu-24.04-4\n", aggregate)
+                self.assertIn(f"          sparse-checkout: {HARNESS_PATH}\n", aggregate)
 
     def test_macos_jobs_stay_hosted_and_only_shards_compete_for_runners(self):
         workflow = workflow_text()
@@ -285,8 +297,8 @@ class WorkflowContractTests(unittest.TestCase):
         for command in commands:
             self.assertRegex(command, r"(?:^|[& ])python -B(?: |$)")
         for name, expected in SHARDED_TARGETS.items():
-            for component in expected["components"]:
-                block = job_block(workflow, f"{name}-test-{component}")
+            for suffix in ["", *(f"-{component}" for component in expected["components"])]:
+                block = job_block(workflow, f"{name}-test{suffix}")
                 self.assertEqual(block.count("python "), block.count("python -B "))
 
 

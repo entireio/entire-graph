@@ -1,6 +1,6 @@
 {
   "schema": "entire-graph.windows-ci.settings.v1",
-  "shardCount": 8,
+  "shardCount": 12,
   "defaultWeightSeconds": 0.05,
   "timeout": "30m",
   "commandLineLimit": 30000,
