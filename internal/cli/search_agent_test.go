@@ -22,8 +22,6 @@ func TestAgentSearchSurfacesCoverageDiagnosticsWithinExactCap(t *testing.T) {
 			"Go": {Files: 3, Symbols: 8},
 		}},
 	}
-	// The level follows health; this response is one whose health is degraded.
-	response.Completeness.Health.Status = "degraded"
 
 	var roomy bytes.Buffer
 	if err := writeAgentSearch(&roomy, response, 512); err != nil {

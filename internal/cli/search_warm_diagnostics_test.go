@@ -24,13 +24,9 @@ func TestAgentQueryColdAndWarmReportTheSameCoverage(t *testing.T) {
 	for _, testCase := range []struct {
 		name    string
 		fillers int
-		// level is the health status of the fixture: the line follows it, so one
-		// broken file is unsafe among three and a notice among a hundred and
-		// thirty-three. Either way the failure is listed, cold and warm alike.
-		level string
 	}{
-		{name: "every file fits the cold indexing pool", fillers: 0, level: "unsafe"},
-		{name: "cold query builds the complete snapshot and derives", fillers: 130, level: "notice"},
+		{name: "every file fits the cold indexing pool", fillers: 0},
+		{name: "cold query builds the complete snapshot and derives", fillers: 130},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			repo := t.TempDir()
@@ -86,7 +82,7 @@ func TestRenderWidget(t *testing.T) {
 				!strings.Contains(hotHeader, "cache-hit") {
 				t.Fatalf("headers = %q / %q / %q, want a miss then two hits", coldHeader, warmHeader, hotHeader)
 			}
-			if !strings.Contains(cold, "Coverage: "+testCase.level+" (") || !strings.Contains(cold, "E_PARSE_ERROR: pkg/broken.go") {
+			if !strings.Contains(cold, "Coverage: degraded") || !strings.Contains(cold, "E_PARSE_ERROR: pkg/broken.go") {
 				t.Fatalf("cold payload does not report the repository's parse failure:\n%s", cold)
 			}
 			if warm != cold {

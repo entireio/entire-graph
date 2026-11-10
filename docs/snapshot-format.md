@@ -99,13 +99,6 @@ written without the field are rebuilt rather than replayed. Parser identity
 revision and stable symbol IDs are unchanged; the persisted `Result` gains the
 field on its `warnings` only.
 
-`effect_scope` bounds a loss; it is not a degradation rule. The level of the
-`Coverage:` line in `query --format agent` comes from `completeness.health.status`
-(see [operations](operations.md#graph-health)): `notice` while health is `ok`,
-otherwise `degraded` or `unsafe`. The one use of `effect_scope` there is that a
-partial failure scoped `snapshot` gives `degraded` by itself, since health
-counts flagged source files and such a failure names none.
-
 ## Streaming NDJSON
 
 The `snapshot`/`symbols`/`edges` commands stream records to stdout as they are

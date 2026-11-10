@@ -1333,12 +1333,6 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			}
 			completeness = cachedSnapshot.Header.Completeness
 			symbolsConsidered = len(cachedSnapshot.Symbols)
-		} else {
-			// No graph was built or loaded, so there is no file to weigh. State
-			// that with the same function every other path uses instead of
-			// leaving health unset: a reader keyed on health.status (the agent
-			// coverage line is one) then never meets an empty status.
-			completeness.Health = calculateGraphHealth(nil, nil, ProviderStats{})
 		}
 		return SearchResponse{
 			Query:                 query,

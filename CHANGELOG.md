@@ -46,21 +46,16 @@ auto-generated notes on
   agent and text output print one line beside the callers with a `grep` the
   reader can run to find those references. A degenerate `impact` ("no callers")
   keeps its marker line and prints the disclosure after it.
-- `query --format agent` takes its coverage level from the graph's existing
-  health status (`completeness.health.status`, the value `neighbors`, `impact`
-  and `stats.completeness_level` already use) instead of printing
-  `Coverage: degraded` whenever any partial failure exists. Flagged source
-  files under 5% of source files give `Coverage: notice` (`!N`); at or above 5%
-  the line reads `degraded`, and `unsafe` where health says so (compact `!D`
-  for both). Intentional skips (`E_MINIFIED`, `E_FILE_TOO_LARGE`) and failures
-  in data, configuration or documentation files do not count towards the
-  percentage, so they degrade the line only through health's existing
-  backstops (more than a quarter of recorded files unparsed, or an empty
-  graph). A failure with no file bound (`effect_scope: snapshot`, such as a
-  repo-ignore shortfall or a spent analysis budget) still gives `degraded` on
-  its own, because health has no file count to weigh it against. Every failure
-  is still counted on the line and listed. A no-hit query with no graph built
-  now reports an explicit `health.status: ok` rather than omitting health.
+- `query --format agent` labels coverage `degraded` (compact `!D`) only when a
+  partial failure can remove a code fact: one not confined to a single file
+  (repo-ignore shortfalls, a spent analysis budget), or one in a source file.
+  Failures confined to data, configuration or documentation files the graph
+  extracts nothing from (JSON, TOML, XML, Markdown and the like) now give
+  `Coverage: notice` (`!N`); they are still counted and listed. Configuration
+  formats in the semantic tier of `capabilities --json` (HCL/Terraform, YAML,
+  CUE) still give `degraded`, because a failure there loses resources and
+  relations. A repository whose only failures were minified JSON
+  fixtures no longer opens every answer with `Coverage: degraded`.
 
 ### Fixed
 
