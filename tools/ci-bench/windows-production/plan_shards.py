@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a deterministic, fail-closed plan from compiled Windows test binaries."""
+"""Build a deterministic, fail-closed plan from compiled native test binaries."""
 
 from __future__ import annotations
 
@@ -13,7 +13,11 @@ from collections import defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+import targets
 
+
+# The schema identifiers keep their historical `windows-ci` prefix for every
+# target; the target itself is carried by `targetEnvironment`.
 SETTINGS_SCHEMA = "entire-graph.windows-ci.settings.v1"
 WEIGHTS_SCHEMA = "entire-graph.windows-ci.historical-weights.v1"
 INVENTORY_SCHEMA = "entire-graph.windows-ci.compiled-inventory.v1"
@@ -22,7 +26,13 @@ ROOT_KINDS = ("Test", "Example", "Fuzz")
 _TIMEOUT = re.compile(r"^[1-9][0-9]*(?:ns|us|µs|ms|s|m|h)$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-TARGET_ENVIRONMENT = {"GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "1"}
+# The default target's identity, kept as a module constant for existing callers.
+TARGET_ENVIRONMENT = targets.DEFAULT.environment
+
+
+def settings_target(settings: dict[str, Any]) -> targets.Target:
+    """The target a settings object names; a missing key is the Windows default."""
+    return targets.resolve(settings.get("target", targets.DEFAULT.name))
 
 
 def read_json(path: Path) -> Any:
@@ -66,6 +76,7 @@ def load_settings(path: Path) -> dict[str, Any]:
     value = read_json(path)
     if not isinstance(value, dict) or value.get("schema") != SETTINGS_SCHEMA:
         raise ValueError(f"{path}: unexpected settings schema")
+    target = settings_target(value)
     shard_count = value.get("shardCount")
     default_weight = value.get("defaultWeightSeconds")
     command_limit = value.get("commandLineLimit")
@@ -79,12 +90,10 @@ def load_settings(path: Path) -> dict[str, Any]:
         or float(default_weight) <= 0
     ):
         raise ValueError(f"{path}: defaultWeightSeconds must be finite and positive")
-    if (
-        not isinstance(command_limit, int)
-        or isinstance(command_limit, bool)
-        or not 1024 <= command_limit <= 32767
-    ):
-        raise ValueError(f"{path}: commandLineLimit must be from 1024 through 32767")
+    if not target.valid_command_line_limit(command_limit):
+        raise ValueError(
+            f"{path}: commandLineLimit must be from 1024 through {target.command_line_limit_maximum}"
+        )
     if not isinstance(timeout, str) or not _TIMEOUT.fullmatch(timeout):
         raise ValueError(f"{path}: timeout is not a positive Go duration")
     if value.get("shuffle") != "off":
@@ -119,7 +128,7 @@ def load_settings(path: Path) -> dict[str, Any]:
             or Path(binary_name).name != binary_name
             or "/" in binary_name
             or "\\" in binary_name
-            or not binary_name.endswith(".test.exe")
+            or not binary_name.endswith(target.binary_suffix)
         ):
             raise ValueError(f"{path}: unsafe heavy package binaryName {binary_name!r}")
         if argument in seen_arguments or import_path in seen_imports or binary_name in seen_binaries:
@@ -170,19 +179,53 @@ def load_settings(path: Path) -> dict[str, Any]:
             }
         )
     result = dict(value)
+    result["target"] = target.name
     result["defaultWeightSeconds"] = float(default_weight)
     result["heavyPackages"] = normalized
     return result
 
 
-def load_weights(path: Path) -> tuple[dict[tuple[str, str], float], dict[str, Any]]:
+class Weights(dict):
+    """Per-root elapsed seconds, plus what is known about `t.Parallel()` roots.
+
+    `parallel` names the roots that call `t.Parallel()`; `parallelism` is how
+    many of them effectively run at once on the target's runner. A plain dict
+    carries neither, which plans every root as serial.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.parallel: set[tuple[str, str]] = set()
+        self.parallelism = 1.0
+
+
+def process_seconds(serial: float, parallel: float, longest_parallel: float, parallelism: float) -> float:
+    """Estimated wall time of one test process.
+
+    `go test` runs a binary's serial roots first, one at a time, and then its
+    `t.Parallel()` roots together. The parallel phase can end no sooner than
+    its longest root and no sooner than its total work spread over the cores.
+    """
+    return serial + max(longest_parallel, parallel / parallelism)
+
+
+def load_weights(path: Path) -> tuple[Weights, dict[str, Any]]:
     value = read_json(path)
     if not isinstance(value, dict) or value.get("schema") != WEIGHTS_SCHEMA:
         raise ValueError(f"{path}: unexpected historical-weight schema")
     rows = value.get("weights")
     if not isinstance(rows, list):
         raise ValueError(f"{path}: weights must be a list")
-    weights: dict[tuple[str, str], float] = {}
+    parallelism = value.get("parallelism", 1.0)
+    if (
+        not isinstance(parallelism, (int, float))
+        or isinstance(parallelism, bool)
+        or not math.isfinite(float(parallelism))
+        or not 1.0 <= float(parallelism) <= 1024.0
+    ):
+        raise ValueError(f"{path}: parallelism must be from 1 through 1024")
+    weights = Weights()
+    weights.parallelism = float(parallelism)
     for position, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"{path}: weights[{position}] is not an object")
@@ -199,13 +242,20 @@ def load_weights(path: Path) -> tuple[dict[tuple[str, str], float], dict[str, An
         key = (package, name)
         if key in weights:
             raise ValueError(f"{path}: duplicate weight for {package}::{name}")
+        parallel = row.get("parallel", False)
+        if not isinstance(parallel, bool):
+            raise ValueError(f"{path}: weights[{position}] parallel must be a boolean")
         weights[key] = float(seconds)
+        if parallel:
+            weights.parallel.add(key)
     metadata = {
         "path": path.name,
         "sha256": sha256_file(path),
         "sourceCommit": value.get("sourceCommit"),
         "source": value.get("source"),
         "entryCount": len(weights),
+        "parallelism": weights.parallelism,
+        "parallelCount": len(weights.parallel),
     }
     return weights, metadata
 
@@ -214,7 +264,9 @@ def _root_kind(name: str) -> str | None:
     return next((kind for kind in ROOT_KINDS if name.startswith(kind)), None)
 
 
-def load_inventories(paths: Iterable[Path]) -> list[dict[str, Any]]:
+def load_inventories(
+    paths: Iterable[Path], target: targets.Target = targets.DEFAULT
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen_packages: set[str] = set()
     for path in paths:
@@ -231,7 +283,7 @@ def load_inventories(paths: Iterable[Path]) -> list[dict[str, Any]]:
             or Path(binary).name != binary
             or "/" in binary
             or "\\" in binary
-            or not binary.endswith(".test.exe")
+            or not binary.endswith(target.binary_suffix)
         ):
             raise ValueError(f"{path}: unsafe binaryName")
         if value.get("listExitCode") != 0:
@@ -249,9 +301,9 @@ def load_inventories(paths: Iterable[Path]) -> list[dict[str, Any]]:
             "GOARCH": value.get("goarch"),
             "CGO_ENABLED": value.get("cgoEnabled"),
         }
-        if target_environment != TARGET_ENVIRONMENT:
+        if target_environment != target.environment:
             raise ValueError(
-                f"{path}: compiled inventory target is {target_environment!r}, want {TARGET_ENVIRONMENT!r}"
+                f"{path}: compiled inventory target is {target_environment!r}, want {target.environment!r}"
             )
         listing_contract = value.get("listingContract")
         if listing_contract != {
@@ -276,6 +328,7 @@ def load_inventories(paths: Iterable[Path]) -> list[dict[str, Any]]:
                 not isinstance(name, str)
                 or not name
                 or any(character.isspace() for character in name)
+                or "/" in name
                 or kind not in ROOT_KINDS
                 or _root_kind(name) != kind
                 or name in names
@@ -326,7 +379,9 @@ def load_inventories(paths: Iterable[Path]) -> list[dict[str, Any]]:
                 "binarySizeBytes": value["binarySizeBytes"],
                 "repositorySha": value["repositorySha"],
                 "goVersion": value["goVersion"],
-                "targetEnvironment": dict(TARGET_ENVIRONMENT),
+                "targetEnvironment": {
+                    key: target.environment[key] for key in ("GOOS", "GOARCH", "CGO_ENABLED")
+                },
                 "listingContract": dict(listing_contract),
                 "roots": sorted(normalized_roots, key=lambda item: item["name"]),
                 "excludedBenchmarks": sorted(benchmarks),
@@ -357,10 +412,25 @@ def _render_trie(node: _Trie) -> str:
     return "(" + body + ")?" if node.terminal else body
 
 
+def run_regex_selects(expression: str, name: str) -> bool:
+    """Whether `-test.run=expression` selects the top-level root `name`.
+
+    Go splits the expression on `/` into one pattern per subtest level and
+    SEARCHES each level's name for its pattern; nothing anchors it unless the
+    expression does. A plan expression has a single level, so a `/` in it is
+    refused rather than interpreted.
+    """
+    if "/" in expression:
+        raise ValueError(f"run expression addresses subtests: {expression!r}")
+    return re.search(expression, name) is not None
+
+
 def compressed_run_regex(names: Iterable[str]) -> str:
     ordered = sorted(set(names))
     if not ordered:
         raise ValueError("cannot create a run regex for no roots")
+    if any("/" in name for name in ordered):
+        raise ValueError("a root name contains '/', which -test.run reads as a subtest separator")
     root = _Trie()
     for name in ordered:
         node = root
@@ -385,6 +455,9 @@ def create_plan(
 ) -> dict[str, Any]:
     if not inventories:
         raise ValueError("at least one compiled inventory is required")
+    target = settings_target(settings)
+    if any(item.get("targetEnvironment") != target.environment for item in inventories):
+        raise ValueError(f"compiled inventories are not all {target.description}")
     expected_config = {
         (item["importPath"], item["binaryName"])
         for item in settings["heavyPackages"]
@@ -406,6 +479,8 @@ def create_plan(
     if len(repository_shas) != 1 or len(go_versions) != 1:
         raise ValueError("compiled inventories disagree on repository or Go version")
 
+    parallel_roots = getattr(weights, "parallel", frozenset())
+    parallelism = float(getattr(weights, "parallelism", 1.0))
     work: list[dict[str, Any]] = []
     used_weight_keys: set[tuple[str, str]] = set()
     for inventory in inventories:
@@ -413,7 +488,7 @@ def create_plan(
             key = (inventory["importPath"], root["name"])
             if key in weights:
                 weight = weights[key]
-                source = "historical-windows"
+                source = target.weight_source
                 used_weight_keys.add(key)
             else:
                 weight = settings["defaultWeightSeconds"]
@@ -428,6 +503,8 @@ def create_plan(
                     "kind": root["kind"],
                     "weightSeconds": round(float(weight), 6),
                     "weightSource": source,
+                    # A root with no history is planned as serial.
+                    "parallel": key in weights and key in parallel_roots,
                 }
             )
 
@@ -437,12 +514,31 @@ def create_plan(
     work.sort(key=lambda item: (-item["weightSeconds"], item["importPath"], item["name"]))
     bins: list[list[dict[str, Any]]] = [[] for _ in range(shard_count)]
     totals = [0.0] * shard_count
+    # A shard runs one process per package, one after another, so its estimated
+    # wall time is the sum of its processes'. Each root, slowest first, goes to
+    # the shard that would finish soonest with it. With no parallel roots this
+    # is longest-processing-time-first; a parallel root is free wherever it
+    # hides beneath a longer one or beneath the cores' share of the work.
+    processes: list[dict[str, list[float]]] = [{} for _ in range(shard_count)]
+
+    def placed(index: int, item: dict[str, Any]) -> tuple[float, list[float]]:
+        serial, parallel, longest = processes[index].get(item["importPath"], [0.0, 0.0, 0.0])
+        before = process_seconds(serial, parallel, longest, parallelism)
+        if item["parallel"]:
+            parallel += item["weightSeconds"]
+            longest = max(longest, item["weightSeconds"])
+        else:
+            serial += item["weightSeconds"]
+        after = process_seconds(serial, parallel, longest, parallelism)
+        return totals[index] - before + after, [serial, parallel, longest]
+
     for item in work:
         destination = min(
-            range(shard_count), key=lambda index: (totals[index], len(bins[index]), index)
+            range(shard_count),
+            key=lambda index: (placed(index, item)[0], len(bins[index]), index),
         )
+        totals[destination], processes[destination][item["importPath"]] = placed(destination, item)
         bins[destination].append(item)
-        totals[destination] += item["weightSeconds"]
 
     shards: list[dict[str, Any]] = []
     for index, roots in enumerate(bins):
@@ -465,6 +561,7 @@ def create_plan(
                             "kind": item["kind"],
                             "weightSeconds": item["weightSeconds"],
                             "weightSource": item["weightSource"],
+                            **({"parallel": True} if item["parallel"] else {}),
                         }
                         for item in package_roots
                     ],
@@ -495,10 +592,12 @@ def create_plan(
     ]
     return {
         "schema": PLAN_SCHEMA,
-        "algorithm": "deterministic-longest-processing-time-first-v1",
+        "algorithm": "deterministic-greedy-process-wall-time-v2",
         "repositorySha": next(iter(repository_shas)),
         "goVersion": next(iter(go_versions)),
-        "targetEnvironment": dict(TARGET_ENVIRONMENT),
+        "targetEnvironment": {
+            key: target.environment[key] for key in ("GOOS", "GOARCH", "CGO_ENABLED")
+        },
         "inventorySetSha256": _inventory_digest(inventories),
         "shardCount": shard_count,
         "rootCount": len(work),
@@ -536,7 +635,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = load_settings(args.settings)
         weights, metadata = load_weights(args.weights)
-        inventories = load_inventories(args.inventory)
+        inventories = load_inventories(args.inventory, settings_target(settings))
         plan = create_plan(inventories, settings, weights, metadata)
         write_json(args.output, plan)
     except (ValueError, OSError) as error:
