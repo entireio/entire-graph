@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_01NCXhtjsPynv2xvuoVZm9iP",
+  "agent_id": "ad6bbd524d8dfe5da",
+  "task_description": "Fix Gradle leftover from 249",
+  "token_usage": {
+    "input_tokens": 42,
+    "cache_creation_tokens": 129059,
+    "cache_read_tokens": 2023140,
+    "output_tokens": 38626,
+    "api_call_count": 21
+  },
+  "started_at": "2026-11-10T10:34:38.845824+01:00",
+  "completed_at": "2026-11-10T10:57:28.963576+01:00"
+}
