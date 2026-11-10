@@ -1,7 +1,5 @@
 package sem
 
-import "sync"
-
 // Effect scopes say how far the loss a diagnostic reports can reach. They are
 // published as effect_scope on every warning and partial failure (schema 1.6),
 // because a consumer deciding whether to trust an answer needs that bound and
@@ -83,45 +81,18 @@ func DiagnosticEffectScope(code, filePath string) string {
 }
 
 // PartialFailureAffectsCode reports whether failure can have removed a fact
-// the graph would otherwise hold. Only a file-scoped failure in a format the
-// graph extracts nothing from cannot: such a file holds no facts to lose.
-//
-// Two policies decide that, and either one is enough to answer yes:
-//
-//   - sourceFileLanguage, the one health accounting uses, so every file
-//     completeness.health counts as source counts here too;
-//   - the capabilities registry (supportsSemanticExtraction, the classification
-//     behind semantic_languages and language_tiers). Health deliberately leaves
-//     configuration formats out of its source-file percentage, but HCL, YAML
-//     and CUE are semantic-tier: a Terraform file that fails to parse loses
-//     resources and relations, so it must not be waved through as "data".
-//
-// A file whose language cannot be resolved is treated as affecting code, since
-// it cannot be ruled out.
+// about source code. Only a file-scoped failure in a data, configuration or
+// documentation format cannot: such a file holds no code facts to lose. The
+// format policy is sourceFileLanguage, the one health accounting already uses,
+// so this answer and completeness.health agree on which files are source. A file
+// whose language cannot be resolved is treated as source, since it cannot be
+// ruled out.
 func PartialFailureAffectsCode(failure PartialFailure) bool {
 	if DiagnosticEffectScope(failure.Code, failure.FilePath) != EffectScopeFile {
 		return true
 	}
 	language, source := sourceFileLanguage(failure.FilePath, failure.Language)
-	return source || language == "" || semanticTierLanguage(language)
-}
-
-// semanticTierLanguages is the set Capabilities() publishes as
-// semantic_languages, built once: the registry is static for a build.
-var semanticTierLanguages = sync.OnceValue(func() map[string]bool {
-	semantic := map[string]bool{}
-	for _, spec := range supportedLanguageSpecs() {
-		if supportsSemanticExtraction(spec) {
-			semantic[spec.language] = true
-		}
-	}
-	return semantic
-})
-
-// semanticTierLanguage reports whether the graph extracts symbols and relations
-// from language, per the capabilities registry.
-func semanticTierLanguage(language string) bool {
-	return semanticTierLanguages()[language]
+	return source || language == ""
 }
 
 // withWarningEffectScopes stamps effect_scope on every warning. It is applied

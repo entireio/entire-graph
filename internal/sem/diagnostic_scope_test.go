@@ -44,13 +44,7 @@ func TestPartialFailureAffectsCode(t *testing.T) {
 	}{
 		{"minified JSON fixture", PartialFailure{Code: "E_MINIFIED", FilePath: "benchmarks/agent-brain/case.json"}, false},
 		{"oversized JSON snapshot", PartialFailure{Code: "E_FILE_TOO_LARGE", FilePath: "SNAPSHOT.json"}, false},
-		// Configuration formats health leaves out of its source percentage,
-		// but which are semantic-tier: the graph extracts symbols and
-		// relations from them, so a failure there can remove a fact.
-		{"YAML parse error", PartialFailure{Code: "E_PARSE_ERROR", FilePath: "deploy/compose.yml"}, true},
-		{"Terraform parse error", PartialFailure{Code: "E_PARSE_ERROR", FilePath: "infra/main.tf"}, true},
-		{"oversized HCL by recorded language", PartialFailure{Code: "E_FILE_TOO_LARGE", FilePath: "infra/vars", Language: "HCL"}, true},
-		{"CUE parse error", PartialFailure{Code: "E_PARSE_ERROR", FilePath: "schema/app.cue"}, true},
+		{"YAML parse error", PartialFailure{Code: "E_PARSE_ERROR", FilePath: ".github/workflows/ci.yml"}, false},
 		{"TOML parse error", PartialFailure{Code: "E_PARSE_ERROR", FilePath: "Cargo.toml"}, false},
 		{"XML parse error", PartialFailure{Code: "E_PARSE_ERROR", FilePath: "pom.xml"}, false},
 		{"lockfile in JSON", PartialFailure{Code: "E_FILE_TOO_LARGE", FilePath: "package-lock.json"}, false},
@@ -67,32 +61,5 @@ func TestPartialFailureAffectsCode(t *testing.T) {
 		if got := PartialFailureAffectsCode(tc.failure); got != tc.want {
 			t.Errorf("%s: PartialFailureAffectsCode(%+v) = %v, want %v", tc.name, tc.failure, got, tc.want)
 		}
-	}
-}
-
-// PartialFailureAffectsCode must never answer "no code fact can be lost" for a
-// language the capabilities registry classes as semantic: that is the tier the
-// graph extracts symbols and relations from. The health policy
-// (sourceFileLanguage) excludes some of those languages from its source-file
-// percentage, so this walks the registry rather than a hand-picked list.
-func TestPartialFailureAffectsCodeForEverySemanticLanguage(t *testing.T) {
-	t.Parallel()
-
-	semantic := Capabilities().SemanticLanguages
-	if len(semantic) == 0 {
-		t.Fatal("capabilities report no semantic languages")
-	}
-	configFormats := 0
-	for _, language := range semantic {
-		if _, source := sourceFileLanguage("", language); !source {
-			configFormats++
-		}
-		failure := PartialFailure{Code: "E_PARSE_ERROR", FilePath: "some/file", Language: language}
-		if !PartialFailureAffectsCode(failure) {
-			t.Errorf("a parse failure in semantic-tier %s is reported as unable to affect code", language)
-		}
-	}
-	if configFormats == 0 {
-		t.Fatal("no semantic language is outside the health source policy; this test no longer exercises the registry check")
 	}
 }

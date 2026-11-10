@@ -21,7 +21,7 @@ func TestAgentCoverageLevelIgnoresDataFormatFailures(t *testing.T) {
 		{Code: "E_MINIFIED", Severity: "warning", FilePath: "benchmarks/agent-brain/a.json"},
 		{Code: "E_MINIFIED", Severity: "warning", FilePath: ".entire/runners/b.json"},
 		{Code: "E_FILE_TOO_LARGE", Severity: "warning", FilePath: "SNAPSHOT.json"},
-		{Code: "E_PARSE_ERROR", Severity: "warning", FilePath: "Cargo.toml"},
+		{Code: "E_PARSE_ERROR", Severity: "warning", FilePath: ".github/workflows/ci.yml"},
 	}
 	cases := []struct {
 		name     string
@@ -32,12 +32,6 @@ func TestAgentCoverageLevelIgnoresDataFormatFailures(t *testing.T) {
 		{"data and config formats only", dataOnly, "notice", "!N"},
 		{"plus one Go parse failure", append(append([]sem.PartialFailure{}, dataOnly...),
 			sem.PartialFailure{Code: "E_PARSE_ERROR", Severity: "warning", FilePath: "pkg/a.go"}), "degraded", "!D"},
-		// HCL and YAML are configuration formats, but semantic-tier: the graph
-		// extracts resources and service relations from them.
-		{"plus one Terraform parse failure", append(append([]sem.PartialFailure{}, dataOnly...),
-			sem.PartialFailure{Code: "E_PARSE_ERROR", Severity: "warning", FilePath: "infra/main.tf"}), "degraded", "!D"},
-		{"plus one YAML parse failure", append(append([]sem.PartialFailure{}, dataOnly...),
-			sem.PartialFailure{Code: "E_PARSE_ERROR", Severity: "warning", FilePath: "deploy/compose.yml"}), "degraded", "!D"},
 		{"plus a shortfall that names a JSON path", append(append([]sem.PartialFailure{}, dataOnly...),
 			sem.PartialFailure{Code: "E_REPO_IGNORE_UNREADABLE", Severity: "warning", FilePath: "vendor/x.json"}), "degraded", "!D"},
 		{"plus a shortfall with no path", append(append([]sem.PartialFailure{}, dataOnly...),
