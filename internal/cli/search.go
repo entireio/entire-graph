@@ -2048,7 +2048,7 @@ func writeAgentSearchPayload(out interface{ Write([]byte) (int, error) }, respon
 	}
 	if len(compactDiagnostics) > 0 {
 		marker := "!N"
-		if len(response.PartialFailures) > 0 {
+		if agentCoverageLevel(response) != agentCoverageNotice {
 			marker = "!D"
 		}
 		// The exclusion count degrades WITH the marker rather than being dropped
@@ -2185,10 +2185,7 @@ func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
 		return nil, nil
 	}
 	languages, files := searchCompletenessCounts(response.Completeness)
-	level := "notice"
-	if agentFailuresDegradeCoverage(response.PartialFailures) {
-		level = "degraded"
-	}
+	level := agentCoverageLevel(response)
 	var full bytes.Buffer
 	// The excluded count sits inside the file count's own parentheses on purpose.
 	// This line is the payload's claim about how much of the repository the answer
@@ -2226,8 +2223,9 @@ func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
 	if omitted := len(response.Warnings) + len(response.PartialFailures) - visible; omitted > 0 {
 		fmt.Fprintf(&full, "- ... %d more diagnostic%s in JSON output\n", omitted, pluralSuffix(omitted))
 	}
+	// The compact marker has two states: !D covers both degraded and unsafe.
 	marker := "N"
-	if level == "degraded" {
+	if level != agentCoverageNotice {
 		marker = "D"
 	}
 	excluded := ""
@@ -2242,20 +2240,44 @@ func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
 	return full.Bytes(), compact
 }
 
-// agentFailuresDegradeCoverage decides the coverage line's level. "degraded"
-// claims that a fact the answer could have used may be missing, so it fires only
-// for a failure that can remove a code fact: one not confined to a single file
-// (a narrowed corpus, a spent budget), or one confined to a source file. A
-// minified JSON fixture or an oversized data file holds no code facts, so a
-// repository full of them stays at "notice". Every failure is still counted on
-// the line and listed exactly as before; only the level depends on this.
-func agentFailuresDegradeCoverage(failures []sem.PartialFailure) bool {
-	for _, failure := range failures {
-		if sem.PartialFailureAffectsCode(failure) {
-			return true
+// agentCoverageNotice is the coverage level that claims nothing is wrong: the
+// diagnostics are listed for the record.
+const agentCoverageNotice = "notice"
+
+// agentCoverageLevel decides the coverage line's level. It does not weigh
+// failures itself: the graph already has one degradation rule, the health
+// status calculateGraphHealth computes (completeness.health.status, also
+// published as stats.completeness_level and used by neighbors and impact), and
+// this line follows it. Health counts unique flagged SOURCE files against
+// DegradationThresholdPercent, leaves intentional skips (E_MINIFIED,
+// E_FILE_TOO_LARGE) out of the numerator, and keeps the backstops for a graph
+// that is mostly unparsed or empty. So a few parse failures among a thousand
+// source files, or a repository full of minified JSON, read "notice"; at or
+// above the threshold the line reads "degraded", and "unsafe" where health
+// says so. Every failure is still counted on the line and listed either way.
+//
+// One class of failure is outside what health can weigh: a failure with no
+// file bound (effect_scope "snapshot": a narrowed corpus, a spent analysis
+// budget). Health has no source-file numerator for those, and the repo-ignore
+// shortfalls are attached to the response after health was computed. Such a
+// failure says the answer may not have seen the whole repository, so it keeps
+// the level at "degraded" on its own.
+//
+// The status describes the scope of the header the response reports its
+// diagnostics from (searchDiagnosticsHeader): the complete graph when one is in
+// hand, otherwise the files this query selected. An empty status comes only
+// from a producer that predates health and reads as ok.
+func agentCoverageLevel(response sem.SearchResponse) string {
+	switch status := response.Completeness.Health.Status; status {
+	case "degraded", "unsafe":
+		return status
+	}
+	for _, failure := range response.PartialFailures {
+		if sem.DiagnosticEffectScope(failure.Code, failure.FilePath) == sem.EffectScopeSnapshot {
+			return "degraded"
 		}
 	}
-	return false
+	return agentCoverageNotice
 }
 
 // repoIgnoreDisclosureWarning is the code of the warning that names a file the
