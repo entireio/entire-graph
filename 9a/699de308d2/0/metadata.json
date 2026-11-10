@@ -1,0 +1,46 @@
+{
+  "cli_version": "0.13.1",
+  "checkpoint_id": "9a699de308d2",
+  "session_id": "92bc2a98-aded-4d3d-a987-db22b9a68b40",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-10T15:30:25.105669Z",
+  "branch": "ci/macos-test-shards",
+  "checkpoints_count": 5,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-fable-5-2",
+  "turn_id": "676fc0c85cfc",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 4,
+    "cache_creation_tokens": 280,
+    "cache_read_tokens": 309434,
+    "output_tokens": 392,
+    "api_call_count": 1,
+    "subagent_tokens": {
+      "input_tokens": 58,
+      "cache_creation_tokens": 826110,
+      "cache_read_tokens": 9586499,
+      "output_tokens": 55682,
+      "api_call_count": 29
+    }
+  },
+  "redaction": {
+    "replacements": 0,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 68
+  }
+}
