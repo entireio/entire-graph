@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run every target-Windows package outside the compiled shard set exactly once."""
+"""Run every target-selected package outside the compiled shard set exactly once."""
 
 from __future__ import annotations
 
@@ -15,11 +15,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+import targets
+
 
 PLAN_SCHEMA = "entire-graph.windows-ci.shard-plan.v1"
 PACKAGE_SCHEMA = "entire-graph.windows-ci.package-inventory.v1"
 RUN_SCHEMA = "entire-graph.windows-ci.other-run.v1"
-TARGET_ENVIRONMENT = {"CGO_ENABLED": "1", "GOARCH": "amd64", "GOOS": "windows"}
+TARGET_ENVIRONMENT = targets.DEFAULT.environment
 
 
 def read_json(path: Path) -> Any:
@@ -45,8 +47,7 @@ def sha256_file(path: Path) -> str:
 
 
 def command_line_utf16_units(executable: str, arguments: list[str]) -> int:
-    serialized = subprocess.list2cmdline([executable, *arguments])
-    return len(serialized.encode("utf-16-le")) // 2 + 1
+    return targets.WINDOWS_AMD64.command_line_cost(executable, arguments)
 
 
 def checked_output(
@@ -69,7 +70,10 @@ def checked_output(
 
 
 def checked_target_environment(
-    go: str, repository: Path, environment: dict[str, str]
+    go: str,
+    repository: Path,
+    environment: dict[str, str],
+    target: targets.Target = targets.DEFAULT,
 ) -> dict[str, str]:
     raw = checked_output(
         [go, "env", "-json", "GOOS", "GOARCH", "CGO_ENABLED"],
@@ -78,10 +82,10 @@ def checked_target_environment(
         "go env",
     )
     value = json.loads(raw)
-    target = {key: value.get(key) for key in ("CGO_ENABLED", "GOARCH", "GOOS")}
-    if target != TARGET_ENVIRONMENT:
-        raise RuntimeError(f"unexpected target Go environment: {target!r}")
-    return target
+    actual = {key: value.get(key) for key in ("CGO_ENABLED", "GOARCH", "GOOS")}
+    if actual != target.environment:
+        raise RuntimeError(f"unexpected target Go environment: {actual!r}")
+    return actual
 
 
 def require_tracked_worktree_clean(
@@ -104,12 +108,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--expected-repository-sha", required=True)
     parser.add_argument("--go-command", default="go")
+    parser.add_argument("--target", default=targets.DEFAULT.name, choices=sorted(targets.TARGETS))
     return parser.parse_args(argv)
 
 
 def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
-    if sys.platform != "win32":
-        raise RuntimeError("run_other.py must run on native Windows")
+    target = targets.resolve(getattr(args, "target", targets.DEFAULT.name))
+    if sys.platform != target.host_platform:
+        raise RuntimeError(f"run_other.py must run on native {target.host_label}")
     repository = args.repository.resolve(strict=True)
     bundle = args.bundle.resolve(strict=True)
     output = args.output.resolve()
@@ -122,15 +128,15 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
         raise ValueError("unexpected or missing shard plan schema")
     if not isinstance(package_inventory, dict) or package_inventory.get("schema") != PACKAGE_SCHEMA:
         raise ValueError("unexpected or missing package inventory schema")
-    if plan.get("targetEnvironment") != TARGET_ENVIRONMENT:
-        raise ValueError("shard plan target is not exactly windows/amd64 with CGO_ENABLED=1")
+    if plan.get("targetEnvironment") != target.environment:
+        raise ValueError(f"shard plan target is not exactly {target.description}")
     package_target = {
         "GOOS": package_inventory.get("goos"),
         "GOARCH": package_inventory.get("goarch"),
         "CGO_ENABLED": package_inventory.get("cgoEnabled"),
     }
-    if package_target != TARGET_ENVIRONMENT:
-        raise ValueError("package inventory target is not exactly windows/amd64 with CGO_ENABLED=1")
+    if package_target != target.environment:
+        raise ValueError(f"package inventory target is not exactly {target.description}")
     settings = plan.get("settings")
     if not isinstance(settings, dict) or settings.get("shuffle") != "off":
         raise ValueError("plan does not preserve shuffle=off semantics")
@@ -138,12 +144,12 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
     command_limit = settings.get("commandLineLimit")
     if not isinstance(timeout, str) or not re.fullmatch(r"[1-9][0-9]*(?:ns|us|µs|ms|s|m|h)", timeout):
         raise ValueError("plan has an invalid timeout")
-    if not isinstance(command_limit, int) or not 1024 <= command_limit <= 32767:
-        raise ValueError("plan has an invalid Windows command-line limit")
+    if not target.valid_command_line_limit(command_limit):
+        raise ValueError(f"plan has an invalid {target.host_label} command-line limit")
 
     rows = package_inventory.get("packages")
     if not isinstance(rows, list) or not rows:
-        raise ValueError("target-Windows package inventory is empty")
+        raise ValueError(f"target-{target.host_label} package inventory is empty")
     packages: list[str] = []
     seen: set[str] = set()
     for position, row in enumerate(rows):
@@ -164,7 +170,7 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
         raise ValueError("package inventory and shard plan disagree on heavy packages")
 
     environment = dict(os.environ)
-    environment.update({"GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "1"})
+    environment.update(target.environment)
     go_max_procs = settings.get("goMaxProcs")
     if go_max_procs is not None:
         if not isinstance(go_max_procs, int) or isinstance(go_max_procs, bool) or go_max_procs <= 0:
@@ -189,9 +195,17 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
         raise RuntimeError("repository SHA differs between checkout, workflow, plan, or package inventory")
     if go_version != plan.get("goVersion") or go_version != package_inventory.get("goVersion"):
         raise RuntimeError("Go version differs between runner, plan, or package inventory")
-    target_environment = checked_target_environment(go, repository, environment)
+    target_environment = checked_target_environment(go, repository, environment, target)
     if target_environment != plan.get("targetEnvironment"):
         raise RuntimeError("runner target Go environment differs from the plan")
+    # This job's own view of the target's package set. The packages it runs come
+    # from the bundle; recording what `go list` says here lets the verifier
+    # notice a package the compile-and-plan job never inventoried.
+    listed_packages = sorted(
+        line.strip()
+        for line in checked_output([go, "list", "./..."], repository, environment, "go list ./...").splitlines()
+        if line.strip()
+    )
     require_tracked_worktree_clean(repository, environment, "tracked worktree precondition")
 
     metadata.update(
@@ -203,6 +217,7 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
             "planSha256": sha256_file(plan_path),
             "packageInventorySha256": sha256_file(package_path),
             "expectedPackages": packages,
+            "listedPackages": listed_packages,
             "packageCount": len(packages),
             "timeout": timeout,
             "shuffle": "off",
@@ -240,12 +255,17 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
                 raise ValueError("plan has invalid testParallel")
             command_arguments.append(f"-parallel={test_parallel}")
         command_arguments.extend(packages)
-        command_units = command_line_utf16_units(go, command_arguments)
-        metadata["commandLineUtf16Units"] = command_units
+        command_units = target.command_line_cost(go, command_arguments)
+        metadata[target.command_line_metric] = command_units
         if command_units > command_limit:
             raise RuntimeError(
-                f"serialized Windows command line is {command_units} UTF-16 units, above {command_limit}; refusing implicit package batching"
+                f"serialized {target.host_label} command line is {command_units} {target.command_line_unit}, above {command_limit}; refusing implicit package batching"
             )
+        metadata.update(
+            targets.checked_argument_area(
+                target, [go, *command_arguments], environment, "non-heavy go test launch"
+            )
+        )
         started = time.monotonic()
         with (output / "other-events.jsonl").open("wb") as stdout, (
             output / "other.stderr.log"
