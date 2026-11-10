@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_01KM9VY8vbr2B9UQRmzw45BB",
+  "agent_id": "a75ad2ec5a679085b",
+  "task_description": "Adversarial review: workflow YAML",
+  "token_usage": {
+    "input_tokens": 14,
+    "cache_creation_tokens": 88668,
+    "cache_read_tokens": 373830,
+    "output_tokens": 15703,
+    "api_call_count": 7
+  },
+  "started_at": "2026-11-10T17:11:29.837916+01:00",
+  "completed_at": "2026-11-10T17:14:39.117597+01:00"
+}
