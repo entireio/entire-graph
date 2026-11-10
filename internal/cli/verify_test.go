@@ -316,6 +316,22 @@ func TestParseVerifyFlagsRequiresABaseline(t *testing.T) {
 	}
 }
 
+func TestParseVerifyFlagsRejectsConflictingBaselineModes(t *testing.T) {
+	_, err := parseVerifyFlags([]string{
+		"--test", "go test ./...",
+		"--record-baseline", "new.json",
+		"--pre-edit-baseline", "old.json",
+	})
+	if err == nil {
+		t.Fatal("verify accepted both baseline modes")
+	}
+	for _, want := range []string{"--record-baseline", "--pre-edit-baseline"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error does not name %q: %v", want, err)
+		}
+	}
+}
+
 // TestVerifySetupFailureStopsTheRun pins the exit code of the SETUP command. runVerifyShell reports a
 // command that ran and failed as (nonzero, nil error), so a caller that keeps only the error learns
 // nothing about a failed install or build. The regression this guards is not cosmetic: the test
@@ -563,5 +579,60 @@ func TestVerifyShellForSelectsAPlatformShell(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "POSIX shell") {
 		t.Fatalf("error %q does not say a POSIX shell is what is missing", err)
+	}
+}
+
+func TestVerifyRefusesBaselineWithDifferentSetup(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "run.sh", "#!/bin/sh\necho \"tests/test_a.py::test_x PASSED\"\n")
+	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+		[]string{"verify", "--repo", repo, "--setup", "printf one > setup-one", "--test", "sh run.sh", "--record-baseline", baselinePath}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+		[]string{"verify", "--repo", repo, "--setup", "printf two > setup-two", "--test", "sh run.sh", "--pre-edit-baseline", baselinePath})
+	if err == nil {
+		t.Fatal("a baseline recorded with a different setup was accepted")
+	}
+	if !strings.Contains(err.Error(), "setup command") {
+		t.Fatalf("error does not name the mismatched setup command: %v", err)
+	}
+}
+
+// TestVerifyBaselineRecordsTheSetupCommandItRan covers the write side, which the
+// mismatch test above cannot reach. That test records with one --setup and reruns
+// with another, so it still passes when writeVerifyBaseline stops recording Setup
+// at all: the recorded "" mismatches the rerun either way. The failure that leaves
+// is the one that matters in practice — every baseline carries "", so an honest
+// rerun with the SAME --setup is refused as a mismatch, and the comparison the
+// baseline exists for never happens.
+func TestVerifyBaselineRecordsTheSetupCommandItRan(t *testing.T) {
+	const setup = "printf one > setup-one"
+	repo := t.TempDir()
+	write(t, repo, "run.sh", "#!/bin/sh\necho \"tests/test_a.py::test_x PASSED\"\n")
+	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+		[]string{"verify", "--repo", repo, "--setup", setup, "--test", "sh run.sh", "--record-baseline", baselinePath}); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var baseline verifyBaseline
+	if err := json.Unmarshal(recorded, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	if baseline.Setup != setup {
+		t.Errorf("recorded setup = %q, want %q; the baseline cannot be compared on a command it did not store", baseline.Setup, setup)
+	}
+	out.Reset()
+	if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+		[]string{"verify", "--repo", repo, "--setup", setup, "--test", "sh run.sh", "--pre-edit-baseline", baselinePath}); err != nil {
+		t.Fatalf("a baseline recorded with the SAME --setup was refused: %v", err)
 	}
 }

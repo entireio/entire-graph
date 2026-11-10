@@ -632,6 +632,36 @@ func TestAddDependentCountsBudgetExpiredWarnsAndKeepsResult(t *testing.T) {
 	if got := result.Files[0].Changes[0].DependentsCount; got != 0 {
 		t.Fatalf("dependents count under expired budget = %d, want 0", got)
 	}
+	// The scan itself hit a real limit (see dependentsEvidenceState), not merely the scan's
+	// ordinary token-matching imprecision: some candidate files were never counted at all, so
+	// the 0 above must not be read as a confirmed "nothing depends on this".
+	if got := result.Files[0].Changes[0].DependentsEvidence; got != EvidenceRequiresVerification {
+		t.Fatalf("dependents evidence under expired budget = %q, want %q", got, EvidenceRequiresVerification)
+	}
+}
+
+// TestAddDependentCountsCleanScanIsPartialNotConfirmed pins the OTHER half of the same
+// contract: a scan that completes with no warnings at all is still a token-level heuristic (it
+// can miss a caller reached through an alias, reflection, or a generated binding), so it must
+// never claim Confirmed -- only a scan that additionally hit a real limit escalates further, to
+// RequiresVerification (see TestAddDependentCountsBudgetExpiredWarnsAndKeepsResult above).
+func TestAddDependentCountsCleanScanIsPartialNotConfirmed(t *testing.T) {
+	repo, head := newDependentsTestRepo(t)
+
+	result := Result{Files: []FileChange{{
+		Path:    "auth.py",
+		Status:  "M",
+		Changes: []EntityChange{{Type: "body_changed", Kind: "function", Name: "Foo"}},
+	}}}
+	if err := addDependentCountsWithProgress(context.Background(), repo, head, &result, dependentsScanOptions{}); err != nil {
+		t.Fatalf("clean scan must not error, got %v", err)
+	}
+	if got := result.Files[0].Changes[0].DependentsCount; got != 2 {
+		t.Fatalf("dependents count = %d, want 2 (see newDependentsTestRepo)", got)
+	}
+	if got := result.Files[0].Changes[0].DependentsEvidence; got != EvidencePartial {
+		t.Fatalf("dependents evidence on a clean scan = %q, want %q", got, EvidencePartial)
+	}
 }
 
 type deepDependentFile struct {
