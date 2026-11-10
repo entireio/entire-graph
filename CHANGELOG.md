@@ -42,7 +42,10 @@ auto-generated notes on
   the dollar-quoted body while retaining static DDL declarations and source
   positions. Constraint recovery no longer corrupts identifiers such as
   `unique_key` and `unique_states` in tables and partial indexes. All 16 pinned
-  River migration fixtures now parse without errors.
+  River migration fixtures now parse without errors. When the DDL inside a
+  PL/pgSQL `DO` body is not accepted by the SQL grammar, that block alone is
+  masked whole instead of failing the file: its declarations are not indexed
+  and no diagnostic is reported for it.
 
 - PostgreSQL dumps whose inline `COPY ... FROM stdin` rows contain a lone
   quote, `$$`, `--` or `/*` no longer fail parsing or hide the statements after

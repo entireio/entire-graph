@@ -7217,6 +7217,14 @@ func maskPostgresUnsupportedSyntax(content string) string {
 // is not modelled, but its declarations must not disappear with the wrapper.
 // Match exact dollar tags and a complete LANGUAGE/semicolon suffix; malformed
 // wrappers remain in the parse source and retain their syntax diagnostics.
+//
+// Projection must never cost a file its parse. A body is procedural text, so
+// its DDL can use forms the grammar rejects (`ON COMMIT DROP AS`, a default
+// reading a loop record) or be cut at a procedural boundary. When the
+// projected statements of one block do not parse on their own, that block is
+// masked whole, exactly as before projection existed: its declarations are
+// not indexed and no diagnostic is raised, while other blocks in the file
+// keep theirs.
 func maskPostgresDoBlocks(masked []byte) {
 	content := string(masked)
 	search := maskSQLLiteralContentsForSearch(content)
@@ -7262,7 +7270,28 @@ func maskPostgresDoBlocks(masked []byte) {
 			end = sqlStatementEnd(bodySearch, ddl[0])
 			copy(masked[bodyStart+ddl[0]:bodyStart+end], body[ddl[0]:end])
 		}
+		if end > 0 && !postgresProjectionParses(string(masked[bodyStart:bodyEnd])) {
+			maskBytesPreservingNewlines(masked, bodyStart, bodyEnd)
+		}
 	}
+}
+
+// postgresProjectionParses reports whether the DDL projected out of one DO
+// body survives the same masking and grammar as the file it came from. The
+// projection holds no DO wrapper, so the nested mask does not recurse, and the
+// cost is one parse of that body's statements rather than of the whole file.
+func postgresProjectionParses(projected string) bool {
+	parser := sitter.NewParser()
+	defer parser.Close()
+	parser.SetLanguage(pgsql.GetLanguage())
+	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	defer cancel()
+	tree, err := parser.ParseCtx(ctx, nil, []byte(maskPostgresUnsupportedSyntax(projected)))
+	if tree == nil {
+		return false
+	}
+	defer tree.Close()
+	return err == nil && ctx.Err() == nil && !tree.RootNode().HasError()
 }
 
 // maskSQLLiteralContentsForSearch blanks the contents (but not delimiters) of

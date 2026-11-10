@@ -101,7 +101,7 @@ func TestPostgresDoMalformedWrapperStillFails(t *testing.T) {
 		"DO $$ BEGIN NULL; END; $$ LANGUAGE;",
 		"DO LANGUAGE plpgsql $$ BEGIN NULL; END; $$ LANGUAGE plpgsql;",
 		"DO $$ BEGIN NULL; END; $$ trailing_garbage;",
-		"DO $$ BEGIN CREATE TABLE broken (id int; END; $$ LANGUAGE plpgsql;",
+		"DO $$ BEGIN CREATE TABLE unterminated (id int); END;",
 	} {
 		_, _, status := (TreeSitterParser{}).ParseWithStatus("bad.sql", src)
 		if !status.ParseError {
@@ -280,5 +280,63 @@ CREATE TABLE after_tbl (id int);
 	}
 	if countEntity(entities, "index", "dyn_idx") != 0 {
 		t.Errorf("dynamic index projected: %+v", entities)
+	}
+}
+
+// DDL projected out of a well-formed DO body must never fail the file. When
+// the grammar rejects it, that block alone is masked whole (the behaviour
+// before projection existed): no parse error and no phantom declarations.
+func TestPostgresDoRejectedProjectionMasksBlock(t *testing.T) {
+	for name, ddl := range map[string]string{
+		"on commit drop as":   "CREATE TEMP TABLE tmp_x ON COMMIT DROP AS SELECT * FROM before_tbl WHERE id = r.id;",
+		"record default":      "CREATE TABLE q (id int, v text DEFAULT r.name);",
+		"broken parenthesis":  "CREATE TABLE broken (id int; CREATE TABLE collateral (id int);",
+		"procedural boundary": "IF true THEN CREATE TABLE cut (id int) END IF;",
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := "CREATE TABLE before_tbl (id int);\n" +
+				"DO $$\nDECLARE r record;\nBEGIN\n  FOR r IN SELECT 1 LOOP\n    " + ddl + "\n  END LOOP;\nEND $$;\n" +
+				"CREATE TABLE after_tbl (id int);\n"
+			entities, _, status := (TreeSitterParser{}).ParseWithStatus("rejected.sql", src)
+			if status.ParseError {
+				t.Fatalf("projected DDL failed the file: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(src))
+			}
+			if len(entities) != 2 || countEntity(entities, "table", "before_tbl") != 1 || countEntity(entities, "table", "after_tbl") != 1 {
+				t.Errorf("want only the surrounding tables: %+v", entities)
+			}
+			for _, e := range entities {
+				if e.Name == "after_tbl" && e.StartLine != 9 {
+					t.Errorf("following declaration moved: %+v", e)
+				}
+			}
+		})
+	}
+}
+
+// The fallback is per block: a rejected body does not cost its neighbours
+// their declarations.
+func TestPostgresDoRejectedProjectionKeepsOtherBlocks(t *testing.T) {
+	src := `DO $$ BEGIN CREATE TABLE good_first (id int); END $$;
+DO $bad$
+DECLARE r record;
+BEGIN
+  CREATE TABLE bad_sibling (id int);
+  CREATE TEMP TABLE tmp_x ON COMMIT DROP AS SELECT 1;
+END $bad$ LANGUAGE plpgsql;
+DO LANGUAGE plpgsql $$ BEGIN CREATE INDEX good_idx ON good_first (id); END $$;
+CREATE TABLE after_tbl (id int);
+`
+	entities, _, status := (TreeSitterParser{}).ParseWithStatus("mixed.sql", src)
+	if status.ParseError {
+		t.Fatalf("parse error: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(src))
+	}
+	if countEntity(entities, "table", "good_first") != 1 || countEntity(entities, "index", "good_idx") != 1 || countEntity(entities, "table", "after_tbl") != 1 {
+		t.Errorf("good blocks lost declarations: %+v", entities)
+	}
+	if len(entities) != 3 {
+		t.Errorf("rejected block projected declarations: %+v", entities)
+	}
+	if masked := maskPostgresUnsupportedSyntax(src); len(masked) != len(src) || strings.Count(masked, "\n") != strings.Count(src, "\n") {
+		t.Fatal("changed source width or line count")
 	}
 }
