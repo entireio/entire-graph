@@ -755,7 +755,8 @@ func appendTranscriptText(t *testing.T, path, text string) {
 // from a full parse. A 1 MiB filler record puts the transcript over the size from which renders
 // resume; the transcript then grows a part at a time, and after every write the render must print
 // what a render with an empty cache directory prints, and `stats --transcript` served from the
-// summary that render stored must report the follow-up classes a fresh `stats` reports. The
+// summary that render stored (the memo under `<cache>/statusline/`, which `stats --cache-dir`
+// reads when given that directory) must report the follow-up classes a fresh `stats` reports. The
 // session: a Grep and its result, a graph query run after `cd sub` (sub/a.go is 2,000 bytes, a.go
 // 4,000) with its result in two writes, the query's tool_use again (a re-serialised turn, one
 // call), five unrelated calls that close the query's follow-up window with no follow-up, then two
@@ -844,7 +845,7 @@ func TestStatuslineResumedRenderMatchesAFreshOne(t *testing.T) {
 		if want := runStatuslineForTest(t, 120, t.TempDir(), stdin); got != want {
 			t.Fatalf("%s: the resumed render printed %q, a fresh one %q", step, got, want)
 		}
-		if got, want := followUpClasses(cacheDir), followUpClasses(t.TempDir()); got != want {
+		if got, want := followUpClasses(filepath.Join(cacheDir, "statusline")), followUpClasses(t.TempDir()); got != want {
 			t.Fatalf("%s: stats served from the resumed render's summary reports %s, a fresh one %s", step, got, want)
 		}
 	}
