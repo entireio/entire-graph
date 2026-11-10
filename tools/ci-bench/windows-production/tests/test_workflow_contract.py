@@ -20,23 +20,36 @@ SHARDED_TARGETS = {
         "target": None,
         "shell": "pwsh",
         "runners": ("depot-windows-2025-8", "depot-windows-2025-4"),
+        "bundleCompression": 0,
+        "components": {
+            "prepare": "compile and plan",
+            "shards": "shard ${{ matrix.shard }}",
+            "other": "non-heavy packages",
+            "vet": "vet",
+            "verify": "coverage and integrity",
+        },
+        # Where the native `go vet ./...` runs.
+        "vetJob": "vet",
     },
     "macos": {
         "check": "test (macos-latest)",
         "settings": "settings.darwin-arm64.json",
         "weights": "historical-weights.darwin-arm64.json",
-        "shardCount": 4,
+        "shardCount": 8,
         "target": "darwin/arm64",
         "shell": "bash",
         "runners": ("macos-latest",),
+        "bundleCompression": 1,
+        # No vet job of its own: hosted macOS runners are the scarce resource,
+        # so vet is a step of the short non-heavy job.
+        "components": {
+            "prepare": "compile and plan",
+            "shards": "shard ${{ matrix.shard }}",
+            "other": "non-heavy packages and vet",
+            "verify": "coverage and integrity",
+        },
+        "vetJob": "other",
     },
-}
-COMPONENTS = {
-    "prepare": "compile and plan",
-    "shards": "shard ${{ matrix.shard }}",
-    "other": "non-heavy packages",
-    "vet": "vet",
-    "verify": "coverage and integrity",
 }
 SCRIPTS = {
     "prepare": "prepare.py",
@@ -44,8 +57,6 @@ SCRIPTS = {
     "other": "run_other.py",
     "verify": "verify_results.py",
 }
-# GitHub-hosted macOS concurrency can be as low as five jobs per account.
-MACOS_CONCURRENT_JOB_BUDGET = 5
 
 
 def workflow_text():
@@ -96,21 +107,24 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn(f"    name: {expected['check']}\n", aggregate)
                 self.assertEqual(workflow.count(f"    name: {expected['check']}\n"), 1)
                 self.assertIn("    if: always()\n", aggregate)
-                jobs = [f"{name}-test-{component}" for component in COMPONENTS]
+                components = expected["components"]
+                jobs = [f"{name}-test-{component}" for component in components]
                 self.assertIn(f"      [{', '.join(jobs)}]\n", aggregate)
-                for component in COMPONENTS:
-                    self.assertIn(f"needs.{name}-test-{component}.result", aggregate)
+                self.assertEqual(aggregate.count("_RESULT: ${{ needs."), len(components))
+                for component in components:
+                    variable = f"{component.upper()}_RESULT"
+                    self.assertIn(
+                        f"{variable}: ${{{{ needs.{name}-test-{component}.result }}}}\n", aggregate
+                    )
+                    self.assertEqual(aggregate.count(f'"${variable}"'), 1)
                 self.assertIn('if [ "$result" != success ]; then', aggregate)
                 self.assertIn("exit 1", aggregate)
-                self.assertEqual(aggregate.count("_RESULT: ${{ needs."), len(COMPONENTS))
-                for variable in ("PREPARE", "SHARDS", "OTHER", "VET", "VERIFY"):
-                    self.assertEqual(aggregate.count(f'"${variable}_RESULT"'), 1)
 
     def test_components_follow_the_existing_test_name_scheme(self):
         workflow = workflow_text()
         for name, expected in SHARDED_TARGETS.items():
             with self.subTest(target=name):
-                for component, component_name in COMPONENTS.items():
+                for component, component_name in expected["components"].items():
                     block = job_block(workflow, f"{name}-test-{component}")
                     self.assertIn(f"    name: {expected['check']} / {component_name}\n", block)
         self.assertNotIn("name: Windows test /", workflow)
@@ -163,18 +177,32 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn(f"--settings {HARNESS_PATH}/{expected['settings']}", prepare)
                 self.assertIn(f"--weights {HARNESS_PATH}/{expected['weights']}", prepare)
                 self.assertIn("--shard-index '${{ matrix.shard }}'", job_block(workflow, f"{name}-test-shards"))
-                vet = job_block(workflow, f"{name}-test-vet")
-                self.assertIn("      - run: go vet ./...\n", vet)
-                self.assertNotIn("needs:", vet)
+                vet = job_block(workflow, f"{name}-test-{expected['vetJob']}")
+                self.assertEqual(vet.count("run: go vet ./...\n"), 1)
+                self.assertEqual(workflow.count(f"  {name}-test-vet:\n"), int(expected["vetJob"] == "vet"))
+                if expected["vetJob"] == "vet":
+                    self.assertNotIn("needs:", vet)
+                else:
+                    # A vet step must run, and fail the job, whatever the tests before it did.
+                    step = vet[vet.index("      - name: Vet the darwin-selected files natively\n"):]
+                    self.assertIn("        if: ${{ !cancelled() }}\n", step)
+                    self.assertNotIn("continue-on-error", vet)
+                    self.assertLess(vet.index("Upload non-heavy package evidence"), vet.index("go vet ./..."))
 
-    def test_harness_unit_tests_run_natively_before_each_plan(self):
+    def test_harness_unit_tests_run_natively_off_the_critical_path(self):
         workflow = workflow_text()
+        validate = f'python -B -m unittest discover -s {HARNESS_PATH}/tests -p "test_*.py" -v'
         for name, expected in SHARDED_TARGETS.items():
             with self.subTest(target=name):
-                prepare = job_block(workflow, f"{name}-test-prepare")
-                validate = f'python -B -m unittest discover -s {HARNESS_PATH}/tests -p "test_*.py" -v'
-                self.assertIn(validate, prepare)
-                self.assertLess(prepare.index(validate), prepare.index(f"{HARNESS_PATH}/prepare.py"))
+                # Once per target, on its native runner, in the short non-heavy job that the
+                # aggregate requires; never in compile-and-plan, which every shard waits for.
+                other = job_block(workflow, f"{name}-test-other")
+                self.assertEqual(other.count(validate), 1)
+                self.assertLess(other.index(validate), other.index(f"{HARNESS_PATH}/run_other.py"))
+                for component in expected["components"]:
+                    if component != "other":
+                        self.assertNotIn("unittest", job_block(workflow, f"{name}-test-{component}"))
+        self.assertEqual(workflow.count(validate), len(SHARDED_TARGETS))
 
     def test_artifacts_are_named_per_target_and_never_cross(self):
         workflow = workflow_text()
@@ -184,7 +212,7 @@ class WorkflowContractTests(unittest.TestCase):
                 prepare = job_block(workflow, f"{name}-test-prepare")
                 self.assertIn(f"          name: {name}-test-bundle\n", prepare)
                 self.assertIn("if-no-files-found: error", prepare)
-                self.assertIn("compression-level: 0", prepare)
+                self.assertIn(f"compression-level: {expected['bundleCompression']}\n", prepare)
                 shards = job_block(workflow, f"{name}-test-shards")
                 self.assertIn(f"          name: {name}-test-bundle\n", shards)
                 self.assertIn(f"          name: {name}-test-shard-${{{{ matrix.shard }}}}\n", shards)
@@ -196,7 +224,7 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn(f"          pattern: {name}-test-shard-*\n", verify)
                 self.assertIn(f"          name: {name}-test-other\n", verify)
                 self.assertIn(f"          name: {name}-test-verification\n", verify)
-                for component in COMPONENTS:
+                for component in expected["components"]:
                     block = job_block(workflow, f"{name}-test-{component}")
                     self.assertNotIn(f"{foreign}-test", block)
                     if component != "vet":
@@ -211,7 +239,7 @@ class WorkflowContractTests(unittest.TestCase):
         for name, expected in SHARDED_TARGETS.items():
             with self.subTest(target=name):
                 foreign_shell = "bash" if expected["shell"] == "pwsh" else "pwsh"
-                for component in ("prepare", "shards", "other", "vet"):
+                for component in set(expected["components"]) - {"verify"}:
                     block = job_block(workflow, f"{name}-test-{component}")
                     runner = re.search(r"^    runs-on: (.+)$", block, flags=re.MULTILINE).group(1)
                     self.assertIn(runner, expected["runners"])
@@ -223,16 +251,23 @@ class WorkflowContractTests(unittest.TestCase):
                 for job in (f"{name}-test-verify", f"{name}-test"):
                     self.assertIn("    runs-on: depot-ubuntu-24.04-4\n", job_block(workflow, job))
 
-    def test_macos_jobs_stay_hosted_within_the_concurrency_budget(self):
+    def test_macos_jobs_stay_hosted_and_only_shards_compete_for_runners(self):
         workflow = workflow_text()
         settings = json.loads(
             (HARNESS / SHARDED_TARGETS["macos"]["settings"]).read_text(encoding="utf-8")
         )
-        # Shards and the non-heavy job run together once the plan exists.
-        self.assertLessEqual(settings["shardCount"] + 1, MACOS_CONCURRENT_JOB_BUDGET)
         shards = job_block(workflow, "macos-test-shards")
         self.assertIn(f"max-parallel: {settings['shardCount']}\n", shards)
-        for component in COMPONENTS:
+        # Once the plan exists, the shards share the hosted macOS runners with exactly
+        # one other job of this harness.
+        after_plan = [
+            job
+            for job in re.findall(r"^  (macos-test-[a-z-]+):\n", workflow, flags=re.MULTILINE)
+            if "runs-on: macos-latest" in job_block(workflow, job)
+            and "needs: macos-test-prepare\n" in job_block(workflow, job)
+        ]
+        self.assertEqual(sorted(after_plan), ["macos-test-other", "macos-test-shards"])
+        for component in SHARDED_TARGETS["macos"]["components"]:
             block = job_block(workflow, f"macos-test-{component}")
             self.assertNotIn("depot-macos", block)
             self.assertNotIn("pwsh", block)
@@ -249,8 +284,8 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertTrue(commands)
         for command in commands:
             self.assertRegex(command, r"(?:^|[& ])python -B(?: |$)")
-        for name in SHARDED_TARGETS:
-            for component in COMPONENTS:
+        for name, expected in SHARDED_TARGETS.items():
+            for component in expected["components"]:
                 block = job_block(workflow, f"{name}-test-{component}")
                 self.assertEqual(block.count("python "), block.count("python -B "))
 

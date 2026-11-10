@@ -134,8 +134,6 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - name: Validate the sharding harness
-        run: python -B -m unittest discover -s tools/ci-bench/windows-production/tests -p "test_*.py" -v
       - name: Compile once and inventory default-runnable roots
         shell: pwsh
         run: |
@@ -240,6 +238,10 @@ jobs:
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
+      # The harness unit tests run natively here, not in compile-and-plan: this
+      # job is far shorter than a shard, so they cost the workflow no wall time.
+      - name: Validate the sharding harness
+        run: python -B -m unittest discover -s tools/ci-bench/windows-production/tests -p "test_*.py" -v
       - name: Run every target-Windows non-heavy package once
         shell: pwsh
         run: |
@@ -344,12 +346,12 @@ jobs:
   # slowest leg no longer sets CI wall time as one 17-20 minute job.
   #
   # Capacity: these jobs stay on GitHub-hosted macos-latest (see the Depot note
-  # on the build matrix), where concurrent macOS jobs are capped per account, as
-  # low as five on some plans, and this workflow already runs macOS build,
-  # statusline, and prompt-context-hook jobs. The shard count is therefore four,
-  # not Windows' eight: four shards plus the non-heavy job is five. Change it in
-  # tools/ci-bench/windows-production/settings.darwin-arm64.json together with
-  # max-parallel below.
+  # on the build matrix), where concurrent macOS jobs are capped per account.
+  # Once the plan exists the workflow runs the shards plus one job for the
+  # non-heavy packages and vet, and nothing else on macOS. Change the shard
+  # count in tools/ci-bench/windows-production/settings.darwin-arm64.json
+  # together with max-parallel below, and check each shard job's queued-to-
+  # started gap afterwards: a shard that queues costs more than it saves.
   macos-test-prepare:
     name: test (macos-latest) / compile and plan
     runs-on: macos-latest
@@ -360,16 +362,19 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      # setup-go keys its build cache on these files and the first job to finish
+      # saves it. Naming the settings file as well gives this job a key no other
+      # job shares, so the cache it restores holds compiled test packages rather
+      # than whatever a build-only job saved.
       - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.27.x"
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            tools/ci-bench/windows-production/settings.darwin-arm64.json
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - name: Validate the sharding harness
-        shell: bash
-        run: python -B -m unittest discover -s tools/ci-bench/windows-production/tests -p "test_*.py" -v
       - name: Compile once and inventory default-runnable roots
         shell: bash
         run: |
@@ -403,7 +408,7 @@ jobs:
           name: macos-test-bundle
           path: ${{ runner.temp }}/macos-test-bundle
           if-no-files-found: error
-          compression-level: 0
+          compression-level: 1
           retention-days: 3
 
   macos-test-shards:
@@ -413,7 +418,7 @@ jobs:
     timeout-minutes: 105
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 8
       matrix:
         shard: ${{ fromJSON(needs.macos-test-prepare.outputs.shard-matrix) }}
     steps:
@@ -451,7 +456,7 @@ jobs:
           retention-days: 3
 
   macos-test-other:
-    name: test (macos-latest) / non-heavy packages
+    name: test (macos-latest) / non-heavy packages and vet
     needs: macos-test-prepare
     runs-on: macos-latest
     timeout-minutes: 40
@@ -470,6 +475,11 @@ jobs:
         with:
           name: macos-test-bundle
           path: ${{ runner.temp }}/macos-test-bundle
+      # The harness unit tests run natively here, not in compile-and-plan: this
+      # job is far shorter than a shard, so they cost the workflow no wall time.
+      - name: Validate the sharding harness
+        shell: bash
+        run: python -B -m unittest discover -s tools/ci-bench/windows-production/tests -p "test_*.py" -v
       - name: Run every target-macOS non-heavy package once
         shell: bash
         run: |
@@ -487,26 +497,16 @@ jobs:
           path: ${{ runner.temp }}/macos-test-other
           if-no-files-found: error
           retention-days: 3
-
-  # The harness compiles and runs with -vet=off, and lint vets only the files Go
-  # selects on Linux. Files selected only on darwin (the *_darwin and *_bsd
-  # sources and tests, and the !linux fallbacks) were vetted solely by the
-  # former monolithic `go test ./...`, so they keep a native vet here. It needs
-  # no bundle and runs beside compile-and-plan, before the shards occupy the
-  # macOS runners.
-  macos-test-vet:
-    name: test (macos-latest) / vet
-    runs-on: macos-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@v7.0.0
-        with:
-          go-version: "1.27.x"
-          cache-dependency-path: go.sum
-      - run: go vet ./...
+      # The harness compiles and runs with -vet=off, and lint vets only the files
+      # Go selects on Linux. Files selected only on darwin (the *_darwin and *_bsd
+      # sources and tests, and the !linux fallbacks) were vetted solely by the
+      # former monolithic `go test ./...`, so they keep a native vet. It is a
+      # step of this short job rather than a job of its own so that it does not
+      # hold a macOS runner the shards could use.
+      - name: Vet the darwin-selected files natively
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: go vet ./...
 
   macos-test-verify:
     name: test (macos-latest) / coverage and integrity
@@ -555,7 +555,7 @@ jobs:
   macos-test:
     name: test (macos-latest)
     needs:
-      [macos-test-prepare, macos-test-shards, macos-test-other, macos-test-vet, macos-test-verify]
+      [macos-test-prepare, macos-test-shards, macos-test-other, macos-test-verify]
     if: always()
     runs-on: depot-ubuntu-24.04-4
     steps:
@@ -564,10 +564,9 @@ jobs:
           PREPARE_RESULT: ${{ needs.macos-test-prepare.result }}
           SHARDS_RESULT: ${{ needs.macos-test-shards.result }}
           OTHER_RESULT: ${{ needs.macos-test-other.result }}
-          VET_RESULT: ${{ needs.macos-test-vet.result }}
           VERIFY_RESULT: ${{ needs.macos-test-verify.result }}
         run: |
-          for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT" "$VET_RESULT" "$VERIFY_RESULT"; do
+          for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT" "$VERIFY_RESULT"; do
             if [ "$result" != success ]; then
               echo "A required macOS test component ended with: $result" >&2
               exit 1

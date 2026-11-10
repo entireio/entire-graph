@@ -112,11 +112,6 @@ class TargetSettingsTests(unittest.TestCase):
         for key in ("timeout", "shuffle", "testParallel", "goMaxProcs", "defaultWeightSeconds"):
             self.assertEqual(darwin[key], windows[key], key)
 
-    def test_macos_shard_count_respects_hosted_runner_concurrency(self):
-        # GitHub-hosted macOS concurrency can be as low as five jobs per account
-        # and this workflow runs other macOS jobs; see the workflow comment.
-        self.assertEqual(plan_shards.load_settings(DARWIN_SETTINGS)["shardCount"], 4)
-
     def test_committed_macos_weights_load_and_name_only_configured_packages(self):
         weights, metadata = plan_shards.load_weights(DARWIN_WEIGHTS)
         configured = {

@@ -21,7 +21,7 @@ the host platform, `go env`, and every artifact.
 | --- | --- | --- |
 | Settings | `settings.json` | `settings.darwin-arm64.json` |
 | Weights | `historical-weights.json` | `historical-weights.darwin-arm64.json` |
-| Shards | 8 | 4 |
+| Shards | 8 | 8 |
 | Test binaries | `*.test.exe` | `*.test` |
 | Command budget | 30000 UTF-16 units | 262144 argv bytes |
 | Budget record | `commandLineUtf16Units` | `commandLineArgvBytes` |
@@ -34,9 +34,11 @@ weights are always stored as `settings.json` and `historical-weights.json`.
 The JSON schema identifiers keep their historical `entire-graph.windows-ci.*`
 prefix for both targets; the target is carried by `targetEnvironment`.
 
-macOS uses four shards rather than eight because GitHub-hosted macOS
-concurrency is capped per account (as low as five concurrent jobs) and the
-workflow runs other macOS jobs. Four shards plus the non-heavy job is five.
+GitHub-hosted macOS concurrency is capped per account, so on macOS the shards
+are the only jobs that compete for runners once the plan exists: the native
+vet and the harness unit tests are steps of the one short non-heavy job. When
+changing the macOS shard count, compare each shard job's queued and started
+times afterwards; a shard that queues costs more wall time than it saves.
 
 ## Semantics
 
@@ -107,17 +109,42 @@ every expected operation, each shard's cache clean and planned invocation, and
 the non-heavy clean/test sequence must all be present and zero.
 
 The workflow keeps native `go build ./...` coverage on both targets and adds a
-separate native `go vet ./...` job for each, because the harness compiles and
-runs with `-vet=off` and the lint job vets only the files Go selects on Linux.
-It uses only standard ephemeral hosted runners.
+native `go vet ./...` for each (a job on Windows, a step of the non-heavy job
+on macOS), because the harness compiles and runs with `-vet=off` and the lint
+job vets only the files Go selects on Linux. The harness unit tests run
+natively in each target's non-heavy job, which the aggregate check requires,
+rather than in compile-and-plan, which every shard waits for. It uses only
+standard ephemeral hosted runners.
 
 ## Historical weights
 
 Weights are per target and only balance shards; they never decide what runs.
-The Windows file was seeded from a Windows monolithic baseline. The macOS file
-was seeded from one sequential local run of the sharded flow on an Apple M1
-(darwin/arm64); roots below two seconds use the configured default, as on
-Windows. Hosted runners are slower, which scales every shard alike.
+A weight is a root's top-level elapsed time on the real CI runner. Roots below
+half a second are not recorded and use `defaultWeightSeconds`, which is set to
+their measured mean (0.05 s) so that the thousands of quick roots do not
+outweigh the slow ones.
+
+Refresh the weights from a green run whenever the shards drift apart, or after
+adding or splitting a slow test:
+
+```sh
+H=tools/ci-bench/windows-production; E=$(mktemp -d); RUN=<run id>
+gh run download "$RUN" -D "$E/macos" -p 'macos-test-shard-*'
+gh run download "$RUN" -D "$E/windows" -p 'windows-test-shard-*'
+python3 -B $H/refresh_weights.py --target darwin/arm64 --run "$RUN" \
+  --evidence "$E/macos" --output $H/historical-weights.darwin-arm64.json
+python3 -B $H/refresh_weights.py --target windows/amd64 --run "$RUN" \
+  --evidence "$E/windows" --output $H/historical-weights.json
+```
+
+`refresh_weights.py` refuses evidence that is not one complete, successful run
+of the named target (a missing shard, a nonzero exit, two commits, or a root
+with more than one terminal event), so a partial download cannot skew a plan.
+
+A shard cannot be shorter than its slowest root, and summed weights overstate
+roots that call `t.Parallel()`, which overlap inside one shard. When one root
+approaches half of a shard's time, split it into several top-level tests that
+together make the same assertions; the planner can then spread them.
 
 ## Running a target locally
 
@@ -128,7 +155,7 @@ H=tools/ci-bench/windows-production; O=$(mktemp -d); SHA=$(git rev-parse HEAD)
 python3 -B $H/prepare.py --target darwin/arm64 --repository "$PWD" --output "$O/bundle" \
   --settings $H/settings.darwin-arm64.json --weights $H/historical-weights.darwin-arm64.json \
   --expected-repository-sha "$SHA"
-for i in 0 1 2 3; do
+for i in $(seq 0 7); do
   python3 -B $H/run_shard.py --target darwin/arm64 --repository "$PWD" --bundle "$O/bundle" \
     --output "$O/shards/macos-test-shard-$i" --shard-index $i --expected-repository-sha "$SHA"
 done
