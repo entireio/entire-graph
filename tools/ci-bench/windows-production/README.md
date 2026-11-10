@@ -21,7 +21,7 @@ the host platform, `go env`, and every artifact.
 | --- | --- | --- |
 | Settings | `settings.json` | `settings.darwin-arm64.json` |
 | Weights | `historical-weights.json` | `historical-weights.darwin-arm64.json` |
-| Shards | 12 | 12 |
+| Shards | 16 | 12 |
 | Test binaries | `*.test.exe` | `*.test` |
 | Command budget | 30000 UTF-16 units | 262144 argv bytes |
 | Budget record | `commandLineUtf16Units` | `commandLineArgvBytes` |
@@ -38,7 +38,25 @@ GitHub-hosted macOS concurrency is capped per account, so on macOS the shards
 are the only jobs that compete for runners once the plan exists: the native
 vet and the harness unit tests are steps of the one short non-heavy job. When
 changing the macOS shard count, compare each shard job's queued and started
-times afterwards; a shard that queues costs more wall time than it saves.
+times afterwards; a shard that queues costs more wall time than it saves. With
+twelve shards, all thirteen macOS jobs started within two seconds of the plan,
+so the account's cap is above thirteen; it has not been probed further.
+
+## What bounds the wall time
+
+Each sharded target ends at compile-and-plan, plus its slowest shard, plus the
+aggregate job. Measured with twelve shards per target:
+
+- Windows: each Depot Windows runner takes 80 to 175 s to start, and the
+  critical path pays that twice (compile-and-plan, then the shards), which is
+  more than a third of the target's time. Test steps take 100 to 140 s.
+- macOS: runners start at once; a shard spends 50 to 60 s on checkout, the Go
+  toolchain and the bundle before 70 to 130 s of tests. Hosted macOS runners
+  differ in speed by up to forty percent from one job to the next, which is
+  what is left of the spread between shards.
+- compile-and-plan is fast only while its Go build cache holds compiled test
+  packages. On macOS that job has a cache key of its own for that reason
+  (22 s to compile instead of 117 s).
 
 ## Semantics
 

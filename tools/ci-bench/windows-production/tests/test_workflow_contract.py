@@ -16,7 +16,7 @@ SHARDED_TARGETS = {
         "check": "test (windows-latest)",
         "settings": "settings.json",
         "weights": "historical-weights.json",
-        "shardCount": 12,
+        "shardCount": 16,
         "target": None,
         "shell": "pwsh",
         "runners": ("depot-windows-2025-8", "depot-windows-2025-4"),

@@ -177,7 +177,7 @@ jobs:
     timeout-minutes: 105
     strategy:
       fail-fast: false
-      max-parallel: 12
+      max-parallel: 16
       matrix:
         shard: ${{ fromJSON(needs.windows-test-prepare.outputs.shard-matrix) }}
     steps:
@@ -353,7 +353,9 @@ jobs:
   # non-heavy packages and vet, and nothing else on macOS. Change the shard
   # count in tools/ci-bench/windows-production/settings.darwin-arm64.json
   # together with max-parallel below, and check each shard job's queued-to-
-  # started gap afterwards: a shard that queues costs more than it saves.
+  # started gap afterwards: a shard that queues costs more than it saves. With
+  # twelve shards, thirteen macOS jobs started within two seconds of the plan
+  # (runs 42840857648 and 42843364246), so the cap is above that.
   macos-test-prepare:
     name: test (macos-latest) / compile and plan
     runs-on: macos-latest
