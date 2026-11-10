@@ -11,6 +11,7 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import plan_shards  # noqa: E402
+import targets  # noqa: E402
 import verify_results  # noqa: E402
 
 
@@ -29,23 +30,35 @@ class VerifyResultsTests(unittest.TestCase):
         with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
             return verify_results.main(arguments)
 
-    def make_fixture(self, root):
+    def make_fixture(self, root, target=targets.WINDOWS_AMD64):
+        """Build a passing evidence set; the default is the original Windows fixture."""
+        windows = target is targets.WINDOWS_AMD64
+        binary_name = "heavy" + target.binary_suffix
+        command_limit = 30000 if windows else 262144
+        go_tool_directory = (
+            "C:\\Go\\pkg\\tool\\windows_amd64" if windows else "/usr/local/go/pkg/tool/darwin_arm64"
+        )
+        # POSIX targets must also prove the launch fit the kernel's exec argument area.
+        argument_area = (
+            {} if windows else {"execArgumentAreaBytes": 20000, "execArgumentAreaLimit": 1048576}
+        )
         bundle = root / "bundle"
         shards_root = root / "shards"
         other_root = root / "other"
         output = root / "verification.json"
-        binary = bundle / "binaries" / "heavy.test.exe"
+        binary = bundle / "binaries" / binary_name
         binary.parent.mkdir(parents=True)
-        binary.write_bytes(b"compiled-windows-test-binary")
+        binary.write_bytes(f"compiled-{target.goos}-test-binary".encode())
         binary_hash = plan_shards.sha256_file(binary)
         repository_sha = "b" * 40
-        go_version = "go version go1.26.7 windows/amd64"
+        go_version = f"go version go1.26.7 {target.name}"
         settings = {
             "schema": plan_shards.SETTINGS_SCHEMA,
+            **({} if windows else {"target": target.name}),
             "shardCount": 2,
             "defaultWeightSeconds": 1.0,
             "timeout": "30m",
-            "commandLineLimit": 30000,
+            "commandLineLimit": command_limit,
             "shuffle": "off",
             "testParallel": None,
             "goMaxProcs": None,
@@ -53,7 +66,7 @@ class VerifyResultsTests(unittest.TestCase):
                 {
                     "argument": "./heavy",
                     "importPath": "example/heavy",
-                    "binaryName": "heavy.test.exe",
+                    "binaryName": binary_name,
                     "expectedTestMainDeclarations": [],
                 }
             ],
@@ -72,8 +85,8 @@ class VerifyResultsTests(unittest.TestCase):
             "schema": plan_shards.INVENTORY_SCHEMA,
             "repositorySha": repository_sha,
             "goVersion": go_version,
-            "goos": "windows",
-            "goarch": "amd64",
+            "goos": target.goos,
+            "goarch": target.goarch,
             "cgoEnabled": "1",
             "listingContract": {
                 "arguments": ["-test.paniconexit0", "-test.list=."],
@@ -85,7 +98,7 @@ class VerifyResultsTests(unittest.TestCase):
             "packageArgument": "./heavy",
             "importPath": "example/heavy",
             "packageDirectoryRelative": "heavy",
-            "binaryName": "heavy.test.exe",
+            "binaryName": binary_name,
             "binarySha256": binary_hash,
             "binarySizeBytes": binary.stat().st_size,
             "listExitCode": 0,
@@ -96,9 +109,9 @@ class VerifyResultsTests(unittest.TestCase):
             ],
             "excludedBenchmarks": ["BenchmarkNo"],
         }
-        inventory_path = bundle / "inventories" / "heavy.test.exe.inventory.json"
+        inventory_path = bundle / "inventories" / f"{binary_name}.inventory.json"
         write_json(inventory_path, inventory_payload)
-        inventories = plan_shards.load_inventories([inventory_path])
+        inventories = plan_shards.load_inventories([inventory_path], target)
         loaded_settings = plan_shards.load_settings(bundle / "settings.json")
         weights, weight_metadata = plan_shards.load_weights(bundle / "historical-weights.json")
         plan = plan_shards.create_plan(inventories, loaded_settings, weights, weight_metadata)
@@ -107,8 +120,8 @@ class VerifyResultsTests(unittest.TestCase):
             "schema": verify_results.PACKAGE_SCHEMA,
             "repositorySha": repository_sha,
             "goVersion": go_version,
-            "goos": "windows",
-            "goarch": "amd64",
+            "goos": target.goos,
+            "goarch": target.goarch,
             "cgoEnabled": "1",
             "packages": [
                 {"importPath": "example/heavy", "packageDirectoryRelative": "heavy", "heavy": True},
@@ -124,9 +137,9 @@ class VerifyResultsTests(unittest.TestCase):
                 "repositorySha": repository_sha,
                 "repositoryShaAfter": repository_sha,
                 "goVersion": go_version,
-                "targetEnvironment": dict(plan_shards.TARGET_ENVIRONMENT),
+                "targetEnvironment": target.environment,
                 "exitCode": 0,
-                "goToolDirectory": "C:\\Go\\pkg\\tool\\windows_amd64",
+                "goToolDirectory": go_tool_directory,
                 "trackedWorktreeCleanBefore": True,
                 "trackedWorktreeCleanAfter": True,
                 "operations": [
@@ -147,7 +160,7 @@ class VerifyResultsTests(unittest.TestCase):
         plan_hash = plan_shards.sha256_file(bundle / "plan.json")
         for shard in plan["shards"]:
             index = shard["index"]
-            directory = shards_root / f"windows-test-shard-{index}"
+            directory = shards_root / f"{target.goos}-test-shard-{index}"
             invocations = []
             events = []
             for assignment in shard["assignments"]:
@@ -165,7 +178,8 @@ class VerifyResultsTests(unittest.TestCase):
                         "binaryName": assignment["binaryName"],
                         "binarySha256": assignment["binarySha256"],
                         "rootCount": len(assignment["roots"]),
-                        "commandLineUtf16Units": 1000,
+                        target.command_line_metric: 1000,
+                        **argument_area,
                         "exitCode": 0,
                         "paniconexit0": True,
                         "workingDirectoryRelative": assignment["packageDirectoryRelative"],
@@ -183,15 +197,15 @@ class VerifyResultsTests(unittest.TestCase):
                     "repositorySha": repository_sha,
                     "repositoryShaAfter": repository_sha,
                     "goVersion": go_version,
-                    "targetEnvironment": dict(plan_shards.TARGET_ENVIRONMENT),
-                    "goToolDirectory": "C:\\Go\\pkg\\tool\\windows_amd64",
+                    "targetEnvironment": target.environment,
+                    "goToolDirectory": go_tool_directory,
                     "trackedWorktreeCleanBefore": True,
                     "trackedWorktreeCleanAfter": True,
                     "cleanTestCacheExitCode": 0,
                     "planSha256": plan_hash,
                     "shardIndex": index,
                     "shardCount": 2,
-                    "commandLineLimit": 30000,
+                    "commandLineLimit": command_limit,
                     "timeout": "30m",
                     "shuffle": "off",
                     "testParallel": None,
@@ -220,7 +234,7 @@ class VerifyResultsTests(unittest.TestCase):
                 "repositorySha": repository_sha,
                 "repositoryShaAfter": repository_sha,
                 "goVersion": go_version,
-                "targetEnvironment": dict(plan_shards.TARGET_ENVIRONMENT),
+                "targetEnvironment": target.environment,
                 "trackedWorktreeCleanBefore": True,
                 "trackedWorktreeCleanAfter": True,
                 "planSha256": plan_hash,
@@ -231,8 +245,9 @@ class VerifyResultsTests(unittest.TestCase):
                 "shuffle": "off",
                 "testParallel": None,
                 "goMaxProcs": None,
-                "commandLineLimit": 30000,
-                "commandLineUtf16Units": 500,
+                "commandLineLimit": command_limit,
+                target.command_line_metric: 500,
+                **argument_area,
                 "cleanTestCacheExitCode": 0,
                 "testExitCode": 0,
             },
@@ -247,6 +262,8 @@ class VerifyResultsTests(unittest.TestCase):
             "--output",
             str(output),
         ]
+        if not windows:
+            arguments += ["--target", target.name]
         return arguments, output, bundle, shards_root, other_root
 
     def test_complete_fixture_passes_without_a_monolithic_baseline(self):
