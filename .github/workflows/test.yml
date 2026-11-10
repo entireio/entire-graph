@@ -143,7 +143,7 @@ jobs:
   #     several times their cold-cache worst case (about four and three).
   windows-test-prepare:
     name: test (windows-latest) / compile and plan
-    runs-on: depot-windows-2025-8
+    runs-on: windows-latest
     timeout-minutes: 15
     outputs:
       shard-matrix: ${{ steps.shard-matrix.outputs.value }}
@@ -237,7 +237,7 @@ jobs:
   windows-test-shards:
     name: test (windows-latest) / shard ${{ matrix.shard }}
     needs: windows-test-prepare
-    runs-on: depot-windows-2025-8
+    runs-on: windows-latest
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -285,7 +285,7 @@ jobs:
   windows-test-other:
     name: test (windows-latest) / non-heavy packages
     needs: windows-test-prepare
-    runs-on: depot-windows-2025-4
+    runs-on: windows-latest
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7.0.1
@@ -330,7 +330,7 @@ jobs:
 
   windows-test-vet:
     name: test (windows-latest) / vet
-    runs-on: depot-windows-2025-4
+    runs-on: windows-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
