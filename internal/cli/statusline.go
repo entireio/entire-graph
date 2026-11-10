@@ -26,18 +26,20 @@ import (
 //	▸ ctx 42%
 //
 // Line 1 shows only what the user acts on: the indexed graph's size (symbol nodes and relations,
-// as `index` reported them for HEAD's entry, written in full) only when HEAD itself is indexed; an
-// index state segment and its remedy only when HEAD has a commit but no index ("index N commits behind" when a
-// recent first-parent ancestor has one, else "not indexed"); then the gross and net figures once
-// the session has made a graph lookup. Every token figure is an estimated count from the stats
-// collector (run in-process, never as a subprocess) over this session's transcript and its
-// subagent transcripts. Nothing is priced: the line never shows money. The index state is a stat
-// of each sem.HeadIndexEntries entry, HEAD's and then each ancestor's, and the size one small read
-// of the counts file beside HEAD's entry (sem.IndexEntryCounts); the entries and HEAD's tree are
-// kept under a key read from .git without running git, so a warm render spawns no git at all. A
-// status line must never surface an error, so every failure past argument parsing prints nothing and
-// returns nil, and so does an anchor outside any checkout, except an index read error, which drops
-// only the index state and keeps the token figures.
+// as `index` reported them for HEAD's entry, written in full) only when HEAD itself is indexed;
+// an index state segment and its remedy only when HEAD has a commit but no index ("index N
+// commits behind" when a recent first-parent ancestor has one, else "not indexed"); then the gross
+// and net figures once the session has made a graph lookup. Every token figure is an estimated
+// count from the stats collector (run in-process, never as a subprocess) over this session's
+// transcript and its subagent transcripts. Nothing is priced: the line never shows money. The
+// index state is a stat of each sem.HeadIndexEntries entry, HEAD's and then each ancestor's, and
+// the size one small read of the counts file beside HEAD's entry (sem.IndexEntryCounts); the
+// entries and HEAD's tree are kept under a key read from .git without running git, so a warm
+// render spawns no git at all. The line shows no index state when there is no commit yet, when git
+// cannot be run on the checkout (metadata validation or the HEAD read fails), or when the index
+// state cannot be read; the token figures stay. A status line must never surface an error, so
+// every other failure past argument parsing prints nothing and returns nil, and so does an anchor
+// outside any checkout.
 
 const (
 	statuslineDefaultColumns = 120
@@ -57,8 +59,9 @@ const (
 const (
 	// statuslineNotIndexed is statuslineIndexDistance's answer when no entry exists.
 	statuslineNotIndexed = -1
-	// statuslineNoHead stands for a HEAD with no tree to index: unborn, git refused or failed, or the index
-	// state could not be read. `index` cannot fix that, so the line shows no index state and no remedy.
+	// statuslineNoHead stands for a HEAD with no tree to index: unborn, git refused or failed, or
+	// the index state could not be read. `index` cannot fix that, so the line shows no index state
+	// and no remedy.
 	statuslineNoHead = -2
 )
 
@@ -226,13 +229,13 @@ type statuslineGitRecord struct {
 
 // statuslineHeadState returns HEAD's tree ("" when unborn, unresolvable, or when the index state
 // cannot be read), its index entries and its ancestors' (nearest first). When the git key
-// (sem.HeadKeyWithoutGit plus the repo, the cache dir and this binary) matches the stored record, it runs no git and skips the metadata validation,
-// which guards git subprocesses and has none to guard. Otherwise it takes the full path (HEAD read
-// once, then sem.HeadIndexEntries) and stores a
+// (sem.HeadKeyWithoutGit plus the repo, the cache dir and this binary) matches the stored record,
+// it runs no git and skips the metadata validation, which guards git subprocesses and has none to
+// guard. Otherwise it takes the full path (HEAD read once, then sem.HeadIndexEntries) and stores a
 // record, but only when the validation passed, HEAD resolved (or is unborn), the ancestor walk
 // succeeded and ctx was not cancelled, so a transient failure never pins an answer under an
-// unchanged key. An index read error returns no tree, keeps nothing and still reports ok, so only the
-// index state is dropped. ok is false when the render must print nothing.
+// unchanged key. An index read error returns no tree, keeps nothing and still reports ok, so only
+// the index state is dropped. ok is false when the render must print nothing.
 func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (tree string, head []sem.IndexEntry, behind [][]sem.IndexEntry, ok bool) {
 	key, headKey, unborn, keyed := "", "", false, false
 	path := ""
@@ -283,10 +286,10 @@ func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (t
 }
 
 // statuslineIndexDistance stats HEAD's entries, then each ancestor's in order, and returns 0 when
-// HEAD is indexed, n when the nearest indexed ancestor is n commits back, and statuslineNotIndexed when none is. When
-// HEAD is indexed, current is its first existing entry in sem.HeadIndexEntries order (full before
-// fast), the one whose size is shown. It runs no git, so an `index` since the last render shows at
-// once.
+// HEAD is indexed, n when the nearest indexed ancestor is n commits back, and statuslineNotIndexed
+// when none is. When HEAD is indexed, current is its first existing entry in sem.HeadIndexEntries
+// order (full before fast), the one whose size is shown. It runs no git, so an `index` since the
+// last render shows at once.
 func statuslineIndexDistance(head []sem.IndexEntry, behind [][]sem.IndexEntry) (distance int, current sem.IndexEntry) {
 	for _, entry := range head {
 		if sem.AnyIndexEntryExists([]sem.IndexEntry{entry}) {

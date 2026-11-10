@@ -1772,12 +1772,11 @@ func searchSnapshotCountsEntryFor(entry cacheEntry) cacheEntry {
 // calls it only once the entry has landed (renamed into place, and for `index` verified), so the
 // counts never describe a build that was not published; a render between the two renames sees
 // the previous counts or none. A selective view must never reach it, since its stats count a
-// subset. It calls
-// refuseTruncatedSnapshot itself and writes nothing on a refusal, so a caller that does not refuse
-// first (the index hit's backfill) is guarded too. It is best effort: its error never fails a
-// write, an `index` or a lookup, and never blocks the entry's rename. A failed write only leaves
-// the status line without a size (on Windows a render holding the old file open can make the
-// replacing rename fail).
+// subset. It calls refuseTruncatedSnapshot itself and writes nothing on a refusal, so a caller
+// that does not refuse first (the index hit's backfill) is guarded too. It is best effort: its
+// error never fails a write, an `index` or a lookup. A failed write only leaves the status line
+// without a size (on Windows a render holding the old file open can make the replacing rename
+// fail).
 func writeSearchSnapshotCounts(entry cacheEntry, cache cachedSearchSnapshot) error {
 	if err := refuseTruncatedSnapshot(cache); err != nil {
 		return err

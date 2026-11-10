@@ -38,9 +38,9 @@ everything and `--cache-dir` relocates the memo. Requires the `entire-graph` plu
 
 ## What it reads
 
-Coding-agent session transcripts already on disk: `~/.claude/projects/<repo-path-slug>/**/*.jsonl` (under
-`$CLAUDE_CONFIG_DIR/projects/` when that is set)
-(the slug is the repo's absolute path with non-alphanumerics folded to `-`). Nothing is
+Coding-agent session transcripts already on disk: `~/.claude/projects/<repo-path-slug>/**/*.jsonl`
+(under `$CLAUDE_CONFIG_DIR/projects/` when that is set; the slug is the repo's absolute path with
+non-alphanumerics folded to `-`). Nothing is
 uploaded and no model is called; the only thing written is the summary memo under the cache
 directory. If there are no sessions for the repo it says so and exits 0.
 
@@ -110,7 +110,9 @@ It shows only what the user acts on: the graph's size when HEAD itself is indexe
 gross figure once the session has made a graph lookup, the net figure when stats has a comparison,
 and, when HEAD has no index, `index N commits behind` (a first-parent ancestor at most 5 commits
 back has one) or `not indexed`, each followed by `run entire graph index`. The size is never shown
-beside those two, and with no commit yet, or when the index state cannot be read, neither appears.
+beside those two. The line shows no index state when there is no commit yet, when git cannot be run
+on the checkout (metadata validation or the HEAD read fails), or when the index state cannot be
+read.
 
 The status line is opt-in. `entire graph setup` asks at a terminal (default no) before installing
 it in the repository's `.claude/settings.local.json`; `entire graph setup --statusline` installs it

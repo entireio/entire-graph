@@ -23,11 +23,13 @@ auto-generated notes on
   prices; when HEAD is indexed, the graph's size as `N nodes | M edges`, the
   counts `entire graph index` reported, in full; and, when HEAD has no index,
   how many commits behind (at most 5) the nearest indexed first-parent
-  ancestor is, else `not indexed`; with no commit yet, or when the index state cannot be read, neither. Each complete
-  committed-tree cache entry gains a small `<key>.counts.json` beside it,
-  which the status line reads; entries built earlier gain theirs the next
-  time `index` runs. Outside a
-  checkout it prints nothing. A project-local status line overrides the shared
+  ancestor is, else `not indexed`. The line shows no index state when there
+  is no commit yet, when git cannot be run on the checkout (metadata
+  validation or the HEAD read fails), or when the index state cannot be read.
+  Each complete committed-tree cache entry gains a small `<key>.counts.json`
+  beside it, which the status line reads; entries built earlier gain theirs
+  the next time `index` runs. Outside a checkout it prints nothing. A
+  project-local status line overrides the shared
   and user ones, so when `.claude/settings.local.json`,
   `.claude/settings.json` or the user settings (`$CLAUDE_CONFIG_DIR/settings.json`
   when that is set, else `~/.claude/settings.json`) already defines another,

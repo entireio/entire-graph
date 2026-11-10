@@ -120,7 +120,9 @@ other is installation.
   (`~/.claude/projects/<path-slug>/*.jsonl`, under
   `$CLAUDE_CONFIG_DIR/projects/` when that is set, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the
-  report is read-only and local. No other command reads transcripts.
+  report is read-only and local. Only `entire graph statusline` also reads
+  transcripts, the current session's and its subagents', to total the same
+  estimated token figures.
 
 ### Credential-store path exclusions
 
@@ -214,6 +216,11 @@ these rules existed misses instead of re-emitting the paths it named.
   directory. `os.Root` intentionally keeps using that directory object after a
   move; portable Go cannot pin its lexical ancestry, and a process with that
   namespace authority can already move existing cache artifacts.
+- `entire graph statusline` keeps transcript-derived state in its cache, under
+  `<cache>/statusline/`: the session's figures, the per-session stats memo, and
+  the resume checkpoints (`resume-*.json`), which hold tool-use and message IDs
+  and the file paths that results named and reads touched. Files unused for a
+  week are swept.
 - `setup` writes through three primary repository paths, disclosed in
   [agent activation](agents.md): `.entire/agent-guide.md` and managed blocks
   in `AGENTS.md` and `CLAUDE.md`. It also merges one Claude Code hook entry
@@ -224,11 +231,12 @@ these rules existed misses instead of re-emitting the paths it named.
   `.claude/settings.local.json` and `.claude/settings.json` (under the same
   symlink, hard-link and regular-file refusals) and the user's
   `settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when that is set, else
-  `~/.claude/settings.json`), in that order, stopping at the first one that defines a `statusLine`. It does
-  this whether or not a terminal is attached, and also with `--statusline`
-  (which additionally validates `settings.local.json` before writing); only
-  `--no-statusline` reads none of them. Existing legacy Graph/Brain guide paths are
-  also checked and rewritten as redirects under the same protections. See
+  `~/.claude/settings.json`), in that order, stopping at the first one that
+  defines a `statusLine`. It does this whether or not a terminal is attached,
+  and also with `--statusline` (which additionally validates
+  `settings.local.json` before writing); only `--no-statusline` reads none of
+  them. Existing legacy Graph/Brain guide paths are also checked and rewritten
+  as redirects under the same protections. See
   [coordination](agent-coordination.md) for detection and migration.
   A repository-committed symlink at one of
   those paths may redirect the write to another file, which is what makes the

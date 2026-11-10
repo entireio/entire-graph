@@ -26,8 +26,9 @@ import (
 // stats answers the question users actually ask about a code graph: "did this save me
 // anything?". It is a local, read-only report over the coding-agent session transcripts that
 // already exist on disk (Claude Code writes one JSONL file per session under
-// ~/.claude/projects/<path-slug>/, or $CLAUDE_CONFIG_DIR/projects/ when that is set). Nothing is uploaded; the only thing written is a per-file
-// memo under the cache directory, which --no-cache turns off.
+// ~/.claude/projects/<path-slug>/, or $CLAUDE_CONFIG_DIR/projects/ when that is set). Nothing is
+// uploaded; the only thing written is a per-file memo under the cache directory, which --no-cache
+// turns off.
 //
 // The DEFAULT output is one line: a signed, explicitly counterfactual context model.
 // --verbose restores the full report (per-verb/per-kind tables, usage and model text), and

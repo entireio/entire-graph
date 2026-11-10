@@ -153,9 +153,9 @@ const statusLinePrompt = "Install the Claude Code status line (estimated graph t
 //     ours is active in another scope, overriding a foreign shared or user line in this repo, never
 //     replacing a foreign line inside settings.local.json.
 //  3. Otherwise the active status line (ActiveStatusLine) being ours is "unchanged", naming the
-//     file that holds it, so a second copy is never written.
-//     3a. A legacy shim line (scripts/entire-graph-statusline.sh) in any scope settles the row
-//     without asking, naming it and the command to switch to.
+//     file that holds it, so a second copy is never written. A legacy shim line
+//     (scripts/entire-graph-statusline.sh) in any scope settles the row without asking, naming it
+//     and the command to switch to.
 //  4. Not interactive: skip with the --statusline hint, also when a scope cannot be read.
 //  5. Interactive: an unreadable scope or a foreign line in any scope settles the row without
 //     asking; else ask, and only a yes runs the preflight and installs.
