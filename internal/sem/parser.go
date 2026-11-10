@@ -872,6 +872,7 @@ var rustItemWrapperMacroName = regexp.MustCompile(`^cfg_[A-Za-z0-9_]*$`)
 // whitespace so the contents parse at identical byte offsets. Wrappers nest
 // (`cfg_net! { cfg_io! { ... } }`), so unwrapping iterates to a fixed point.
 func maskRustUnsupportedSyntax(ctx context.Context, content string) string {
+	content = maskRustSplitInnerAttribute(content)
 	if !rustItemWrapperMacroHint.MatchString(content) {
 		return content
 	}
@@ -883,6 +884,28 @@ func maskRustUnsupportedSyntax(ctx context.Context, content string) string {
 		}
 	}
 	return string(src)
+}
+
+// maskRustSplitInnerAttribute keeps a leading `#!` that is separated from its
+// `[` by a line break parsing as an inner attribute. rustc treats `#!` at the
+// start of a file as a shebang only when the next token is not `[`, but
+// tree-sitter-rust 0.24.2 lexes `#!` up to the end of the line as a shebang
+// and then reports the `[...]` that follows as a syntax error (the grammar
+// bundled with go-tree-sitter accepted it). The `#!` swaps places with the
+// whitespace before the `[`, so the length, the line count and every offset
+// from the `[` onwards are unchanged. Only whitespace may sit in between: with
+// a comment there the bundled grammar failed as well, so that case is left
+// alone.
+func maskRustSplitInnerAttribute(content string) string {
+	if !strings.HasPrefix(content, "#!") {
+		return content
+	}
+	gap := strings.TrimLeft(content[2:], " \t\r\n")
+	bracket := len(content) - len(gap)
+	if !strings.HasPrefix(gap, "[") || !strings.Contains(content[2:bracket], "\n") {
+		return content
+	}
+	return content[2:bracket] + "#!" + content[bracket:]
 }
 
 // unwrapRustItemWrapperMacros blanks one layer of item-position cfg_*! macro
