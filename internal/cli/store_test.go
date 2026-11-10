@@ -301,14 +301,16 @@ func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 		})
 	}
 	// def's JSON budget must keep the run warning when it empties the others.
-	// The budget is one byte under the full answer.
+	// The budget sits 48 bytes under a separate cold run's full answer: the three
+	// latency fields can differ by a few digits between runs (at most 18 bytes
+	// here), and the trim removes 114 bytes on this fixture.
 	t.Run("cold def --head json budgeted", func(t *testing.T) {
 		defJSON := func(cache string, budget int) []string {
 			return []string{"--repo", repo, "--head", "--cache-dir", cache, "--profile", "full", "--format", "json",
 				"--max-context-bytes", strconv.Itoa(budget), "Render"}
 		}
 		full := run(t, runDef, defJSON(coldCacheWithBlockedSidecar(t), 0)...)
-		output := run(t, runDef, defJSON(coldCacheWithBlockedSidecar(t), len(full)-1)...)
+		output := run(t, runDef, defJSON(coldCacheWithBlockedSidecar(t), len(full)-48)...)
 		var fitted struct {
 			BudgetOmitted *struct {
 				Warnings int `json:"warnings"`

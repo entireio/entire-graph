@@ -49,8 +49,10 @@ auto-generated notes on
   completeness banner, `completeness_scope.in_scope_warnings`, or `query`'s agent
   `Coverage:` line and compact `!N W` count.
 - `def --format json` keeps `W_SEARCH_STORE_UNAVAILABLE` in `warnings` when it trims
-  its answer to `--max-context-bytes`; it counts against the budget, so an answer
-  that no longer fits is dropped by the existing over-budget rule.
+  its answer to `--max-context-bytes`; it counts against the budget. An answer
+  that still does not fit returns the budget error with no output when one name
+  was asked, and with several names is left out while the rest are written and
+  the command exits non-zero.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being
   assigned to a variable, passed as an argument, or stored in a struct field or
