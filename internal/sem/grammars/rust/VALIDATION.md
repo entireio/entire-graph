@@ -49,9 +49,17 @@ The two newly failing files keep their one symbol each:
 
 - `tests/crashes/132126.rs` is a known-bug crash fixture
   (`trait UnsafeCopy where Self: use<Self> {}`).
-- `tests/ui/parser/shebang/multiline-attrib.rs` is valid Rust: a `#!` line
-  followed by an attribute on the next line. This is a small grammar
-  regression.
+- `tests/ui/parser/shebang/multiline-attrib.rs` is valid Rust: an inner
+  attribute whose `#!` and `[` are on different lines. 0.24.2 lexes the `#!`
+  as a shebang. The audit above ran before the fix: the Rust pre-parse mask
+  (`maskRustSplitInnerAttribute` in `internal/sem/parser.go`) now moves the
+  `#!` next to its `[`, so this file parses cleanly again. Real shebang
+  lines, which the bundled grammar rejected, parse on 0.24.2 unaided.
+
+Syntax both grammars still reject includes `safe fn` items in
+`unsafe extern` blocks, besides the const-trait syntax above.
+
+Regression coverage lives in `internal/sem/rust_grammar_regression_test.go`.
 
 ## Whole-repository graph comparison
 
