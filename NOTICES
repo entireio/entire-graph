@@ -682,7 +682,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 --------------------------------------------------------------------------------
-charm.land/bubbletea/v2@v2.1.0
+charm.land/bubbletea/v2@v2.1.1
 License: MIT (verbatim text of LICENSE follows)
 --------------------------------------------------------------------------------
 
@@ -952,7 +952,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 --------------------------------------------------------------------------------
-github.com/dustin/go-humanize@v1.0.1
+github.com/dustin/go-humanize@v1.1.0
 License: MIT (verbatim text of LICENSE follows)
 --------------------------------------------------------------------------------
 
@@ -979,7 +979,7 @@ SOFTWARE.
 <http://www.opensource.org/licenses/mit-license.php>
 
 --------------------------------------------------------------------------------
-github.com/entireio/cli@v0.7.8-nightly.202606270713.37c158f81.0.20260702100228-bc9a821d41e5
+github.com/entireio/cli@v0.13.2-nightly.202611061535.3a760b96a
 License: MIT (verbatim text of LICENSE follows)
 --------------------------------------------------------------------------------
 
@@ -1121,7 +1121,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 --------------------------------------------------------------------------------
-github.com/ncruces/go-strftime@v1.0.0
+github.com/ncruces/go-strftime@v1.1.0
 License: MIT (verbatim text of LICENSE follows)
 --------------------------------------------------------------------------------
 
@@ -1948,7 +1948,7 @@ rights granted to you under this License for this implementation of Go
 shall terminate as of the date such litigation is filed.
 
 --------------------------------------------------------------------------------
-modernc.org/libc@v1.77.1
+modernc.org/libc@v1.79.0
 License: BSD-3-Clause (verbatim text of LICENSE follows)
 --------------------------------------------------------------------------------
 
@@ -2047,7 +2047,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 --------------------------------------------------------------------------------
-modernc.org/sqlite@v1.60.1
+modernc.org/sqlite@v1.61.1
 License: BSD-3-Clause (verbatim text of LICENSE follows)
 --------------------------------------------------------------------------------
 
