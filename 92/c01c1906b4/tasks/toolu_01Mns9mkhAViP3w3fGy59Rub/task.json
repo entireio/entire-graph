@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_01Mns9mkhAViP3w3fGy59Rub",
+  "agent_id": "ae6c7073b648e6f1c",
+  "task_description": "Adversarial review: shard harness",
+  "token_usage": {
+    "input_tokens": 94,
+    "cache_creation_tokens": 218612,
+    "cache_read_tokens": 7866315,
+    "output_tokens": 64202,
+    "api_call_count": 47
+  },
+  "started_at": "2026-11-10T17:11:29.836963+01:00",
+  "completed_at": "2026-11-10T17:33:31.067944+01:00"
+}
