@@ -86,6 +86,12 @@ func TestEffectScopeOnEveryDiagnostic(t *testing.T) {
 			map[string]string{sem.GoGrammarGapCode: sem.EffectScopeFile, "W_VALUE_REFERENCES_UNMODELLED": sem.EffectScopeSnapshot}},
 		{"diff", []string{"diff", "--repo", repo, "--base", "HEAD~1", "--head", "HEAD", "--json"},
 			map[string]string{sem.GoGrammarGapCode: sem.EffectScopeFile}},
+		{"def", []string{"def", "--repo", repo, "--head", "--format", "json", "--cache-dir", cacheDir, "--symbol", "Helper"}, fileScoped},
+		{"impact", []string{"impact", "--repo", repo, "--head", "--format", "json", "--cache-dir", cacheDir, "--symbol", "Helper"},
+			map[string]string{sem.GoGrammarGapCode: sem.EffectScopeFile, "E_PARSE_ERROR": sem.EffectScopeFile, "W_VALUE_REFERENCES_UNMODELLED": sem.EffectScopeSnapshot}},
+		{"health", []string{"health", "--repo", repo, "--head", "--json", "--cache-dir", cacheDir}, fileScoped},
+		{"risk", []string{"risk", "--repo", repo, "--base", "HEAD~1", "--head", "HEAD", "--format", "json"},
+			map[string]string{sem.GoGrammarGapCode: sem.EffectScopeFile}},
 	}
 	for _, s := range surfaces {
 		raw := run(s.args...)
@@ -127,6 +133,34 @@ func TestEffectScopeOnEveryDiagnostic(t *testing.T) {
 			if seen[code] != scope {
 				t.Fatalf("%s: want %s with effect_scope %q; saw %v", s.name, code, scope, seen)
 			}
+		}
+	}
+
+	// The SCIP projection cannot carry a partial failure, so its stderr
+	// omission note is the only place one survives; it must carry the scope too.
+	var scipOut, scipNote bytes.Buffer
+	if err := Run(t.Context(), Options{
+		Version: "test-version",
+		Env:     EntireEnv{RepoRoot: repo, PluginDataDir: cacheDir},
+		Stdout:  &scipOut,
+		Stderr:  &scipNote,
+	}, []string{"snapshot", "--repo", repo, "--format", "scip"}); err != nil {
+		t.Fatalf("snapshot --format scip: %v\n%s", err, scipNote.String())
+	}
+	var note any
+	if err := json.Unmarshal(bytes.TrimSpace(scipNote.Bytes()), &note); err != nil {
+		t.Fatalf("scip omission note is not JSON: %q: %v", scipNote.String(), err)
+	}
+	var noteDiagnostics []map[string]any
+	collectDiagnostics(note, &noteDiagnostics)
+	if len(noteDiagnostics) == 0 {
+		t.Fatalf("scip omission note lists no partial failure:\n%s", scipNote.String())
+	}
+	for _, diagnostic := range noteDiagnostics {
+		code, _ := diagnostic["code"].(string)
+		path, _ := diagnostic["file_path"].(string)
+		if scope, _ := diagnostic["effect_scope"].(string); scope != sem.DiagnosticEffectScope(code, path) {
+			t.Fatalf("scip omission note: %s %q has effect_scope %q: %v", code, path, scope, diagnostic)
 		}
 	}
 
