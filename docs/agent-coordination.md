@@ -191,9 +191,15 @@ BRAIN_INTEGRATION_BRAIN_BINARY=<brain build> BRAIN_INTEGRATION_GRAPH_BINARY=<gra
 go test ./tools/integration -count=1
 ```
 
-"The matching guide change" is literal: strict parity is byte equality, so it
-holds only against a Brain that carries the other half. The `remember --path`
-rule above is entireio/entire-brain#605, and Brain's `compareGuideText` still
-re-inserts the two obsolete MCP sentences for the pinned Graph release. Run the
-parity leg against Brain main before #605 lands and it fails on this
-repository's own correction rather than on a regression.
+"The matching guide change" is literal. `guide.go` and `strict.go` are mirrored
+in entire-brain, and strict parity is byte equality of the rendered guides, so
+every guide-text change has two halves, one per repository, and the parity leg
+passes only against a Brain checkout that carries the same wording. The
+`remember --path` rule is an example: the Brain-enabled guides say that each
+path segment uses only lowercase letters, digits and underscores
+(`project.ci_cache.layout`, not `project.ci-cache.layout`), and Brain states the
+same sentence verbatim (entireio/entire-brain#605). A parity failure against a
+Brain checkout without the matching half reports that missing half, not a
+regression here. Without `BRAIN_INTEGRATION_REQUIRE_GUIDE_PARITY=1`, Brain's
+`compareGuideText` accepts only the exact legacy wording of the Graph release it
+pins, so the default leg does not establish parity for a new change.
