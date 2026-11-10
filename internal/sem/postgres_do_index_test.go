@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,7 +28,7 @@ func TestPostgresDoLanguagePreservesDeclarations(t *testing.T) {
 				"END;\n" + wrapper[1] + "\nCREATE TABLE after_tbl (id int);\n"
 			entities, _, status := (TreeSitterParser{}).ParseWithStatus("migration.sql", src)
 			if status.ParseError {
-				t.Fatalf("parse error: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(src))
+				t.Fatalf("parse error: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(context.Background(), src))
 			}
 			for _, name := range []string{"before_tbl", "nested_tbl", "after_tbl"} {
 				if countEntity(entities, "table", name) != 1 {
@@ -50,7 +51,7 @@ func TestPostgresDoLanguagePreservesDeclarations(t *testing.T) {
 					t.Errorf("following declaration moved: %+v", e)
 				}
 			}
-			masked := maskPostgresUnsupportedSyntax(src)
+			masked := maskPostgresUnsupportedSyntax(context.Background(), src)
 			if len(masked) != len(src) {
 				t.Fatal("changed source width")
 			}
@@ -69,7 +70,7 @@ func TestPostgresConstraintKeywordPrefixes(t *testing.T) {
 			src := "CREATE TABLE jobs (" + name + " int, id int);\n" +
 				"CREATE UNIQUE INDEX jobs_idx ON jobs (id, " + name + ") WHERE " + name + " IS NOT NULL;\n" +
 				"CREATE INDEX jobs_single ON jobs (" + name + ");\n"
-			if got := maskPostgresUnsupportedSyntax(src); got != src {
+			if got := maskPostgresUnsupportedSyntax(context.Background(), src); got != src {
 				t.Fatalf("identifier changed:\n%s", got)
 			}
 			entities, _, status := (TreeSitterParser{}).ParseWithStatus("indexes.sql", src)
@@ -88,7 +89,7 @@ func TestPostgresConstraintKeywordPrefixes(t *testing.T) {
 func TestPostgresConstraintKeywordNonASCIIAndDollarBoundaries(t *testing.T) {
 	for _, name := range []string{"unique$value", "uniqueé", "constraint$name", "constrainté"} {
 		src := "CREATE TABLE jobs (" + name + " int);"
-		if got := maskPostgresUnsupportedSyntax(src); got != src {
+		if got := maskPostgresUnsupportedSyntax(context.Background(), src); got != src {
 			t.Errorf("identifier changed: %s", got)
 		}
 	}
@@ -113,7 +114,7 @@ func TestPostgresDoMalformedWrapperStillFails(t *testing.T) {
 func TestPostgresDoTextInsideLiteralIsUntouched(t *testing.T) {
 	for _, value := range []string{`'DO $$ BEGIN NULL; END; $$ LANGUAGE plpgsql;'`, `$outer$DO $$ BEGIN NULL; END; $$;$outer$`, `"DO $$ BEGIN NULL; END; $$;"`} {
 		src := "CREATE TABLE t (label text DEFAULT " + value + ");"
-		if got := maskPostgresUnsupportedSyntax(src); got != src {
+		if got := maskPostgresUnsupportedSyntax(context.Background(), src); got != src {
 			t.Errorf("literal changed: %s", got)
 		}
 	}
@@ -123,7 +124,7 @@ func TestPostgresDoTextInsideLiteralIsUntouched(t *testing.T) {
 	if status.ParseError || countEntity(entities, "table", "tail_tbl") != 1 {
 		t.Fatalf("adjacent blocks: %+v %+v", status, entities)
 	}
-	if strings.Count(maskPostgresUnsupportedSyntax(src), "\n") != strings.Count(src, "\n") {
+	if strings.Count(maskPostgresUnsupportedSyntax(context.Background(), src), "\n") != strings.Count(src, "\n") {
 		t.Fatal("changed line count")
 	}
 }
@@ -266,7 +267,7 @@ CREATE TABLE after_tbl (id int);
 `
 	entities, _, status := (TreeSitterParser{}).ParseWithStatus("guarded.sql", src)
 	if status.ParseError {
-		t.Fatalf("parse error: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(src))
+		t.Fatalf("parse error: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(context.Background(), src))
 	}
 	for _, want := range [][2]string{{"table", "before_tbl"}, {"table", "guarded_tbl"}, {"index", "guarded_idx"}, {"function", "nested_fn"}, {"table", "after_tbl"}} {
 		if countEntity(entities, want[0], want[1]) != 1 {
@@ -299,7 +300,7 @@ func TestPostgresDoRejectedProjectionMasksBlock(t *testing.T) {
 				"CREATE TABLE after_tbl (id int);\n"
 			entities, _, status := (TreeSitterParser{}).ParseWithStatus("rejected.sql", src)
 			if status.ParseError {
-				t.Fatalf("projected DDL failed the file: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(src))
+				t.Fatalf("projected DDL failed the file: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(context.Background(), src))
 			}
 			if len(entities) != 2 || countEntity(entities, "table", "before_tbl") != 1 || countEntity(entities, "table", "after_tbl") != 1 {
 				t.Errorf("want only the surrounding tables: %+v", entities)
@@ -328,7 +329,7 @@ CREATE TABLE after_tbl (id int);
 `
 	entities, _, status := (TreeSitterParser{}).ParseWithStatus("mixed.sql", src)
 	if status.ParseError {
-		t.Fatalf("parse error: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(src))
+		t.Fatalf("parse error: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(context.Background(), src))
 	}
 	if countEntity(entities, "table", "good_first") != 1 || countEntity(entities, "index", "good_idx") != 1 || countEntity(entities, "table", "after_tbl") != 1 {
 		t.Errorf("good blocks lost declarations: %+v", entities)
@@ -336,7 +337,7 @@ CREATE TABLE after_tbl (id int);
 	if len(entities) != 3 {
 		t.Errorf("rejected block projected declarations: %+v", entities)
 	}
-	if masked := maskPostgresUnsupportedSyntax(src); len(masked) != len(src) || strings.Count(masked, "\n") != strings.Count(src, "\n") {
+	if masked := maskPostgresUnsupportedSyntax(context.Background(), src); len(masked) != len(src) || strings.Count(masked, "\n") != strings.Count(src, "\n") {
 		t.Fatal("changed source width or line count")
 	}
 }

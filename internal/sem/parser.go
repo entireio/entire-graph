@@ -384,7 +384,7 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 		entityLineOffset = lineOffset
 	}
 	if spec.language == "SQL" {
-		parseSrc = []byte(maskPostgresUnsupportedSyntax(content))
+		parseSrc = []byte(maskPostgresUnsupportedSyntax(ctx, content))
 	}
 	if spec.language == "C" {
 		parseSrc = []byte(maskCUnsupportedSyntax(content))
@@ -7037,12 +7037,12 @@ var postgresForeignAndTriggerDDLPattern = regexp.MustCompile(`(?is)\b(?:create|a
 var postgresAlterTextSearchPattern = regexp.MustCompile(`(?is)\balter\s+text\s+search\s+(?:configuration|dictionary|parser|template)\b[^;]*;`)
 var postgresCommentOnObjectPattern = regexp.MustCompile(`(?is)\bcomment\s+on\s+(?:access\s+method|operator(?:\s+(?:family|class))?|aggregate|type|domain|collation|text\s+search\s+\w+|transform|extension|cast|function|procedure|language|server|publication|subscription)\b[^;]*;`)
 
-func maskPostgresUnsupportedSyntax(content string) string {
+func maskPostgresUnsupportedSyntax(ctx context.Context, content string) string {
 	// Use the SQL-aware comment stripper instead of raw comment regexes so `--`
 	// and `/* ... */` inside string or dollar-quoted literals remain ordinary
 	// literal content in the parse source.
 	masked := []byte(stripSQLComments(content))
-	maskPostgresDoBlocks(masked)
+	maskPostgresDoBlocks(ctx, masked)
 	// Blank comments first and run every later pattern against the comment-free
 	// view: DDL-looking prose inside comments ("unique within a repo", "no
 	// partition of relation ...") otherwise matches the statement patterns and
@@ -7225,7 +7225,7 @@ func maskPostgresUnsupportedSyntax(content string) string {
 // masked whole, exactly as before projection existed: its declarations are
 // not indexed and no diagnostic is raised, while other blocks in the file
 // keep theirs.
-func maskPostgresDoBlocks(masked []byte) {
+func maskPostgresDoBlocks(ctx context.Context, masked []byte) {
 	content := string(masked)
 	search := maskSQLLiteralContentsForSearch(content)
 	for _, loc := range postgresDoPrefixPattern.FindAllStringSubmatchIndex(search, -1) {
@@ -7270,7 +7270,7 @@ func maskPostgresDoBlocks(masked []byte) {
 			end = sqlStatementEnd(bodySearch, ddl[0])
 			copy(masked[bodyStart+ddl[0]:bodyStart+end], body[ddl[0]:end])
 		}
-		if end > 0 && !postgresProjectionParses(string(masked[bodyStart:bodyEnd])) {
+		if end > 0 && !postgresProjectionParses(ctx, string(masked[bodyStart:bodyEnd])) {
 			maskBytesPreservingNewlines(masked, bodyStart, bodyEnd)
 		}
 	}
@@ -7280,13 +7280,13 @@ func maskPostgresDoBlocks(masked []byte) {
 // body survives the same masking and grammar as the file it came from. The
 // projection holds no DO wrapper, so the nested mask does not recurse, and the
 // cost is one parse of that body's statements rather than of the whole file.
-func postgresProjectionParses(projected string) bool {
+func postgresProjectionParses(ctx context.Context, projected string) bool {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(pgsql.GetLanguage())
-	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	ctx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
 	defer cancel()
-	tree, err := parser.ParseCtx(ctx, nil, []byte(maskPostgresUnsupportedSyntax(projected)))
+	tree, err := parser.ParseCtx(ctx, nil, []byte(maskPostgresUnsupportedSyntax(ctx, projected)))
 	if tree == nil {
 		return false
 	}

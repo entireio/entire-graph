@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -258,7 +259,7 @@ func TestPostgresCopyDataIsNotLexedAsSQL(t *testing.T) {
 				"CREATE TABLE after_tbl (id int);\n"
 			entities, _, status := TreeSitterParser{}.ParseWithStatus("dump.sql", src)
 			if status.ParseError {
-				t.Fatalf("parse error: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(src))
+				t.Fatalf("parse error: %s\n%s", status.Detail, maskPostgresUnsupportedSyntax(context.Background(), src))
 			}
 			for _, table := range []string{"before_tbl", "do_tbl", "after_tbl"} {
 				if countEntity(entities, "table", table) != 1 {
@@ -268,7 +269,7 @@ func TestPostgresCopyDataIsNotLexedAsSQL(t *testing.T) {
 			if countEntity(entities, "table", "phantom") != 0 {
 				t.Errorf("COPY row became a declaration: %+v", entities)
 			}
-			masked := maskPostgresUnsupportedSyntax(src)
+			masked := maskPostgresUnsupportedSyntax(context.Background(), src)
 			if len(masked) != len(src) || strings.Count(masked, "\n") != strings.Count(src, "\n") {
 				t.Fatal("changed source width or line count")
 			}
@@ -476,7 +477,7 @@ func TestPostgresDDLTextInsideStringDoesNotTriggerMasks(t *testing.T) {
 		"    escaped text DEFAULT E'it\\'s DROP TYPE mood, status'\n" +
 		");\n" +
 		"CREATE TABLE survivor (id int);\n"
-	masked := maskPostgresUnsupportedSyntax(src)
+	masked := maskPostgresUnsupportedSyntax(context.Background(), src)
 	if !strings.Contains(masked, "'DROP TABLE a, b'") || !strings.Contains(masked, "E'it\\'s DROP TYPE mood, status'") {
 		t.Fatalf("DDL text inside string was masked:\n%s", masked)
 	}
