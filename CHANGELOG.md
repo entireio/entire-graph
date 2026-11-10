@@ -27,12 +27,20 @@ auto-generated notes on
 
 ### Changed
 
-- The cache root reclaims version directories this build cannot address. A
-  cache version is hashed into every entry key, so an upgraded build never
-  reads an older version's entries; they were previously kept forever (an
-  observed cache root was 95% dead versions). Pruning is best-effort and leaves
-  a version directory alone until it has been untouched for 24 hours, so a
-  concurrently running older build is not disturbed.
+- Committed-tree commands that use the cache now reclaim cache version
+  directories that are older than the running build's and have gone unused for
+  24 hours. A cache version is hashed into every entry key, so an upgraded
+  build never reads an older version's entries; they were previously kept
+  forever (an observed cache root was 95% dead versions). A directory written
+  by a newer build, or whose name cannot be ordered against this build's, is
+  never removed, so builds sharing a cache root do not delete a newer build's
+  cache. Use is recorded by touching `last-used.marker` in the version
+  directory at most once an hour, including on cache hits and `graph store` /
+  `graph context` reads; a build that predates the marker is seen only when it
+  writes, so one that is served nothing but hits for 24 hours rebuilds its
+  entries after a newer build prunes them. A version directory with a held
+  build or retention lock is skipped, symlinked or junction cache components
+  are refused rather than followed, and pruning stays best-effort.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being
   assigned to a variable, passed as an argument, or stored in a struct field or
