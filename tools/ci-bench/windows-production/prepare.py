@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile, hash, inventory, and plan the production Windows test shards."""
+"""Compile, hash, inventory, and plan the production native test shards."""
 
 from __future__ import annotations
 
@@ -16,12 +16,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import plan_shards
+import targets
 
 
 PACKAGE_SCHEMA = "entire-graph.windows-ci.package-inventory.v1"
 PREPARE_SCHEMA = "entire-graph.windows-ci.prepare-metadata.v1"
 ROOT_PREFIXES = ("Test", "Example", "Fuzz")
-TARGET_ENVIRONMENT = {"CGO_ENABLED": "1", "GOARCH": "amd64", "GOOS": "windows"}
+TARGET_ENVIRONMENT = targets.DEFAULT.environment
 TESTMAIN_SCHEMA = "entire-graph.windows-ci.testmain-inventory.v1"
 
 
@@ -173,12 +174,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--weights", type=Path, required=True)
     parser.add_argument("--expected-repository-sha", required=True)
     parser.add_argument("--go-command", default="go")
+    parser.add_argument("--target", default=targets.DEFAULT.name, choices=sorted(targets.TARGETS))
     return parser.parse_args(argv)
 
 
 def prepare(args: argparse.Namespace) -> None:
-    if sys.platform != "win32":
-        raise RuntimeError("prepare.py must run on native Windows")
+    target = targets.resolve(getattr(args, "target", targets.DEFAULT.name))
+    if sys.platform != target.host_platform:
+        raise RuntimeError(f"prepare.py must run on native {target.host_label}")
     repository = args.repository.resolve(strict=True)
     output = args.output.resolve()
     binaries = output / "binaries"
@@ -190,11 +193,15 @@ def prepare(args: argparse.Namespace) -> None:
     settings_path = args.settings.resolve(strict=True)
     weights_path = args.weights.resolve(strict=True)
     settings = plan_shards.load_settings(settings_path)
+    if plan_shards.settings_target(settings) is not target:
+        raise ValueError(
+            f"settings target {settings['target']!r} differs from the requested target {target.name!r}"
+        )
     if not re.fullmatch(r"[0-9a-f]{40}", args.expected_repository_sha):
         raise ValueError("expected repository SHA must be 40 lowercase hexadecimal characters")
 
     environment = dict(os.environ)
-    environment.update({"GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "1"})
+    environment.update(target.environment)
     go = shutil.which(args.go_command, path=environment.get("PATH"))
     if go is None:
         raise RuntimeError(f"cannot resolve Go command {args.go_command!r}")
@@ -251,7 +258,7 @@ def prepare(args: argparse.Namespace) -> None:
     target_environment = {
         key: go_environment.get(key) for key in ("CGO_ENABLED", "GOARCH", "GOOS")
     }
-    if target_environment != TARGET_ENVIRONMENT:
+    if target_environment != target.environment:
         raise RuntimeError(f"unexpected target Go environment: {target_environment!r}")
     go_tool_value = go_environment.get("GOTOOLDIR")
     if not isinstance(go_tool_value, str) or not go_tool_value:
@@ -273,7 +280,7 @@ def prepare(args: argparse.Namespace) -> None:
             "durationSeconds": round(all_packages_seconds, 6),
         }
     )
-    require_success(all_packages_process, "target-Windows go list ./...")
+    require_success(all_packages_process, f"target-{target.host_label} go list ./...")
     package_objects = decode_json_stream(all_packages_process.stdout, "go list ./...")
     configured_heavy = {item["importPath"] for item in settings["heavyPackages"]}
     package_rows: list[dict[str, Any]] = []
@@ -282,9 +289,11 @@ def prepare(args: argparse.Namespace) -> None:
         import_path = item.get("ImportPath")
         directory = item.get("Dir")
         if not isinstance(import_path, str) or not import_path or import_path in seen_packages:
-            raise ValueError(f"target-Windows package has missing or duplicate ImportPath: {import_path!r}")
+            raise ValueError(
+                f"target-{target.host_label} package has missing or duplicate ImportPath: {import_path!r}"
+            )
         if not isinstance(directory, str) or not directory:
-            raise ValueError(f"target-Windows package {import_path} has no directory")
+            raise ValueError(f"target-{target.host_label} package {import_path} has no directory")
         seen_packages.add(import_path)
         package_rows.append(
             {
@@ -299,15 +308,16 @@ def prepare(args: argparse.Namespace) -> None:
         )
     if not configured_heavy.issubset(seen_packages):
         raise ValueError(
-            f"configured heavy packages absent from target-Windows go list: {sorted(configured_heavy - seen_packages)!r}"
+            f"configured heavy packages absent from target-{target.host_label} go list: "
+            f"{sorted(configured_heavy - seen_packages)!r}"
         )
     package_rows.sort(key=lambda item: item["importPath"])
     package_inventory = {
         "schema": PACKAGE_SCHEMA,
         "repositorySha": repository_sha,
         "goVersion": go_version,
-        "goos": "windows",
-        "goarch": "amd64",
+        "goos": target.goos,
+        "goarch": target.goarch,
         "cgoEnabled": "1",
         "packages": package_rows,
     }
@@ -431,8 +441,8 @@ def prepare(args: argparse.Namespace) -> None:
             "schema": plan_shards.INVENTORY_SCHEMA,
             "repositorySha": repository_sha,
             "goVersion": go_version,
-            "goos": "windows",
-            "goarch": "amd64",
+            "goos": target.goos,
+            "goarch": target.goarch,
             "cgoEnabled": "1",
             "packageArgument": package_argument,
             "importPath": expected_import,
@@ -460,7 +470,7 @@ def prepare(args: argparse.Namespace) -> None:
         inventory_paths.append(inventory_path)
 
     weights, weight_metadata = plan_shards.load_weights(weights_path)
-    inventories = plan_shards.load_inventories(inventory_paths)
+    inventories = plan_shards.load_inventories(inventory_paths, target)
     plan = plan_shards.create_plan(inventories, settings, weights, weight_metadata)
     write_json(output / "plan.json", plan)
     shutil.copyfile(settings_path, output / "settings.json")

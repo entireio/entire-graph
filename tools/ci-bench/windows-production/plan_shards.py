@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a deterministic, fail-closed plan from compiled Windows test binaries."""
+"""Build a deterministic, fail-closed plan from compiled native test binaries."""
 
 from __future__ import annotations
 
@@ -13,7 +13,11 @@ from collections import defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+import targets
 
+
+# The schema identifiers keep their historical `windows-ci` prefix for every
+# target; the target itself is carried by `targetEnvironment`.
 SETTINGS_SCHEMA = "entire-graph.windows-ci.settings.v1"
 WEIGHTS_SCHEMA = "entire-graph.windows-ci.historical-weights.v1"
 INVENTORY_SCHEMA = "entire-graph.windows-ci.compiled-inventory.v1"
@@ -22,7 +26,13 @@ ROOT_KINDS = ("Test", "Example", "Fuzz")
 _TIMEOUT = re.compile(r"^[1-9][0-9]*(?:ns|us|µs|ms|s|m|h)$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-TARGET_ENVIRONMENT = {"GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "1"}
+# The default target's identity, kept as a module constant for existing callers.
+TARGET_ENVIRONMENT = targets.DEFAULT.environment
+
+
+def settings_target(settings: dict[str, Any]) -> targets.Target:
+    """The target a settings object names; a missing key is the Windows default."""
+    return targets.resolve(settings.get("target", targets.DEFAULT.name))
 
 
 def read_json(path: Path) -> Any:
@@ -66,6 +76,7 @@ def load_settings(path: Path) -> dict[str, Any]:
     value = read_json(path)
     if not isinstance(value, dict) or value.get("schema") != SETTINGS_SCHEMA:
         raise ValueError(f"{path}: unexpected settings schema")
+    target = settings_target(value)
     shard_count = value.get("shardCount")
     default_weight = value.get("defaultWeightSeconds")
     command_limit = value.get("commandLineLimit")
@@ -79,12 +90,10 @@ def load_settings(path: Path) -> dict[str, Any]:
         or float(default_weight) <= 0
     ):
         raise ValueError(f"{path}: defaultWeightSeconds must be finite and positive")
-    if (
-        not isinstance(command_limit, int)
-        or isinstance(command_limit, bool)
-        or not 1024 <= command_limit <= 32767
-    ):
-        raise ValueError(f"{path}: commandLineLimit must be from 1024 through 32767")
+    if not target.valid_command_line_limit(command_limit):
+        raise ValueError(
+            f"{path}: commandLineLimit must be from 1024 through {target.command_line_limit_maximum}"
+        )
     if not isinstance(timeout, str) or not _TIMEOUT.fullmatch(timeout):
         raise ValueError(f"{path}: timeout is not a positive Go duration")
     if value.get("shuffle") != "off":
@@ -119,7 +128,7 @@ def load_settings(path: Path) -> dict[str, Any]:
             or Path(binary_name).name != binary_name
             or "/" in binary_name
             or "\\" in binary_name
-            or not binary_name.endswith(".test.exe")
+            or not binary_name.endswith(target.binary_suffix)
         ):
             raise ValueError(f"{path}: unsafe heavy package binaryName {binary_name!r}")
         if argument in seen_arguments or import_path in seen_imports or binary_name in seen_binaries:
@@ -170,6 +179,7 @@ def load_settings(path: Path) -> dict[str, Any]:
             }
         )
     result = dict(value)
+    result["target"] = target.name
     result["defaultWeightSeconds"] = float(default_weight)
     result["heavyPackages"] = normalized
     return result
@@ -214,7 +224,9 @@ def _root_kind(name: str) -> str | None:
     return next((kind for kind in ROOT_KINDS if name.startswith(kind)), None)
 
 
-def load_inventories(paths: Iterable[Path]) -> list[dict[str, Any]]:
+def load_inventories(
+    paths: Iterable[Path], target: targets.Target = targets.DEFAULT
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen_packages: set[str] = set()
     for path in paths:
@@ -231,7 +243,7 @@ def load_inventories(paths: Iterable[Path]) -> list[dict[str, Any]]:
             or Path(binary).name != binary
             or "/" in binary
             or "\\" in binary
-            or not binary.endswith(".test.exe")
+            or not binary.endswith(target.binary_suffix)
         ):
             raise ValueError(f"{path}: unsafe binaryName")
         if value.get("listExitCode") != 0:
@@ -249,9 +261,9 @@ def load_inventories(paths: Iterable[Path]) -> list[dict[str, Any]]:
             "GOARCH": value.get("goarch"),
             "CGO_ENABLED": value.get("cgoEnabled"),
         }
-        if target_environment != TARGET_ENVIRONMENT:
+        if target_environment != target.environment:
             raise ValueError(
-                f"{path}: compiled inventory target is {target_environment!r}, want {TARGET_ENVIRONMENT!r}"
+                f"{path}: compiled inventory target is {target_environment!r}, want {target.environment!r}"
             )
         listing_contract = value.get("listingContract")
         if listing_contract != {
@@ -326,7 +338,9 @@ def load_inventories(paths: Iterable[Path]) -> list[dict[str, Any]]:
                 "binarySizeBytes": value["binarySizeBytes"],
                 "repositorySha": value["repositorySha"],
                 "goVersion": value["goVersion"],
-                "targetEnvironment": dict(TARGET_ENVIRONMENT),
+                "targetEnvironment": {
+                    key: target.environment[key] for key in ("GOOS", "GOARCH", "CGO_ENABLED")
+                },
                 "listingContract": dict(listing_contract),
                 "roots": sorted(normalized_roots, key=lambda item: item["name"]),
                 "excludedBenchmarks": sorted(benchmarks),
@@ -385,6 +399,9 @@ def create_plan(
 ) -> dict[str, Any]:
     if not inventories:
         raise ValueError("at least one compiled inventory is required")
+    target = settings_target(settings)
+    if any(item.get("targetEnvironment") != target.environment for item in inventories):
+        raise ValueError(f"compiled inventories are not all {target.description}")
     expected_config = {
         (item["importPath"], item["binaryName"])
         for item in settings["heavyPackages"]
@@ -413,7 +430,7 @@ def create_plan(
             key = (inventory["importPath"], root["name"])
             if key in weights:
                 weight = weights[key]
-                source = "historical-windows"
+                source = target.weight_source
                 used_weight_keys.add(key)
             else:
                 weight = settings["defaultWeightSeconds"]
@@ -498,7 +515,9 @@ def create_plan(
         "algorithm": "deterministic-longest-processing-time-first-v1",
         "repositorySha": next(iter(repository_shas)),
         "goVersion": next(iter(go_versions)),
-        "targetEnvironment": dict(TARGET_ENVIRONMENT),
+        "targetEnvironment": {
+            key: target.environment[key] for key in ("GOOS", "GOARCH", "CGO_ENABLED")
+        },
         "inventorySetSha256": _inventory_digest(inventories),
         "shardCount": shard_count,
         "rootCount": len(work),
@@ -536,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = load_settings(args.settings)
         weights, metadata = load_weights(args.weights)
-        inventories = load_inventories(args.inventory)
+        inventories = load_inventories(args.inventory, settings_target(settings))
         plan = create_plan(inventories, settings, weights, metadata)
         write_json(args.output, plan)
     except (ValueError, OSError) as error:

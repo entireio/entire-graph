@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify baseline-free coverage and integrity for production Windows test shards."""
+"""Verify baseline-free coverage and integrity for production native test shards."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import plan_shards
+import targets
 
 
 PACKAGE_SCHEMA = "entire-graph.windows-ci.package-inventory.v1"
@@ -20,7 +21,7 @@ SHARD_RUN_SCHEMA = "entire-graph.windows-ci.shard-run.v1"
 OTHER_RUN_SCHEMA = "entire-graph.windows-ci.other-run.v1"
 REPORT_SCHEMA = "entire-graph.windows-ci.verification.v1"
 TERMINAL_ACTIONS = frozenset({"pass", "fail", "skip"})
-TARGET_ENVIRONMENT = {"CGO_ENABLED": "1", "GOARCH": "amd64", "GOOS": "windows"}
+TARGET_ENVIRONMENT = targets.DEFAULT.environment
 
 
 def read_json(path: Path) -> Any:
@@ -138,6 +139,7 @@ def validate_plan(
     plan: dict[str, Any],
     inventories: list[dict[str, Any]],
     failures: list[str],
+    target: targets.Target = targets.DEFAULT,
 ) -> tuple[
     dict[tuple[str, str], int],
     dict[tuple[int, str], dict[str, Any]],
@@ -150,8 +152,8 @@ def validate_plan(
     }
     if plan.get("schema") != plan_shards.PLAN_SCHEMA:
         raise ValueError(f"unexpected shard plan schema {plan.get('schema')!r}")
-    if plan.get("targetEnvironment") != TARGET_ENVIRONMENT:
-        failures.append("plan target is not exactly windows/amd64 with CGO_ENABLED=1")
+    if plan.get("targetEnvironment") != target.environment:
+        failures.append(f"plan target is not exactly {target.description}")
     settings = plan.get("settings")
     if not isinstance(settings, dict) or settings.get("shuffle") != "off":
         failures.append("plan does not preserve shuffle=off semantics")
@@ -288,6 +290,7 @@ def verify_shards(
     root_details: dict[str, dict[str, str]],
     failures: list[str],
     exit_report: list[dict[str, Any]],
+    target: targets.Target = targets.DEFAULT,
 ) -> dict[str, Any]:
     metadata_paths = sorted(root.rglob("shard-metadata.json"))
     shard_count = plan.get("shardCount")
@@ -337,8 +340,8 @@ def verify_shards(
             failures.append(f"shard {index} post-run repository SHA differs from plan")
         if metadata.get("goVersion") != plan.get("goVersion"):
             failures.append(f"shard {index} Go version differs from plan")
-        if metadata.get("targetEnvironment") != TARGET_ENVIRONMENT:
-            failures.append(f"shard {index} target is not exactly windows/amd64 with CGO_ENABLED=1")
+        if metadata.get("targetEnvironment") != target.environment:
+            failures.append(f"shard {index} target is not exactly {target.description}")
         if metadata.get("targetEnvironment") != plan.get("targetEnvironment"):
             failures.append(f"shard {index} target differs from plan")
         if metadata.get("trackedWorktreeCleanBefore") is not True:
@@ -398,13 +401,17 @@ def verify_shards(
                 failures.append(f"shard {index} {package} did not set PWD to its package directory")
             if invocation.get("goToolDirectoryPrependedToPath") is not True:
                 failures.append(f"shard {index} {package} did not prepend the Go tool directory to PATH")
-            command_units = invocation.get("commandLineUtf16Units")
+            command_units = invocation.get(target.command_line_metric)
             if (
                 not isinstance(command_units, int)
                 or isinstance(command_units, bool)
                 or not 1 <= command_units <= plan["settings"]["commandLineLimit"]
             ):
                 failures.append(f"shard {index} {package} command line exceeded or omitted its budget")
+            if not targets.valid_argument_area(target, invocation):
+                failures.append(
+                    f"shard {index} {package} exec argument area exceeded or omitted its kernel limit"
+                )
         if set(actual_invocations) != set(expected_assignments):
             failures.append(f"shard {index} invocation package set differs from plan")
 
@@ -508,6 +515,7 @@ def verify_other(
     package_inventory_sha256: str,
     failures: list[str],
     exit_report: list[dict[str, Any]],
+    target: targets.Target = targets.DEFAULT,
 ) -> dict[str, Any]:
     metadata_paths = sorted(root.rglob("other-metadata.json"))
     event_paths = sorted(root.rglob("other-events.jsonl"))
@@ -535,8 +543,8 @@ def verify_other(
         failures.append("non-heavy post-run repository SHA differs from plan")
     if metadata.get("goVersion") != plan.get("goVersion"):
         failures.append("non-heavy Go version differs from plan")
-    if metadata.get("targetEnvironment") != TARGET_ENVIRONMENT:
-        failures.append("non-heavy target is not exactly windows/amd64 with CGO_ENABLED=1")
+    if metadata.get("targetEnvironment") != target.environment:
+        failures.append(f"non-heavy target is not exactly {target.description}")
     if metadata.get("targetEnvironment") != plan.get("targetEnvironment"):
         failures.append("non-heavy target differs from plan")
     if metadata.get("trackedWorktreeCleanBefore") is not True:
@@ -550,19 +558,23 @@ def verify_other(
     for key in ("timeout", "shuffle", "testParallel", "goMaxProcs", "commandLineLimit"):
         if metadata.get(key) != plan.get("settings", {}).get(key):
             failures.append(f"non-heavy metadata setting {key} differs from plan")
-    command_units = metadata.get("commandLineUtf16Units")
+    command_units = metadata.get(target.command_line_metric)
     if (
         not isinstance(command_units, int)
         or isinstance(command_units, bool)
         or not 1 <= command_units <= plan["settings"]["commandLineLimit"]
     ):
         failures.append("non-heavy command line exceeded or omitted its budget")
+    if not targets.valid_argument_area(target, metadata):
+        failures.append("non-heavy exec argument area exceeded or omitted its kernel limit")
 
     expected_packages = sorted(
         row["importPath"] for row in package_inventory["packages"] if not row["heavy"]
     )
     if metadata.get("expectedPackages") != expected_packages:
-        failures.append("non-heavy metadata package list differs from target-Windows inventory")
+        failures.append(
+            f"non-heavy metadata package list differs from target-{target.host_label} inventory"
+        )
     events = read_jsonl(event_paths[0])
     starts: collections.Counter[str] = collections.Counter()
     terminals: collections.Counter[tuple[str, str]] = collections.Counter()
@@ -640,6 +652,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "passed": False,
         "failures": failures,
     }
+    target = targets.resolve(getattr(args, "target", targets.DEFAULT.name))
     bundle = args.bundle.resolve(strict=True)
     plan_path = bundle / "plan.json"
     package_path = bundle / "package-inventory.json"
@@ -649,11 +662,13 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     inventory_paths = sorted((bundle / "inventories").glob("*.inventory.json"))
     if not inventory_paths:
         raise ValueError("bundle contains no compiled inventories")
-    inventories = plan_shards.load_inventories(inventory_paths)
+    inventories = plan_shards.load_inventories(inventory_paths, target)
     plan = read_json(plan_path)
     if not isinstance(plan, dict):
         raise ValueError("plan is not an object")
     settings = plan_shards.load_settings(settings_path)
+    if plan_shards.settings_target(settings) is not target:
+        failures.append(f"bundled settings target is not exactly {target.description}")
     if plan.get("shardCount") != settings.get("shardCount"):
         failures.append("bundled settings shard count differs from plan")
     for key in (
@@ -686,8 +701,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             failures.append("prepare post-run repository SHA differs from plan")
         if prepare.get("goVersion") != plan.get("goVersion"):
             failures.append("prepare Go version differs from plan")
-        if prepare.get("targetEnvironment") != TARGET_ENVIRONMENT:
-            failures.append("prepare target is not exactly windows/amd64 with CGO_ENABLED=1")
+        if prepare.get("targetEnvironment") != target.environment:
+            failures.append(f"prepare target is not exactly {target.description}")
         if prepare.get("targetEnvironment") != plan.get("targetEnvironment"):
             failures.append("prepare target differs from plan")
         if prepare.get("trackedWorktreeCleanBefore") is not True:
@@ -708,11 +723,11 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             failures.append(f"compiled binary hash differs from inventory: {inventory['binaryName']}")
 
     assignment_for_root, process_assignments, root_details = validate_plan(
-        plan, inventories, failures
+        plan, inventories, failures, target
     )
     package_inventory = read_json(package_path)
     if not isinstance(package_inventory, dict) or package_inventory.get("schema") != PACKAGE_SCHEMA:
-        raise ValueError("unexpected target-Windows package inventory schema")
+        raise ValueError(f"unexpected target-{target.host_label} package inventory schema")
     if package_inventory.get("repositorySha") != plan.get("repositorySha"):
         failures.append("package inventory repository SHA differs from plan")
     if package_inventory.get("goVersion") != plan.get("goVersion"):
@@ -722,26 +737,32 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "GOARCH": package_inventory.get("goarch"),
         "CGO_ENABLED": package_inventory.get("cgoEnabled"),
     }
-    if package_target != TARGET_ENVIRONMENT:
-        failures.append("package inventory target is not exactly windows/amd64 with CGO_ENABLED=1")
+    if package_target != target.environment:
+        failures.append(f"package inventory target is not exactly {target.description}")
     if package_target != plan.get("targetEnvironment"):
         failures.append("package inventory target differs from plan")
     package_rows = package_inventory.get("packages")
     if not isinstance(package_rows, list) or not package_rows:
-        raise ValueError("target-Windows package inventory is empty")
+        raise ValueError(f"target-{target.host_label} package inventory is empty")
     package_names: set[str] = set()
     heavy_names: set[str] = set()
     for row in package_rows:
         if not isinstance(row, dict) or not isinstance(row.get("heavy"), bool):
-            raise ValueError("target-Windows package inventory contains a malformed row")
+            raise ValueError(
+                f"target-{target.host_label} package inventory contains a malformed row"
+            )
         package = row.get("importPath")
         if not isinstance(package, str) or not package or package in package_names:
-            raise ValueError("target-Windows package inventory contains a missing or duplicate package")
+            raise ValueError(
+                f"target-{target.host_label} package inventory contains a missing or duplicate package"
+            )
         package_names.add(package)
         if row["heavy"]:
             heavy_names.add(package)
     if heavy_names != set(root_details):
-        failures.append("target-Windows heavy package declarations differ from compiled inventories")
+        failures.append(
+            f"target-{target.host_label} heavy package declarations differ from compiled inventories"
+        )
     configured_test_mains = {
         item["importPath"]: item["expectedTestMainDeclarations"]
         for item in settings["heavyPackages"]
@@ -762,6 +783,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         root_details,
         failures,
         exit_report,
+        target,
     )
     report["otherPackages"] = verify_other(
         args.other_results.resolve(strict=True),
@@ -771,6 +793,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         plan_shards.sha256_file(package_path),
         failures,
         exit_report,
+        target,
     )
     report["inventory"] = {
         "repositorySha": plan.get("repositorySha"),
@@ -794,6 +817,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--shard-results", type=Path, required=True)
     parser.add_argument("--other-results", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--target", default=targets.DEFAULT.name, choices=sorted(targets.TARGETS))
     return parser.parse_args(argv)
 
 
@@ -812,7 +836,9 @@ def main(argv: list[str] | None = None) -> int:
         for failure in report.get("failures", []):
             print(f"FAIL: {failure}", file=sys.stderr)
         return 1
-    print("Windows shard coverage and integrity verification passed")
+    print(
+        f"{targets.resolve(args.target).host_label} shard coverage and integrity verification passed"
+    )
     return 0
 
 
