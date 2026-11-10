@@ -116,6 +116,10 @@ func TestGitMetadataGuardDoesNotTreatCommentOrValueAsIncludeSection(t *testing.T
 }
 
 func TestGitMetadataGuardRejectsPromisorConfiguration(t *testing.T) {
+	// Detection is what this pins, so stand in a Git that ignores
+	// GIT_NO_LAZY_FETCH; TestGitMetadataGuardAdmitsPartialCloneOnlyWhenLazyFetchIsDisabled
+	// covers the version gate.
+	useGitLazyFetchGuard(t, gitBeforeLazyFetchGuard)
 	cases := []struct {
 		name    string
 		content string
@@ -234,6 +238,7 @@ func TestGitMetadataGuardChecksOnlyActiveWorktreeConfig(t *testing.T) {
 }
 
 func TestGitMetadataGuardChecksPromisorInOnlyActiveWorktreeConfig(t *testing.T) {
+	useGitLazyFetchGuard(t, gitBeforeLazyFetchGuard)
 	const planted = "[remote \"origin\"]\npromisor = true\nurl = https://example.invalid/repo.git\n"
 
 	t.Run("disabled", func(t *testing.T) {
@@ -264,6 +269,7 @@ func TestGitMetadataGuardChecksPromisorInOnlyActiveWorktreeConfig(t *testing.T) 
 }
 
 func TestGitMetadataGuardChecksPartialCloneExtensionInOnlyActiveWorktreeConfig(t *testing.T) {
+	useGitLazyFetchGuard(t, gitBeforeLazyFetchGuard)
 	const planted = "[extensions]\npartialClone = origin\n"
 
 	t.Run("disabled", func(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 
 // TestReadClaudeSettingsRefusesAFIFO pins the regular-file check on its own. A symlink is also
 // caught by the later handle comparison, but a FIFO is not caught by anything else: opening one
-// blocks until a writer appears, so without the check init-agents hangs on a hostile checkout.
+// blocks until a writer appears, so without the check setup hangs on a hostile checkout.
 func TestReadClaudeSettingsRefusesAFIFO(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()

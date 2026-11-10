@@ -58,7 +58,7 @@ misses the cache by construction, and a daemon would add an authoritative mutabl
 the provider currently has only rebuildable derivative caches.
 
 ### Named per-host installers — **graph's job, not done yet**
-`init-agents` writing `AGENTS.md`/`CLAUDE.md` already covers the instruction-file hosts implicitly.
+`setup` writing `AGENTS.md`/`CLAUDE.md` already covers the instruction-file hosts implicitly.
 Per-host installers are cheap, additive, and a real distribution win; they are simply not
 architecture, so they queue behind product behavior.
 

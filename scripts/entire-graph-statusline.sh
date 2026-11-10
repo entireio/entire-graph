@@ -12,7 +12,7 @@
 # comparison with a zero modeled balance renders "1:1 model 0 tok". Optional zero counters are
 # dropped. Only WORK verbs are named (locate verbs search/neighbors/impact first,
 # then def/explain/verify/diff/analyze/commit/checkpoint/symbols/edges/snapshot/snapshot-query/
-# index). The self-reporting meta verbs — stats, version, help, doctor, init-agents,
+# index). The self-reporting meta verbs — stats, version, help, doctor, setup (formerly init-agents),
 # agent-guide, capabilities, health — replace no exploration, so they are struck from the verb
 # split AND from the residual "other" count.
 #
@@ -196,7 +196,7 @@ render() {
 		# exploration, so they must never be named in the badge nor counted as work.
 		# health belongs here -- it reports on the index, not on the codebase.
 		function isMeta(n) {
-			return index(" stats version help doctor init-agents agent-guide capabilities health ", " " n " ") > 0
+			return index(" stats version help doctor setup init-agents agent-guide capabilities health ", " " n " ") > 0
 		}
 		# Verbs that do work on the codebase. Locate verbs rank first in the split.
 		# Must cover every non-meta verb in internal/cli/stats.go graphVerbs: one missing

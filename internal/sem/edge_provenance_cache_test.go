@@ -43,7 +43,11 @@ func TestRelationProvenanceCacheUpgradeAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	header := SnapshotHeader{SchemaVersion: SchemaVersion, Provider: ProviderName, ProviderVersion: version, RepoKey: transaction.repositoryKey, Commit: commit, Tree: tree, Profile: string(transaction.options.Profile)}
-	if err := transaction.Store(stream.Bytes(), nil, header); err != nil {
+	spool, err := spoolRecords(transaction, stream.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.Store(spool, nil, header); err != nil {
 		t.Fatal(err)
 	}
 	replay, _, hit := transaction.Load()

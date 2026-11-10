@@ -96,11 +96,34 @@ func RepoCommandRoot(ctx context.Context, cwd string) (string, error) {
 	return RepoRoot(ctx, cwd)
 }
 
+// repoPrefixCache memoizes successful RepoPrefix answers per directory for
+// tree-path composition. The per-blob fallbacks (ScanBlobLinesAtRev,
+// OversizeBlobAtRev, ShowFile and its limited variants) otherwise pay one
+// `rev-parse --show-prefix` per blob for an answer that is constant per
+// directory — doubling the subprocess count of exactly the loops those
+// fallbacks serve. Failures are not cached, so a cancelled or broken first
+// call stays retryable. Entries are keyed by the absolute, cleaned directory,
+// never the argument's spelling: a relative repo (".") names different
+// directories as the process cwd changes, and a spelling-keyed entry would
+// silently serve one directory's prefix for another.
+// ponytail: process-lifetime cache — a directory whose enclosing repository
+// layout changes mid-process would be served the old prefix; add explicit
+// invalidation if a long-lived consumer ever needs that.
+var repoPrefixCache sync.Map
+
 func repoTreePath(ctx context.Context, repo, path string) (string, error) {
+	key, err := filepath.Abs(repo)
+	if err != nil {
+		return "", err
+	}
+	if prefix, ok := repoPrefixCache.Load(key); ok {
+		return prefix.(string) + path, nil
+	}
 	prefix, err := RepoPrefix(ctx, repo)
 	if err != nil {
 		return "", err
 	}
+	repoPrefixCache.Store(key, prefix)
 	return prefix + path, nil
 }
 
@@ -120,16 +143,25 @@ func RevParse(ctx context.Context, repo, rev string) (string, error) {
 
 // HeadCommitAndTree resolves HEAD and its root tree from one selected commit.
 // Besides avoiding a second Git process on every committed cache probe, using
-// one show operation prevents a concurrent HEAD update from mixing provenance
+// one log operation prevents a concurrent HEAD update from mixing provenance
 // from two different commits.
+//
+// It is `git log --no-walk`, not `git show -s`: show still computes HEAD's
+// diff against its parent when -s suppresses printing it, and rename detection
+// in that diff reads the parent's blobs. A partial clone usually lacks them, so
+// with lazy fetching disabled `show -s` fails ("unable to read <oid>") on any
+// HEAD that renames and edits a file. log with no diff option reads only the
+// commit object. i18n.logOutputEncoding is pinned because a repository that
+// sets it to UTF-16 would otherwise re-encode the hex ids and make every
+// committed-tree command fail on "malformed" metadata.
 func HeadCommitAndTree(ctx context.Context, repo string) (string, string, error) {
-	out, err := run(ctx, repo, "git", "show", "-s", "--no-show-signature", "--no-notes", "--format=%H%x00%T", "--end-of-options", "HEAD^{commit}")
+	out, err := run(ctx, repo, "git", "-c", "i18n.logOutputEncoding=UTF-8", "log", "-1", "--no-walk", "--no-show-signature", "--no-notes", "--format=%H%x00%T", "--end-of-options", "HEAD^{commit}")
 	if err != nil {
 		return "", "", err
 	}
 	commit, tree, ok := strings.Cut(strings.TrimSuffix(out, "\n"), "\x00")
 	if !ok || commit == "" || tree == "" || strings.ContainsAny(commit, "\x00\r\n") || strings.ContainsAny(tree, "\x00\r\n") {
-		return "", "", errors.New("git show returned malformed HEAD commit/tree metadata")
+		return "", "", errors.New("git log returned malformed HEAD commit/tree metadata")
 	}
 	return commit, tree, nil
 }
@@ -149,7 +181,9 @@ func FindCommitWithCheckpoint(ctx context.Context, repo, checkpointID string) (s
 	// --all includes detached HEADs from every linked worktree because a
 	// checkpoint commit can be reachable only from one of them. --ignore-missing
 	// keeps an unrelated invalid worktree HEAD from breaking the whole lookup.
-	out, err := run(ctx, repo, "git", "log", "--ignore-missing", "--all", "--format=%H", "-n", "1", "--grep=Entire-Checkpoint: "+checkpointID)
+	// i18n.logOutputEncoding is pinned for the same reason as HeadCommitAndTree:
+	// a UTF-16 setting would re-encode the hex id.
+	out, err := run(ctx, repo, "git", "-c", "i18n.logOutputEncoding=UTF-8", "log", "--ignore-missing", "--all", "--format=%H", "-n", "1", "--grep=Entire-Checkpoint: "+checkpointID)
 	if err != nil {
 		return "", err
 	}
@@ -637,25 +671,37 @@ func GrepIndexPatternSample(ctx context.Context, repo string, patterns []string,
 	return grepPatternLines(ctx, repo, "", patterns, 32, visit)
 }
 
-// GrepTreePatternLines streams matches from the specified immutable tree and
-// strips Git's treeish prefix from each returned path.
-func GrepTreePatternLines(ctx context.Context, repo, treeish string, patterns []string, visit func(GrepMatch) error) error {
-	if treeish == "" || strings.HasPrefix(treeish, "-") || strings.ContainsRune(treeish, '\x00') {
-		return fmt.Errorf("invalid git grep treeish %q", treeish)
-	}
-	return grepPatternLines(ctx, repo, treeish, patterns, 1, visit)
+func grepPatternLines(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, visit func(GrepMatch) error) error {
+	return runGrepPatterns(ctx, repo, treeish, patterns, []string{"-m", strconv.Itoa(maxPerFile)}, nil, func(reader *bufio.Reader) error {
+		return readGrepPatternLines(reader, func(match GrepMatch) error {
+			if treeish != "" {
+				prefix := treeish + ":"
+				if !strings.HasPrefix(match.Path, prefix) {
+					return fmt.Errorf("git grep missing treeish prefix")
+				}
+				match.Path = strings.TrimPrefix(match.Path, prefix)
+			}
+			return visit(match)
+		})
+	})
 }
 
-func grepPatternLines(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, visit func(GrepMatch) error) error {
-
+// runGrepPatterns runs one `git grep -E` for caller-built POSIX expressions,
+// sent on stdin as grepPatternLinesInput renders them, and hands Git's stdout to
+// read. modeArgs pick the output shape (`-m N` or `-l`); pathspecs follow `--`.
+// A read error kills Git; exit status 1 with no stderr is "no match".
+func runGrepPatterns(ctx context.Context, repo, treeish string, patterns, modeArgs, pathspecs []string, read func(*bufio.Reader) error) error {
 	if len(patterns) == 0 {
 		return nil
 	}
-	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E", "-m", strconv.Itoa(maxPerFile), "-f", "-"}
+	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E"}
+	args = append(args, modeArgs...)
+	args = append(args, "-f", "-")
 	if treeish != "" {
 		args = append(args, treeish)
 	}
 	args = append(args, "--")
+	args = append(args, pathspecs...)
 	cmd := newGitCmdWithCallerLocale(ctx, repo, args...)
 	// Pattern data can exceed Windows command-line limits; send it on stdin.
 	cmd.Stdin = strings.NewReader(grepPatternLinesInput(patterns))
@@ -668,17 +714,7 @@ func grepPatternLines(ctx context.Context, repo, treeish string, patterns []stri
 	if err = cmd.Start(); err != nil {
 		return err
 	}
-	reader := bufio.NewReader(stdout)
-	readErr := readGrepPatternLines(reader, func(match GrepMatch) error {
-		if treeish != "" {
-			prefix := treeish + ":"
-			if !strings.HasPrefix(match.Path, prefix) {
-				return fmt.Errorf("git grep missing treeish prefix")
-			}
-			match.Path = strings.TrimPrefix(match.Path, prefix)
-		}
-		return visit(match)
-	})
+	readErr := read(bufio.NewReader(stdout))
 	if readErr != nil {
 		_ = cmd.Process.Kill()
 	}
@@ -895,6 +931,11 @@ func GrepFixedStringPaths(ctx context.Context, repo, treeish, pattern string) ([
 }
 
 func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string, textOnly, caseSensitive bool) ([]string, error) {
+	return grepTreePathsWithFiles(ctx, repo, treeish, patterns, textOnly, caseSensitive, nil)
+}
+
+// files is nil for the whole tree; scoped callers must never pass an empty batch.
+func grepTreePathsWithFiles(ctx context.Context, repo, treeish string, patterns []string, textOnly, caseSensitive bool, files []string) ([]string, error) {
 	if strings.HasPrefix(treeish, "-") || strings.ContainsRune(treeish, '\x00') {
 		return nil, fmt.Errorf("invalid git grep treeish %q", treeish)
 	}
@@ -935,6 +976,9 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 		args = append(args, treeish)
 	}
 	args = append(args, "--")
+	for _, path := range files {
+		args = append(args, ":(literal)"+path)
+	}
 	cmd := newGitCmdWithCallerLocale(ctx, repo, args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -1237,8 +1281,10 @@ func FileCochanges(ctx context.Context, repo, revision string, maxCommits int) (
 	// blows up memory: one 10k-file commit alone produces ~50M pair keys (multi-GB).
 	// Real feature/fix commits touch a handful of related files and stay well under.
 	const maxFilesPerCommit = 50
+	// i18n.logOutputEncoding is pinned so a UTF-16 repository setting cannot
+	// re-encode the marker and silently drop every co-change pair.
 	out, err := run(
-		ctx, repo, "git", "log", "--no-relative", "--ignore-submodules=none",
+		ctx, repo, "git", "-c", "i18n.logOutputEncoding=UTF-8", "log", "--no-relative", "--ignore-submodules=none",
 		"-z", "--name-only", "--pretty=format:"+marker,
 		"-n", strconv.Itoa(maxCommits), revision, "--",
 	)
@@ -1836,6 +1882,12 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 	if _, _, _, found, probeErr := reader.objectInfoLocked(probeOID); probeErr != nil || found {
 		_ = stdin.Close()
 		waitErr := cmd.Wait()
+		// A context expiring mid-probe kills the child, and its EOF would read
+		// as version skew below. The cancellation is the cause; report it so a
+		// cancelled caller sees its own deadline, not a Git-version diagnosis.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("git cat-file --batch-command: %w", ctxErr)
+		}
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			if probeErr != nil {
@@ -1845,6 +1897,14 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 			} else {
 				msg = "unexpected response to protocol probe"
 			}
+		}
+		// The probe cannot distinguish an old Git from a dead one. When THIS
+		// context ended, exec kills the child mid-probe and the read fails, so
+		// blaming the Git version would report a wrong and unactionable cause --
+		// telling a user to upgrade a Git that was fine. Classify by the context
+		// first, and keep the probe's message for the reader.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("git cat-file --batch-command probe ended: %s: %w", msg, ctxErr)
 		}
 		return nil, fmt.Errorf("git cat-file --batch-command unavailable (Git 2.36 or newer required): %s", msg)
 	}
@@ -2379,7 +2439,15 @@ func treePathsOverlap(left, right string) bool {
 		strings.HasPrefix(right, left+"/")
 }
 
-func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []string) (map[string]primedLimitedFile, error) {
+func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []string) (result map[string]primedLimitedFile, err error) {
+	// Killing Git can surface as an exit status or a truncated pipe read,
+	// especially on Windows. Preserve the cancellation identity at this
+	// subprocess boundary, as runWithStderr does for ordinary Git commands.
+	defer func() {
+		if err != nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
+	}()
 	if rev == "" || strings.HasPrefix(rev, "-") || strings.ContainsRune(rev, 0) {
 		return nil, fmt.Errorf("invalid treeish %q", rev)
 	}
@@ -2423,6 +2491,10 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 		if message == "" {
 			message = err.Error()
 		}
+		// Same context-vs-signal ambiguity as the Wait path below.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("git ls-tree metadata: %s: %w", message, ctxErr)
+		}
 		return nil, fmt.Errorf("git ls-tree metadata: %s", message)
 	}
 	defer job.close()
@@ -2446,6 +2518,15 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 				message := strings.TrimSpace(stderr.String())
 				if message == "" {
 					message = waitErr.Error()
+				}
+				// A subprocess killed because THIS context ended reports the signal,
+				// not the reason (see the note on run()): Wait returns "signal: killed"
+				// and a caller that set a deadline could not distinguish its own expiry
+				// from a Git failure. Carry the context's error alongside Git's message
+				// so errors.Is(err, context.DeadlineExceeded) holds while stderr stays
+				// readable.
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, fmt.Errorf("git ls-tree metadata: %s: %w", message, ctxErr)
 				}
 				return nil, fmt.Errorf("git ls-tree metadata: %s", message)
 			}
@@ -2625,12 +2706,20 @@ func RemoteURLs(ctx context.Context, repo string) ([]string, error) {
 func run(ctx context.Context, dir, name string, args ...string) (string, error) {
 	stdout, stderr, err := runWithStderr(ctx, dir, name, args...)
 	if err != nil {
-		if contextErr := ctx.Err(); contextErr != nil {
-			return "", contextErr
-		}
 		msg := stderr
 		if msg == "" {
 			msg = err.Error()
+		}
+		// A subprocess killed because THIS context ended reports the signal, not
+		// the reason: exec.CommandContext kills the child and Wait returns
+		// "signal: killed" (or the platform's equivalent), so a caller that set a
+		// deadline cannot tell its own expiry from a Git failure. The context's
+		// error is carried alongside Git's message rather than replacing it, so
+		// errors.Is(err, context.DeadlineExceeded) holds while the argv and
+		// stderr a reader needs stay in the text. Only added when the context
+		// actually ended, so an ordinary Git failure is unchanged.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("%s %s: %s: %w", name, strings.Join(args, " "), msg, ctxErr)
 		}
 		return "", fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
 	}
@@ -2639,16 +2728,21 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 
 const (
 	rawGitObjectsEnv = "GIT_NO_REPLACE_OBJECTS=1"
-	noLazyFetchEnv   = "GIT_NO_LAZY_FETCH=1"
-	// noTransportProtocolEnv is a second, independent no-egress guard.
-	// GIT_NO_LAZY_FETCH only became effective in Git 2.45 (git/git@2c206fc);
-	// this package's floor is Git 2.36 (cat-file --batch-command). Production
-	// entrypoints therefore reject active partial-clone/promisor configuration
-	// in the repository metadata preflight: older Git can stat a local/UNC
-	// promisor URL before it applies the protocol allowlist. GIT_ALLOW_PROTOCOL
-	// remains a second guard for every transport and remote helper after that
-	// preflight. This tool never intentionally fetches, clones, or pushes, so
-	// blocking every protocol costs it nothing.
+	// noLazyFetchEnv is the guard that keeps a partial clone offline: in Git
+	// 2.45.1+ (and the 2.39.4-2.44.1 backports; git/git@7b70e9efb18c)
+	// promisor-remote.c fetch_objects() checks it before spawning `git fetch`,
+	// so a missing promised object is a local read failure and the promisor URL
+	// is never opened. This package's floor is Git 2.36 (cat-file
+	// --batch-command), and other releases -- 2.45.0 included, whose rename
+	// prefetch ignores the variable -- can still start the fetch, so the
+	// repository metadata preflight admits partial-clone/promisor configuration
+	// only when LazyFetchGuard proves the Git honours it.
+	noLazyFetchEnv = "GIT_NO_LAZY_FETCH=1"
+	// noTransportProtocolEnv is a second, independent no-egress guard for every
+	// transport and remote helper. It is not sufficient on its own for partial
+	// clones: a Git that starts the lazy fetch can stat a local/UNC promisor URL
+	// before it applies the protocol allowlist. This tool never intentionally
+	// fetches, clones, or pushes, so blocking every protocol costs it nothing.
 	noTransportProtocolEnv = "GIT_ALLOW_PROTOCOL="
 	// Listing and object inspection are read-only. Disable optional lock and
 	// index-refresh writes even when repository configuration would request one.
@@ -2680,9 +2774,9 @@ const (
 // case-folding must retain the caller's locale. Like every other production Git
 // subprocess in this package, it disables replace refs: exact tree/object IDs
 // are the immutable snapshot boundary, regardless of later refs/replace edits.
-// It also disables lazy fetching as defense in depth. Production entrypoints
-// reject active partial-clone/promisor configuration before reaching this
-// constructor because the Git 2.36 compatibility floor predates that guard.
+// It also disables lazy fetching. Production entrypoints admit a partial
+// clone only when LazyFetchGuard proves the runtime Git honours that guard;
+// the Git 2.36 compatibility floor predates it.
 func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
@@ -2865,9 +2959,10 @@ func gitSafeDirectoryValues(dir string) []string {
 // promised object as a per-entry failure instead of fetching it — ls-tree -l
 // prints its "BAD" sentinel for a blob it cannot size, which callers already
 // classify as LimitedFileUnreadable rather than treating as an error.
-// Production metadata preflight rejects active promisor configuration because
-// old Git can inspect a local/UNC URL before applying GIT_ALLOW_PROTOCOL; both
-// environment guards remain defense in depth (see noTransportProtocolEnv).
+// Production metadata preflight admits active promisor configuration only when
+// LazyFetchGuard proves the runtime Git honours GIT_NO_LAZY_FETCH, because any
+// other Git can inspect a local/UNC URL before applying GIT_ALLOW_PROTOCOL; see
+// noLazyFetchEnv and noTransportProtocolEnv.
 func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir

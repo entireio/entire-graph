@@ -90,7 +90,7 @@ Two consequences worth stating to the user:
 - Give the estimate with its label: "estimated; both per-call costs measured from this
   session, 1:1 substitution assumed". Never drop the `~`.
 - If graph calls are 0 while exploration is high, say so plainly and point at the fix:
-  `entire graph init-agents` installs the search-first, verify-once doctrine into `AGENTS.md`/`CLAUDE.md`
+  `entire graph setup` installs the search-first, verify-once doctrine into `AGENTS.md`/`CLAUDE.md`
   so agents in this repo actually use it.
 - Never present the estimate as billed savings; the billed number in the same report is the
   session total, not a saving.

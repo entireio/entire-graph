@@ -116,14 +116,31 @@ as a need to refresh derived semantic data. History consumers must also migrate
 previously persisted entity deltas rather than merely append newly parsed ones.
 
 This is one global revision for parser identity rules across all languages.
-The value is a decimal revision encoded as a string, currently `"3"`. Consumers
+The value is a decimal revision encoded as a string, currently `"5"`. Consumers
 compare the complete opaque string for equality rather than relying on numeric
 ordering. The field name supplies its meaning; the value names no language or
 feature. A bump invalidates both snapshot and search
 cache namespaces even when the source tree and provider release are unchanged.
 It does not change the individual symbol-ID format.
 
-The current revision `"3"` adds the Python nested-callable correction
+Revision `"5"` cuts Julia signatures to declaration headers. Same-name Julia
+overloads use a `#sig:<hash>` suffix derived from the signature, so their IDs
+change even when the indexed source is unchanged. Unique-name Julia symbols keep
+their IDs. Revision `"5"` also retains the body as rename evidence for Julia
+definitions, both in single-line fingerprints and in fallback similarity;
+unrelated replacements no longer match on parameter types alone.
+Consumers upgrading from revision `"4"` or earlier must refresh derived snapshots
+and recompute persisted entity deltas using the new parser, preserving source
+commits, checkpoint/session provenance, and authored memory. The local provider
+and search cache bumps alone do not migrate a downstream consumer's stored IDs
+or history. Verify consumer support for revision-mismatch migration before
+deploying this revision.
+
+Revision `"4"` extends the nested-callable correction to Swift, Kotlin, Rust and
+PHP. Those nested declarations receive corrected function IDs, and real members
+whose names collided with phantom nested members can lose their `#sig:` suffixes.
+
+Revision `"3"` adds the Python nested-callable correction
 (issue #199). A callable declared inside a Python method body was qualified by
 the enclosing CLASS, so `def helper(...)` inside `C.m` emitted the method
 `C.helper` — a member no instance of `C` has ever had, because the name binds in

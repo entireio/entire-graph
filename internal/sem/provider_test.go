@@ -2,6 +2,7 @@ package sem
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -178,7 +179,7 @@ export function handleRoute() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Header.SchemaVersion != "1.4" {
+	if snapshot.Header.SchemaVersion != "1.5" {
 		t.Fatalf("schema version = %q", snapshot.Header.SchemaVersion)
 	}
 	if snapshot.Header.Provider != ProviderName {
@@ -5221,7 +5222,7 @@ def sibling():
 
 	t.Run("incomplete scope disables raw FFI but retains imported external fallback", func(t *testing.T) {
 		deep := strings.Repeat("(", maxParseWalkDepth+10) + "0" + strings.Repeat(")", maxParseWalkDepth+10)
-		scopes := newPythonBareImportScopes("from lib import compute\nvalue = "+deep+"\n", nil)
+		scopes := newPythonBareImportScopes(context.Background(), "from lib import compute\nvalue = "+deep+"\n", nil)
 		if scopes.complete {
 			t.Fatal("deep scope walk unexpectedly completed")
 		}
@@ -5250,7 +5251,7 @@ def sibling():
 		repo := t.TempDir()
 		writeFile(t, repo, "lib.c", "int compute(int value) { return value + 1; }\n")
 		content := "from lib import compute\n\ndef run():\n    return compute(1)\n\nbroken = (\n"
-		if newPythonBareImportScopes(content, nil).complete {
+		if newPythonBareImportScopes(context.Background(), content, nil).complete {
 			t.Fatal("malformed scope unexpectedly completed")
 		}
 		writeFile(t, repo, "app.py", content)
@@ -5264,7 +5265,7 @@ def sibling():
 		repo := t.TempDir()
 		writeFile(t, repo, "lib.c", "int compute(int value) { return value + 1; }\n")
 		content := "from lib import compute\n\ncompute(1)\n\nbroken = (\n"
-		if newPythonBareImportScopes(content, nil).complete {
+		if newPythonBareImportScopes(context.Background(), content, nil).complete {
 			t.Fatal("malformed scope unexpectedly completed")
 		}
 		writeFile(t, repo, "app.py", content)
@@ -5508,7 +5509,7 @@ def valid():
 	if err != nil {
 		t.Fatal(err)
 	}
-	scopes := newPythonBareImportScopes(string(content), snapshot.Symbols)
+	scopes := newPythonBareImportScopes(context.Background(), string(content), snapshot.Symbols)
 	byName := map[string]SymbolRecord{}
 	for _, symbol := range snapshot.Symbols {
 		if symbol.FilePath == "app.py" && symbol.Name != "compute" {
@@ -12821,7 +12822,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("feature %s should not require network access", feature)
 		}
 	}
-	for _, feature := range []string{"stable_symbol_ids", "semantic_diff", "ndjson_snapshot", "compact_snapshot_ndjson_v1", "scip_snapshot_experimental", "durable_preindex", "focused_neighbors"} {
+	for _, feature := range []string{"stable_symbol_ids", "semantic_diff", "ndjson_snapshot", "compact_snapshot_ndjson_v1", "scip_snapshot_experimental", "durable_preindex", "focused_neighbors", "context_allow_ancestor"} {
 		if !caps.OptionalLocalOnlyFeatures[feature] {
 			t.Fatalf("optional feature %s not advertised: %#v", feature, caps.OptionalLocalOnlyFeatures)
 		}
@@ -13201,7 +13202,7 @@ func TestBuildRelationsUsesSymbolBlockIdentifierLookup(t *testing.T) {
 	recordsByFile[caller.FilePath] = []SymbolRecord{caller}
 	contentByFile[caller.FilePath] = "package pkg\nfunc Caller() {\n\tTargetSymbol()\n}\n"
 
-	relations := buildRelations("repo", files, recordsByFile, mapReader(contentByFile))
+	relations := buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile))
 
 	var sawTargetCall bool
 	for _, relation := range relations {
@@ -13272,7 +13273,7 @@ func TestBuildRelationsDropsAmbiguousCrossFileCallNameCollisions(t *testing.T) {
 		"runtime.ts":    "function sleep(ms: number) {}\n",
 	}
 
-	for _, relation := range buildRelations("repo", files, recordsByFile, mapReader(contentByFile)) {
+	for _, relation := range buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile)) {
 		if relation.Type == "CALLS" && relation.FromID == "caller" {
 			t.Fatalf("ambiguous sleep call should not resolve globally: %#v", relation)
 		}
@@ -13324,7 +13325,7 @@ func TestBuildRelationsResolvesCPlusPlusSameFileOverloadSet(t *testing.T) {
 	}
 
 	var targets []string
-	for _, relation := range buildRelations("repo", files, recordsByFile, mapReader(contentByFile)) {
+	for _, relation := range buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile)) {
 		if relation.Type == "CALLS" && relation.FromID == "caller" {
 			targets = append(targets, relation.ToID)
 			if relation.Resolution != "name_only" || relation.RelationScope != "workspace" {
@@ -14165,7 +14166,7 @@ func TestCollectRegistrationAliases(t *testing.T) {
 		return c, ok
 	}
 
-	got := collectRegistrationAliases(paths, read)
+	got := collectRegistrationAliases(nil, paths, read)
 	want := map[string][]string{
 		"getrangeCommand": {"getrange", "substr"},
 		"getCommand":      {"get"},
@@ -15044,6 +15045,300 @@ end
 	}
 	if !has("CONSTRUCTS", fCaller, fWidget) {
 		t.Fatalf("existing Julia constructor resolution changed: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+	}
+}
+
+func TestJuliaSignaturesStopAtDeclarationHeader(t *testing.T) {
+	// tree-sitter-julia keeps body statements as direct children of the
+	// definition, so the generic body cut never fired and every signature
+	// carried the whole definition (a module's carried every member).
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Shapes.jl", `module Shapes
+
+abstract type Shape end
+abstract type Solid <: Shape end
+primitive type Word 32 end
+
+struct Circle <: Shape
+    radius::Float64
+end
+
+mutable struct Counter
+    count::Int
+end
+
+struct Point{T}
+    x::T
+end
+
+mutable struct Box{T} <: Solid
+    item::T
+end
+
+function bump!(n)
+    k = Counter(n)
+    return k
+end
+
+function area(c::Circle)::Float64
+    return pi * c.radius^2
+end
+
+function scale(v::Vector{T}, s::T) where {T<:Real}
+    return v .* s
+end
+
+function clamp_to(x::T, hi::T)::T where T
+    return min(x, hi)
+end
+
+function Base.show(io::IO, p::Point)
+    print(io, p.x)
+end
+
+function spread(a::Int,
+                b::Int)
+    return a + b
+end
+
+macro trace(ex)
+    return esc(ex)
+end
+
+double(x) = 2 * x
+half(x)::Float64 = x / 2
+first_of(p::Point{T}) where T = p.x
+
+end
+
+baremodule Bare
+q(x) = x
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct{ kind, name, signature string }{
+		{"module", "Shapes", "module Shapes"},
+		{"module", "Bare", "baremodule Bare"},
+		{"type", "Shape", "abstract type Shape end"},
+		{"type", "Solid", "abstract type Solid <: Shape end"},
+		{"type", "Word", "primitive type Word 32 end"},
+		{"struct", "Circle", "struct Circle <: Shape"},
+		{"struct", "Counter", "mutable struct Counter"},
+		{"struct", "Point", "struct Point{T}"},
+		{"struct", "Box", "mutable struct Box{T} <: Solid"},
+		{"method", "Shapes.bump!", "function bump!(n)"},
+		{"method", "Shapes.area", "function area(c::Circle)::Float64"},
+		{"method", "Shapes.scale", "function scale(v::Vector{T}, s::T) where {T<:Real}"},
+		{"method", "Shapes.clamp_to", "function clamp_to(x::T, hi::T)::T where T"},
+		{"function", "Base.show", "function Base.show(io::IO, p::Point)"},
+		{"method", "Shapes.spread", "function spread(a::Int, b::Int)"},
+		{"method", "Shapes.trace", "macro trace(ex)"},
+		{"method", "Shapes.double", "double(x)"},
+		{"method", "Shapes.half", "half(x)::Float64"},
+		{"method", "Shapes.first_of", "first_of(p::Point{T}) where T"},
+		{"method", "Bare.q", "q(x)"},
+	} {
+		got := symbolByKindAndName(snapshot.Symbols, want.kind, want.name)
+		if got.ID == "" {
+			t.Fatalf("missing Julia %s %s: %#v", want.kind, want.name, snapshot.Symbols)
+		}
+		if got.Signature != want.signature {
+			t.Errorf("Julia %s %s signature = %q, want %q", want.kind, want.name, got.Signature, want.signature)
+		}
+	}
+}
+
+func TestJuliaAndRubyModulesEmitNoDataFlows(t *testing.T) {
+	// A module's block spans its members, so the DATA_FLOWS pass found each
+	// member's return flows again and attributed them to the module. Only the
+	// members' own edges may remain.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Shapes.jl", `module Shapes
+
+mutable struct Counter
+    count::Int
+end
+
+function area(x)
+    return x * 2
+end
+
+function work(x)
+    return area(x)
+end
+
+function bump!(n)
+    k = Counter(n)
+    return k
+end
+
+end
+`)
+	writeFile(t, repo, "lib/util.rb", `module Util
+  def self.a
+    return b()
+  end
+
+  def self.b
+    1
+  end
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbol := func(kind, name string) SymbolRecord {
+		got := symbolByKindAndName(snapshot.Symbols, kind, name)
+		if got.ID == "" {
+			t.Fatalf("missing %s %s: %#v", kind, name, snapshot.Symbols)
+		}
+		return got
+	}
+	// Both modules must exist, or the endpoint check below passes vacuously.
+	symbol("module", "Shapes")
+	symbol("module", "Util")
+	kindByID := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		kindByID[s.ID] = s.Kind
+	}
+	flows := relationsOfType(snapshot.Relations, "DATA_FLOWS")
+	for _, relation := range flows {
+		if kindByID[relation.FromID] == "module" || kindByID[relation.ToID] == "module" {
+			t.Fatalf("DATA_FLOWS with a module endpoint: %#v", relation)
+		}
+	}
+	for _, want := range []struct {
+		from, to SymbolRecord
+		reason   string
+	}{
+		{symbol("method", "Shapes.area"), symbol("method", "Shapes.work"), "callee return value flows into caller return value"},
+		{symbol("struct", "Counter"), symbol("method", "Shapes.bump!"), "callee return value assigned to local and returned by caller"},
+		{symbol("method", "Util.b"), symbol("method", "Util.a"), "callee return value flows into caller return value"},
+	} {
+		found := false
+		for _, relation := range flows {
+			found = found || relation.FromID == want.from.ID && relation.ToID == want.to.ID && relation.Reason == want.reason
+		}
+		if !found {
+			t.Fatalf("missing member DATA_FLOWS %s -> %s (%s): %#v", want.from.QualifiedName, want.to.QualifiedName, want.reason, flows)
+		}
+	}
+}
+
+func TestJuliaUsesTypeReadsOnlyTheSignature(t *testing.T) {
+	// USES_TYPE matches identifiers in the signature, so a body-laden Julia
+	// signature turned every type named in a body into a USES_TYPE edge. The
+	// construction in the body is CONSTRUCTS, which must survive.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Shapes.jl", `module Shapes
+
+struct Circle
+    radius::Float64
+end
+
+struct Area
+    value::Float64
+end
+
+mutable struct Counter
+    count::Int
+end
+
+function area(c::Circle)::Area
+    return Area(pi * c.radius^2)
+end
+
+function bump!(n)
+    k = Counter(n)
+    return k
+end
+
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbol := func(kind, name string) SymbolRecord {
+		got := symbolByKindAndName(snapshot.Symbols, kind, name)
+		if got.ID == "" {
+			t.Fatalf("missing %s %s: %#v", kind, name, snapshot.Symbols)
+		}
+		return got
+	}
+	circle, areaType, counter := symbol("struct", "Circle"), symbol("struct", "Area"), symbol("struct", "Counter")
+	area, bump := symbol("method", "Shapes.area"), symbol("method", "Shapes.bump!")
+	has := func(relationType string, from, to SymbolRecord) bool {
+		for _, relation := range snapshot.Relations {
+			if relation.Type == relationType && relation.FromID == from.ID && relation.ToID == to.ID {
+				return true
+			}
+		}
+		return false
+	}
+	if has("USES_TYPE", bump, counter) {
+		t.Fatalf("USES_TYPE from a type named only in the body: %#v", relationsOfType(snapshot.Relations, "USES_TYPE"))
+	}
+	if !has("CONSTRUCTS", bump, counter) {
+		t.Fatalf("missing CONSTRUCTS bump! -> Counter: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+	}
+	for _, want := range []struct {
+		relationType string
+		to           SymbolRecord
+	}{
+		{"USES_TYPE", circle},
+		{"PARAM_TYPE", circle},
+		{"USES_TYPE", areaType},
+	} {
+		if !has(want.relationType, area, want.to) {
+			t.Fatalf("missing signature %s area -> %s: %#v", want.relationType, want.to.QualifiedName, snapshot.Relations)
+		}
+	}
+}
+
+func TestJuliaBodyOnlyEditIsBodyChanged(t *testing.T) {
+	// compareEntities checks the signature before the body hash, so while the
+	// signature carried the body every Julia body edit read as a signature
+	// change, on the function and again on its module.
+	source := func(step string) string {
+		return `module Shapes
+
+mutable struct Counter
+    count::Int
+end
+
+function bump!(n)
+    k = Counter(n)
+    k.count = k.count + ` + step + `
+    return k
+end
+
+double(x) = ` + step + ` * x
+
+end
+`
+	}
+	before, _ := TreeSitterParser{}.Parse("src/Shapes.jl", source("1"))
+	after, _ := TreeSitterParser{}.Parse("src/Shapes.jl", source("2"))
+	changes, removed, added := compareEntities(before, after, false)
+	if len(removed) != 0 || len(added) != 0 {
+		t.Fatalf("body-only edit removed=%#v added=%#v", removed, added)
+	}
+	got := map[string]string{}
+	for _, change := range changes {
+		got[change.Kind+":"+change.Name] = change.Type
+	}
+	want := map[string]string{
+		"method:Shapes.bump!":  "body_changed",
+		"method:Shapes.double": "body_changed",
+		"module:Shapes":        "body_changed",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("body-only edit changes = %#v, want %#v (all: %#v)", got, want, changes)
 	}
 }
 

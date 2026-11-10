@@ -55,23 +55,6 @@ func TestContainedReplacementPreservesOriginalOnWriteFailure(t *testing.T) {
 	}
 }
 
-func TestReadRecordRejectsUnnormalizedPaths(t *testing.T) {
-	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "brain.json"), []byte("{}"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"", ".", "./brain.json", "sub/../brain.json", "sub/./brain.json", "sub//brain.json", "../brain.json", filepath.Join(repo, "brain.json")} {
-		t.Run(name, func(t *testing.T) {
-			if _, _, err := readRecord(repo, name); err == nil {
-				t.Fatalf("accepted %q", name)
-			}
-		})
-	}
-	if _, present, err := readRecord(repo, "brain.json"); err != nil || !present {
-		t.Fatalf("valid record: %v, %v", present, err)
-	}
-}
-
 func TestSafeKeyBeforePlatformConversion(t *testing.T) {
 	for _, key := range []string{"gh/team/repo", "gh/team/sub/repo", "local/repo-1234"} {
 		if !safeKey(key) {

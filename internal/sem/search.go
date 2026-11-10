@@ -96,6 +96,23 @@ type SearchOptions struct {
 	// standard cold default may widen adaptively; explicit and TopK-adaptive
 	// MaxIndexedFiles values remain exact compatibility limits.
 	progressivePreselection bool
+	// coldCompleteEligible is internal policy, set by searchRepository: this query
+	// missed the complete preindex, and nothing it asked for rules out the
+	// cold-complete build (a cache directory is in use, the search is on HEAD, and
+	// neither --max-indexed-files nor --index-all-files was given). preselectSearchFiles
+	// adds the one input it alone knows, the corpus size, and when that build will
+	// follow it selects with the warm Git tree grep instead of the content scan.
+	// It is a prefilter only: the snapshot loader serves that selection from a
+	// complete snapshot or refuses it (coldCompletePolicy.required).
+	coldCompleteEligible bool
+	// coldCompleteUnavailable marks the second attempt of a search whose
+	// cold-complete selection the loader refused (errColdCompleteUnavailable): it
+	// selects with the bounded content scan and does not attempt the complete
+	// build again, which is what a cold query did before the warm route existed.
+	// coldCompleteRetryLatency is the refused attempt's wall time, charged to this
+	// attempt's index and total latency.
+	coldCompleteUnavailable  bool
+	coldCompleteRetryLatency time.Duration
 	// afterCachePolicyCapture is a deterministic test seam for policy-file
 	// mutation between transaction capture and the first cache lookup. It is
 	// deliberately unexported and nil in production.
@@ -1184,6 +1201,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 }
 
 func searchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {
+	// The options as the caller passed them, before the defaults below are
+	// applied: a retry after errColdCompleteUnavailable starts from these.
+	requestedOptions := options
 	q := buildSearchQuery(query)
 	if len(q.terms) == 0 {
 		return SearchResponse{}, errors.New("search query has no meaningful terms")
@@ -1226,7 +1246,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		options.Profile = ProfileFast
 	}
 	sparseQuery := buildSparseSearchQueryExpanded(query, q)
-	searchStarted := time.Now()
+	searchStarted := time.Now().Add(-options.coldCompleteRetryLatency)
 	baseSnapshotOptions := ProviderSnapshotOptions{
 		NoNetwork:     true,
 		Worktree:      options.Worktree,
@@ -1277,7 +1297,14 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if options.afterPreindexLoad != nil {
 		options.afterPreindexLoad()
 	}
-	preindexLoadLatency := time.Since(indexStarted)
+	// Whether a cold-complete build can follow, as far as this search can tell
+	// before selecting; preselection adds the corpus-size bound. The loader makes
+	// the actual decision and refuses the warm selection when no complete
+	// snapshot can serve it, so this only spares a doomed grep and retry.
+	options.coldCompleteEligible = !preindexCacheHit && !options.Worktree && !searchCacheDisabled &&
+		options.CacheDir != "" && !explicitIndexedFileBound && !options.IndexAllFiles &&
+		!options.coldCompleteUnavailable
+	preindexLoadLatency := time.Since(indexStarted) + options.coldCompleteRetryLatency
 	preselectStarted := time.Now()
 	selection, err := preselectSearchFiles(
 		ctx, repo, q, sparseQuery, options, baseSnapshotOptions, preindexedSnapshot, preindexCacheHit,
@@ -1524,8 +1551,9 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	snapshotOptions := baseSnapshotOptions
 	snapshotOptions.OnlyFiles = onlyFiles
 	snapshotOptions.coldComplete = coldCompletePolicy{
-		disabled:    explicitIndexedFileBound,
+		disabled:    explicitIndexedFileBound || options.coldCompleteUnavailable,
 		sourceFiles: selection.filesScanned,
+		required:    selection.coldCompleteRoute,
 	}
 	var derivedFromComplete *SnapshotHeader
 	snapshotOptions.onCompleteDerivation = func(header SnapshotHeader) {
@@ -1554,6 +1582,17 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	} else if !cacheHit {
 		indexStarted = time.Now()
 		snapshot, cacheHit, err = loadOrBuildSearchGraphSnapshot(ctx, repo, providerVersion, snapshotOptions, options.CacheDir, searchCacheDisabled)
+		if errors.Is(err, errColdCompleteUnavailable) && !options.coldCompleteUnavailable {
+			// No complete snapshot can serve the warm selection: the cache
+			// generation is unreadable, the cache policy changed, HEAD moved, or
+			// the complete build failed. Search again from the caller's options,
+			// selecting with the bounded content scan, so the fallback builds the
+			// same bounded view a cold query always built.
+			retry := requestedOptions
+			retry.coldCompleteUnavailable = true
+			retry.coldCompleteRetryLatency = time.Since(searchStarted)
+			return searchRepository(ctx, repo, providerVersion, query, retry)
+		}
 		if err != nil {
 			return SearchResponse{}, err
 		}
@@ -1671,21 +1710,56 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	q = q.withCorpusPresence(fileDF)
 	statisticsPassFiles, statisticsPassBytes := queryReads.files, queryReads.bytes
-	for _, filePath := range indexableFiles {
-		if err := ctx.Err(); err != nil {
+	// Candidate construction is pure per-file CPU over content the statistics
+	// pass above already read and memoized, so the reads stay serial (same
+	// memo, same telemetry) and only the computation fans out. Files are
+	// independent and the ordered pipeline appends in exactly the sequential
+	// loop's order, so output bytes are unchanged. Measured at 1.5s of a warm
+	// query single-threaded on entire-brain — the largest Query-stage cost.
+	// Chunked so the contents pinned for the workers stay bounded: a single
+	// whole-corpus pre-read would hold every indexable file at once and defeat
+	// the content cache's bound on large repositories. Chunks are processed in
+	// order and the ordered reduce appends in order within each, so output
+	// bytes are unchanged.
+	workers := runtime.GOMAXPROCS(0)
+	chunkSize := max(workers*8, 64)
+	for start := 0; start < len(indexableFiles); start += chunkSize {
+		chunk := indexableFiles[start:min(start+chunkSize, len(indexableFiles))]
+		chunkContents := make([]string, len(chunk))
+		chunkRead := make([]bool, len(chunk))
+		for index, filePath := range chunk {
+			if err := ctx.Err(); err != nil {
+				return SearchResponse{}, err
+			}
+			// A file the nomination plan evicted contributes no candidates and
+			// must not be read here, exactly as the sequential loop skipped it.
+			if nominationPlan.evicted[filePath] {
+				continue
+			}
+			chunkContents[index], chunkRead[index] = read(filePath)
+		}
+		if err := runIndexedStreamingPipeline(ctx, len(chunk), workers,
+			func(_ context.Context, index int, emitCandidate func(searchCandidate)) struct{} {
+				if !chunkRead[index] {
+					return struct{}{}
+				}
+				filePath := chunk[index]
+				lines := strings.Split(chunkContents[index], "\n")
+				for _, candidate := range candidatesForFile(
+					q, filePath, fileLanguages[filePath], lines, symbolsByFile[filePath], options,
+				) {
+					emitCandidate(candidate)
+				}
+				return struct{}{}
+			},
+			func(_ int, candidate searchCandidate) error {
+				candidates = append(candidates, candidate)
+				return nil
+			},
+			func(int, struct{}) error { return nil },
+		); err != nil {
 			return SearchResponse{}, err
 		}
-		if nominationPlan.evicted[filePath] {
-			continue
-		}
-		content, ok := read(filePath)
-		if !ok {
-			continue
-		}
-		lines := strings.Split(content, "\n")
-		candidates = append(candidates, candidatesForFile(
-			q, filePath, fileLanguages[filePath], lines, symbolsByFile[filePath], options,
-		)...)
 	}
 	// Re-reading a file the content cache had to drop pulls in the same file, not another
 	// one, so it must not inflate what the query is reported to have read.
@@ -2694,6 +2768,10 @@ type searchFileSelection struct {
 	// re-deriving a predicate is what keeps a caller's --include-file meaning the same thing on
 	// both routes.
 	ignores ignoreMatcher
+	// coldCompleteRoute says files came from the warm Git tree grep on a cold
+	// query, so they may only be served from a complete snapshot
+	// (coldCompletePolicy.required).
+	coldCompleteRoute bool
 }
 
 type searchScanTelemetry struct {
@@ -2755,7 +2833,8 @@ func preselectSearchFiles(
 	// Interactive committed-tree search can ask Git's optimized object-store
 	// scanner for every eligible content match in one fixed-string batch. Keep
 	// every matched/path-evidenced file: MaxIndexedFiles is a cold selective-
-	// indexing guard, not a retrieval recall cap once the graph is preindexed.
+	// indexing guard, not a retrieval recall cap once the graph is preindexed
+	// (or about to be built complete; see coldCompleteFollows).
 	// Deeper sparse search retains the exhaustive path until corpus statistics
 	// can be persisted with the preindex.
 	//
@@ -2765,8 +2844,17 @@ func preselectSearchFiles(
 	exactFullPreindex := preindexCacheHit &&
 		preindexedSnapshot.Header.Tree == source.tree &&
 		preindexedSnapshot.Header.RepoKey == source.key
+	// A cold query that will build the complete snapshot of this tree anyway
+	// (loadOrBuildSearchSnapshotPersisting, on a corpus within the cold-complete
+	// bound) derives its view from the same complete graph a warm query does, so
+	// it selects the same way. The content scan it used to run cost 3-5s on
+	// repositories of 1-2k files only to choose a different, smaller file set,
+	// which made the first answer for a query differ from every later one.
+	// Selection still precedes the build, so a query nothing matches builds nothing.
+	coldCompleteFollows := options.coldCompleteEligible && source.commit != "" &&
+		coldCompleteSnapshotFits(len(source.paths))
 	grepPatterns, grepSafe := searchGitGrepPatterns(q.terms)
-	if exactFullPreindex && !options.Worktree && !options.Deep && grepSafe {
+	if (exactFullPreindex || coldCompleteFollows) && !options.Worktree && !options.Deep && grepSafe {
 		var matches []string
 		var grepErr error
 		// Only the plain fixed-string route below returns EVERY file containing a query term; the
@@ -2790,25 +2878,42 @@ func preselectSearchFiles(
 			for _, path := range source.paths {
 				allowed[path] = true
 			}
-			seen := map[string]bool{}
 			patterns := searchGitAliasPatternsForTerms(q, q.terms)
 			if patterns == nil {
 				grepErr = fmt.Errorf("query requires Unicode content preselection")
 			} else {
-				grepErr = gitutil.GrepTreePatternLines(ctx, source.absRepo, source.commit, patterns, func(match gitutil.GrepMatch) error {
-					if allowed[match.Path] && !seen[match.Path] {
-						text := match.Text
-						if !textMatchesSearchQuery(q, text) {
-							// A conservative locale boundary may need validation.
-							if content, ok := validationRead(match.Path); ok {
-								text = content
-								selection.filesContentRead++
-							}
+				// The expression is a conservative superset (a locale boundary may
+				// over-match), so every hit is validated against the matcher on its
+				// content. Git lists files (-l) rather than first lines: it reads a
+				// file only to its first match, and the matcher is line-local and
+				// monotone, so validating the content admits exactly the files that
+				// validating the first matching line did.
+				grepErr = gitutil.GrepTreePatternFiles(ctx, source.absRepo, source.commit, patterns, searchGitGrepExcludedPaths(ctx, source.absRepo, source.commit, allowed), func(path string) error {
+					if !allowed[path] {
+						return ctx.Err()
+					}
+					if content, ok := validationRead(path); ok {
+						selection.filesContentRead++
+						if textMatchesSearchQuery(q, content) {
+							matches = append(matches, path)
 						}
-						if textMatchesSearchQuery(q, text) {
-							matches = append(matches, match.Path)
-						}
-						seen[match.Path] = true
+						return ctx.Err()
+					}
+					// The bounded reader declined the blob (in practice: it is over
+					// the cap). Stream it and admit it if any line validates. That
+					// admits a superset of the first-matching-line rule it replaces
+					// and differs only when that line fails validation and a later
+					// one passes. A blob that cannot be streamed either cannot be
+					// validated and stays out.
+					found, err := gitutil.ScanBlobLinesAtRev(ctx, source.absRepo, source.commit, path, func(line string) bool {
+						return textMatchesSearchQuery(q, line)
+					})
+					if err != nil {
+						return ctx.Err()
+					}
+					selection.filesContentRead++
+					if found {
+						matches = append(matches, path)
 					}
 					return ctx.Err()
 				})
@@ -2819,7 +2924,7 @@ func preselectSearchFiles(
 			// content pass reads. Including them makes this set a genuine superset of every file
 			// containing a term; a NUL-containing file among them is still inspected and skipped
 			// by the scorer, exactly as on the cold path.
-			matches, grepErr = gitutil.GrepTreePathsIncludingBinary(ctx, source.absRepo, source.commit, grepPatterns)
+			matches, grepErr = gitutil.GrepTreePathsIncludingBinaryInFiles(ctx, source.absRepo, source.commit, grepPatterns, source.paths)
 			matchesEveryTermFile = true
 		}
 		if grepErr == nil {
@@ -2830,6 +2935,7 @@ func preselectSearchFiles(
 			selection.files = bridgeRegistrationHandlerFiles(ctx, source, files, searchRegistrationBridgeMaxHandlers)
 			selection.sparseFiles = append([]string(nil), selection.files...)
 			selection.preselectionBackend = "git-tree-grep"
+			selection.coldCompleteRoute = !exactFullPreindex
 			selection.preselectionPasses = 1
 			selection.preselectionFilesExamined = len(source.paths)
 			// Git scanned content but returned only paths, so the provider has no posting lists.
@@ -3286,7 +3392,7 @@ func bridgeRegistrationHandlerFiles(ctx context.Context, source sourceContext, s
 	if budget <= 0 || len(selected) == 0 || len(selected) >= len(source.paths) {
 		return selected
 	}
-	aliases := collectRegistrationAliases(selected, source.read)
+	aliases := collectRegistrationAliases(func() bool { return ctx.Err() != nil }, selected, source.read)
 	if len(aliases) == 0 {
 		return selected
 	}
@@ -5226,11 +5332,17 @@ func committedUsageFileSelector(
 	if !useHead || deep {
 		return nil
 	}
+	// These are the same eligible files used to filter the postings below. Give
+	// Git the inventory up front so ignored blobs are never searched.
+	paths := make([]string, 0, len(languages))
+	for path := range languages {
+		paths = append(paths, path)
+	}
 	return func(ctx context.Context, identifiers []string) ([]string, bool) {
 		if !searchTermsSafeForGitGrep(identifiers) {
 			return nil, false
 		}
-		matches, err := gitutil.GrepTreePaths(ctx, repo, treeish, identifiers)
+		matches, err := gitutil.GrepTreePathsInFiles(ctx, repo, treeish, identifiers, paths)
 		if err != nil {
 			return nil, false
 		}

@@ -9,8 +9,9 @@ import (
 // TestColdSelectiveQueryPersistsCompleteSnapshot pins that a cold committed-tree
 // query leaves a COMPLETE snapshot behind, not only its own selective view, so
 // a later query asking something else is served from the cache instead of
-// rebuilding. The cold query's own answer must not change for it: it is still
-// computed over its own selection and ranks exactly like an uncached search.
+// rebuilding. The cold query answers over its own selection, which is the one a
+// warm query makes (TestColdCachedQueryAnswersLikeWarm), so repeating it once the
+// snapshot is cached returns the same answer.
 func TestColdSelectiveQueryPersistsCompleteSnapshot(t *testing.T) {
 	repo := selectiveFilterFixture(t)
 	cacheDir := t.TempDir()
@@ -25,14 +26,12 @@ func TestColdSelectiveQueryPersistsCompleteSnapshot(t *testing.T) {
 	if cold.Stats.IndexCacheHit || cold.Stats.FilesIndexed == 0 || cold.Stats.FilesIndexed >= 4 {
 		t.Fatalf("premise lost: first query must be a cold, selective build: %#v", cold.Stats)
 	}
-	uncachedOptions := options
-	uncachedOptions.CacheDir, uncachedOptions.DisableCache = "", true
-	uncached, err := SearchRepository(t.Context(), repo, "test-version", "Format ledger entry", uncachedOptions)
+	repeat, err := SearchRepository(t.Context(), repo, "test-version", "Format ledger entry", options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(cold.Results, uncached.Results) || len(cold.Results) == 0 {
-		t.Fatalf("building the complete snapshot changed the cold query's answer:\ncold=%#v\nuncached=%#v", cold.Results, uncached.Results)
+	if !repeat.Stats.IndexCacheHit || !reflect.DeepEqual(cold.Results, repeat.Results) || len(cold.Results) == 0 {
+		t.Fatalf("the cached repeat of a cold query answered differently:\ncold=%#v\nrepeat=%#v", cold.Results, repeat.Results)
 	}
 
 	complete, hit, err := loadCachedCompleteSearchSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFull}, cacheDir)
@@ -158,8 +157,10 @@ func TestSelectiveDerivationReportsCompleteHeaderOnce(t *testing.T) {
 		if len(snapshot.Files) != 1 {
 			t.Fatalf("selected files = %d", len(snapshot.Files))
 		}
-		if calls != 1 {
-			t.Fatalf("callback count after request %d = %d, want 1 (direct hits must not derive again)", i+1, calls)
+		// The derived view is not persisted, so every request derives it from the
+		// complete entry and reports that entry's header exactly once.
+		if calls != i+1 {
+			t.Fatalf("callback count after request %d = %d, want %d (once per derivation)", i+1, calls, i+1)
 		}
 	}
 }

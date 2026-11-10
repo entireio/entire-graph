@@ -1,7 +1,7 @@
 # Command reference
 
 Day to day, Entire Graph is driven by a coding agent following the guide that
-`init-agents` installs. The commands below are the same surface used directly
+`setup` installs. The commands below are the same surface used directly
 for manual inspection, debugging a result the agent acted on, or scripting.
 `entire graph help` lists every public command for your installed version, and
 `entire graph <command> --help` is authoritative for flags; this page groups
@@ -13,8 +13,8 @@ Pass `--repo .` (or a path) when running outside an Entire session.
 
 | Command | What it does |
 | --- | --- |
-| `init-agents` | Writes `.entire/agent-guide.md`, managed blocks in `AGENTS.md`/`CLAUDE.md`, and a Claude Code `SubagentStart` hook in `.claude/settings.local.json`. See [agent activation](agents.md). |
-| `agent-guide` | Prints the operating guide `init-agents` installs, for inspection or piping elsewhere. |
+| `setup` | Writes `.entire/agent-guide.md`, managed blocks in `AGENTS.md`/`CLAUDE.md`, and a Claude Code `SubagentStart` hook in `.claude/settings.local.json`. See [agent activation](agents.md). |
+| `agent-guide` | Prints the operating guide `setup` installs, for inspection or piping elsewhere. |
 | `index` | Prewarms one committed-tree cache variant before a batch of `--head` queries. Defaults to `--profile full`; see the [operations cache guide](operations.md#cache). |
 | `capabilities` | Reports semantic vs inventory-only languages, relation types, profiles, and features as JSON. Feature-detect with this before relying on a relation family. |
 
@@ -30,6 +30,13 @@ default**; `--head` switches to the committed tree.
 | `explain` | Resolves symbols named by a failing build or test into definitions and context. |
 | `neighbors` | Direct relations of one symbol (`--relation`, `--direction`, `--depth 1\|2`). Ambiguous names return a definition list; disambiguate with `--file`. |
 | `impact` | One-shot blast radius for a symbol: direct and transitive callers (depth ≤ 2), callees, type consumers, data flows, co-change files, siblings. |
+
+Callers come from `CALLS` edges only. For a Go function or method, `neighbors`
+(direction `in` or `both`) and `impact` add a `W_VALUE_REFERENCES_UNMODELLED`
+warning to JSON and one line to agent and text output: references to the
+function as a value (assigned to a variable, passed as an argument, stored in a
+struct field or map) are not modelled, and the line gives a `grep` that finds
+them. Any non-comment hit that is not a call is a dependent the graph cannot see.
 
 Cache visibility differs by command and format. JSON from `query`, `impact`,
 and `neighbors` includes cache fields. Text output from `impact` and

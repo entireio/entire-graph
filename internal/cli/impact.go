@@ -57,6 +57,14 @@ type impactEntry struct {
 	// overview, so it reports the LINE only and never quotes source; use
 	// `neighbors --direction in` for the conditions around a call.
 	CallSite *callSite `json:"call_site,omitempty"`
+	// EvidenceState states how much this entry can be trusted at face value: a
+	// structural fact (a sibling, or a resolved single-target relation) is
+	// "confirmed"; an edge produced by inference, fan-out, or a documented
+	// heuristic relation kind is "partial"; a bare name/text match or a pattern
+	// the graph flagged as weak is "requires_verification" (see
+	// sem.RelationEvidenceState). It never changes Relation/Detail/Endpoint —
+	// it is a read of data the graph already computed, not a new judgment.
+	EvidenceState sem.EvidenceState `json:"evidence_state"`
 
 	// Evidence span and written call text, kept only to resolve CallSite after
 	// the graph query. Not part of the wire format.
@@ -76,9 +84,15 @@ type impactSection struct {
 	In         int           `json:"in,omitempty"`
 	Out        int           `json:"out,omitempty"`
 	Entries    []impactEntry `json:"entries"`
+	// EvidenceState rolls every entry in this section up to the single most cautious
+	// verdict, computed over ALL matching relations before the --limit cap (an entry
+	// pushed out of Entries by the cap can still make the section requires_verification).
+	EvidenceState sem.EvidenceState `json:"evidence_state"`
 }
 
 type impactResponse struct {
+	// Text groups and counts must be computed before the display limit is applied.
+	textLimit          int
 	FormatVersion      int    `json:"format_version"`
 	RepoRoot           string `json:"repo_root"`
 	Commit             string `json:"commit,omitempty"`
@@ -100,8 +114,19 @@ type impactResponse struct {
 	FuzzyMatchKind string `json:"fuzzy_match_kind,omitempty"`
 	// Degenerate reports that the answer carries no blast radius worth reading, with the reason. It is
 	// the same verdict the text marker prints, so a JSON consumer can act on it without parsing text.
-	Degenerate             bool                   `json:"degenerate,omitempty"`
-	DegenerateReason       string                 `json:"degenerate_reason,omitempty"`
+	Degenerate       bool   `json:"degenerate,omitempty"`
+	DegenerateReason string `json:"degenerate_reason,omitempty"`
+	// EvidenceState is the answer-wide verdict: the worst state among every section below,
+	// escalated to requires_verification when the focus sits in a language the graph only
+	// inventories (no call/reference resolution ran at all) or when the answer is Degenerate
+	// (a zero or bundle-only blast radius is exactly the shape dynamic dispatch, reflection,
+	// or generated code leaves behind — see impactEvidenceVerificationNote). It is computed
+	// once, on the finished response, so text and JSON can never disagree about it.
+	EvidenceState sem.EvidenceState `json:"evidence_state,omitempty"`
+	// EvidenceNote explains, when EvidenceState is requires_verification, what to do about
+	// it: the source/test verification path a reader should follow instead of trusting the
+	// counts above as complete. Empty whenever EvidenceState is not requires_verification.
+	EvidenceNote           string                 `json:"evidence_note,omitempty"`
 	MatchBodies            []symbolMatchBody      `json:"match_bodies,omitempty"`
 	DisambiguationRequired bool                   `json:"disambiguation_required"`
 	Definitions            []neighborEndpoint     `json:"definitions,omitempty"`
@@ -126,49 +151,18 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
+	var diagnostics bytes.Buffer
+	analysisOpts := opts
+	analysisOpts.Stderr = &diagnostics
+	response, err := runImpactProgress(ctx, opts.Stderr, flags.Symbol, func(ctx context.Context, report impactProgressReporter) (impactResponse, error) {
+		return analyzeImpact(ctx, analysisOpts, flags, report)
+	})
+	if _, writeErr := io.Copy(opts.Stderr, &diagnostics); err == nil {
+		err = writeErr
+	}
 	if err != nil {
 		return err
 	}
-	profile, err := parseProfile(flags.Profile)
-	if err != nil {
-		return err
-	}
-	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
-	totalStarted := time.Now()
-	indexStarted := totalStarted
-	snapshot, cacheHit, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
-		NoNetwork:    true,
-		Worktree:     flags.Worktree,
-		IgnoreFiles:  flags.IgnoreFile,
-		IncludeFiles: flags.IncludeFile,
-		Profile:      profile,
-	}, cacheDir, flags.DisableCache)
-	if err != nil {
-		return err
-	}
-	// The snapshot is loaded, so the index phase is over: read the clock before
-	// opening the source reader, whose `git cat-file` spawn belongs to answering
-	// the query rather than to the index-cache telemetry. See runDef.
-	indexLatency := time.Since(indexStarted)
-	queryStarted := time.Now()
-	readSource, closeSource := openSnapshotLineReaderOrDegrade(ctx, snapshot, flags.Worktree, opts.Stderr)
-	if closeSource != nil {
-		defer closeSource()
-	}
-	response := buildImpactResponseFromReader(snapshot, flags, readSource)
-	annotateImpactCallSites(&response, readSource)
-	// The verdict is computed once, on the finished response, so the text marker and the JSON fields
-	// can never disagree about whether this answer was worth reading.
-	if reason := impactDegenerateReason(response); reason != "" {
-		response.Degenerate, response.DegenerateReason = true, reason
-	}
-	queryLatency := time.Since(queryStarted)
-	response.IndexCacheHit = cacheHit
-	response.IndexCacheDisabled = cacheDir == "" || flags.DisableCache
-	response.IndexLatencyMS = indexLatency.Milliseconds()
-	response.QueryLatencyMS = queryLatency.Milliseconds()
-	response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
 	switch flags.Format {
 	case "json":
 		encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
@@ -179,6 +173,70 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	default:
 		return fmt.Errorf("impact --format must be text or json, got %q", flags.Format)
 	}
+}
+
+func analyzeImpact(ctx context.Context, opts Options, flags impactFlags, report impactProgressReporter) (impactResponse, error) {
+	report.update("Opening repository", "")
+	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
+	if err != nil {
+		return impactResponse{}, err
+	}
+	profile, err := parseProfile(flags.Profile)
+	if err != nil {
+		return impactResponse{}, err
+	}
+	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
+	totalStarted := time.Now()
+	indexStarted := totalStarted
+	snapshotOptions := sem.ProviderSnapshotOptions{
+		NoNetwork:    true,
+		Worktree:     flags.Worktree,
+		IgnoreFiles:  flags.IgnoreFile,
+		IncludeFiles: flags.IncludeFile,
+		Profile:      profile,
+	}
+	if flags.Worktree {
+		report.update("Discovering source files", "Working tree, including uncommitted changes")
+	} else {
+		report.update("Checking committed graph cache", "")
+	}
+	if report != nil {
+		snapshotOptions.Progress = report.snapshot
+	}
+	snapshot, cacheHit, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, snapshotOptions, cacheDir, flags.DisableCache)
+	if err != nil {
+		return impactResponse{}, err
+	}
+	// The snapshot is loaded, so the index phase is over: read the clock before
+	// opening the source reader, whose `git cat-file` spawn belongs to answering
+	// the query rather than to the index-cache telemetry. See runDef.
+	indexLatency := time.Since(indexStarted)
+	queryStarted := time.Now()
+	if cacheHit {
+		report.update("Checking committed graph cache", "Cache hit; parsing and linking skipped")
+	}
+	report.update("Collecting impact", "Callers, dependencies, types and coupling")
+	readSource, closeSource := openSnapshotLineReaderOrDegrade(ctx, snapshot, flags.Worktree, opts.Stderr)
+	if closeSource != nil {
+		defer closeSource()
+	}
+	response := buildImpactResponseFromReader(snapshot, flags, readSource)
+	report.update("Locating caller source lines", "")
+	annotateImpactCallSites(&response, readSource)
+	// The verdict is computed once, on the finished response, so the text marker and the JSON fields
+	// can never disagree about whether this answer was worth reading.
+	if reason := impactDegenerateReason(response); reason != "" {
+		response.Degenerate, response.DegenerateReason = true, reason
+	}
+	finalizeImpactEvidence(&response)
+	report.update("Preparing results", "Grouping callers and tests; formatting the summary")
+	queryLatency := time.Since(queryStarted)
+	response.IndexCacheHit = cacheHit
+	response.IndexCacheDisabled = cacheDir == "" || flags.DisableCache
+	response.IndexLatencyMS = indexLatency.Milliseconds()
+	response.QueryLatencyMS = queryLatency.Milliseconds()
+	response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
+	return response, nil
 }
 
 func parseImpactFlags(args []string) (impactFlags, error) {
@@ -417,6 +475,9 @@ func buildImpactResponseFromReader(
 	focus := focuses[0]
 	focusEndpoint := endpointForSymbol(focus)
 	response.Focus = &focusEndpoint
+	// Callers come from CALLS edges only; disclose the value references they cannot
+	// include. See value_refs.go.
+	response.Warnings = withValueReferenceDisclosure(response.Warnings, focusEndpoint)
 	if focus.ContainerID != "" {
 		if container, ok := endpoints[focus.ContainerID]; ok {
 			response.Container = &container
@@ -463,6 +524,7 @@ func buildImpactResponseFromReader(
 		seenTouching[key] = true
 		*entries = append(*entries, impactEntry{
 			Endpoint: endpoint, Relation: relation.Type, Direction: direction, Depth: 1,
+			EvidenceState: sem.RelationEvidenceState(relation),
 		})
 	}
 	for _, relation := range snapshot.Relations {
@@ -478,6 +540,7 @@ func buildImpactResponseFromReader(
 					seenCallee[key] = true
 					callees = append(callees, impactEntry{
 						Endpoint: endpoint, Relation: relation.Type, Direction: "out", Depth: 1,
+						EvidenceState: sem.RelationEvidenceState(relation),
 					})
 				}
 			}
@@ -499,6 +562,7 @@ func buildImpactResponseFromReader(
 				seenCochange[otherID] = true
 				cochangeEntries = append(cochangeEntries, impactEntry{
 					Endpoint: endpoint, Relation: relation.Type, Detail: relation.Reason,
+					EvidenceState: sem.RelationEvidenceState(relation),
 				})
 			}
 		}
@@ -541,6 +605,7 @@ func buildImpactResponseFromReader(
 				seenCaller[relation.FromID] = true
 				entry := impactEntry{
 					Endpoint: endpoint, Relation: relation.Type, Direction: "in", Depth: depth,
+					EvidenceState: sem.RelationEvidenceState(relation),
 				}
 				// Keep the caller-body span and written call text so the call
 				// LINE can replace the definition line in the answer.
@@ -576,18 +641,29 @@ func buildImpactResponseFromReader(
 		}
 		switch {
 		case focus.ContainerID != "" && symbol.ContainerID == focus.ContainerID:
-			siblings = append(siblings, impactEntry{Endpoint: endpointForSymbol(symbol), Detail: "sibling"})
+			// Sibling/member is a structural fact read straight off container membership,
+			// not a resolved relation the graph could have gotten wrong through dynamic
+			// dispatch or reflection, so it is always Confirmed.
+			siblings = append(siblings, impactEntry{
+				Endpoint: endpointForSymbol(symbol), Detail: "sibling", EvidenceState: sem.EvidenceConfirmed,
+			})
 		case symbol.ContainerID == focus.ID:
-			siblings = append(siblings, impactEntry{Endpoint: endpointForSymbol(symbol), Detail: "member"})
+			siblings = append(siblings, impactEntry{
+				Endpoint: endpointForSymbol(symbol), Detail: "member", EvidenceState: sem.EvidenceConfirmed,
+			})
 		}
 	}
 
-	response.Callers = impactSectionOf(callers, flags.Limit)
-	response.Callees = impactSectionOf(callees, flags.Limit)
-	response.TypeConsumers = impactSectionOf(typeEntries, flags.Limit)
-	response.DataFlows = impactSectionOf(flowEntries, flags.Limit)
-	response.CoChanges = impactSectionOf(cochangeEntries, flags.Limit)
-	response.Siblings = impactSectionOf(siblings, flags.Limit)
+	limit := flags.Limit
+	if flags.Format == "text" {
+		response.textLimit, limit = limit, 0
+	}
+	response.Callers = impactSectionOf(callers, limit)
+	response.Callees = impactSectionOf(callees, limit)
+	response.TypeConsumers = impactSectionOf(typeEntries, limit)
+	response.DataFlows = impactSectionOf(flowEntries, limit)
+	response.CoChanges = impactSectionOf(cochangeEntries, limit)
+	response.Siblings = impactSectionOf(siblings, limit)
 	return response
 }
 
@@ -616,11 +692,22 @@ func annotateImpactCallSites(response *impactResponse, read lineReader) {
 	}
 }
 
-// formatImpactEntryLocation reports a caller at its call site, with the
-// definition line kept alongside; every other section keeps its endpoint
-// location, which is already the right one.
+// formatImpactEntryLocation reports a caller at its call site. Definition
+// metadata remains in JSON; text needs only the location to inspect.
 func formatImpactEntryLocation(entry impactEntry) string {
-	return formatCallSiteLocation(entry.Endpoint, entry.CallSite)
+	path, line := entry.Endpoint.FilePath, entry.Endpoint.StartLine
+	if entry.CallSite != nil {
+		path, line = entry.CallSite.FilePath, entry.CallSite.Line
+	}
+	name := termsafe.Line(endpointDisplayName(entry.Endpoint))
+	path = termsafe.Line(path)
+	if path == "" {
+		return name
+	}
+	if line <= 0 {
+		return fmt.Sprintf("%s (%s)", name, path)
+	}
+	return fmt.Sprintf("%s (%s:%d)", name, path, line)
 }
 
 // impactSectionOf sorts entries deterministically (depth, then file/line/name),
@@ -654,6 +741,7 @@ func impactSectionOf(entries []impactEntry, limit int) impactSection {
 		return entries[left].Relation < entries[right].Relation
 	})
 	section := impactSection{Total: len(entries)}
+	states := make([]sem.EvidenceState, 0, len(entries))
 	for _, entry := range entries {
 		switch {
 		case entry.Direction == "in" && entry.Depth > 1:
@@ -664,7 +752,12 @@ func impactSectionOf(entries []impactEntry, limit int) impactSection {
 		case entry.Direction == "out":
 			section.Out++
 		}
+		states = append(states, entry.EvidenceState)
 	}
+	// Rolled up over every matching relation, not just the entries the --limit cap kept: an
+	// entry pushed out of the visible list by the cap must still be able to make the section
+	// (and therefore the whole answer) say requires_verification.
+	section.EvidenceState = sem.WorstEvidenceState(states...)
 	if limit > 0 && len(entries) > limit {
 		entries = entries[:limit]
 	}
@@ -701,15 +794,18 @@ func writeImpactBounded(out io.Writer, response impactResponse, budget int) erro
 		}
 		rendered = reduced.Bytes()
 	}
-	const marker = "!output-truncated; use --format json\n"
+	const marker = "!output-truncated; use --format json\n\n"
 	if len(marker) >= budget {
 		_, err := out.Write([]byte(marker[:budget]))
 		return err
 	}
-	// The cut is searched over the window the reserved-width rendering would offer; every newline
-	// after the header sits exactly slack bytes earlier in the printed one.
+	// Telemetry is last. Drop it before a hard cut so line selection cannot
+	// depend on the measured latency's width.
+	if footer := bytes.LastIndex(rendered, []byte("\nIndex: cache-")); footer >= 0 {
+		rendered = rendered[:footer+1]
+	}
 	cut := -1
-	if window := budget - len(marker) - slack; window > 0 {
+	if window := min(budget-len(marker), len(rendered)); window > 0 {
 		cut = bytes.LastIndexByte(rendered[:window], '\n')
 	}
 	if cut < 0 {
@@ -725,18 +821,9 @@ func writeImpactBounded(out io.Writer, response impactResponse, budget int) erro
 }
 
 func capImpactSections(response impactResponse, limit int) impactResponse {
-	trim := func(section impactSection) impactSection {
-		if limit > 0 && len(section.Entries) > limit {
-			section.Entries = section.Entries[:limit]
-		}
-		return section
+	if response.textLimit <= 0 || limit < response.textLimit {
+		response.textLimit = limit
 	}
-	response.Callers = trim(response.Callers)
-	response.Callees = trim(response.Callees)
-	response.TypeConsumers = trim(response.TypeConsumers)
-	response.DataFlows = trim(response.DataFlows)
-	response.CoChanges = trim(response.CoChanges)
-	response.Siblings = trim(response.Siblings)
 	if limit > 0 && len(response.Definitions) > limit {
 		response.Definitions = response.Definitions[:limit]
 	}
@@ -746,12 +833,17 @@ func capImpactSections(response impactResponse, limit int) impactResponse {
 func writeImpactText(out io.Writer, response impactResponse) {
 	// Every section here names repository paths and symbols. See writeTextSearch.
 	out = termsafe.NewWriter(out)
-	out.Write(relationLatencyHeader(response.IndexCacheHit, response.IndexLatencyMS, response.QueryLatencyMS,
-		response.TotalLatencyMS).printed)
-	writeIndexCostNotice(out, response.IndexCacheHit, response.IndexCacheDisabled)
-	writeScopedCompletenessBlock(out,
-		completenessScopeOrAll(response.CompletenessScope, response.Warnings, response.PartialFailures, response.Stats),
-		response.Warnings, response.PartialFailures, response.Stats)
+	fmt.Fprintln(out)
+	warnings := snapshotWarnings(response.Warnings)
+	scope := completenessScopeOrAll(response.CompletenessScope, warnings, response.PartialFailures, response.Stats)
+	defer func() {
+		writeImpactFooter(out, response, scope)
+		fmt.Fprintln(out)
+	}()
+	if scope.LanguageFailed > 0 || len(scope.InScopeFailures) > 0 {
+		writeScopedCompletenessBlock(out, scope, warnings, response.PartialFailures, response.Stats)
+		fmt.Fprintln(out)
+	}
 	if response.FocusMatchesTotal == 0 {
 		writeNoFocusMatch(out, response.Query, response.File, response.Line)
 		return
@@ -776,45 +868,7 @@ func writeImpactText(out io.Writer, response impactResponse) {
 		return
 	}
 
-	focusLine := formatNeighborFocus(*response.Focus)
-	if response.Focus.Kind != "" {
-		annotation := response.Focus.Kind
-		if response.Container != nil {
-			annotation += " in " + endpointDisplayName(*response.Container)
-		}
-		focusLine += " [" + annotation + "]"
-	}
-	fmt.Fprintf(out, "Impact: %s\n", focusLine)
-	fmt.Fprintf(out, "Blast radius: %d caller%s (%d direct, %d transitive), %d callee%s, %d type consumer%s, %d data flow%s, %d co-change file%s, %d sibling%s.\n",
-		response.Callers.Total, pluralSuffix(response.Callers.Total),
-		response.Callers.Direct, response.Callers.Transitive,
-		response.Callees.Total, pluralSuffix(response.Callees.Total),
-		response.TypeConsumers.Total, pluralSuffix(response.TypeConsumers.Total),
-		response.DataFlows.Total, pluralSuffix(response.DataFlows.Total),
-		response.CoChanges.Total, pluralSuffix(response.CoChanges.Total),
-		response.Siblings.Total, pluralSuffix(response.Siblings.Total),
-	)
-	writeImpactSection(out,
-		fmt.Sprintf("Callers (%d direct, %d transitive; who breaks if behavior changes)",
-			response.Callers.Direct, response.Callers.Transitive),
-		response.Callers, false)
-	writeImpactSection(out,
-		fmt.Sprintf("Callees (%d; what it depends on)", response.Callees.Total),
-		response.Callees, false)
-	writeImpactSection(out,
-		fmt.Sprintf("Type consumers (%d in, %d out; USES_TYPE/PARAM_TYPE/RETURNS_TYPE)",
-			response.TypeConsumers.In, response.TypeConsumers.Out),
-		response.TypeConsumers, true)
-	writeImpactSection(out,
-		fmt.Sprintf("Data flows (%d in, %d out)", response.DataFlows.In, response.DataFlows.Out),
-		response.DataFlows, true)
-	writeImpactSection(out,
-		fmt.Sprintf("Co-change coupling (%d; files that historically change with %s)",
-			response.CoChanges.Total, termsafe.Line(response.Focus.FilePath)),
-		response.CoChanges, false)
-	writeImpactSection(out,
-		fmt.Sprintf("Same-container siblings (%d)", response.Siblings.Total),
-		response.Siblings, false)
+	writeImpactOverview(out, response)
 }
 
 // writeImpactSection prints one bounded section. arrows toggles the <- / ->
@@ -859,6 +913,13 @@ func writeImpactSection(out io.Writer, header string, section impactSection, arr
 		}
 		if entry.Detail == impactMentionDetail {
 			annotations = append(annotations, impactMentionDetail)
+		}
+		// Silent for Confirmed and Partial -- a resolved edge or a documented heuristic
+		// (type-inferred fan-out, a heuristic relation kind) is not new information the
+		// reader has to act on. Only the bare name/text match or weak-pattern match that
+		// RelationEvidenceState calls RequiresVerification earns a visible flag here.
+		if entry.EvidenceState == sem.EvidenceRequiresVerification {
+			annotations = append(annotations, "requires_verification")
 		}
 		if len(annotations) > 0 {
 			fmt.Fprintf(out, " [%s]", strings.Join(annotations, ", "))
@@ -982,4 +1043,57 @@ func writeImpactDegenerate(out io.Writer, response impactResponse, reason string
 		}
 	}
 	fmt.Fprintf(out, "%s: %s has %s\n", impactDegenerateMarker, name, reason)
+	// "No callers" is exactly the answer a function used only as a value gets, so
+	// the one-line verdict is the place a missing caller most needs disclosing. The
+	// marker line itself is unchanged: consumers match on its prefix.
+	if response.Focus != nil {
+		if note := valueReferenceNote(response.Warnings, response.Focus.Name); note != "" {
+			fmt.Fprintln(out, note)
+		}
+	}
+	// A degenerate answer is the one a reader is most likely to mistake for
+	// "nothing depends on this", so the verdict is repeated here rather than left
+	// to the overview, which this path never reaches.
+	if response.EvidenceState == sem.EvidenceRequiresVerification && response.EvidenceNote != "" {
+		fmt.Fprintf(out, "Evidence: requires_verification -- %s\n", response.EvidenceNote)
+	}
+}
+
+// EVIDENCE STATE
+// ==============
+//
+// A "0 callers" or "bundle-only" answer and a resolved-but-heuristic edge are two different
+// shades of the same problem this file otherwise treats separately (impactDegenerateReason
+// above, RelationEvidenceState per entry): the graph presenting a necessarily incomplete
+// static approximation as though it were the whole truth. finalizeImpactEvidence folds both
+// into the one verdict a consumer actually needs — can this count be trusted as-is, or does it
+// need a human/test check — computed once on the finished response so text and JSON agree.
+
+// finalizeImpactEvidence computes the answer-wide evidence verdict and, when it lands on
+// requires_verification, the guidance note that names a concrete way to check it. It runs
+// AFTER impactDegenerateReason because a degenerate verdict escalates the evidence state: a
+// zero or bundle-only blast radius is exactly the shape dynamic dispatch past its fan-out
+// limit, reflection, or generated/vendored code leaves behind, and must not be read as a
+// confirmed "nothing depends on this."
+func finalizeImpactEvidence(response *impactResponse) {
+	if response == nil || response.Focus == nil {
+		return
+	}
+	worst := sem.WorstEvidenceState(
+		response.Callers.EvidenceState, response.Callees.EvidenceState,
+		response.TypeConsumers.EvidenceState, response.DataFlows.EvidenceState,
+		response.CoChanges.EvidenceState, response.Siblings.EvidenceState,
+	)
+	if response.Degenerate {
+		worst = sem.WorstEvidenceState(worst, sem.EvidenceRequiresVerification)
+	}
+	worst = sem.WorstEvidenceState(worst, sem.LanguageEvidenceState(response.Focus.Language))
+	response.EvidenceState = worst
+	if worst == sem.EvidenceRequiresVerification {
+		name := response.Query
+		if display := endpointDisplayName(*response.Focus); display != "" {
+			name = display
+		}
+		response.EvidenceNote = sem.EvidenceVerificationNote(name)
+	}
 }

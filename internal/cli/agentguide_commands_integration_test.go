@@ -43,9 +43,12 @@ func TestShippedGraphGuideCommandsExecuteAgainstCommittedSource(t *testing.T) {
 	git(t, repo, "-c", "user.name=Guide Test", "-c", "user.email=guide@example.invalid", "commit", "-m", "fixture")
 	for name, guide := range map[string]string{"graph": agentsetup.GraphGuide, "combined": agentsetup.CombinedGuide} {
 		t.Run(name, func(t *testing.T) {
-			seen := map[string]bool{}
+			seen := map[string]string{}
 			for _, line := range strings.Split(guide, "\n") {
 				line = strings.TrimSpace(line)
+				// The combined guide ships the query inside an ordered sequence
+				// ("2. entire graph query ..."); the command is the rest of the line.
+				line = strings.TrimPrefix(strings.TrimPrefix(line, "1. "), "2. ")
 				if !strings.HasPrefix(line, "entire graph ") {
 					continue
 				}
@@ -61,10 +64,17 @@ func TestShippedGraphGuideCommandsExecuteAgainstCommittedSource(t *testing.T) {
 				if command != "query" && command != "def" && command != "neighbors" && command != "impact" {
 					t.Fatalf("unexpected shipped example: %s", line)
 				}
-				if seen[command] {
-					t.Fatalf("duplicate example: %s", line)
+				// The combined guide shows the query line twice on purpose (as
+				// sequence step 2 and again on the every-question list). A repeat
+				// must be the SAME line; two different spellings of one verb would
+				// leave an agent guessing which to follow.
+				if previous, ok := seen[command]; ok {
+					if previous != line {
+						t.Fatalf("conflicting examples for %s: %q vs %q", command, previous, line)
+					}
+					continue
 				}
-				seen[command] = true
+				seen[command] = line
 				var out bytes.Buffer
 				if err := Run(t.Context(), Options{Version: "guide-test", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, args); err != nil {
 					t.Fatalf("%s: %v", line, err)

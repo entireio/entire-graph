@@ -11,7 +11,7 @@ authoritative in `entire graph capabilities --json`.
 | Document | Purpose |
 | --- | --- |
 | [Root README](../README.md) | What Entire Graph is, installation, activation, and the first agent task |
-| [Agent activation](agents.md) | `init-agents` file effects, rerun and marker behavior, client notes, verification, and recovery |
+| [Agent activation](agents.md) | `setup` file effects, rerun and marker behavior, client notes, verification, and recovery |
 | [Command reference](commands.md) | Task-grouped manual and automation surface, with the defaults that matter |
 | [Search results and ranking](search.md) | What `query` returns and how to read it |
 | [Operations](operations.md) | Installation channels, cache locations and keys, prewarming, reports, and release archives |

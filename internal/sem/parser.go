@@ -21,6 +21,7 @@ import (
 	objc "github.com/entireio/entire-graph/internal/sem/grammars/objc"
 	perl "github.com/entireio/entire-graph/internal/sem/grammars/perl"
 	rlang "github.com/entireio/entire-graph/internal/sem/grammars/r"
+	swift "github.com/entireio/entire-graph/internal/sem/grammars/swift"
 	zig "github.com/entireio/entire-graph/internal/sem/grammars/zig"
 	"github.com/entireio/entire-graph/internal/sem/pgsql"
 	"github.com/entireio/entire-graph/internal/sem/zsh"
@@ -43,7 +44,6 @@ import (
 	"github.com/smacker/go-tree-sitter/ruby"
 	"github.com/smacker/go-tree-sitter/rust"
 	"github.com/smacker/go-tree-sitter/scala"
-	"github.com/smacker/go-tree-sitter/swift"
 	treesittertsx "github.com/smacker/go-tree-sitter/typescript/tsx"
 	treesitterts "github.com/smacker/go-tree-sitter/typescript/typescript"
 	treesitteryaml "github.com/smacker/go-tree-sitter/yaml"
@@ -239,7 +239,57 @@ func (TreeSitterParser) Parse(path, content string) ([]Entity, string) {
 	return entities, language
 }
 
+// ParseWithStatus parses without a cancellation deadline of its own. It is the
+// entry point for callers that have no context to stop it.
 func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string, ParseStatus) {
+	return TreeSitterParser{}.ParseWithStatusCtx(context.Background(), path, content)
+}
+
+// ctxStop returns a cheap "has this context finished?" predicate, or nil when
+// the context can never finish. A nil predicate is what the unbudgeted path
+// gets: the walk then carries no per-node check at all, so a build with no
+// deadline does exactly the work — and produces exactly the bytes — it did
+// before deadlines existed.
+func ctxStop(ctx context.Context) func() bool {
+	done := ctx.Done()
+	if done == nil {
+		return nil
+	}
+	return func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+// stopped reports whether a stop predicate exists and has fired. A nil
+// predicate is the unbudgeted path and always answers false, so every guard
+// built on this is inert -- not merely cheap -- when the caller set no deadline.
+func stopped(stop func() bool) bool {
+	return stop != nil && stop()
+}
+
+// parseStoppedStatus describes a parse abandoned because the caller's budget
+// expired. It reuses the E_PARSE_TIMEOUT code that a tree-sitter parse stopped
+// by the same context already reports; the detail says which half stopped.
+func parseStoppedStatus(ctx context.Context, where string) ParseStatus {
+	return ParseStatus{
+		ParseError: true,
+		Code:       "E_PARSE_TIMEOUT",
+		Detail:     fmt.Sprintf("%s stopped by caller: %v", where, ctx.Err()),
+	}
+}
+
+// ParseWithStatusCtx is ParseWithStatus under a caller deadline. Both halves of
+// the per-file cost observe ctx: the tree-sitter parse (whose 5s internal cap is
+// now derived from ctx rather than from context.Background, so an expiring budget
+// sets the C parser's cancellation flag) and the entity walk, which is the far
+// larger term — it is superlinear in nesting depth and, before ctx reached it,
+// could run for minutes on one pathological file with nothing able to stop it.
+func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content string) ([]Entity, string, ParseStatus) {
 	spec, ok := languageForContent(path, content)
 	if !ok {
 		return nil, "", ParseStatus{}
@@ -270,16 +320,58 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "SQL" {
 		spec.grammar = pgsql.GetLanguage()
 	}
+	// The stop predicate is built HERE, above the three return paths that never
+	// reach tree-sitter, not below them: the dedicated Groovy parser, every
+	// grammar-less fallback parser and YAML's entity extraction each returned
+	// straight out of this function with nothing able to stop them, so a budget
+	// that expired inside one of them waited for the whole file -- and
+	// processProviderFile discards that file anyway once ctx has expired, so all
+	// of it was overshoot spent on a result nobody keeps. stop is nil whenever
+	// the caller set no deadline, so the unbudgeted path carries no check at all.
+	stop := ctxStop(ctx)
 	if spec.language == "Groovy" {
 		// Groovy uses a dedicated structural parser (see groovy.go): the best
 		// available tree-sitter-groovy grammar fails on fundamental syntax —
 		// quoted method names, casts, slashy strings — leaving 1,400+ parse
 		// errors on real repos, so it is not consulted at all.
-		entities, status := groovyEntities(content)
+		//
+		// It is also superlinear: every entity's body hash joins the lines it
+		// spans, and nested classes each span the rest of the file, so one
+		// 12k-class file cost 21.0s against a 500ms budget. The scanner takes
+		// the predicate; this checks the outcome, so a scan cut short is a
+		// dropped file rather than a silently short symbol list.
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "groovy parse")
+		}
+		entities, status := groovyEntities(content, stop)
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "groovy parse")
+		}
 		return entities, spec.language, status
 	}
 	if spec.grammar == nil {
-		return fallbackEntities(path, content, spec.language), spec.language, ParseStatus{}
+		// Every grammar-less fallback (Dockerfile, JSON, TOML, XML, Make,
+		// Markdown, HTML, CSS, GraphQL, Vue/Svelte and the inventory default)
+		// is a single linear pass, so the residual here is bounded by the
+		// file-size cap rather than superlinear -- but it observed nothing at
+		// all, and the file is discarded on expiry regardless.
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "fallback parse")
+		}
+		entities := fallbackEntities(path, content, spec.language, stop)
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "fallback parse")
+		}
+		return entities, spec.language, ParseStatus{}
+	}
+	// Source masking is language-specific work in its own right, and it sat
+	// between the predicate above and the budgeted parse context below, so
+	// nothing observed the budget across it. Rust's mask is the extreme case:
+	// it runs up to eight tree-sitter unwrap passes of its own. Guard the
+	// stage on entry and hand the mask the context, so no later stage can be
+	// reached unbudgeted.
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "source masking")
 	}
 	src := []byte(content)
 	parseSrc := src
@@ -292,7 +384,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		entityLineOffset = lineOffset
 	}
 	if spec.language == "SQL" {
-		parseSrc = []byte(maskPostgresUnsupportedSyntax(content))
+		parseSrc = []byte(maskPostgresUnsupportedSyntax(ctx, content))
 	}
 	if spec.language == "C" {
 		parseSrc = []byte(maskCUnsupportedSyntax(content))
@@ -341,12 +433,15 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		}
 	}
 	if spec.language == "Rust" {
-		parseSrc = []byte(maskRustUnsupportedSyntax(content))
+		parseSrc = []byte(maskRustUnsupportedSyntax(ctx, content))
 	}
 	if flowJS {
 		parseSrc = []byte(maskFlowJavaScriptUnsupportedSyntax(content))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "source masking")
+	}
+	parseCtx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
 	defer cancel()
 	// Own the parser and tree explicitly and free their native (cgo) memory on
 	// return. sitter.ParseCtx leaves the C parser and tree to be reclaimed by Go
@@ -357,7 +452,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(spec.grammar)
-	tree, err := parser.ParseCtx(ctx, nil, parseSrc)
+	tree, err := parser.ParseCtx(parseCtx, nil, parseSrc)
 	if tree != nil {
 		defer tree.Close()
 	}
@@ -370,25 +465,48 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		code := "E_PARSE_ERROR"
 		if err != nil {
 			detail = err.Error()
-			if ctx.Err() != nil {
+			if parseCtx.Err() != nil {
 				code = "E_PARSE_TIMEOUT"
 				detail = fmt.Sprintf("tree-sitter parse exceeded %s", treeSitterParseTimeout)
+				if ctx.Err() != nil {
+					// The caller's budget stopped the parse, not the 5s cap.
+					detail = fmt.Sprintf("tree-sitter parse stopped by caller: %v", ctx.Err())
+				}
 			}
 		}
 		return nil, spec.language, ParseStatus{ParseError: true, Code: code, Detail: detail}
 	}
 	if spec.language == "YAML" {
+		// YAML's entities come from its own line scanner, not from the walk, so
+		// the walk's predicate never covered it either.
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "yaml entity extraction")
+		}
 		status := ParseStatus{}
 		if root.HasError() {
 			status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetail(root, src)}
 		}
-		return yamlEntities(path, content), spec.language, status
+		return yamlEntities(path, content, stop), spec.language, status
 	}
 
 	var entities []Entity
-	depthExceeded := walkEntities(root, entitySrc, spec.language, "", &entities)
+	depthExceeded := walkEntities(ctx, root, entitySrc, spec.language, "", stop, &entities)
+	// walkEntities returns early when the budget expires, but everything below
+	// it -- the language-specific supplemental extractors, the binding collapse,
+	// the offset fixup and the final sort -- used to run regardless, and one of
+	// those passes is superlinear in match count. processProviderFile then drops
+	// the whole file because ctx expired, so every bit of it was overshoot spent
+	// on a result nobody keeps. Bail out at each pass boundary instead. stop is
+	// nil whenever the caller has no deadline, so an unbudgeted parse does
+	// exactly the work, and emits exactly the bytes, it did before.
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity walk")
+	}
 	if spec.language == "C++" {
 		entities = appendMissingEntities(entities, cPlusPlusTypeAliasEntities(content)...)
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
 	}
 	if spec.language == "C" || spec.language == "C++" {
 		// The C mask blanks `#define` lines before tree-sitter, so macro names (opcodes,
@@ -396,14 +514,23 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		// nothing. Recover them from the UNMASKED content so `symbols`/`def <MACRO>` resolve.
 		entities = appendMissingEntities(entities, cMacroEntities(content)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
+	}
 	if spec.language == "Kotlin" {
 		entities = append(entities, kotlinPrimaryConstructorFieldEntities(content)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
+	}
 	if spec.language == "JavaScript" || spec.language == "TypeScript" {
-		entities = appendMissingEntities(entities, javascriptExportedVariableEntities(content)...)
+		entities = appendMissingEntities(entities, javascriptExportedVariableEntities(content, stop)...)
 		entities = appendMissingEntities(entities, javascriptAssignmentMethodEntities(content)...)
 		entities = appendMissingEntities(entities, javascriptDefaultExportEntities(path, content)...)
 		entities = append(entities, graphqlResolverEntities(path, content)...)
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
 	}
 	if spec.language == "SQL" {
 		// Run the regex fallback extractors on comment-stripped source so that
@@ -413,11 +540,17 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		entities = append(entities, postgresFunctionEntities(regexSrc)...)
 		entities = append(entities, postgresPolicyEntities(regexSrc)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
+	}
 	if spec.language == "Lua" {
 		// tree-sitter-lua can recover from large annotated files with incomplete
 		// top-level function coverage. Supplement it with the canonical Lua
 		// declaration forms so exported table functions stay discoverable.
 		entities = appendMissingEntities(entities, luaFunctionEntities(content)...)
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
 	}
 	if spec.language == "Objective-C" {
 		// Large Objective-C implementation files with blocks/macros can leave
@@ -425,12 +558,18 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		// only brace-backed implementation methods; header prototypes end in ';'.
 		entities = appendMissingEntities(entities, objectiveCMethodEntities(content)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity reconciliation")
+	}
 	// A name binding and the function expression that initialises it are ONE entity. The
 	// tree-sitter walk classifies such a declarator by its VALUE while the regex recovery
 	// passes above classify it by its DECLARATOR, so both can emit a record with the same
 	// qualified name for the same source location. Collapse them onto the function record
 	// (real span, real signature) LAST, after every pass has contributed.
 	entities = collapseFunctionValueBindings(entities)
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity reconciliation")
+	}
 	if entityLineOffset > 0 {
 		for index := range entities {
 			entities[index].StartLine -= entityLineOffset
@@ -448,6 +587,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 				entities[index].sourceEndByte = 0
 			}
 		}
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity sort")
 	}
 	sort.Slice(entities, func(i, j int) bool {
 		if entities[i].StartLine == entities[j].StartLine {
@@ -729,14 +871,14 @@ var rustItemWrapperMacroName = regexp.MustCompile(`^cfg_[A-Za-z0-9_]*$`)
 // all. The macro name, `!`, and wrapping braces are blanked with same-length
 // whitespace so the contents parse at identical byte offsets. Wrappers nest
 // (`cfg_net! { cfg_io! { ... } }`), so unwrapping iterates to a fixed point.
-func maskRustUnsupportedSyntax(content string) string {
+func maskRustUnsupportedSyntax(ctx context.Context, content string) string {
 	if !rustItemWrapperMacroHint.MatchString(content) {
 		return content
 	}
 	src := []byte(content)
 	const maxUnwrapDepth = 8
 	for i := 0; i < maxUnwrapDepth; i++ {
-		if !unwrapRustItemWrapperMacros(src) {
+		if !unwrapRustItemWrapperMacros(ctx, src) {
 			break
 		}
 	}
@@ -745,13 +887,19 @@ func maskRustUnsupportedSyntax(content string) string {
 
 // unwrapRustItemWrapperMacros blanks one layer of item-position cfg_*! macro
 // wrappers in src in place and reports whether anything changed.
-func unwrapRustItemWrapperMacros(src []byte) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+func unwrapRustItemWrapperMacros(ctx context.Context, src []byte) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	// The cap is a bound on top of the caller's context, not a fresh budget
+	// rooted at context.Background: each unwrap pass is a full parse, and
+	// maskRustUnsupportedSyntax runs up to eight of them.
+	parseCtx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
 	defer cancel()
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(rust.GetLanguage())
-	tree, err := parser.ParseCtx(ctx, nil, src)
+	tree, err := parser.ParseCtx(parseCtx, nil, src)
 	if tree != nil {
 		defer tree.Close()
 	}
@@ -763,6 +911,23 @@ func unwrapRustItemWrapperMacros(src []byte) bool {
 		return false
 	}
 	changed := false
+	// The walk is the unbudgeted half of an unwrap pass. ParseCtx above stops on
+	// ctx, but the recursive traversal of the tree it produced polled nothing,
+	// so a deadline that expired after the parse still paid for a COMPLETE
+	// traversal before the next iteration of maskRustUnsupportedSyntax could
+	// notice -- and there are up to maxUnwrapDepth iterations. Poll every
+	// rustUnwrapPollStride nodes: often enough that the residual is a few
+	// hundred nodes, rare enough that an unbudgeted parse does not pay a
+	// context read per node.
+	//
+	// Abandoning the walk mid-tree leaves src partially unwrapped, which is
+	// harmless: the caller checks the stop predicate immediately after masking
+	// and discards the parse, so a partially masked source is never parsed for
+	// entities.
+	visited := 0
+	stop := false
+	// It is also depth-bounded: this pass runs before the guarded entity walk
+	// and therefore needs its own protection against pathological nesting.
 	// depth is capped at maxParseWalkDepth. This pass runs BEFORE the guarded
 	// entity walk (it rewrites the source that walk is then given), on its own
 	// tree, so nothing downstream can protect it: a Rust file that merely
@@ -784,6 +949,13 @@ func unwrapRustItemWrapperMacros(src []byte) bool {
 			return
 		}
 		for i := 0; i < int(node.NamedChildCount()); i++ {
+			visited++
+			if visited%rustUnwrapPollStride == 0 && ctx.Err() != nil {
+				stop = true
+			}
+			if stop {
+				return
+			}
 			child := node.NamedChild(i)
 			if child == nil || child.IsNull() {
 				continue
@@ -798,6 +970,10 @@ func unwrapRustItemWrapperMacros(src []byte) bool {
 	walk(root, 0)
 	return changed
 }
+
+// rustUnwrapPollStride is how often the unwrap walk checks the caller's
+// context, in visited nodes. It matches the stride the JS scope walk uses.
+const rustUnwrapPollStride = 512
 
 // unwrapRustItemWrapperMacro blanks a single cfg_*! wrapper when the
 // invocation sits at item position (file, module, impl, or trait scope — not
@@ -1457,12 +1633,8 @@ func maskSwiftUnsupportedSyntax(content string) string {
 			continue
 		}
 		text = maskSwiftPropertyWrapperPrefix(text)
-		text = maskSwiftEmptyAttributeCalls(text)
 		text = replacePatternSameLength(text, swiftTypedThrowsPattern, "throws")
 		if replacement, ok := maskSwiftAsyncForLine(text); ok {
-			text = replacement
-		}
-		if replacement, ok := maskSwiftOptionalBindingShorthand(text); ok {
 			text = replacement
 		}
 		if strings.Contains(text, `"""`) {
@@ -1471,26 +1643,6 @@ func maskSwiftUnsupportedSyntax(content string) string {
 				continue
 			}
 			break
-		}
-		if swiftLeadingOperatorContinuationLinePattern.MatchString(text) {
-			if strings.Contains(text, "{") {
-				balance := strings.Count(text, "(") - strings.Count(text, ")")
-				balance += strings.Count(text, "{") - strings.Count(text, "}")
-				lines[i] = maskLineText(text) + newline
-				for balance > 0 && i+1 < len(lines) {
-					i++
-					text, newline = splitLineEnding(lines[i])
-					balance += strings.Count(text, "(") - strings.Count(text, ")")
-					balance += strings.Count(text, "{") - strings.Count(text, "}")
-					lines[i] = maskLineText(text) + newline
-				}
-				continue
-			}
-			if strings.HasSuffix(strings.TrimSpace(text), ")") && !strings.Contains(text, "(") {
-				text = paddedReplacement(leadingWhitespace(text), ")", len(text))
-			} else {
-				text = maskLineText(text)
-			}
 		}
 		lines[i] = text + newline
 	}
@@ -1592,12 +1744,6 @@ func swiftNextNonEmptyTrimmedLine(lines []string, start int) string {
 	return ""
 }
 
-func maskSwiftEmptyAttributeCalls(text string) string {
-	return swiftEmptyAttributeCallPattern.ReplaceAllStringFunc(text, func(match string) string {
-		return strings.TrimSuffix(match, "()") + strings.Repeat(" ", len("()"))
-	})
-}
-
 func swiftComputedStringPropertyHasRecoverableBody(lines []string) bool {
 	hasExpression := false
 	for _, line := range lines {
@@ -1613,22 +1759,6 @@ func swiftComputedStringPropertyHasRecoverableBody(lines []string) bool {
 		return false
 	}
 	return hasExpression
-}
-
-func maskSwiftPropertyWrapperPrefix(text string) string {
-	matches := swiftPropertyWrapperPrefixPattern.FindStringIndex(text)
-	if len(matches) != 2 {
-		return text
-	}
-	wrapperEnd := strings.LastIndex(text[:matches[1]], " var ")
-	if wrapperEnd < 0 {
-		wrapperEnd = strings.LastIndex(text[:matches[1]], " let ")
-	}
-	if wrapperEnd < 0 {
-		return text
-	}
-	declStart := wrapperEnd + 1
-	return text[:matches[0]] + strings.Repeat(" ", declStart-matches[0]) + text[declStart:]
 }
 
 func maskSwiftAsyncForLine(text string) (string, bool) {
@@ -1650,29 +1780,33 @@ func maskSwiftAsyncForLine(text string) (string, bool) {
 	return paddedReplacement(leadingWhitespace(text), replacement, len(text)), true
 }
 
-func maskSwiftOptionalBindingShorthand(text string) (string, bool) {
-	matches := swiftOptionalBindingShorthandPattern.FindStringSubmatchIndex(text)
-	if len(matches) != 4 {
-		return text, false
+func maskSwiftPropertyWrapperPrefix(text string) string {
+	matches := swiftPropertyWrapperPrefixPattern.FindStringIndex(text)
+	if len(matches) != 2 {
+		return text
 	}
-	replacement := "if true {"
-	return text[:matches[0]] + sameLengthReplacement(replacement, matches[1]-matches[0]) + text[matches[1]:], true
+	wrapperEnd := strings.LastIndex(text[:matches[1]], " var ")
+	if wrapperEnd < 0 {
+		wrapperEnd = strings.LastIndex(text[:matches[1]], " let ")
+	}
+	if wrapperEnd < 0 {
+		return text
+	}
+	declStart := wrapperEnd + 1
+	return text[:matches[0]] + strings.Repeat(" ", declStart-matches[0]) + text[declStart:]
 }
 
 var (
-	cSharpPointerDerefCastPattern               = regexp.MustCompile(`\*+\(\s*[A-Za-z_@][\w<>,.\s]*?\*+\s*\)`)
-	cSharpBareAsyncArgumentPattern              = regexp.MustCompile(`([(,]\s*)async(\s*[,)])`)
-	cSharpDictionaryIndexInitializerPattern     = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
-	swiftTypedThrowsPattern                     = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
-	swiftOptionalBindingShorthandPattern        = regexp.MustCompile(`\bif\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{`)
-	swiftEmptyAttributeCallPattern              = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*\(\)`)
-	swiftPropertyWrapperPrefixPattern           = regexp.MustCompile(`^(\s*)@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+(?:var|let)\s+`)
-	swiftLeadingOperatorContinuationLinePattern = regexp.MustCompile(`^\s*(?:<|>|<=|>=|==|!=|&&|\|\|)\s+`)
-	swiftComputedStringPropertyStartPattern     = regexp.MustCompile(`^((?:(?:private|fileprivate|internal|public)\s+)?)var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|\[String\])\s*\{$`)
-	cControlIteratorMacroPattern                = regexp.MustCompile(`^(?:(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)|(?:foreach|foreach_ptr|foreach_node|foreach_oid|foreach_int|foreach_xid|foreach_delete_current|forboth|for_both_cell|forthree|for_fourth_cell|for_each_from|dlist_foreach(?:_modify)?|dclist_foreach(?:_modify)?|slist_foreach(?:_modify)?|hash_seq_search|SGITITERATE))\s*\(`)
-	cGenerateMacroPattern                       = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
-	cEnumMacroPattern                           = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
-	cFileScopeStatementMacroPattern             = regexp.MustCompile(`^(?:PG_MODULE_MAGIC(?:_EXT)?|PG_FUNCTION_INFO_V1|PGDLLEXPORT|PG_KEYWORD|PG_FUNCTION_ARGS|PG_USED_FOR_ASSERTS_ONLY|DECLARE_[A-Z][A-Z0-9_]*|MAKE_SYSCACHE)\s*\(`)
+	cSharpPointerDerefCastPattern           = regexp.MustCompile(`\*+\(\s*[A-Za-z_@][\w<>,.\s]*?\*+\s*\)`)
+	cSharpBareAsyncArgumentPattern          = regexp.MustCompile(`([(,]\s*)async(\s*[,)])`)
+	cSharpDictionaryIndexInitializerPattern = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
+	swiftTypedThrowsPattern                 = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
+	swiftPropertyWrapperPrefixPattern       = regexp.MustCompile(`^(\s*)@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+(?:var|let)\s+`)
+	swiftComputedStringPropertyStartPattern = regexp.MustCompile(`^((?:(?:private|fileprivate|internal|public)\s+)?)var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|\[String\])\s*\{$`)
+	cControlIteratorMacroPattern            = regexp.MustCompile(`^(?:(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)|(?:foreach|foreach_ptr|foreach_node|foreach_oid|foreach_int|foreach_xid|foreach_delete_current|forboth|for_both_cell|forthree|for_fourth_cell|for_each_from|dlist_foreach(?:_modify)?|dclist_foreach(?:_modify)?|slist_foreach(?:_modify)?|hash_seq_search|SGITITERATE))\s*\(`)
+	cGenerateMacroPattern                   = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
+	cEnumMacroPattern                       = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
+	cFileScopeStatementMacroPattern         = regexp.MustCompile(`^(?:PG_MODULE_MAGIC(?:_EXT)?|PG_FUNCTION_INFO_V1|PGDLLEXPORT|PG_KEYWORD|PG_FUNCTION_ARGS|PG_USED_FOR_ASSERTS_ONLY|DECLARE_[A-Z][A-Z0-9_]*|MAKE_SYSCACHE)\s*\(`)
 	// PostgreSQL system-catalog header macros: the `CATALOG(name,oid,...) BKI_...`
 	// struct opener (the `{` follows on the next line) and BKI_* field/struct
 	// annotations. BEGIN/END_CATALOG_STRUCT markers are handled as bare lines.
@@ -3542,32 +3676,42 @@ func inventoryLanguageForSuffix(base string) (languageSpec, bool) {
 	return languageSpec{}, false
 }
 
-func fallbackEntities(path, content, language string) []Entity {
+// fallbackEntities dispatches to a per-format extractor for files with no
+// tree-sitter grammar. Every extractor below that scans line-by-line polls
+// stop every stopPollStride lines, mirroring the cadence search_cache.go
+// uses for its own per-record loops: a maximum-sized Markdown, HTML, XML or
+// JSON file is exactly the case a cancellation landing mid-file needs to
+// interrupt, since the caller discards the whole result once ctx expires
+// regardless of how much of the file this pass already walked.
+func fallbackEntities(path, content, language string, stop func() bool) []Entity {
 	switch language {
 	case "Dockerfile":
-		return dockerfileEntities(content)
+		return dockerfileEntities(content, stop)
 	case "Kustomize":
-		return kustomizeEntities(content)
+		return kustomizeEntities(content, stop)
 	case "JSON", "JSON5":
-		return jsonLikeEntities(content)
+		return jsonLikeEntities(content, stop)
 	case "TOML":
-		return tomlEntities(content)
+		return tomlEntities(content, stop)
 	case "XML":
-		return xmlEntities(content)
+		return xmlEntities(content, stop)
 	case "Make":
-		return makeEntities(content)
+		return makeEntities(content, stop)
 	case "Markdown":
-		return markdownEntities(content)
+		return markdownEntities(content, stop)
 	case "HTML":
-		return htmlEntities(path, content)
+		return htmlEntities(path, content, stop)
 	case "CSS":
-		return cssEntities(content)
+		return cssEntities(content, stop)
 	case "GraphQL":
 		entities := inventoryEntities(path, content, language)
+		if stopped(stop) {
+			return entities
+		}
 		entities = append(entities, graphqlSchemaEntities(content)...)
 		return entities
 	case "Vue", "Svelte":
-		return componentEntities(path, content, language)
+		return componentEntities(path, content, language, stop)
 	default:
 		return inventoryEntities(path, content, language)
 	}
@@ -3587,11 +3731,14 @@ func inventoryEntities(path, content, language string) []Entity {
 	return []Entity{simpleFallbackEntity(kind, base, signature, 1, maxInt(1, len(lines)), content)}
 }
 
-func dockerfileEntities(content string) []Entity {
+func dockerfileEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	stageIndex := 0
 	for index, line := range lines {
+		if index%stopPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -3631,16 +3778,19 @@ func dockerfileEntities(content string) []Entity {
 	return entities
 }
 
-func kustomizeEntities(content string) []Entity {
-	return yamlKeyEntities(content, "kustomize")
+func kustomizeEntities(content string, stop func() bool) []Entity {
+	return yamlKeyEntities(content, "kustomize", stop)
 }
 
 var yamlKeyEntitiesKeyRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
 
-func yamlKeyEntities(content, prefix string) []Entity {
+func yamlKeyEntities(content, prefix string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	for i, line := range lines {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -3657,11 +3807,14 @@ func yamlKeyEntities(content, prefix string) []Entity {
 
 var jsonLikeEntitiesKeyRe = regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
 
-func jsonLikeEntities(content string) []Entity {
+func jsonLikeEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		match := jsonLikeEntitiesKeyRe.FindStringSubmatch(line)
 		if match == nil || seen[match[1]] {
 			continue
@@ -3677,11 +3830,14 @@ var (
 	tomlEntitiesKeyRe     = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
 )
 
-func tomlEntities(content string) []Entity {
+func tomlEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		name := ""
 		kind := "section"
 		if match := tomlEntitiesSectionRe.FindStringSubmatch(line); match != nil {
@@ -3701,11 +3857,14 @@ func tomlEntities(content string) []Entity {
 
 var xmlEntitiesTagRe = regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
 
-func xmlEntities(content string) []Entity {
+func xmlEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		match := xmlEntitiesTagRe.FindStringSubmatch(line)
 		if match == nil || strings.HasPrefix(match[1], "?") || seen[match[1]] {
 			continue
@@ -3718,10 +3877,13 @@ func xmlEntities(content string) []Entity {
 
 var makeEntitiesTargetRe = regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
 
-func makeEntities(content string) []Entity {
+func makeEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	for i, line := range lines {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		if strings.HasPrefix(line, "\t") || strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
@@ -3739,11 +3901,14 @@ var (
 	markdownEntitiesFenceRe   = regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
 )
 
-func markdownEntities(content string) []Entity {
+func markdownEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	fenceIndex := 0
 	for i, line := range lines {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		if match := markdownEntitiesHeadingRe.FindStringSubmatch(line); match != nil {
 			name := strings.TrimSpace(strings.Trim(match[2], "#"))
 			entities = append(entities, simpleFallbackEntity("section", slugName(name), "markdown heading "+name, i+1, i+1, strings.TrimSpace(line)))
@@ -3764,13 +3929,16 @@ func markdownEntities(content string) []Entity {
 
 var htmlEntitiesIdRe = regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
 
-func htmlEntities(path, content string) []Entity {
+func htmlEntities(path, content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	seen := map[string]bool{}
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	entities = append(entities, simpleFallbackEntity("document", base, "html document "+base, 1, maxInt(1, len(lines)), base))
 	for i, line := range lines {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		for _, match := range htmlEntitiesIdRe.FindAllStringSubmatch(line, -1) {
 			name := slugName(match[1])
 			if name == "" || seen[name] {
@@ -3785,10 +3953,13 @@ func htmlEntities(path, content string) []Entity {
 
 var cssEntitiesSelectorRe = regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
 
-func cssEntities(content string) []Entity {
+func cssEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	for i, line := range lines {
+		if i%stopPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		match := cssEntitiesSelectorRe.FindStringSubmatch(line)
 		if match == nil {
 			continue
@@ -3799,12 +3970,12 @@ func cssEntities(content string) []Entity {
 	return entities
 }
 
-func componentEntities(path, content, language string) []Entity {
+func componentEntities(path, content, language string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	entities := []Entity{simpleFallbackEntity("component", base, language+" component "+base, 1, maxInt(1, len(lines)), base)}
 	if language == "Vue" {
-		entities = append(entities, htmlEntities(path, content)...)
+		entities = append(entities, htmlEntities(path, content, stop)...)
 	}
 	return entities
 }
@@ -3931,15 +4102,24 @@ func cFamilyTypedefAliasEntities(node *sitter.Node, src []byte, language string,
 	return aliases
 }
 
-func fastCFamilyEntities(path, content, language string) []Entity {
+// fastCFamilyEntities is the ProfileFast C/C++ parser. It never reaches
+// tree-sitter, so the walk's stop predicate never covered it, yet its two line
+// loops each call a forward statement/brace scan that runs to end-of-file on a
+// declaration that never terminates -- quadratic in file length, in plain Go,
+// with nothing able to stop it. It takes the same predicate the walk takes; nil
+// (no caller deadline) leaves both loops exactly as they were.
+func fastCFamilyEntities(path, content, language string, stop func() bool) []Entity {
 	_ = path
 	_ = language
 	stripped := stripCodeLiteralsAndComments(content)
 	lines := strings.Split(stripped, "\n")
 	originalLines := strings.Split(content, "\n")
 	var entities []Entity
-	entities = append(entities, fastCFamilyTypeEntities(lines, originalLines)...)
-	entities = append(entities, fastCFamilyFunctionEntities(lines, originalLines)...)
+	entities = append(entities, fastCFamilyTypeEntities(lines, originalLines, stop)...)
+	if stopped(stop) {
+		return entities
+	}
+	entities = append(entities, fastCFamilyFunctionEntities(lines, originalLines, stop)...)
 	sort.Slice(entities, func(i, j int) bool {
 		if entities[i].StartLine == entities[j].StartLine {
 			if entities[i].Kind == entities[j].Kind {
@@ -3952,11 +4132,14 @@ func fastCFamilyEntities(path, content, language string) []Entity {
 	return entities
 }
 
-func fastCFamilyTypeEntities(lines, originalLines []string) []Entity {
+func fastCFamilyTypeEntities(lines, originalLines []string, stop func() bool) []Entity {
 	var entities []Entity
 	seen := map[string]bool{}
 	depth := 0
 	for i := 0; i < len(lines); i++ {
+		if stopped(stop) {
+			return entities
+		}
 		trimmed := strings.TrimSpace(lines[i])
 		if depth != 0 || trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			depth += braceDelta(lines[i])
@@ -3973,13 +4156,13 @@ func fastCFamilyTypeEntities(lines, originalLines []string) []Entity {
 				continue
 			}
 			seen[key] = true
-			end := fastCFamilyStatementEnd(lines, i)
+			end := fastCFamilyStatementEnd(lines, i, stop)
 			entities = append(entities, fastCFamilyEntity(kind, name, i+1, end, originalLines))
 		}
 		if !strings.HasPrefix(trimmed, "typedef ") {
 			continue
 		}
-		end := fastCFamilyStatementEnd(lines, i)
+		end := fastCFamilyStatementEnd(lines, i, stop)
 		statement := strings.TrimSpace(strings.Join(lines[i:end], " "))
 		statement = strings.TrimSuffix(statement, ";")
 		if match := cFamilyTypedefNameRe.FindStringSubmatch(statement); match != nil {
@@ -3999,12 +4182,15 @@ func fastCFamilyTypeEntities(lines, originalLines []string) []Entity {
 	return entities
 }
 
-func fastCFamilyFunctionEntities(lines, originalLines []string) []Entity {
+func fastCFamilyFunctionEntities(lines, originalLines []string, stop func() bool) []Entity {
 	var entities []Entity
 	depth := 0
 	pendingStart := -1
 	pending := ""
 	for i := 0; i < len(lines); i++ {
+		if stopped(stop) {
+			return entities
+		}
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 		if depth != 0 {
@@ -4031,7 +4217,7 @@ func fastCFamilyFunctionEntities(lines, originalLines []string) []Entity {
 				signature = strings.TrimSpace(strings.TrimSuffix(signature, braceText))
 			}
 			if name := fastCFamilyFunctionName(signature); name != "" {
-				end := fastCFamilyBraceEnd(lines, i)
+				end := fastCFamilyBraceEnd(lines, i, stop)
 				entities = append(entities, fastCFamilyEntity("function", name, pendingStart+1, end, originalLines))
 				i = end - 1
 				pending = ""
@@ -4068,9 +4254,19 @@ func fastCFamilyFunctionName(signature string) string {
 	return name
 }
 
-func fastCFamilyStatementEnd(lines []string, start int) int {
+// fastCFamilyStatementEnd scans forward from start for the end of a single
+// declaration. An unterminated declaration (never closed by `;` or `}`) makes
+// this run to EOF, and every call site invokes it once per candidate line, so
+// a single malformed file made the pair quadratic in file length with nothing
+// able to stop it; stop is the same walk-level predicate the outer loops
+// already poll, threaded down so a deadline expiring mid-scan takes effect
+// here too rather than only between whole top-level declarations.
+func fastCFamilyStatementEnd(lines []string, start int, stop func() bool) int {
 	depth := 0
 	for i := start; i < len(lines); i++ {
+		if stopped(stop) {
+			return i + 1
+		}
 		depth += braceDelta(lines[i])
 		if strings.Contains(lines[i], ";") && depth <= 0 {
 			return i + 1
@@ -4082,9 +4278,15 @@ func fastCFamilyStatementEnd(lines []string, start int) int {
 	return start + 1
 }
 
-func fastCFamilyBraceEnd(lines []string, start int) int {
+// fastCFamilyBraceEnd is fastCFamilyStatementEnd's sibling for a function
+// body: it scans forward for the matching closing brace and is exposed to the
+// same unbounded-scan risk on an unterminated body.
+func fastCFamilyBraceEnd(lines []string, start int, stop func() bool) int {
 	depth := 0
 	for i := start; i < len(lines); i++ {
+		if stopped(stop) {
+			return i + 1
+		}
 		depth += braceDelta(lines[i])
 		if depth <= 0 && i > start {
 			return i + 1
@@ -4169,9 +4371,9 @@ func minInt(a, b int) int {
 // walk was truncated at maxParseWalkDepth, which the caller turns into an
 // E_PARSE_DEPTH_EXCEEDED status so a truncated file is never silently reported
 // as fully understood.
-func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) (depthExceeded bool) {
+func walkEntities(ctx context.Context, node *sitter.Node, src []byte, language, scope string, stop func() bool, entities *[]Entity) (depthExceeded bool) {
 	exceeded := false
-	walkEntitiesScoped(node, src, language, scope, false, false, 0, entities, &exceeded)
+	walkEntitiesScoped(ctx, node, src, language, scope, false, false, stop, 0, entities, &exceeded)
 	return exceeded
 }
 
@@ -4192,7 +4394,11 @@ func walkEntities(node *sitter.Node, src []byte, language, scope string, entitie
 // one, because walkEntitiesScoped calls it and then descends into what it
 // returns; two independent budgets over the same root-to-leaf path would let the
 // two walkers amplify each other.
-func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, scopeIsCallable, inFunc bool, depth int, entities *[]Entity, depthExceeded *bool) {
+func walkEntitiesScoped(ctx context.Context, node *sitter.Node, src []byte, language, scope string, scopeIsCallable, inFunc bool, stop func() bool, depth int, entities *[]Entity, depthExceeded *bool) {
+	// Check the caller's context before descending into each node.
+	if stop != nil && stop() {
+		return
+	}
 	if !validNode(node) {
 		return
 	}
@@ -4222,7 +4428,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 		// are retained without becoming members of the surrounding class.
 		if functionLocalScopeResets(language) && len(fields) == 1 && fields[0].Kind == "method" {
 			if value := node.ChildByFieldName("value"); functionLikeValue(value) {
-				walkEntitiesScoped(value, src, language, fields[0].Name, true, true, depth+1, entities, depthExceeded)
+				walkEntitiesScoped(ctx, value, src, language, fields[0].Name, true, true, stop, depth+1, entities, depthExceeded)
 				return
 			}
 		}
@@ -4240,7 +4446,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 		// inside a method body, so localReachable keeps them scoped to the
 		// declaration instead of name-colliding with real members.
 		for _, body := range initializerTypeBodies(node, depth, depthExceeded) {
-			walkEntitiesScoped(body, src, language, scope, scopeIsCallable, true, depth+1, entities, depthExceeded)
+			walkEntitiesScoped(ctx, body, src, language, scope, scopeIsCallable, true, stop, depth+1, entities, depthExceeded)
 		}
 		// A C/C++ member can also DEFINE its type inline:
 		// `struct Inner { int value; } inner;`. Before members were extracted
@@ -4250,7 +4456,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 		// same scope and the same inFunc — the path the walk already took — so
 		// the type keeps its symbol and gains its own members.
 		for _, definition := range cFamilyInlineTypeDefinitions(node, language) {
-			walkEntitiesScoped(definition, src, language, scope, scopeIsCallable, inFunc, depth+1, entities, depthExceeded)
+			walkEntitiesScoped(ctx, definition, src, language, scope, scopeIsCallable, inFunc, stop, depth+1, entities, depthExceeded)
 		}
 		// An ANONYMOUS aggregate with a named instance --
 		// `union { int i; float f; } value;` -- declares no type symbol, so the
@@ -4263,12 +4469,12 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 				// The instance-qualified scope names a CONTAINER path (`Packet.value`),
 				// never the enclosing callable, so it is not callable-scoped whatever
 				// the parent was.
-				walkEntitiesScoped(body, src, language, qualify(scope, instance), false, inFunc, depth+1, entities, depthExceeded)
+				walkEntitiesScoped(ctx, body, src, language, qualify(scope, instance), false, inFunc, stop, depth+1, entities, depthExceeded)
 			}
 		}
 		return
 	}
-	entity, ok := entityFromNode(node, src, language, scope)
+	entity, ok := entityFromNode(ctx, node, src, language, scope)
 	childScope := scope
 	childScopeIsCallable := scopeIsCallable
 	childInFunc := inFunc
@@ -4284,7 +4490,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 			entity.Kind = "function"
 		}
 		setEntitySourceRange(&entity, node, language, src)
-		entity.cLinkage = declaredWithCLinkage(language, node, src)
+		entity.cLinkage = declaredWithCLinkage(ctx, language, node, src)
 		if language == "C++" && node.Type() == "function_definition" {
 			entity.cPlusPlusDefinitionName = cPlusPlusDefinitionName(node, src)
 		}
@@ -4427,7 +4633,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, s
 		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childScopeIsCallable, childInFunc, depth+1, entities, depthExceeded)
+		walkEntitiesScoped(ctx, node.NamedChild(i), src, language, childScope, childScopeIsCallable, childInFunc, stop, depth+1, entities, depthExceeded)
 	}
 }
 
@@ -4719,6 +4925,47 @@ func fsharpSignature(node *sitter.Node, src []byte) string {
 	}
 	signature := strings.Join(strings.Fields(string(src[start:end])), " ")
 	return strings.TrimSpace(strings.TrimRight(signature, "=: \t\r\n"))
+}
+
+// juliaSignature returns the declaration header of a Julia definition.
+// tree-sitter-julia keeps body statements as direct, unlabeled children (its
+// _block rule is hidden), so the generic body-boundary cut never applies. It
+// returns "" when the expected header child is missing, and the caller then
+// keeps the generic signature.
+func juliaSignature(node *sitter.Node, src []byte) string {
+	start := node.StartByte()
+	var end uint32
+	switch node.Type() {
+	case "function_definition", "macro_definition":
+		// The signature child spans the call plus any `::ReturnType` and
+		// `where {...}` clause.
+		if signature := firstNamedChildOfType(node, "signature"); validNode(signature) {
+			end = signature.EndByte()
+		}
+	case "struct_definition":
+		// type_head spans the name, type parameters and the `<:` supertype.
+		if head := firstNamedChildOfType(node, "type_head"); validNode(head) {
+			end = head.EndByte()
+		}
+	case "abstract_definition", "primitive_definition":
+		// Header-only declarations (`abstract type A <: B end`): keep them whole.
+		end = node.EndByte()
+	case "module_definition":
+		// `module Name` and `baremodule Name`, without the members.
+		if name := node.ChildByFieldName("name"); validNode(name) {
+			end = name.EndByte()
+		}
+	case "assignment":
+		// Short-form `f(x) = expr`: the left-hand side, which also holds any
+		// `::T` or `where` clause.
+		if lhs := node.NamedChild(0); validNode(lhs) {
+			end = lhs.EndByte()
+		}
+	}
+	if end <= start || int(end) > len(src) {
+		return ""
+	}
+	return strings.Join(strings.Fields(string(src[start:end])), " ")
 }
 
 // fieldEntities extracts struct/class field declarations as field symbols, one
@@ -5660,7 +5907,7 @@ func pythonOverloadStub(node *sitter.Node, src []byte) bool {
 	return false
 }
 
-func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Entity, bool) {
+func entityFromNode(ctx context.Context, node *sitter.Node, src []byte, language, scope string) (Entity, bool) {
 	var kind string
 	var name string
 	// bodyless: this declaration declares a callable without defining it (see
@@ -6495,6 +6742,22 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			entity.Fingerprint = hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: sig}, block)))
 		}
 	}
+	// Julia definitions have the same shape: body statements follow the header
+	// as direct children, so signatureFromNode would keep the whole definition
+	// (for a module, every member) and any body edit would read as a signature
+	// change. Cap it to the declaration header.
+	if language == "Julia" {
+		if sig := juliaSignature(node, src); sig != "" {
+			entity.Signature = sig
+			// Header-only Jaccard similarity can exceed the rename threshold
+			// for unrelated functions with long, identical parameter types.
+			entity.similaritySource = block
+			// The single-line fingerprint fallback reads Signature. Give it the
+			// full definition so unrelated bodies with the same parameters do
+			// not become perfect rename matches after the header-only cut.
+			entity.Fingerprint = hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: block}, block)))
+		}
+	}
 	// Dart declaration heads (function/method/getter/setter signatures) keep the
 	// body as a *sibling* function_body node, so the node range covers only the
 	// head. Extend the entity to the body: without this, the symbol block that
@@ -6641,6 +6904,13 @@ func isWordByte(b byte) bool {
 }
 
 var postgresGeneratedColumnPattern = regexp.MustCompile(`(?is)\bgenerated\s+always\s+as\s*\([^;]*?\)\s+stored`)
+var postgresIdentityColumnPattern = regexp.MustCompile(`(?i)\bgenerated\s+(?:always|by\s+default)\s+as\s+identity\b`)
+
+// PostgreSQL's scanner accepts non-ASCII bytes in unquoted identifiers. For
+// UTF-8 source, match the corresponding non-ASCII runes, including combining
+// marks, so CONSTRAINT and its full name are masked together.
+// https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/parser/scan.l
+var postgresCheckConstraintPattern = regexp.MustCompile(`(?i)\b(?:constraint\s+(?:"(?:[^"]|"")*"|[a-z_\x{80}-\x{10ffff}][a-z0-9_$\x{80}-\x{10ffff}]*)\s+)?check\s*\(`)
 var postgresVectorTypePattern = regexp.MustCompile(`(?i)\bvector\s*\([^)]*\)`)
 var postgresTimestamptzTypePattern = regexp.MustCompile(`(?i)\btimestamptz\b`)
 var postgresBigserialTypePattern = regexp.MustCompile(`(?i)\bbigserial\b`)
@@ -6688,16 +6958,52 @@ var postgresPartitionByPattern = regexp.MustCompile(`(?is)\s+partition\s+by\b[^;
 var postgresPartitionOfPattern = regexp.MustCompile(`(?is)\s+partition\s+of\b[^;]*`)
 
 // COPY is a psql/dump construct the grammar rejects. `COPY t (...) FROM stdin;`
-// is followed by tab-delimited data terminated by a `\.` line (pg_dump output);
-// mask the whole block. Other COPY statements (TO/FROM file) mask as one statement.
-var postgresCopyStdinBlockPattern = regexp.MustCompile(`(?ism)^[ \t]*copy\b[^;]*\bfrom\s+stdin\b[^;]*;.*?^\\\.[ \t]*$`)
+// is followed by tab-delimited data terminated by a `\.` line (pg_dump output).
+// The rows are data, not SQL: a lone `'`, `"`, `$$`, `--` or `/*` in a value
+// must not open a literal or comment that swallows the terminator and the
+// statements after it. stripSQLComments therefore blanks the rows and the
+// terminator before any quote-aware pass sees them; the COPY statement itself
+// (like COPY TO/FROM file) is masked as one statement.
+var postgresCopyStdinHeaderPattern = regexp.MustCompile(`(?is)^copy\b.*\bfrom\s+stdin\b.*;$`)
+var postgresCopyDataEndPattern = regexp.MustCompile(`(?m)^\\\.[ \t]*\r?$`)
 var postgresCopyStatementPattern = regexp.MustCompile(`(?im)^[ \t]*copy\b[^;]*;`)
+
+// postgresCopyStdinData returns the byte range of the inline rows, through the
+// `\.` terminator, of a `COPY ... FROM stdin;` statement whose COPY keyword is
+// content[i]. The keyword must be the first token on its line, and the caller
+// must be at statement level (outside literals and comments). An unterminated
+// block is not recognized, so its rows keep their syntax diagnostics.
+func postgresCopyStdinData(content string, i int) (start, end int, ok bool) {
+	for j := i - 1; j >= 0 && content[j] != '\n'; j-- {
+		if content[j] != ' ' && content[j] != '\t' {
+			return 0, 0, false
+		}
+	}
+	if len(content)-i < len("copy") || !strings.EqualFold(content[i:i+len("copy")], "copy") {
+		return 0, 0, false
+	}
+	// A quoted option such as DELIMITER ';' does not end the statement.
+	start = sqlStatementEnd(content, i)
+	if !postgresCopyStdinHeaderPattern.MatchString(content[i:start]) {
+		return 0, 0, false
+	}
+	terminator := postgresCopyDataEndPattern.FindStringIndex(content[start:])
+	if terminator == nil {
+		return 0, 0, false
+	}
+	return start, start + terminator[1], true
+}
 
 // Extension-template placeholders like @extschema@ / @extschema:cube@ in .sql.in
 // files are not valid SQL scalars; replace each with a same-width identifier so
 // the surrounding statement parses (e.g. `AS @extschema:cube@.cube`).
 var postgresExtschemaPlaceholderPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_:]*@`)
-var postgresDoBlockPattern = regexp.MustCompile(`(?is)\bdo\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$;`)
+
+const postgresDoLanguageName = `(?:[a-z_][a-z0-9_$]*|'[^']+'|"[^"]+")`
+
+var postgresDoPrefixPattern = regexp.MustCompile(`(?i)\bdo\s+(?:language\s+(` + postgresDoLanguageName + `)\s+)?`)
+var postgresDoSuffixPattern = regexp.MustCompile(`(?i)^\s*(?:language\s+(` + postgresDoLanguageName + `)\s*)?;`)
+var postgresDoDDLPattern = regexp.MustCompile(`(?i)\bcreate\s+(?:or\s+replace\s+)?(?:(?:unlogged|temporary|temp|unique)\s+)?(?:table|index|view|materialized\s+view|type|schema|function|procedure|trigger|policy)\b`)
 var postgresDropTriggerPattern = regexp.MustCompile(`(?is)\bdrop\s+trigger\b[^;]*;`)
 var postgresDropPolicyPattern = regexp.MustCompile(`(?is)\bdrop\s+policy\b[^;]*;`)
 
@@ -6731,11 +7037,12 @@ var postgresForeignAndTriggerDDLPattern = regexp.MustCompile(`(?is)\b(?:create|a
 var postgresAlterTextSearchPattern = regexp.MustCompile(`(?is)\balter\s+text\s+search\s+(?:configuration|dictionary|parser|template)\b[^;]*;`)
 var postgresCommentOnObjectPattern = regexp.MustCompile(`(?is)\bcomment\s+on\s+(?:access\s+method|operator(?:\s+(?:family|class))?|aggregate|type|domain|collation|text\s+search\s+\w+|transform|extension|cast|function|procedure|language|server|publication|subscription)\b[^;]*;`)
 
-func maskPostgresUnsupportedSyntax(content string) string {
+func maskPostgresUnsupportedSyntax(ctx context.Context, content string) string {
 	// Use the SQL-aware comment stripper instead of raw comment regexes so `--`
 	// and `/* ... */` inside string or dollar-quoted literals remain ordinary
 	// literal content in the parse source.
 	masked := []byte(stripSQLComments(content))
+	maskPostgresDoBlocks(ctx, masked)
 	// Blank comments first and run every later pattern against the comment-free
 	// view: DDL-looking prose inside comments ("unique within a repo", "no
 	// partition of relation ...") otherwise matches the statement patterns and
@@ -6775,14 +7082,16 @@ func maskPostgresUnsupportedSyntax(content string) string {
 	for _, loc := range postgresGeneratedColumnPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	maskPostgresCheckConstraints(masked, search)
+	// Match clauses against a literal-safe view, keeping all byte offsets. In
+	// particular, CHECK text in defaults and parentheses in quoted values must
+	// not change the boundary of a real constraint.
+	clauseSearch := maskSQLLiteralContentsForSearch(search)
+	maskPostgresIdentityColumns(masked, clauseSearch)
+	maskPostgresCheckConstraints(masked, clauseSearch)
 	for _, loc := range postgresCreateFunctionPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresCreateExternalFunctionPattern.FindAllStringIndex(search, -1) {
-		maskBytesPreservingNewlines(masked, loc[0], loc[1])
-	}
-	for _, loc := range postgresDoBlockPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	// Re-snapshot after the function/DO-body masks and hide the contents of all
@@ -6875,9 +7184,6 @@ func maskPostgresUnsupportedSyntax(content string) string {
 	for _, loc := range postgresPartitionByPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresCopyStdinBlockPattern.FindAllStringIndex(search, -1) {
-		maskBytesPreservingNewlines(masked, loc[0], loc[1])
-	}
 	for _, loc := range postgresCopyStatementPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
@@ -6906,17 +7212,101 @@ func maskPostgresUnsupportedSyntax(content string) string {
 	return string(masked)
 }
 
+// maskPostgresDoBlocks projects static DDL out of dollar-quoted anonymous
+// blocks before the normal SQL compatibility passes. Procedural control flow
+// is not modelled, but its declarations must not disappear with the wrapper.
+// Match exact dollar tags and a complete LANGUAGE/semicolon suffix; malformed
+// wrappers remain in the parse source and retain their syntax diagnostics.
+//
+// Projection must never cost a file its parse. A body is procedural text, so
+// its DDL can use forms the grammar rejects (`ON COMMIT DROP AS`, a default
+// reading a loop record) or be cut at a procedural boundary. When the
+// projected statements of one block do not parse on their own, that block is
+// masked whole, exactly as before projection existed: its declarations are
+// not indexed and no diagnostic is raised, while other blocks in the file
+// keep theirs.
+func maskPostgresDoBlocks(ctx context.Context, masked []byte) {
+	content := string(masked)
+	search := maskSQLLiteralContentsForSearch(content)
+	for _, loc := range postgresDoPrefixPattern.FindAllStringSubmatchIndex(search, -1) {
+		if !postgresClauseKeywordStart(search, loc[0]) {
+			continue
+		}
+		tag, ok := dollarQuoteTag(content, loc[1])
+		if !ok {
+			continue
+		}
+		bodyStart := loc[1] + len(tag)
+		closeRel := strings.Index(content[bodyStart:], tag)
+		if closeRel < 0 {
+			continue
+		}
+		bodyEnd := bodyStart + closeRel
+		tail := bodyEnd + len(tag)
+		suffix := postgresDoSuffixPattern.FindStringSubmatchIndex(search[tail:])
+		if suffix == nil || (loc[2] >= 0 && suffix[2] >= 0) {
+			continue
+		}
+		// The search view blanks a quoted language name; read it from content.
+		language := "plpgsql"
+		if loc[2] >= 0 {
+			language = content[loc[2]:loc[3]]
+		} else if suffix[2] >= 0 {
+			language = content[tail+suffix[2] : tail+suffix[3]]
+		}
+		maskBytesPreservingNewlines(masked, loc[0], tail+suffix[1])
+		// Only PL/pgSQL embeds SQL statements. A Python or Perl body is not SQL:
+		// its comments and strings would project declarations that never run.
+		if !strings.EqualFold(strings.Trim(language, `'"`), "plpgsql") {
+			continue
+		}
+		body := stripSQLComments(content[bodyStart:bodyEnd])
+		bodySearch := maskSQLLiteralContentsForSearch(body)
+		end := 0
+		for _, ddl := range postgresDoDDLPattern.FindAllStringIndex(bodySearch, -1) {
+			if ddl[0] < end || !postgresClauseKeywordStart(bodySearch, ddl[0]) {
+				continue
+			}
+			end = sqlStatementEnd(bodySearch, ddl[0])
+			copy(masked[bodyStart+ddl[0]:bodyStart+end], body[ddl[0]:end])
+		}
+		if end > 0 && !postgresProjectionParses(ctx, string(masked[bodyStart:bodyEnd])) {
+			maskBytesPreservingNewlines(masked, bodyStart, bodyEnd)
+		}
+	}
+}
+
+// postgresProjectionParses reports whether the DDL projected out of one DO
+// body survives the same masking and grammar as the file it came from. The
+// projection holds no DO wrapper, so the nested mask does not recurse, and the
+// cost is one parse of that body's statements rather than of the whole file.
+func postgresProjectionParses(ctx context.Context, projected string) bool {
+	parser := sitter.NewParser()
+	defer parser.Close()
+	parser.SetLanguage(pgsql.GetLanguage())
+	ctx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
+	defer cancel()
+	tree, err := parser.ParseCtx(ctx, nil, []byte(maskPostgresUnsupportedSyntax(ctx, projected)))
+	if tree == nil {
+		return false
+	}
+	defer tree.Close()
+	return err == nil && ctx.Err() == nil && !tree.RootNode().HasError()
+}
+
 // maskSQLLiteralContentsForSearch blanks the contents (but not delimiters) of
-// single-quoted and dollar-quoted PostgreSQL literals. Length and newlines are
-// preserved so regex match offsets remain valid against the parse source. The
+// single-quoted and dollar-quoted PostgreSQL literals and quoted identifiers.
+// Length and newlines are preserved so regex match offsets remain valid against
+// the parse source. The
 // delimiters stay visible because a few statement masks intentionally recognize
 // quoted arguments, such as LOAD 'library'.
 func maskSQLLiteralContentsForSearch(content string) string {
 	masked := []byte(content)
 	for i := 0; i < len(content); {
 		switch content[i] {
-		case '\'':
-			backslashEscapes := postgresEscapeStringPrefix(content, i)
+		case '\'', '"':
+			quote := content[i]
+			backslashEscapes := quote == '\'' && postgresEscapeStringPrefix(content, i)
 			i++ // preserve the opening quote
 			for i < len(content) {
 				if backslashEscapes && content[i] == '\\' && i+1 < len(content) {
@@ -6927,8 +7317,8 @@ func maskSQLLiteralContentsForSearch(content string) string {
 					i += 2
 					continue
 				}
-				if content[i] == '\'' {
-					if i+1 < len(content) && content[i+1] == '\'' {
+				if content[i] == quote {
+					if i+1 < len(content) && content[i+1] == quote {
 						masked[i] = ' '
 						masked[i+1] = ' '
 						i += 2
@@ -7022,61 +7412,73 @@ func maskBytesPreservingNewlines(src []byte, start, end int) {
 	}
 }
 
-func maskPostgresCheckConstraints(masked []byte, content string) {
-	lower := asciiLowerString(content)
-	offset := 0
-	for {
-		rel := strings.Index(lower[offset:], "check")
-		if rel < 0 {
-			return
+// The search view has comments and literal/identifier contents blanked, so
+// parentheses here are structural. Never recover across a statement boundary
+// or an unclosed clause: those must still produce parse diagnostics.
+func postgresClauseParenEnd(search string, open int) int {
+	depth := 0
+	for i := open; i < len(search); i++ {
+		switch search[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		case ';':
+			return -1
 		}
-		start := offset + rel
-		beforeOK := start == 0 || !isSQLIdentifierByte(lower[start-1])
-		after := start + len("check")
-		afterOK := after >= len(lower) || !isSQLIdentifierByte(lower[after])
-		if !beforeOK || !afterOK {
-			offset = after
+	}
+	return -1
+}
+
+func postgresClauseKeywordStart(search string, start int) bool {
+	return start == 0 || (!isWordByte(search[start-1]) && search[start-1] != '$' && search[start-1] < 0x80)
+}
+
+func maskPostgresIdentityColumns(masked []byte, search string) {
+	for _, loc := range postgresIdentityColumnPattern.FindAllStringIndex(search, -1) {
+		if !postgresClauseKeywordStart(search, loc[0]) ||
+			(loc[1] < len(search) && (search[loc[1]] == '$' || search[loc[1]] >= 0x80)) {
 			continue
 		}
-		open := after
-		for open < len(content) && (content[open] == ' ' || content[open] == '\t' || content[open] == '\n' || content[open] == '\r') {
-			open++
+		end := loc[1]
+		next := end
+		for next < len(search) && strings.ContainsRune(" \t\r\n", rune(search[next])) {
+			next++
 		}
-		if open >= len(content) || content[open] != '(' {
-			offset = after
-			continue
-		}
-		depth := 0
-		inString := false
-		for i := open; i < len(content); i++ {
-			switch content[i] {
-			case '\'':
-				if inString && i+1 < len(content) && content[i+1] == '\'' {
-					i++
-					continue
-				}
-				inString = !inString
-			case '(':
-				if !inString {
-					depth++
-				}
-			case ')':
-				if !inString {
-					depth--
-					if depth == 0 {
-						if before := previousNonSpace(content, start); before >= 0 && (content[before] == ',' || content[before] == '(') {
-							replaceRangePreservingNewlines(masked, start, i+1, "check_dummy text")
-						} else {
-							maskBytesPreservingNewlines(masked, start, i+1)
-						}
-						offset = i + 1
-						goto next
-					}
-				}
+		if next < len(search) && search[next] == '(' {
+			end = postgresClauseParenEnd(search, next)
+			if end < 0 {
+				continue
 			}
 		}
-		return
-	next:
+		maskBytesPreservingNewlines(masked, loc[0], end)
+	}
+}
+
+func maskPostgresCheckConstraints(masked []byte, search string) {
+	end := 0
+	for _, loc := range postgresCheckConstraintPattern.FindAllStringIndex(search, -1) {
+		start := loc[0]
+		if start < end || !postgresClauseKeywordStart(search, start) {
+			continue
+		}
+		close := postgresClauseParenEnd(search, loc[1]-1)
+		if close < 0 {
+			continue
+		}
+		end = close
+		// Include CONSTRAINT name in the same mask. Leaving it behind makes
+		// the later table-constraint pass swallow separators or following DDL.
+		if before := previousNonSpace(search, start); before >= 0 && (search[before] == ',' || search[before] == '(') {
+			// Five bytes fit even CHECK(x), and cannot overwrite a newline in
+			// the leading CHECK / CONSTRAINT keyword.
+			replaceRangePreservingNewlines(masked, start, end, "_ int")
+		} else {
+			maskBytesPreservingNewlines(masked, start, end)
+		}
 	}
 }
 
@@ -7113,6 +7515,14 @@ func maskPostgresTableConstraints(masked []byte, content string) {
 				break
 			}
 			start := offset + rel
+			after := start + len(keyword)
+			// Constraint keywords are whole SQL tokens, not prefixes of names
+			// such as unique_key, unique_states or constraint_name.
+			if !postgresClauseKeywordStart(content, start) ||
+				(after < len(content) && (isWordByte(content[after]) || content[after] == '$' || content[after] >= 0x80)) {
+				offset = after
+				continue
+			}
 			before := previousNonSpace(content, start)
 			if before >= 0 && content[before] != ',' && content[before] != '(' {
 				offset = start + len(keyword)
@@ -7814,17 +8224,24 @@ func dollarQuoteTag(content string, i int) (string, bool) {
 // (preserving length and newlines so reported line numbers stay correct), while
 // leaving comment markers that appear inside single-quoted or dollar-quoted
 // literals untouched. It is used to feed the regex entity extractors source that
-// cannot match commented-out DDL.
+// cannot match commented-out DDL. Inline `COPY ... FROM stdin;` rows are blanked
+// the same way: they are data whose quote and comment characters are not SQL.
 func stripSQLComments(content string) string {
 	b := []byte(content)
 	n := len(b)
 	for i := 0; i < n; {
 		switch b[i] {
-		case '\'':
+		case '\'', '"':
+			quote := b[i]
+			backslashEscapes := quote == '\'' && postgresEscapeStringPrefix(content, i)
 			i++
 			for i < n {
-				if b[i] == '\'' {
-					if i+1 < n && b[i+1] == '\'' {
+				if backslashEscapes && b[i] == '\\' && i+1 < n {
+					i += 2
+					continue
+				}
+				if b[i] == quote {
+					if i+1 < n && b[i+1] == quote {
 						i += 2
 						continue
 					}
@@ -7840,6 +8257,13 @@ func stripSQLComments(content string) string {
 					return string(b)
 				}
 				i = i + len(tag) + closeRel + len(tag)
+			} else {
+				i++
+			}
+		case 'c', 'C':
+			if start, end, ok := postgresCopyStdinData(content, i); ok {
+				maskBytesPreservingNewlines(b, start, end)
+				i = end
 			} else {
 				i++
 			}
@@ -8188,10 +8612,19 @@ var luaFunctionLinePattern = regexp.MustCompile(`(?m)^[ \t]*(?:local[ \t]+)?func
 var luaBlockTokenPattern = regexp.MustCompile(`\b(function|if|for|while|repeat|do|end|until)\b`)
 var objectiveCMethodNamePattern = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)`)
 
-func javascriptExportedVariableEntities(content string) []Entity {
+// javascriptExportedVariableEntities is superlinear in match count: it counts
+// the newlines in content[:match] once per match, so a file of N exports costs
+// O(N * len(content)). That is why it takes a stop predicate -- it is the one
+// supplemental pass whose own runtime can dwarf the budget (2m32s on a 5.7 MB
+// file of 40k exports), so a guard at the pass boundary alone would not bound
+// the overshoot. stop is nil for callers with no deadline.
+func javascriptExportedVariableEntities(content string, stop func() bool) []Entity {
 	matches := jsExportedVariablePattern.FindAllStringSubmatchIndex(content, -1)
 	entities := make([]Entity, 0, len(matches))
 	for _, match := range matches {
+		if stopped(stop) {
+			return entities
+		}
 		if len(match) < 4 {
 			continue
 		}
@@ -9931,7 +10364,7 @@ func validNode(node *sitter.Node) bool {
 // distinction; candidateSharesDeclarations is its only consumer.
 //
 // `extern "C++"` is deliberately not matched: it says the opposite.
-func declaredWithCLinkage(language string, node *sitter.Node, src []byte) bool {
+func declaredWithCLinkage(ctx context.Context, language string, node *sitter.Node, src []byte) bool {
 	switch language {
 	case "C", "C++", "Objective-C", "Objective-C++":
 	default:
@@ -9941,13 +10374,13 @@ func declaredWithCLinkage(language string, node *sitter.Node, src []byte) bool {
 	if !validNode(linkage) || linkageSpecificationName(linkage, src) != "C" {
 		return false
 	}
-	if !cLinkageCompatibleDeclaration(node, src) {
+	if !cLinkageCompatibleDeclaration(ctx, node, src) {
 		return false
 	}
 	for parent := node.Parent(); validNode(parent) && parent != linkage; parent = parent.Parent() {
 		// A C-linkage spelling does not make declarations nested in a C++ class
 		// or namespace visible to a C translation unit.
-		if cxxLinkageForbiddenAncestor(parent, src) {
+		if cxxLinkageForbiddenAncestor(ctx, parent, src) {
 			return false
 		}
 	}
@@ -9974,12 +10407,12 @@ func linkageSpecificationName(node *sitter.Node, src []byte) string {
 	return strings.Trim(value.Content(src), `"`)
 }
 
-func cxxLinkageForbiddenAncestor(node *sitter.Node, src []byte) bool {
+func cxxLinkageForbiddenAncestor(ctx context.Context, node *sitter.Node, src []byte) bool {
 	switch node.Type() {
 	case "namespace_definition", "class_specifier", "class_declaration":
 		return true
 	case "struct_specifier", "union_specifier":
-		return cxxAggregateMembers(node, src)
+		return cxxAggregateMembers(ctx, node, src)
 	default:
 		return false
 	}
@@ -9989,14 +10422,14 @@ func cxxLinkageForbiddenAncestor(node *sitter.Node, src []byte) bool {
 // still places syntactically inside a linkage_specification but that a C source
 // cannot declare or name. Plain C aggregates, unscoped enums, typedefs and
 // ordinary functions intentionally remain eligible.
-func cLinkageCompatibleDeclaration(node *sitter.Node, src []byte) bool {
+func cLinkageCompatibleDeclaration(ctx context.Context, node *sitter.Node, src []byte) bool {
 	switch node.Type() {
 	case "class_specifier", "class_declaration", "alias_declaration", "using_declaration":
 		return false
 	case "enum_specifier", "enum_declaration":
 		return !cxxScopedEnum(node, src)
 	case "struct_specifier", "union_specifier":
-		return !cxxAggregateMembers(node, src)
+		return !cxxAggregateMembers(ctx, node, src)
 	}
 	return true
 }
@@ -10006,7 +10439,7 @@ func cxxScopedEnum(node *sitter.Node, src []byte) bool {
 	return len(fields) >= 2 && fields[0] == "enum" && (fields[1] == "class" || fields[1] == "struct")
 }
 
-func cxxAggregateMembers(node *sitter.Node, src []byte) bool {
+func cxxAggregateMembers(ctx context.Context, node *sitter.Node, src []byte) bool {
 	// Tree-sitter C is a compact, more complete compatibility oracle for an
 	// aggregate than maintaining a growing list of C++-only member forms. This
 	// is reached only after finding `extern "C"` ancestry, so its parser cost is
@@ -10014,7 +10447,7 @@ func cxxAggregateMembers(node *sitter.Node, src []byte) bool {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(c.GetLanguage())
-	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	ctx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
 	defer cancel()
 	tree, err := parser.ParseCtx(ctx, nil, append([]byte(node.Content(src)), ';', '\n'))
 	if tree == nil {

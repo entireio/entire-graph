@@ -326,15 +326,15 @@ func TestImpactSourceAnnotationsFollowSelectedTree(t *testing.T) {
 	headCallSite := runSourceViewCommand(t, repo, cacheDir, "", "impact",
 		"--symbol", "Target", "--head", "--format", "text")
 	requireSourceView(t, headCallSite,
-		[]string{"calls.go:7, def :5"},
-		[]string{"calls.go:8, def :5"},
+		[]string{"Caller (calls.go:7)"},
+		[]string{"Caller (calls.go:8)"},
 	)
 
 	worktreeCallSite := runSourceViewCommand(t, repo, cacheDir, "", "impact",
 		"--symbol", "Target", "--format", "text")
 	requireSourceView(t, worktreeCallSite,
-		[]string{"calls.go:8, def :5"},
-		[]string{"calls.go:7, def :5"},
+		[]string{"Caller (calls.go:8)"},
+		[]string{"Caller (calls.go:7)"},
 	)
 
 	headMatches := runSourceViewCommand(t, repo, cacheDir, "", "impact",

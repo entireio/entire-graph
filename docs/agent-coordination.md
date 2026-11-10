@@ -1,13 +1,14 @@
 # Coordinated agent instructions
 
-Both products provide `init-agents` and `agent-guide`, invoked through
-`entire graph` and `entire brain`. Brain also retains `guide` as an alias.
+Both products install the instructions from `setup` and preview them with
+`agent-guide`, invoked through `entire graph` and `entire brain`. Brain also
+retains `guide` as an alias.
 
 ## Repository activation
 
-Each `init-agents` enables only the invoking product and preserves products already
-enabled in this repository. Running Graph and Brain initializers in either order
-produces the same combined guide. Installing a plugin globally, creating Brain
+Each product's setup enables only the invoking product and preserves products
+already enabled in this repository. Running Graph and Brain setups in either
+order produces the same combined guide. Installing a plugin globally, creating Brain
 runtime setup, or building an index does not activate its agent guidance.
 Generation does not query the host inventory or invoke another plugin.
 
@@ -47,10 +48,10 @@ the metadata or infer activation using their old rules.
 
 ## Guidance mode
 
-Both commands accept mutually exclusive `--strict` and `--normal` flags.
-`init-agents --strict` persists strict guidance for every enabled product in this
-repository. Subsequent initialization and previews inherit that mode, including
-when the other product is added. `init-agents --normal` persistently resets it.
+Both setup and agent-guide accept mutually exclusive `--strict` and `--normal`
+flags. `setup --strict` persists strict guidance for every enabled product in
+this repository. Subsequent setups and previews inherit that mode, including
+when the other product is added. `setup --normal` persistently resets it.
 New repositories and legacy guides default to normal.
 
 `agent-guide` is always read-only. Its `--strict` and `--normal` flags override
@@ -111,23 +112,29 @@ Follow-up questions use `def` for a named symbol, `neighbors` for callers or cal
 and `impact` for blast radius, each with `--head`; grep is for literal text only.
 
 Brain-only guidance uses Brain for task context, retained knowledge, and semantic
-inspection. Combined guidance begins substantive tasks needing orientation with:
+inspection. Combined guidance states one ordered sequence for tasks that require
+finding code — the brief first, then a Graph query:
 
 ```sh
 entire brain brief "<task>" --json
+entire graph query --repo . --profile full --head --format agent --max-context-bytes 4096 --query "<task>"
 ```
 
-Skip the brief when equivalent context is already available. Reuse useful locations
-without a redundant Graph query. Graph query, def, neighbors, and impact answer
+Run the brief before deciding the task does not need it. Locations from the brief
+answer where code is, not what depends on it, so neither step replaces the other.
+Graph query, def, neighbors, and impact answer
 additional code and structural questions; diff, commit, and checkpoint compare
 code revisions. Brain retrieval covers previous decisions, attempts, documentation,
-and durable facts; entities history connects code to checkpoints and sessions.
+and durable memories (recall ranks decisions and rationale first); entities history
+connects code to checkpoints and sessions.
 Use Brain memory-informed review and workspace capabilities when relevant. Do not
 ask both products the same question without an identified gap.
 
-In every normal product combination that includes Graph, the first action on a task
-that requires finding code is a Graph query, and each later locate or relationship
-question goes through Graph too; there is no one-query cap. Normal mode does not offer a
+In every normal product combination that includes Graph, a task that requires
+finding code starts with a Graph query (preceded by the brief when Brain is also
+enabled — one sequence, never two competing first-action absolutes), and each later
+locate or relationship question goes through Graph too; there is no one-query cap.
+Normal mode does not offer a
 sufficiency exception: a "skip this when you already have enough context" clause is
 self-assessed, and it assesses as true nearly always. (Graph interactive queries
 normally inspect the working tree; Brain semantic answers refer to a stored index.)

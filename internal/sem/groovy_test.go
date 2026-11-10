@@ -79,7 +79,7 @@ enum Phase {
 @interface Marker {
   String value()
 }
-`)
+`, nil)
 	if status.ParseError {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
@@ -179,7 +179,7 @@ task integrationTest(type: Test) {
 }
 
 println greet('world')
-`)
+`, nil)
 	if status.ParseError {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
@@ -220,7 +220,7 @@ func TestGroovyEntitiesClosuresAreNotSymbols(t *testing.T) {
 
   void after() { }
 }
-`)
+`, nil)
 	if status.ParseError {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
@@ -262,7 +262,7 @@ func TestGroovyEntitiesStringsDoNotConfuseStructure(t *testing.T) {
     """
   }
 }
-`)
+`, nil)
 	if status.ParseError {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
@@ -339,7 +339,7 @@ func TestGroovyKAndRAndAbstractShapes(t *testing.T) {
     return area() * factor
   }
 }
-`)
+`, nil)
 	if status.ParseError {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
@@ -359,7 +359,7 @@ func TestGroovyParseStatusReportsUnbalancedBraces(t *testing.T) {
 	entities, status := groovyEntities(`class Broken {
   void fine() {
   }
-`)
+`, nil)
 	if !status.ParseError {
 		t.Fatalf("expected parse error for unbalanced braces, got %#v", status)
 	}

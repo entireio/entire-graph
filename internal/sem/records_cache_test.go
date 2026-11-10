@@ -10,12 +10,31 @@ import (
 	"testing"
 )
 
+// spoolRecords feeds literal record bytes through the transaction's spool the
+// way a producer tees them, so tests can Store byte streams directly.
+func spoolRecords(transaction *ProviderRecordsCacheTransaction, records []byte) (*ProviderRecordsSpool, error) {
+	spool, err := transaction.NewSpool()
+	if err != nil || spool == nil {
+		// A disabled transaction hands out no spool; Store(nil, ...) stays the
+		// same silent no-op the byte-slice Store had, which the worktree-bypass
+		// test depends on.
+		return nil, err
+	}
+	// Spool writes always report success; a failure is deferred to Store.
+	_, _ = spool.Write(records)
+	return spool, nil
+}
+
 func storeProviderRecordsForTest(ctx context.Context, repo, providerVersion, tree, mode, cacheDir string, options ProviderSnapshotOptions, records []byte, summary *SnapshotSummary) error {
 	transaction, err := BeginProviderRecordsCache(ctx, repo, providerVersion, tree, tree, mode, cacheDir, options)
 	if err != nil {
 		return err
 	}
-	return transaction.Store(records, summary, SnapshotHeader{
+	spool, err := spoolRecords(transaction, records)
+	if err != nil {
+		return err
+	}
+	return transaction.Store(spool, summary, SnapshotHeader{
 		SchemaVersion:   SchemaVersion,
 		Provider:        ProviderName,
 		ProviderVersion: providerVersion,
@@ -57,15 +76,30 @@ func TestProviderRecordsCacheTransactionRejectsObservedProvenanceMismatch(t *tes
 				Profile:         string(transaction.options.Profile),
 			}
 			tc.mutate(&header)
-			if err := transaction.Store([]byte("wrong provenance\n"), nil, header); err == nil {
+			spool, err := spoolRecords(transaction, []byte("wrong provenance\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := transaction.Store(spool, nil, header); err == nil {
 				t.Fatal("stored records observed with mismatched provenance")
 			}
 			if _, _, hit := transaction.Load(); hit {
 				t.Fatal("provenance-mismatched records reached the cache")
 			}
-			artifact := filepath.Join(transaction.entry.root, transaction.entry.relative)
-			if _, err := os.Stat(artifact); !os.IsNotExist(err) {
-				t.Fatalf("provenance-mismatched records created cache artifact %q: %v", artifact, err)
+			for _, entry := range []cacheEntry{transaction.entry, transaction.streamEntry} {
+				artifact := filepath.Join(entry.root, entry.relative)
+				if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+					t.Fatalf("provenance-mismatched records created cache artifact %q: %v", artifact, err)
+				}
+			}
+			// The refused spool's temporary must be gone too, or every refusal
+			// leaks a file in the cache directory.
+			leftovers, err := filepath.Glob(filepath.Join(transaction.entry.root, filepath.Dir(transaction.entry.relative), ".stream-*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(leftovers) != 0 {
+				t.Fatalf("provenance-mismatched store left spool temporaries %v", leftovers)
 			}
 		})
 	}
@@ -81,7 +115,11 @@ func TestProviderRecordsCacheDiscriminatesSameTreeCommits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := first.Store([]byte("commit-a records\n"), nil, SnapshotHeader{
+	firstSpool, err := spoolRecords(first, []byte("commit-a records\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Store(firstSpool, nil, SnapshotHeader{
 		SchemaVersion:   SchemaVersion,
 		Provider:        ProviderName,
 		ProviderVersion: "test",
@@ -214,7 +252,11 @@ func TestProviderRecordsCacheTransactionPinsPolicyThroughBuildAndStore(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := transaction.Store(records, nil, snapshot.Header); err != nil {
+			spool, err := spoolRecords(transaction, records)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := transaction.Store(spool, nil, snapshot.Header); err != nil {
 				t.Fatal(err)
 			}
 

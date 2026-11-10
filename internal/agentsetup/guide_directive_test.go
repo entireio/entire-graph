@@ -23,7 +23,9 @@ func TestNormalGuideStaysDirective(t *testing.T) {
 	// The obligation covers EVERY question, not the first one. "MUST be ONE Graph query" was
 	// obeyed to the letter in a fresh-environment baseline: one query, then grep and sed for the
 	// rest of the task, zero def/neighbors/impact calls even on a blast-radius task.
-	const everyQuestion = "each later locate or relationship question MUST also go through Graph"
+	// (Case-neutral substring: the Graph-only guide states it mid-sentence, the combined
+	// guide opens a sentence with it.)
+	const everyQuestion = "later locate or relationship question MUST also go through Graph"
 
 	// The commands are pinned whole. --format agent is a cost decision (json measured 17595 B
 	// against agent's 6011 B for the same results; see guide.go), --head is the cache (every
@@ -47,10 +49,30 @@ func TestNormalGuideStaysDirective(t *testing.T) {
 		"coverage notice is not loss": "It does not mean the results are partial",
 	}
 
-	for name, guide := range map[string]string{"GraphGuide": GraphGuide, "CombinedGuide": CombinedGuide} {
-		if !strings.Contains(guide, obligation) {
-			t.Errorf("%s lost the first-action obligation: agents do not call a tool they are told is optional", name)
+	// The two guides state the obligation differently ON PURPOSE. The Graph-only guide
+	// has one tool, so a first-action absolute is unambiguous. The combined guide has
+	// two, and stating two first-action absolutes made a measured session drop Brain
+	// entirely ("I also skipped `entire brain brief` entirely, which the guide
+	// recommends") — an agent can only do one thing first, so it picks. The combined
+	// guide therefore states ONE ordered sequence, checked below.
+	if !strings.Contains(GraphGuide, obligation) {
+		t.Error("GraphGuide lost the first-action obligation: agents do not call a tool they are told is optional")
+	}
+	for _, want := range []string{
+		"Both tools run, in this order",
+		"1. entire brain brief",
+		"2. entire graph query",
+		"do not treat having done one as having done the other",
+	} {
+		if !strings.Contains(CombinedGuide, want) {
+			t.Errorf("CombinedGuide no longer states the ordered sequence; missing %q", want)
 		}
+	}
+	if strings.Contains(CombinedGuide, "first action") || strings.Contains(CombinedGuide, "FIRST action") {
+		t.Error("CombinedGuide carries a first-action absolute beside the ordered sequence; two absolutes let the agent pick one and drop the other")
+	}
+
+	for name, guide := range map[string]string{"GraphGuide": GraphGuide, "CombinedGuide": CombinedGuide} {
 		if !strings.Contains(guide, everyQuestion) {
 			t.Errorf("%s lost the every-question obligation: a first-query-only rule is followed once and then grep takes over", name)
 		}
@@ -111,8 +133,9 @@ func TestNormalGuideStaysDirective(t *testing.T) {
 	}
 
 	// Graph before Brain in the combined guide. An obligation printed under a paragraph that
-	// already offers a way to find code reads as the optional one of the two.
-	graphAt := strings.Index(CombinedGuide, obligation)
+	// already offers a way to find code reads as the optional one of the two, so the Graph
+	// EVERY-question obligation must open the guide, ahead of the brief command it sequences.
+	graphAt := strings.Index(CombinedGuide, "Use Graph EVERY time")
 	brainAt := strings.Index(CombinedGuide, `entire brain brief "<task>" --json`)
 	if graphAt < 0 || brainAt < 0 || graphAt > brainAt {
 		t.Errorf("combined guide does not put the Graph obligation before the Brain brief (graph=%d brain=%d)", graphAt, brainAt)

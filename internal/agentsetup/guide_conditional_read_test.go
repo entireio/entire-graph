@@ -12,9 +12,11 @@ import (
 func conditionalReadGuides() map[string]string {
 	guides := make(map[string]string)
 	for _, mode := range []Mode{ModeNormal, ModeStrict} {
+		// Graph-containing activations only: the [complete] marker is Graph output,
+		// so a Brain-only guide carries the neutral verification text instead of a
+		// doctrine about a marker the agent will never see.
 		for name, active := range map[string]map[string]bool{
 			"Graph":    {"graph": true},
-			"Brain":    {"brain": true},
 			"Combined": {"graph": true, "brain": true},
 		} {
 			guides[string(mode)+" "+name] = strings.Join(strings.Fields(guideFor(active, mode)), " ")

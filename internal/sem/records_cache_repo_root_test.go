@@ -104,7 +104,11 @@ func TestProviderRecordsCacheReplaysAcrossCheckoutsNamedLikeTheField(t *testing.
 		Profile:         string(transaction.options.Profile),
 	}
 	symbol := map[string]string{"record_type": "symbol", "path": "a.go"}
-	if err := transaction.Store(encodeRecordStreamForTest(t, header, symbol), nil, header); err != nil {
+	spool, err := spoolRecords(transaction, encodeRecordStreamForTest(t, header, symbol))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.Store(spool, nil, header); err != nil {
 		t.Fatal(err)
 	}
 

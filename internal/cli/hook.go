@@ -13,7 +13,7 @@ import (
 )
 
 // claudeSubagentStartHook is the hook name Claude Code's SubagentStart entry invokes; see
-// agentsetup.SubagentHookCommand, which init-agents writes into .claude/settings.local.json.
+// agentsetup.SubagentHookCommand, which setup writes into .claude/settings.local.json.
 const claudeSubagentStartHook = "claude-subagent-start"
 
 // maxHookEventBytes bounds the event read. A SubagentStart event is a few hundred bytes.

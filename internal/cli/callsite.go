@@ -185,7 +185,7 @@ func openSnapshotLineReaderOrDegrade(
 	read, closeSource, err := openSnapshotLineReader(ctx, snapshot, worktree)
 	if err != nil {
 		if warn != nil {
-			fmt.Fprintf(warn, "graph: committed source unavailable (%v); reporting locations without source\n", err)
+			warnf(warn, "committed source unavailable (%v); reporting locations without source", err)
 		}
 		return noSourceLineReader, nil
 	}

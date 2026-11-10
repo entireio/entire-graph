@@ -180,7 +180,7 @@ func TestInitAgentsInstallsClaudeSubagentHook(t *testing.T) {
 	}
 	initAgents := func(extra ...string) (string, error) {
 		var out bytes.Buffer
-		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, append([]string{"init-agents", "--repo", repo}, extra...))
+		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, append([]string{"setup", "--repo", repo}, extra...))
 		return out.String(), err
 	}
 
@@ -189,7 +189,7 @@ func TestInitAgentsInstallsClaudeSubagentHook(t *testing.T) {
 		t.Fatalf("%v\n%s", err, report)
 	}
 	if !strings.Contains(report, "updated "+settingsPath) {
-		t.Errorf("init-agents did not report the settings change:\n%s", report)
+		t.Errorf("setup did not report the settings change:\n%s", report)
 	}
 	if n := settingsHookCount(t, settingsPath); n != 1 {
 		t.Fatalf("hook count = %d, want 1", n)
@@ -216,7 +216,7 @@ func TestInitAgentsClaudeHookOptOutAndPreflight(t *testing.T) {
 	t.Run("opt out writes nothing under .claude", func(t *testing.T) {
 		repo := gitRepoForTest(t, false)
 		var out bytes.Buffer
-		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo, "--no-claude-hook"}); err != nil {
+		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"setup", "--repo", repo, "--no-claude-hook"}); err != nil {
 			t.Fatalf("%v\n%s", err, out.String())
 		}
 		if _, err := os.Stat(filepath.Join(repo, ".claude")); !os.IsNotExist(err) {
@@ -236,7 +236,7 @@ func TestInitAgentsClaudeHookOptOutAndPreflight(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out bytes.Buffer
-		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"setup", "--repo", repo})
 		if err == nil || !strings.Contains(err.Error(), "--no-claude-hook") {
 			t.Fatalf("err = %v, want a refusal naming the opt-out", err)
 		}

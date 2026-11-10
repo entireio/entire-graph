@@ -71,12 +71,16 @@ is active.
 Activation is per repository:
 
 ```sh
-entire graph init-agents --repo .
+entire graph setup --repo .
 ```
+
+If Entire Brain is installed too, also run `entire brain setup` — each setup
+enables its own product, the two compose in either order, and both render the
+same combined guide text.
 
 Add `--strict` to save mandatory Graph/Brain tool-use rules for this repository.
 The saved mode is shared by enabled products and inherited on later runs.
-Use `init-agents --normal` to reset it. `agent-guide` inherits the saved mode;
+Use `setup --normal` to reset it. `agent-guide` inherits the saved mode;
 `agent-guide --strict` or `--normal` previews an override without saving it.
 The two flags are mutually exclusive. New repositories default to normal.
 
@@ -252,6 +256,12 @@ The interactive query family (`query`, `def`, `explain`, `neighbors`, and
 Add `--head` to ask about the committed tree instead. Bulk streams
 (`snapshot`, `symbols`, `edges`) and ref-based analysis (`diff`, `commit`)
 default to committed state.
+
+Range commands (`diff`, its alias `analyze`, `commit`, and `checkpoint`) require
+`--repo` to name the checkout root, including the root of a linked worktree.
+They reject subdirectories rather than silently analyzing the entire checkout.
+To narrow a diff, use root-relative path filters, for example
+`entire graph diff --repo /path/to/checkout --base main --head HEAD -- src/`.
 
 Queries can write a derivative local cache; they never modify repository files.
 Default working-tree queries always build fresh and do not load or store cache

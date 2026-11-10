@@ -107,6 +107,86 @@ class PlanShardTests(unittest.TestCase):
         self.assertEqual(assigned[("example/heavy", "TestNew")]["weightSource"], "default-current-inventory")
         self.assertEqual(first["historicalWeights"]["defaultedCount"], 3)
 
+    def plan_two_shards(self, roots, weights):
+        inventory = normalized_inventory(
+            "example/heavy", "heavy.test.exe", [{"name": name, "kind": "Test"} for name in roots]
+        )
+        metadata = {"path": "weights.json", "sha256": "c" * 64, "entryCount": len(weights)}
+        plan = plan_shards.create_plan([inventory], settings(), weights, metadata)
+        return plan, [
+            sorted(root["name"] for assignment in shard["assignments"] for root in assignment["roots"])
+            for shard in plan["shards"]
+        ]
+
+    def test_plain_weights_plan_serially_by_longest_processing_time_first(self):
+        roots = ["TestA", "TestB", "TestC", "TestD"]
+        weights = {
+            ("example/heavy", "TestA"): 9.0,
+            ("example/heavy", "TestB"): 6.0,
+            ("example/heavy", "TestC"): 5.0,
+            ("example/heavy", "TestD"): 4.0,
+        }
+        plan, shards = self.plan_two_shards(roots, weights)
+        self.assertEqual(shards, [["TestA", "TestD"], ["TestB", "TestC"]])
+        self.assertEqual([shard["estimatedWeightSeconds"] for shard in plan["shards"]], [13.0, 11.0])
+
+    def test_parallel_roots_are_planned_by_process_wall_time(self):
+        self.assertEqual(plan_shards.process_seconds(10.0, 90.0, 20.0, 3.0), 40.0)
+        self.assertEqual(plan_shards.process_seconds(10.0, 90.0, 80.0, 3.0), 90.0)
+        self.assertEqual(plan_shards.process_seconds(10.0, 0.0, 0.0, 3.0), 10.0)
+        # One 60 s parallel root, three 20 s parallel roots and 60 s of serial work.
+        # Summed elapsed would pair the long parallel root with nothing; by wall time
+        # the short parallel roots run beside it for free and the serial root is alone.
+        roots = ["TestLongParallel", "TestP1", "TestP2", "TestP3", "TestSerial"]
+        weights = plan_shards.Weights(
+            {
+                ("example/heavy", "TestLongParallel"): 60.0,
+                ("example/heavy", "TestP1"): 20.0,
+                ("example/heavy", "TestP2"): 20.0,
+                ("example/heavy", "TestP3"): 20.0,
+                ("example/heavy", "TestSerial"): 60.0,
+            }
+        )
+        weights.parallel = {key for key in weights if key[1] != "TestSerial"}
+        weights.parallelism = 2.0
+        plan, shards = self.plan_two_shards(roots, weights)
+        self.assertEqual(shards, [["TestLongParallel", "TestP1", "TestP2", "TestP3"], ["TestSerial"]])
+        self.assertEqual([shard["estimatedWeightSeconds"] for shard in plan["shards"]], [60.0, 60.0])
+        self.assertEqual(plan, self.plan_two_shards(roots, weights)[0])
+        flags = {
+            root["name"]: root.get("parallel", False)
+            for shard in plan["shards"]
+            for assignment in shard["assignments"]
+            for root in assignment["roots"]
+        }
+        self.assertEqual(flags["TestLongParallel"], True)
+        self.assertEqual(flags["TestSerial"], False)
+
+    def test_weight_file_parallel_fields_are_validated(self):
+        base = {"schema": plan_shards.WEIGHTS_SCHEMA, "sourceCommit": "a" * 40, "source": "fixture"}
+        row = {"package": "p", "name": "TestA", "seconds": 1.0}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "weights.json"
+            path.write_text(json.dumps({**base, "weights": [row]}), encoding="utf-8")
+            weights, metadata = plan_shards.load_weights(path)
+            self.assertEqual((weights.parallel, weights.parallelism), (set(), 1.0))
+            self.assertEqual(metadata["parallelism"], 1.0)
+            path.write_text(
+                json.dumps({**base, "parallelism": 2.5, "weights": [{**row, "parallel": True}]}),
+                encoding="utf-8",
+            )
+            weights, _ = plan_shards.load_weights(path)
+            self.assertEqual((weights.parallel, weights.parallelism), ({("p", "TestA")}, 2.5))
+            for payload in (
+                {**base, "parallelism": 0.5, "weights": [row]},
+                {**base, "parallelism": "3", "weights": [row]},
+                {**base, "parallelism": True, "weights": [row]},
+                {**base, "weights": [{**row, "parallel": "yes"}]},
+            ):
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "parallel"):
+                    plan_shards.load_weights(path)
+
     def test_compressed_regex_selects_exact_roots(self):
         names = ["TestParser", "TestParserDepth", "ExampleParser", "FuzzParser"]
         expression = plan_shards.compressed_run_regex(names)

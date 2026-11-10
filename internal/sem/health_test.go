@@ -206,7 +206,11 @@ func TestGraphHealthRejectsObsoleteCachedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := transaction.Store([]byte("obsolete status\n"), nil, snapshot.Header); err != nil {
+	spool, err := spoolRecords(transaction, []byte("obsolete status\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.Store(spool, nil, snapshot.Header); err != nil {
 		t.Fatal(err)
 	}
 	records, err := readProviderRecords(transaction.entry)

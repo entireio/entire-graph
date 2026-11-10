@@ -34,3 +34,28 @@ func TestGitCommandContextHelper(t *testing.T) {
 	time.Sleep(10 * time.Second)
 	os.Exit(23)
 }
+
+func TestTreeEntryMetadataBatchPreservesCancellation(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		name := "cancelled"
+		if deadline {
+			name = "deadline"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			want := context.Canceled
+			if deadline {
+				cancel()
+				ctx, cancel = context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+				want = context.DeadlineExceeded
+			} else {
+				cancel()
+			}
+			defer cancel()
+			_, err := treeEntryMetadataBatch(ctx, t.TempDir(), "HEAD", []string{"main.go"})
+			if !errors.Is(err, want) {
+				t.Fatalf("metadata lookup returned %v, want %v", err, want)
+			}
+		})
+	}
+}

@@ -3,7 +3,9 @@ package cli
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -32,6 +34,25 @@ func recordsCacheEntries(t *testing.T, cacheDir string) []string {
 	return entries
 }
 
+// recordsCacheStreams lists the `.stream.gz` record sidecars under a cache directory.
+func recordsCacheStreams(t *testing.T, cacheDir string) []string {
+	t.Helper()
+	var streams []string
+	err := filepath.WalkDir(filepath.Join(cacheDir, "records"), func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasSuffix(path, ".stream.gz") && !strings.HasPrefix(filepath.Base(path), ".") {
+			streams = append(streams, path)
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return streams
+}
+
 func TestTargetedEdgesRecoverFromCorruptCache(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -41,8 +62,102 @@ func TestTargetedEdgesRecoverFromCorruptCache(t *testing.T) {
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
 
-	for _, damage := range []string{"truncated-gzip", "malformed-record", "invalid-relation", "capture-overflow"} {
-		t.Run(damage, func(t *testing.T) {
+	// tamperStream replaces the sidecar's records and restamps the envelope's
+	// digest so Load still serves them: these cases prove the FILTER refuses a
+	// stream it cannot read, so the damaged bytes must get past the digest.
+	tamperStream := func(t *testing.T, envelopePath, streamPath, records string) {
+		t.Helper()
+		var compressed bytes.Buffer
+		writer := gzip.NewWriter(&compressed)
+		if _, err := writer.Write([]byte(records)); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(streamPath, compressed.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		clean, err := os.ReadFile(envelopePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader, err := gzip.NewReader(bytes.NewReader(clean))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := reader.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		envelope["records_digest"], err = json.Marshal(fmt.Sprintf("%x", sha256.Sum256(compressed.Bytes())))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var reassembled bytes.Buffer
+		rewriter := gzip.NewWriter(&reassembled)
+		if err := json.NewEncoder(rewriter).Encode(envelope); err != nil {
+			t.Fatal(err)
+		}
+		if err := rewriter.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(envelopePath, reassembled.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	damages := []struct {
+		name  string
+		apply func(t *testing.T, envelopePath, streamPath, want string)
+	}{
+		{"truncated-envelope", func(t *testing.T, envelopePath, _, _ string) {
+			clean, err := os.ReadFile(envelopePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(envelopePath, clean[:len(clean)/2], 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"missing-stream", func(t *testing.T, _, streamPath, _ string) {
+			if err := os.Remove(streamPath); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		// A rewritten sidecar the envelope does not vouch for is a miss: the
+		// digest is what keeps the two separately renamed files one entry.
+		{"stream-digest-mismatch", func(t *testing.T, _, streamPath, want string) {
+			var compressed bytes.Buffer
+			writer := gzip.NewWriter(&compressed)
+			if _, err := writer.Write([]byte(want)); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(streamPath, compressed.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		// Keep a valid envelope and matching prefix, then damage a later
+		// record. Recovery must not print the prefix before rebuilding.
+		{"malformed-record", func(t *testing.T, envelopePath, streamPath, want string) {
+			tamperStream(t, envelopePath, streamPath, want+"{not json\n")
+		}},
+		{"invalid-relation", func(t *testing.T, envelopePath, streamPath, want string) {
+			tamperStream(t, envelopePath, streamPath, want+"{\"record_type\":\"relation\",\"to_id\":7}\n")
+		}},
+	}
+	for _, damage := range damages {
+		t.Run(damage.name, func(t *testing.T) {
 			cacheDir, pluginDir := t.TempDir(), t.TempDir()
 			run := func(extra ...string) (string, string) {
 				t.Helper()
@@ -57,77 +172,17 @@ func TestTargetedEdgesRecoverFromCorruptCache(t *testing.T) {
 			if strings.Count(want, `"record_type":"relation"`) != 1 {
 				t.Fatalf("control must contain one matching edge: %s", want)
 			}
-			if damage == "capture-overflow" {
-				previousLimit := providerRecordsCacheMaxBytes
-				providerRecordsCacheMaxBytes = 1
-				defer func() { providerRecordsCacheMaxBytes = previousLimit }()
-				for range 2 {
-					got, gotErr := run()
-					if got != want || gotErr != wantErr {
-						t.Fatal("cache capture overflow changed targeted output")
-					}
-				}
-				if entries := recordsCacheEntries(t, cacheDir); len(entries) != 0 {
-					t.Fatalf("overflow persisted an incomplete cache: %v", entries)
-				}
-				return
-			}
 			run()
 			entries := recordsCacheEntries(t, cacheDir)
-			if len(entries) != 1 {
-				t.Fatalf("control cache entries = %v", entries)
+			streams := recordsCacheStreams(t, cacheDir)
+			if len(entries) != 1 || len(streams) != 1 {
+				t.Fatalf("control cache: envelopes %v streams %v", entries, streams)
 			}
-			clean, err := os.ReadFile(entries[0])
-			if err != nil {
-				t.Fatal(err)
-			}
-			broken := clean[:len(clean)/2]
-			if damage != "truncated-gzip" {
-				reader, err := gzip.NewReader(bytes.NewReader(clean))
-				if err != nil {
-					t.Fatal(err)
-				}
-				raw, err := io.ReadAll(reader)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := reader.Close(); err != nil {
-					t.Fatal(err)
-				}
-				var envelope map[string]json.RawMessage
-				if err := json.Unmarshal(raw, &envelope); err != nil {
-					t.Fatal(err)
-				}
-				// Keep a valid envelope and matching prefix, then damage a later
-				// record. Recovery must not print the prefix before rebuilding.
-				suffix := "{not json\n"
-				if damage == "invalid-relation" {
-					suffix = "{\"record_type\":\"relation\",\"to_id\":7}\n"
-				}
-				envelope["records"], err = json.Marshal([]byte(want + suffix))
-				if err != nil {
-					t.Fatal(err)
-				}
-				var compressed bytes.Buffer
-				writer := gzip.NewWriter(&compressed)
-				if err := json.NewEncoder(writer).Encode(envelope); err != nil {
-					t.Fatal(err)
-				}
-				if err := writer.Close(); err != nil {
-					t.Fatal(err)
-				}
-				broken = compressed.Bytes()
-			}
-			if err := os.WriteFile(entries[0], broken, 0600); err != nil {
-				t.Fatal(err)
-			}
+			damage.apply(t, entries[0], streams[0], want)
+
 			got, gotErr := run()
 			if got != want || gotErr != wantErr {
 				t.Fatalf("recovery differs from uncached output:\nstdout %q\nstderr %q\nwant stdout %q\nwant stderr %q", got, gotErr, want, wantErr)
-			}
-			repaired, err := os.ReadFile(entries[0])
-			if err != nil || bytes.Equal(repaired, broken) {
-				t.Fatalf("damaged entry was not replaced: %v", err)
 			}
 			before, err := os.Stat(entries[0])
 			if err != nil {

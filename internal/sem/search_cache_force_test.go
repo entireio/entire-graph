@@ -98,6 +98,19 @@ func selectiveSearchEntryPath(t *testing.T, cacheDir, absRepo, repositoryKey, pr
 	return filepath.Join(entry.root, entry.relative)
 }
 
+// persistSelectiveSnapshot plants the one selective entry the query path still
+// writes: a selection BUILT because no complete snapshot of the tree existed to
+// derive it from and the cold complete build was not allowed. A view derived from
+// a complete snapshot is not persisted, so a test that needs a selective entry on
+// disk makes it this way, before the complete entry exists.
+func persistSelectiveSnapshot(t *testing.T, repo, providerVersion, cacheDir string, options ProviderSnapshotOptions) {
+	t.Helper()
+	options.coldComplete.disabled = true
+	if _, hit, err := loadOrBuildSearchSnapshot(t.Context(), repo, providerVersion, options, cacheDir, false, nil); err != nil || hit {
+		t.Fatalf("cold selective build: hit=%v err=%v", hit, err)
+	}
+}
+
 func snapshotHasSymbolNamed(snapshot ProviderSnapshot, name string) bool {
 	for _, symbol := range snapshot.Symbols {
 		if symbol.Name == name {
@@ -135,11 +148,9 @@ func TestPreindexForceInvalidatesDerivedSelectiveSnapshots(t *testing.T) {
 		return options
 	}
 
+	// Persist the selective entry, then preindex the complete one it sits beneath.
+	persistSelectiveSnapshot(t, repo, "v", cacheDir, selective())
 	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "v", complete(), cacheDir); err != nil {
-		t.Fatal(err)
-	}
-	// Warm the selective entry through the ordinary query path.
-	if _, _, err := loadOrBuildSearchSnapshot(t.Context(), repo, "v", selective(), cacheDir, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, hit, err := loadOrBuildSearchSnapshot(t.Context(), repo, "v", selective(), cacheDir, false, nil); err != nil {
@@ -232,10 +243,8 @@ func TestPreindexForceRetiresLateWritesFromPreForceDerivations(t *testing.T) {
 		return options
 	}
 
+	persistSelectiveSnapshot(t, repo, "v", cacheDir, selective())
 	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "v", complete(), cacheDir); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := loadOrBuildSearchSnapshot(t.Context(), repo, "v", selective(), cacheDir, false, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -280,11 +289,15 @@ func TestPreindexForceRetiresLateWritesFromPreForceDerivations(t *testing.T) {
 		t.Fatalf("selective search lost the real symbol; got %d symbols", len(served.Symbols))
 	}
 
-	// Warm caching must still work on the far side of the rebuild: the fresh
-	// derivation persists under the new generation and is reused.
-	if _, hit, err := loadOrBuildSearchSnapshot(t.Context(), repo, "v", selective(), cacheDir, false, nil); err != nil {
+	// Warm caching must still work on the far side of the rebuild: the query is
+	// derived from the rebuilt complete entry, a hit, and the retired view stays
+	// retired because the derivation is not persisted over it.
+	if again, hit, err := loadOrBuildSearchSnapshot(t.Context(), repo, "v", selective(), cacheDir, false, nil); err != nil {
 		t.Fatal(err)
-	} else if !hit {
-		t.Fatal("selective query after --force did not re-warm its own entry")
+	} else if !hit || !snapshotHasSymbolNamed(again, "Alpha") || snapshotHasSymbolNamed(again, "DerivedFromTheOutgoingSnapshot") {
+		t.Fatalf("selective query after --force was not derived from the rebuilt complete entry (hit=%v)", hit)
+	}
+	if late := readCachedSnapshotFile(t, derivedPath); !snapshotHasSymbolNamed(late.Snapshot, "DerivedFromTheOutgoingSnapshot") {
+		t.Fatal("a warm derivation persisted its selective view")
 	}
 }

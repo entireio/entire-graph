@@ -334,7 +334,7 @@ def check_token(token):
 		if err := json.Unmarshal([]byte(lines[0]), &header); err != nil {
 			t.Fatalf("%s invalid header json %q: %v", tt.command, lines[0], err)
 		}
-		if header["schema_version"] != "1.4" || header["provider"] != "entire-graph" {
+		if header["schema_version"] != "1.5" || header["provider"] != "entire-graph" {
 			t.Fatalf("%s header = %#v", tt.command, header)
 		}
 		seenTypes := map[string]bool{}
@@ -386,7 +386,7 @@ func TestSnapshotAcceptsNoNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"schema_version":"1.4"`) {
+	if !strings.Contains(out.String(), `"schema_version":"1.5"`) {
 		t.Fatalf("snapshot output:\n%s", out.String())
 	}
 }
@@ -400,7 +400,7 @@ func TestSnapshotAcceptsWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"schema_version":"1.4"`) {
+	if !strings.Contains(out.String(), `"schema_version":"1.5"`) {
 		t.Fatalf("snapshot output:\n%s", out.String())
 	}
 }
@@ -1043,7 +1043,7 @@ func TestProviderCommandsAcceptIgnoreFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", command, err)
 		}
-		if !strings.Contains(out.String(), `"schema_version":"1.4"`) {
+		if !strings.Contains(out.String(), `"schema_version":"1.5"`) {
 			t.Fatalf("%s output missing header:\n%s", command, out.String())
 		}
 		if strings.Contains(out.String(), "ignored.py") || strings.Contains(out.String(), "ignored") {
@@ -1072,7 +1072,7 @@ func TestProviderCommandsAcceptIncludeFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", command, err)
 		}
-		if !strings.Contains(out.String(), `"schema_version":"1.4"`) {
+		if !strings.Contains(out.String(), `"schema_version":"1.5"`) {
 			t.Fatalf("%s output missing header:\n%s", command, out.String())
 		}
 		if !strings.Contains(out.String(), "reopened") {
@@ -1164,7 +1164,7 @@ func TestDiffJSONIncludesSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"schema_version": "1.4"`) {
+	if !strings.Contains(out.String(), `"schema_version": "1.5"`) {
 		t.Fatalf("diff json missing schema_version:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), `"producer_version": "9.9.9-test"`) {
@@ -1178,7 +1178,7 @@ func TestDiffJSONIncludesSchemaVersion(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
 		t.Fatalf("diff json invalid:\n%s\n%v", out.String(), err)
 	}
-	if payload.SchemaVersion != "1.4" {
+	if payload.SchemaVersion != "1.5" {
 		t.Fatalf("schema_version = %q, want 1.2", payload.SchemaVersion)
 	}
 	if payload.ProducerVersion != "9.9.9-test" {
@@ -1574,17 +1574,19 @@ func twoCommitRepo(t *testing.T) string {
 	return repo
 }
 
-// TestSnapshotRecordCacheCaptureIsMemoryBounded pins the streaming contract against the cache tee.
+// TestSnapshotRecordCacheSpoolsToDisk pins the cache tee's spool contract.
 //
 // resolveCacheDir falls back to the user cache directory, so useCache is true for every ordinary
-// committed snapshot/symbols/edges run: the tee that captures records for the cache is no longer the
-// opt-in it was written as, and an unbounded one makes a streaming command hold its entire output in
-// memory — proportional to the whole graph, on exactly the large repositories streaming exists for.
+// committed snapshot/symbols/edges run. The tee therefore must not hold the stream in memory — and
+// the bounded in-memory capture that once enforced that silently stored NOTHING past its 64MB cap,
+// so every repository whose snapshot outgrew it re-parsed on each run. The spool replaces both
+// failure modes: records gzip straight to a temporary file beside the entry, so storing is
+// size-independent.
 //
-// The assertion is behavioural rather than a memory measurement: past the cap the run must still
-// produce its complete output, and must NOT store an entry (a stored entry is proof the whole stream
-// was buffered).
-func TestSnapshotRecordCacheCaptureIsMemoryBounded(t *testing.T) {
+// Pinned here: (1) a run stores the envelope + stream sidecar pair and leaves no temporary behind;
+// (2) a repeat run replays byte-identically from that pair; (3) a run whose spool cannot even open
+// still produces its complete output, says so once on stderr, and stores nothing.
+func TestSnapshotRecordCacheSpoolsToDisk(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -1593,55 +1595,74 @@ func TestSnapshotRecordCacheCaptureIsMemoryBounded(t *testing.T) {
 	git(t, repo, "add", "main.go")
 	git(t, repo, "commit", "-m", "initial")
 
-	run := func(cacheDir string) string {
+	run := func(cacheDir string) (string, string) {
 		t.Helper()
-		var out bytes.Buffer
+		var out, errOut bytes.Buffer
 		if err := Run(t.Context(), Options{
-			Version: "bounded-capture-test",
+			Version: "spool-capture-test",
 			Env:     EntireEnv{RepoRoot: repo},
 			Stdout:  &out,
-			Stderr:  io.Discard,
+			Stderr:  &errOut,
 		}, []string{"snapshot", "--repo", repo, "--format", "ndjson", "--cache-dir", cacheDir}); err != nil {
 			t.Fatal(err)
 		}
-		return out.String()
+		return out.String(), errOut.String()
 	}
-	cacheEntries := func(dir string) int {
+	cacheFiles := func(dir string) []string {
 		t.Helper()
-		count := 0
-		if err := filepath.WalkDir(dir, func(_ string, entry fs.DirEntry, err error) error {
+		var files []string
+		if err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 			if !entry.IsDir() {
-				count++
+				files = append(files, filepath.Base(path))
 			}
 			return nil
-		}); err != nil {
+		}); err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
-		return count
+		return files
 	}
 
-	// CONTROL: with the real cap the run caches, which is what makes the bounded case meaningful.
-	roomy := t.TempDir()
-	full := run(roomy)
-	if cacheEntries(roomy) == 0 {
-		t.Fatal("the control run cached nothing, so this test proves nothing about the bound")
+	cacheDir := t.TempDir()
+	full, _ := run(cacheDir)
+	var envelopes, sidecars, temporaries int
+	for _, name := range cacheFiles(cacheDir) {
+		switch {
+		case strings.HasPrefix(name, "."):
+			temporaries++
+		case strings.HasSuffix(name, ".stream.gz"):
+			sidecars++
+		case strings.HasSuffix(name, ".json.gz"):
+			envelopes++
+		}
+	}
+	if envelopes != 1 || sidecars != 1 || temporaries != 0 {
+		t.Fatalf("stored run should leave exactly one envelope and one stream sidecar and no temporaries, got %v", cacheFiles(cacheDir))
 	}
 
-	// BOUNDED: a cap smaller than this fixture's own output.
-	previous := providerRecordsCacheMaxBytes
-	providerRecordsCacheMaxBytes = 8
-	t.Cleanup(func() { providerRecordsCacheMaxBytes = previous })
-
-	tight := t.TempDir()
-	bounded := run(tight)
-	if bounded != full {
-		t.Fatalf("the bound changed the streamed output:\n got %q\nwant %q", bounded, full)
+	warm, _ := run(cacheDir)
+	if warm != full {
+		t.Fatalf("warm replay differs from the cold stream:\n got %q\nwant %q", warm, full)
 	}
-	if entries := cacheEntries(tight); entries != 0 {
-		t.Fatalf("a %d-byte cap still stored %d cache entrie(s), so the whole stream was buffered",
-			providerRecordsCacheMaxBytes, entries)
+
+	// A cache directory the spool cannot create its temporary in: the stream
+	// must be unaffected, the failure said once on stderr, nothing stored. The
+	// blocker is a regular FILE at the cache-directory path — unlike a 0o500
+	// directory, which Windows does not treat as unwritable.
+	unwritable := filepath.Join(t.TempDir(), "sealed")
+	if err := os.WriteFile(unwritable, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	degraded, degradedErr := run(unwritable)
+	if degraded != full {
+		t.Fatalf("a failed spool changed the streamed output:\n got %q\nwant %q", degraded, full)
+	}
+	if !strings.Contains(degradedErr, "provider records cache") {
+		t.Fatalf("a failed spool should be reported on stderr, got %q", degradedErr)
+	}
+	if info, err := os.Stat(unwritable); err != nil || info.IsDir() {
+		t.Fatalf("a failed spool replaced the blocking file: %v %v", info, err)
 	}
 }

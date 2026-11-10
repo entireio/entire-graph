@@ -231,7 +231,11 @@ func storeScopeRecords(t *testing.T, repo, cacheDir string) SnapshotHeader {
 		Tree:            tree,
 		Profile:         string(transaction.options.Profile),
 	}
-	if err := transaction.Store(encodeRecordStreamForTest(t, header, map[string]string{"record_type": "symbol", "path": "a.go"}), nil, header); err != nil {
+	spool, err := spoolRecords(transaction, encodeRecordStreamForTest(t, header, map[string]string{"record_type": "symbol", "path": "a.go"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.Store(spool, nil, header); err != nil {
 		t.Fatal(err)
 	}
 	return header

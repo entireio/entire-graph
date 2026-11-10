@@ -49,7 +49,12 @@ func processProviderFile(
 	path string,
 ) providerFileResult {
 	result := providerFileResult{index: index, path: path}
-	if ctx.Err() != nil {
+	// The worker context carries both the caller's cancellation and the
+	// pipeline's own (a reduce error, or shutdown). Every stop below drops the
+	// file whole; the pipeline then returns the context's error, so nothing a
+	// cancelled run half-read or half-parsed is ever emitted.
+	stop := func() bool { return ctx.Err() != nil }
+	if stop() {
 		return result
 	}
 	var routedLanguage languageSpec
@@ -91,10 +96,31 @@ func processProviderFile(
 		}
 	}
 
+	// Checked BEFORE the read, not by wrapping sc.read in cancellableReader. A
+	// refused read is reported below as E_FILE_READ ("file listed but content
+	// was unavailable"), which is the signature of a corrupt or vanished
+	// source; a cancellation is not that, so it drops the file with no failure
+	// record instead.
+	//
+	// This bounds the number of reads STARTED after cancellation to zero. It
+	// does not bound a read already in flight: sc.read is synchronous and takes
+	// no context.
+	if stop() {
+		return providerFileResult{index: index, path: path}
+	}
 	var content string
 	var ok bool
 	if routedOversize == nil {
 		content, ok = sc.read(path)
+	}
+	// sc.read is the one synchronous step this function cannot interrupt
+	// mid-flight (see the comment above), but once it returns, everything below
+	// it -- the oversize branch immediately following, E_FILE_TOO_LARGE,
+	// E_MINIFIED -- populates a file record and returns without touching the
+	// parser or ctx again. Rechecking here keeps a cancellation that landed
+	// during the read from still producing one of those records.
+	if stop() {
+		return providerFileResult{index: index, path: path}
 	}
 	if !ok {
 		// A refused read is not a failed one: the reader declines files above
@@ -163,6 +189,9 @@ func processProviderFile(
 	}
 
 	contentBytes := []byte(content)
+	if stop() {
+		return providerFileResult{index: index, path: path}
+	}
 	langSpec, ok := languageForContent(path, content)
 	if !ok {
 		result.failures = append(result.failures, PartialFailure{
@@ -187,6 +216,9 @@ func processProviderFile(
 		Lines:      sourceLineCount(content),
 	}
 	if skipFastProfilePerSymbolScan(spec, language) {
+		if stop() {
+			return providerFileResult{index: index, path: path}
+		}
 		result.precomputedImports = importsFor(path, content)
 		result.hasPrecomputedImports = true
 	}
@@ -202,6 +234,9 @@ func processProviderFile(
 		})
 		return result
 	}
+	if stop() {
+		return providerFileResult{index: index, path: path}
+	}
 	if looksMinified(content) {
 		result.language = language
 		result.file = &file
@@ -215,7 +250,13 @@ func processProviderFile(
 		return result
 	}
 
-	entities, parsedLanguage, parseStatus := parseWithProfile(TreeSitterParser{}, spec, langSpec, path, content)
+	entities, parsedLanguage, parseStatus := parseWithProfile(ctx, TreeSitterParser{}, spec, langSpec, path, content)
+	// The parse and the entity walk both observe ctx, so a cancellation that
+	// lands mid-file returns a PARTIAL entity set. Drop the file entirely rather
+	// than hand the reducer a file record with a silently short symbol list.
+	if stop() {
+		return providerFileResult{index: index, path: path}
+	}
 	if parsedLanguage == "" {
 		result.failures = append(result.failures, PartialFailure{
 			Code:                 "E_UNSUPPORTED_LANGUAGE",
@@ -255,7 +296,17 @@ func processProviderFile(
 	result.file = &file
 	result.parsed = true
 	result.symbols = entitySymbols(sc.key, path, parsedLanguage, entities)
-	result.symbols = append(result.symbols, syntheticBoundarySymbols(sc.key, path, parsedLanguage, content, result.symbols)...)
+	// syntheticBoundarySymbols visits every already-parsed symbol
+	// (route/tool/workflow boundary detection), which grows with a file's
+	// symbol count. stop is polled inside its loop, so
+	// a cancellation landing mid-scan is caught within one poll stride rather
+	// than only after the whole pass finishes. A stop here drops the file whole,
+	// like the post-parse check above.
+	synthetic, truncated := syntheticBoundarySymbols(sc.key, path, parsedLanguage, content, result.symbols, stop)
+	if truncated {
+		return providerFileResult{index: index, path: path}
+	}
+	result.symbols = append(result.symbols, synthetic...)
 	return result
 }
 
@@ -287,18 +338,36 @@ func workerStop(ctx context.Context, overBudget func() bool) (canceled error, bu
 // runProviderFilePipeline processes paths concurrently but reduces results in
 // the exact input order. The coordinator admits at most twice the worker count
 // of results that have not yet been reduced.
+//
+// stop is polled immediately before every reduction and may be nil, which means
+// "the context is the only stop". It exists because reducing is not free: the
+// provider's reducer emits one file record plus that file's entire symbol list
+// into the caller's sink, and the coordinator's select can pick a ready result
+// over a closed Done channel, so without the poll a cancelled run could still
+// emit the results already buffered behind the one in flight. Reduction stays
+// atomic per file: the check is between results, never inside one.
 func runProviderFilePipeline(
 	ctx context.Context,
+	stop func() error,
 	paths []string,
 	workers int,
 	process func(context.Context, int, string) providerFileResult,
 	reduce func(providerFileResult) error,
 ) error {
+	reduceOne := reduce
+	if stop != nil {
+		reduceOne = func(result providerFileResult) error {
+			if err := stop(); err != nil {
+				return err
+			}
+			return reduce(result)
+		}
+	}
 	return runIndexedPipeline(ctx, len(paths), workers,
 		func(workerCtx context.Context, index int) providerFileResult {
 			return process(workerCtx, index, paths[index])
 		},
-		func(_ int, result providerFileResult) error { return reduce(result) },
+		func(_ int, result providerFileResult) error { return reduceOne(result) },
 	)
 }
 

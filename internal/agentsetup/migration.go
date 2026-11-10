@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -144,4 +145,10 @@ func safeKey(key string) bool {
 		}
 	}
 	return true
+}
+
+var unsafeComponent = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+
+func cleanComponent(s string) string {
+	return strings.Trim(unsafeComponent.ReplaceAllString(s, "-"), "-._")
 }
