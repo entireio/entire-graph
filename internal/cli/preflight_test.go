@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,18 @@ func TestPreflightAcceptsFlagsThisBinaryHas(t *testing.T) {
 // agent's FIRST mandated action, in every session, for the whole run — and what a reviewer sees
 // afterwards is a graph arm whose numbers look like the baseline arm. One preflight call turns that
 // into a startup failure, before any instance runs.
+func TestPreflightPreservesQuotedArguments(t *testing.T) {
+	if err := checkPreflight("dev", `search --repo "C:\work trees\repo" --query "validate token" --format text`); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPreflight("dev", `search --repo 'C:\work trees\repo' --query 'validate token' --format text`); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPreflight("dev", `search --repo "C:\work trees\repo --query token`); err == nil {
+		t.Fatal("accepted a command line with an unterminated quote")
+	}
+}
+
 func TestPreflightCatchesVersionSkew(t *testing.T) {
 	t.Parallel()
 	out, err := doctorAssert(t, "--assert", "search --flag-from-a-newer-build")
@@ -103,7 +116,38 @@ func TestPreflightRejectsUncheckableCommand(t *testing.T) {
 	if err == nil {
 		t.Fatal("preflight silently approved a command it cannot check")
 	}
-	if !strings.Contains(err.Error(), "search") {
+	if !strings.Contains(err.Error(), "query") {
 		t.Fatalf("error does not list the checkable commands: %v", err)
+	}
+}
+
+// TestPreflightSplitterKeepsBackslashesOutsideQuotes pins the half of the split
+// that --assert actually needs. This carries a command line, not a shell line,
+// so an unquoted backslash is an ordinary character. Treating it as an escape
+// rewrote every unquoted Windows path — C:\work\repo arrived as C:workrepo —
+// and, worse, an escaped space merged two arguments into one and returned no
+// error at all, so the preflight approved a command line nobody wrote. The
+// second row is that case: it must stay four fields.
+func TestPreflightSplitterKeepsBackslashesOutsideQuotes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		spec string
+		want []string
+	}{
+		{`search --repo C:\work\repo`, []string{"search", "--repo", `C:\work\repo`}},
+		{`search --repo C:\repo\ --query x`, []string{"search", "--repo", `C:\repo\`, "--query", "x"}},
+		{`search --repo "C:\work trees\repo" --query "validate token"`,
+			[]string{"search", "--repo", `C:\work trees\repo`, "--query", "validate token"}},
+		{`search --repo 'C:\work trees\repo'`, []string{"search", "--repo", `C:\work trees\repo`}},
+		{`search --query "say \"hi\""`, []string{"search", "--query", `say "hi"`}},
+	} {
+		got, err := splitPreflightCommandLine(tc.spec)
+		if err != nil {
+			t.Errorf("%s: %v", tc.spec, err)
+			continue
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s:\n got %q\nwant %q", tc.spec, got, tc.want)
+		}
 	}
 }

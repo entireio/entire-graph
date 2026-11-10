@@ -1,0 +1,22 @@
+{
+  "commits": {
+    "graph": "bf9e98abc13286fe0823f9fae0b5a502ee343b57",
+    "brain": "8ddf23aeefbc374434320814f4eb099c8a408349",
+    "agents": "887356f06f517aa2f086140bcf22f91541df69ca"
+  },
+  "profiles": ["fast", "full"],
+  "cases": [
+    {"repo":"graph", "query":"escape control bytes while preserving terminal line layout", "gold":["internal/termsafe/termsafe.go"]},
+    {"repo":"graph", "query":"resolve git repository root from a linked worktree", "gold":["internal/gitutil/git.go"]},
+    {"repo":"graph", "query":"load cached complete search snapshot", "gold":["internal/sem/search_cache.go"]},
+    {"repo":"graph", "query":"count transcript exploration calls and estimated token savings", "gold":["internal/cli/stats.go"]},
+    {"repo":"graph", "query":"fit agent search result headers within the byte budget", "gold":["internal/cli/search.go"]},
+    {"repo":"brain", "query":"session privacy tombstone exclusion", "gold":["internal/cli/session_privacy.go"]},
+    {"repo":"brain", "query":"virtual conversation session outline adjacent context expansion", "gold":["internal/cli/conversation_session.go"]},
+    {"repo":"agents", "query":"read Hermes transcript assistant messages", "gold":["agents/entire-agent-hermes/internal/hermes/transcript.go"]},
+    {"repo":"agents", "query":"load Hermes YAML configuration without modifying it", "gold":["agents/entire-agent-hermes/internal/hermes/config.go"]},
+    {"repo":"agents", "query":"Hermes plugin repository hook registry", "gold":["agents/entire-agent-hermes/internal/hermes/hooks.go"]},
+    {"repo":"agents", "query":"read Kiro session JSONL transcript", "gold":["agents/entire-agent-kiro/internal/kiro/session_jsonl.go"]},
+    {"repo":"agents", "query":"read Goose session JSONL transcript", "gold":["agents/entire-agent-goose/internal/goose/session_jsonl.go"]}
+  ]
+}

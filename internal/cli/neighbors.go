@@ -68,6 +68,13 @@ type neighborEdge struct {
 	Evidence        []sem.Evidence   `json:"evidence,omitempty"`
 	WarningCodes    []string         `json:"warning_codes,omitempty"`
 	EvidenceDropped int              `json:"evidence_dropped,omitempty"`
+	// EvidenceState is a re-classification of Resolution/Confidence/WarningCodes above (see
+	// sem.RelationEvidenceState): "confirmed" for a high-precision single-target resolution,
+	// "partial" for real evidence produced by inference/fan-out/a documented heuristic
+	// relation kind, "requires_verification" for a bare name/text match or a match the graph
+	// itself flagged as weak. It changes no other field — it is a reading of data already
+	// present, so a consumer that ignores it sees exactly the answer it always has.
+	EvidenceState sem.EvidenceState `json:"evidence_state"`
 	// CallSite is where the call is actually written, resolved from the caller's
 	// body. Nil when it could not be resolved, in which case the endpoint's
 	// definition line is all this answer knows.
@@ -129,6 +136,16 @@ type neighborResponse struct {
 	// CompletenessScope is the query-relative reading of the diagnostics above.
 	// The full lists stay untouched; this says which of them can matter here.
 	CompletenessScope completenessScope `json:"completeness_scope"`
+	// EvidenceState is the answer-wide verdict: the worst state among every edge across every
+	// match (see neighborEdge.EvidenceState), escalated to requires_verification when the
+	// focus sits in a language the graph only inventories (see sem.LanguageEvidenceState) --
+	// call/reference extraction never ran for it, so any count above, including zero, is a
+	// guess. Computed once on the finished response so text and JSON cannot disagree.
+	EvidenceState sem.EvidenceState `json:"evidence_state,omitempty"`
+	// EvidenceNote explains, when EvidenceState is requires_verification, the source/test
+	// verification path a reader should follow instead of trusting the edges above as
+	// complete. Empty whenever EvidenceState is not requires_verification.
+	EvidenceNote string `json:"evidence_note,omitempty"`
 
 	// endpointTruncated distinguishes a bounded neighbor list from the JSON-only
 	// explicit path expansion. Agent output can express the full Cartesian path
@@ -162,12 +179,15 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The snapshot is loaded, so the index phase is over: read the clock before
+	// opening the source reader, whose `git cat-file` spawn belongs to answering
+	// the query rather than to the index-cache telemetry. See runDef.
+	indexLatency := time.Since(indexStarted)
+	queryStarted := time.Now()
 	readSource, closeSource := openSnapshotLineReaderOrDegrade(ctx, snapshot, flags.Worktree, opts.Stderr)
 	if closeSource != nil {
 		defer closeSource()
 	}
-	indexLatency := time.Since(indexStarted)
-	queryStarted := time.Now()
 	response := buildNeighborResponseFromReader(snapshot, flags, readSource)
 	// Call-site resolution reads the caller's source from the same snapshot-bound
 	// reader as fuzzy and ambiguous bodies. It runs after the graph query and is
@@ -487,7 +507,44 @@ func buildNeighborResponseFromReader(
 		}
 		response.Matches = append(response.Matches, entry)
 	}
+	// Callers are answered from CALLS edges only. Say so, with a self-check, where a
+	// value reference could be the missing caller. See value_refs.go.
+	if len(focuses) == 1 && flags.Relation == "CALLS" && neighborDirectionQueried(flags.Direction, "in") {
+		response.Warnings = withValueReferenceDisclosure(response.Warnings, endpointForSymbol(focuses[0]))
+	}
+	finalizeNeighborEvidence(&response, focuses)
 	return response
+}
+
+// finalizeNeighborEvidence computes the answer-wide evidence verdict: the worst state among
+// every edge this answer returned, escalated to requires_verification when the focus sits in a
+// language the graph only inventories. It runs once, on the finished response, for the same
+// reason impact's twin does (see impact.go's "EVIDENCE STATE" note): text and JSON must never
+// disagree about how much this answer can be trusted.
+func finalizeNeighborEvidence(response *neighborResponse, focuses []sem.SymbolRecord) {
+	states := make([]sem.EvidenceState, 0, len(response.Matches)*2)
+	for _, match := range response.Matches {
+		for _, edge := range match.Incoming {
+			states = append(states, edge.EvidenceState)
+		}
+		for _, edge := range match.Outgoing {
+			states = append(states, edge.EvidenceState)
+		}
+	}
+	worst := sem.WorstEvidenceState(states...)
+	for _, focus := range focuses {
+		worst = sem.WorstEvidenceState(worst, sem.LanguageEvidenceState(focus.Language))
+	}
+	response.EvidenceState = worst
+	if worst == sem.EvidenceRequiresVerification {
+		name := response.Query
+		if len(focuses) == 1 {
+			if display := endpointDisplayName(endpointForSymbol(focuses[0])); display != "" {
+				name = display
+			}
+		}
+		response.EvidenceNote = sem.EvidenceVerificationNote(name)
+	}
 }
 
 func endpointForSymbol(symbol sem.SymbolRecord) neighborEndpoint {
@@ -506,9 +563,10 @@ func endpointForFile(file sem.FileRecord) neighborEndpoint {
 }
 
 // focusQueryLanguage is the language a relation answer is about: the language of
-// the focus symbol. It scopes the coverage report, because relations in this
-// graph do not cross language boundaries, so a failure in another language
-// cannot have removed a fact this answer needed.
+// the focus symbol. It scopes the coverage report: a failure in an unrelated
+// language cannot have removed a fact this answer needed. "Unrelated" is decided
+// by sameCompletenessLanguageFamily, not by the label alone, because JS/TS and
+// C/C++ resolve across their labels.
 func focusQueryLanguage(focuses []sem.SymbolRecord) string {
 	if len(focuses) != 1 {
 		return ""
@@ -633,6 +691,7 @@ func edgeForRelation(direction string, endpoint neighborEndpoint, relation sem.R
 		Confidence: relation.Confidence, Resolution: relation.Resolution,
 		Reason: relation.Reason, Evidence: relation.Evidence,
 		WarningCodes: relation.WarningCodes, EvidenceDropped: relation.EvidenceDropped,
+		EvidenceState: sem.RelationEvidenceState(relation),
 	}
 }
 
@@ -734,7 +793,10 @@ func writeAgentNeighborsBounded(out io.Writer, response neighborResponse, budget
 	if err := writeAgentNeighborsFull(&full, response); err != nil {
 		return err
 	}
-	if budget <= 0 || full.Len() <= budget {
+	// Charged at the header's reserved width, not its printed one: whether the full answer fits must
+	// not depend on how many digits the measured latencies have. See agent_latency.go.
+	header := relationLatencyHeader(response.IndexCacheHit, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS)
+	if budget <= 0 || full.Len()+header.slack() <= budget {
 		_, err := out.Write(full.Bytes())
 		return err
 	}
@@ -751,18 +813,16 @@ func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {
 	// on the bounded path too, where the caller buffers this output before
 	// trimming it. See writeTextSearch.
 	out = termsafe.NewWriter(out)
-	cacheState := "miss"
-	if response.IndexCacheHit {
-		cacheState = "hit"
-	}
-	fmt.Fprintf(out, "Index: cache-%s (%dms) | Query: %dms | Total: %dms\n",
-		cacheState, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS,
-	)
+	header := relationLatencyHeader(response.IndexCacheHit, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS)
+	out.Write(header.printed)
 	writeIndexCostNotice(out, response.IndexCacheHit, response.IndexCacheDisabled)
 	writeAgentNeighborCompleteness(out, response)
 	if len(response.Matches) == 0 {
 		writeNoFocusMatch(out, response.Query, response.File, response.Line)
 		return nil
+	}
+	if response.EvidenceState == sem.EvidenceRequiresVerification && response.EvidenceNote != "" {
+		fmt.Fprintf(out, "Evidence: requires_verification -- %s\n", response.EvidenceNote)
 	}
 	if response.FuzzyMatch {
 		definitions := make([]neighborEndpoint, 0, len(response.Matches))
@@ -800,6 +860,9 @@ func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {
 		// statement about the graph, and the reader has no way to tell.
 		if neighborDirectionQueried(response.Direction, "in") {
 			writeNeighborEdgeList(out, "Callers", match.Incoming, budget)
+			if note := valueReferenceNote(response.Warnings, match.Symbol.Name); note != "" {
+				fmt.Fprintln(out, note)
+			}
 		} else {
 			writeNeighborSectionNotQueried(out, "Callers", "out")
 		}
@@ -825,7 +888,7 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 	// The coverage marker is scoped: a parse failure in a language this answer
 	// cannot contain a relation from is not a reason to distrust the answer.
 	scope := completenessScopeOrAll(response.CompletenessScope,
-		response.Warnings, response.PartialFailures, response.Stats)
+		snapshotWarnings(response.Warnings), response.PartialFailures, response.Stats)
 	coverageIssue := len(scope.InScopeWarnings) > 0 || scope.LanguageFailed > 0
 	marker := "!output-truncated"
 	if coverageIssue {
@@ -838,12 +901,16 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 
 	var output bytes.Buffer
 	output.WriteString(marker)
+	// slack is what the latency line was charged beyond what it printed. Every fit below compares
+	// output.Len()+slack, so each decision is the one it would be over the reserved-width line and
+	// never depends on the measured latencies. See agent_latency.go.
+	slack := 0
 	appendVariant := func(variants ...string) bool {
 		for _, variant := range variants {
 			if variant == "" {
 				continue
 			}
-			if output.Len()+len(variant) <= budget {
+			if output.Len()+slack+len(variant) <= budget {
 				output.WriteString(variant)
 				return true
 			}
@@ -902,14 +969,27 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 	if response.endpointTruncated {
 		appendVariant("!neighbor-list-truncated; raise --limit\n", "!neighbors-truncated\n")
 	}
-	cacheState := "miss"
-	if response.IndexCacheHit {
-		cacheState = "hit"
+	cacheState := indexCacheState(response.IndexCacheHit)
+	latency := renderLatencyRung("I:%s/%d Q:%d T:%d\n", cacheState, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS)
+	if output.Len()+slack+len(latency.reserved) <= budget {
+		output.Write(latency.printed)
+		slack += latency.slack()
+	} else {
+		// Latency elided, with a width no measurement can change; the cache state survives.
+		appendVariant(fmt.Sprintf("I:%s/-\n", cacheState))
 	}
-	appendVariant(fmt.Sprintf("I:%s/%d Q:%d T:%d\n", cacheState, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS))
 
 	if len(response.Matches) > 0 && !response.DisambiguationRequired {
 		match := response.Matches[0]
+		// Ahead of the edges: under a byte cap the disclosure must not be the first
+		// line dropped, because a dropped disclosure is the silence it exists to end.
+		if note := valueReferenceNote(response.Warnings, match.Symbol.Name); note != "" && neighborDirectionQueried(response.Direction, "in") {
+			appendVariant(
+				note+"\n",
+				"!value-refs-unmodelled: "+valueReferenceGrep(match.Symbol.Name)+"\n",
+				"!value-refs-unmodelled\n",
+			)
+		}
 		for _, edge := range match.Incoming {
 			appendVariant(compactNeighborEdge("<", edge))
 		}
@@ -938,15 +1018,21 @@ func compactNeighborEdge(direction string, edge neighborEdge) string {
 	if edge.Resolution != "" {
 		annotation = " [" + edge.Resolution + "]"
 	}
+	// Silent for Confirmed/Partial (see writeNeighborEdgeList); only the tier that needs a
+	// human/test check earns a visible flag, even at this tightest byte budget.
+	if edge.EvidenceState == sem.EvidenceRequiresVerification {
+		annotation += " [requires_verification]"
+	}
 	// The call site is the location a reader needs; the definition line is
 	// still reported so the caller can be found as a symbol.
 	return fmt.Sprintf("%s %s%s\n", direction, formatCallSiteLocation(edge.Endpoint, edge.CallSite), annotation)
 }
 
 func writeAgentNeighborCompleteness(out io.Writer, response neighborResponse) {
+	warnings := snapshotWarnings(response.Warnings)
 	writeScopedCompletenessBlock(out,
-		completenessScopeOrAll(response.CompletenessScope, response.Warnings, response.PartialFailures, response.Stats),
-		response.Warnings, response.PartialFailures, response.Stats)
+		completenessScopeOrAll(response.CompletenessScope, warnings, response.PartialFailures, response.Stats),
+		warnings, response.PartialFailures, response.Stats)
 }
 
 // neighborDirectionQueried reports whether a --direction value asked for the
@@ -1015,6 +1101,13 @@ func writeNeighborEdgeList(out io.Writer, label string, edges []neighborEdge, bu
 		}
 		if edge.Resolution != "" {
 			annotations = append(annotations, edge.Resolution)
+		}
+		// Silent for Confirmed and Partial: a resolved edge or a documented heuristic
+		// (type-inferred fan-out, a heuristic relation kind, co-change history) is not new
+		// information the reader has to act on -- its resolution tag above already says as
+		// much. Only a bare name/text match or a weak-pattern match earns a visible flag.
+		if edge.EvidenceState == sem.EvidenceRequiresVerification {
+			annotations = append(annotations, "requires_verification")
 		}
 		if len(annotations) > 0 {
 			fmt.Fprintf(out, " [%s]", strings.Join(annotations, ", "))

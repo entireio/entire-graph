@@ -779,6 +779,13 @@ func searchLineIsRecordShapedExact(line string) bool {
 	if searchLineOpensWithWordHead(line) {
 		return true
 	}
+	if agentSearchLineIsElision(line) {
+		// The gap record a declaration block prints (`... N lines elided`, agentSearchElisionLine)
+		// is renderer metadata: a reader recovers every printed line's number by adding N. A
+		// source line spelled the same (in a raw string, a comment) would be read as a gap and
+		// misnumber every line below it, so it is quarantined like any other record head.
+		return true
+	}
 	// Every structural shape below locates its `<path>:<line>` span from the span's RIGHT edge, via
 	// searchScanPathSpans, because the path is not one field: a Git pathname may hold any byte but
 	// NUL and '/', so `dir/evil file.go:42 *` is an EXACT minimal-locator record whose span is field

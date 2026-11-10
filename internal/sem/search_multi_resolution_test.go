@@ -31,7 +31,7 @@ func TestExpandProseResolutionPromotesPassagesIntoSpareSlots(t *testing.T) {
 			proseResolutionPassage(30, "one alpha"), proseResolutionPassage(50, "one beta")),
 	}
 
-	expanded := expandProseResolution(results, 10, 0)
+	expanded := expandProseResolution(results, 10, 0, 0)
 
 	if len(expanded) != 3 {
 		t.Fatalf("expanded to %d results, want 3", len(expanded))
@@ -79,7 +79,7 @@ func TestExpandProseResolutionNeverDisplacesAFile(t *testing.T) {
 	}
 
 	for _, topK := range []int{0, 1, 2} {
-		expanded := expandProseResolution(results, topK, 0)
+		expanded := expandProseResolution(results, topK, 0, 0)
 		if len(expanded) != len(results) {
 			t.Fatalf("top-k %d expanded to %d results, want %d", topK, len(expanded), len(results))
 		}
@@ -100,7 +100,7 @@ func TestExpandProseResolutionRoundRobinsAcrossParents(t *testing.T) {
 			proseResolutionPassage(40, "two alpha")),
 	}
 
-	expanded := expandProseResolution(results, 4, 0)
+	expanded := expandProseResolution(results, 4, 0, 0)
 
 	if len(expanded) != 4 {
 		t.Fatalf("expanded to %d results, want 4", len(expanded))
@@ -145,7 +145,7 @@ func TestExpandProseResolutionSkipsPassagesInsideGrownWindows(t *testing.T) {
 	other := proseResolutionParent(3, "sessions/two.md", 5, "primary other",
 		proseResolutionPassage(30, "same lines, different file"))
 
-	expanded := expandProseResolution([]SearchResult{head, section, other}, 10, 0)
+	expanded := expandProseResolution([]SearchResult{head, section, other}, 10, 0, 0)
 
 	if len(expanded) != 5 {
 		t.Fatalf("expanded to %d results, want 5", len(expanded))
@@ -187,7 +187,7 @@ func TestExpandProseResolutionKeepsResultsScoreOrdered(t *testing.T) {
 		))
 	}
 
-	expanded := expandProseResolution(results, 12, 0)
+	expanded := expandProseResolution(results, 12, 0, 0)
 
 	if len(expanded) != 12 {
 		t.Fatalf("expanded to %d results, want 12", len(expanded))
@@ -216,7 +216,7 @@ func TestExpandProseResolutionRespectsByteBudget(t *testing.T) {
 	}
 	budget := serializedSearchResultBytes(results)
 
-	expanded := expandProseResolution(results, 10, budget)
+	expanded := expandProseResolution(results, 10, budget, 0)
 
 	if serializedSearchResultBytes(expanded) > budget {
 		t.Fatalf("expansion breached the budget: %d > %d", serializedSearchResultBytes(expanded), budget)
@@ -227,7 +227,7 @@ func TestExpandProseResolutionRespectsByteBudget(t *testing.T) {
 	if len(expanded[0].Passages) != 2 {
 		t.Fatalf("passages lost when promotion was unaffordable: %#v", expanded[0].Passages)
 	}
-	if unbounded := expandProseResolution(results, 10, 0); len(unbounded) != 3 {
+	if unbounded := expandProseResolution(results, 10, 0, 0); len(unbounded) != 3 {
 		t.Fatalf("unbounded expansion returned %d results, want 3", len(unbounded))
 	}
 }
@@ -241,7 +241,7 @@ func TestExpandProseResolutionIgnoresResultsWithoutPassages(t *testing.T) {
 			SnippetStartLine: 1, SnippetEndLine: 2, Snippet: "func Search() {}"},
 	}
 
-	expanded := expandProseResolution(results, 10, 0)
+	expanded := expandProseResolution(results, 10, 0, 0)
 
 	if len(expanded) != 1 || expanded[0].Snippet != results[0].Snippet {
 		t.Fatalf("code result changed: %#v", expanded)

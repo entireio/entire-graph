@@ -2,6 +2,7 @@ package sem
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -178,7 +179,7 @@ export function handleRoute() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Header.SchemaVersion != "1.1" {
+	if snapshot.Header.SchemaVersion != "1.5" {
 		t.Fatalf("schema version = %q", snapshot.Header.SchemaVersion)
 	}
 	if snapshot.Header.Provider != ProviderName {
@@ -5221,7 +5222,7 @@ def sibling():
 
 	t.Run("incomplete scope disables raw FFI but retains imported external fallback", func(t *testing.T) {
 		deep := strings.Repeat("(", maxParseWalkDepth+10) + "0" + strings.Repeat(")", maxParseWalkDepth+10)
-		scopes := newPythonBareImportScopes("from lib import compute\nvalue = "+deep+"\n", nil)
+		scopes := newPythonBareImportScopes(context.Background(), "from lib import compute\nvalue = "+deep+"\n", nil)
 		if scopes.complete {
 			t.Fatal("deep scope walk unexpectedly completed")
 		}
@@ -5250,7 +5251,7 @@ def sibling():
 		repo := t.TempDir()
 		writeFile(t, repo, "lib.c", "int compute(int value) { return value + 1; }\n")
 		content := "from lib import compute\n\ndef run():\n    return compute(1)\n\nbroken = (\n"
-		if newPythonBareImportScopes(content, nil).complete {
+		if newPythonBareImportScopes(context.Background(), content, nil).complete {
 			t.Fatal("malformed scope unexpectedly completed")
 		}
 		writeFile(t, repo, "app.py", content)
@@ -5264,7 +5265,7 @@ def sibling():
 		repo := t.TempDir()
 		writeFile(t, repo, "lib.c", "int compute(int value) { return value + 1; }\n")
 		content := "from lib import compute\n\ncompute(1)\n\nbroken = (\n"
-		if newPythonBareImportScopes(content, nil).complete {
+		if newPythonBareImportScopes(context.Background(), content, nil).complete {
 			t.Fatal("malformed scope unexpectedly completed")
 		}
 		writeFile(t, repo, "app.py", content)
@@ -5508,7 +5509,7 @@ def valid():
 	if err != nil {
 		t.Fatal(err)
 	}
-	scopes := newPythonBareImportScopes(string(content), snapshot.Symbols)
+	scopes := newPythonBareImportScopes(context.Background(), string(content), snapshot.Symbols)
 	byName := map[string]SymbolRecord{}
 	for _, symbol := range snapshot.Symbols {
 		if symbol.FilePath == "app.py" && symbol.Name != "compute" {
@@ -6951,6 +6952,148 @@ func ping() {
 	}
 	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "showAudit") {
 		t.Fatalf("missing route bridge CALLS ping->showAudit: %#v", snapshot.Relations)
+	}
+}
+
+// goRouteRegistrationsWithin calls goHTTPRouteRegistrations in-process and
+// fails if it took longer than a generous budget. There is deliberately no
+// goroutine or subprocess: a goroutine abandoned at a deadline would keep
+// spinning after the test failed, and the resolver is now a single bounded
+// syntax walk. A regression back to a non-terminating loop is caught by the
+// package -timeout, which kills the whole test binary and nothing it owns.
+func goRouteRegistrationsWithin(t *testing.T, content string) []goHTTPRouteRegistration {
+	t.Helper()
+	start := time.Now()
+	regs := goHTTPRouteRegistrations(content, nil)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("goHTTPRouteRegistrations took %s on a small input", elapsed)
+	}
+	return regs
+}
+
+func goRouteSet(regs []goHTTPRouteRegistration) map[string]bool {
+	routes := map[string]bool{}
+	for _, reg := range regs {
+		key := reg.Route + " -> " + reg.Handler
+		if reg.Unplaced {
+			key += " [unplaced]"
+		}
+		routes[key] = true
+	}
+	return routes
+}
+
+func assertGoRouteSet(t *testing.T, regs []goHTTPRouteRegistration, want ...string) {
+	t.Helper()
+	got := goRouteSet(regs)
+	if len(regs) != len(want) || len(got) != len(want) {
+		t.Fatalf("routes = %v, want exactly %v", regs, want)
+	}
+	for _, route := range want {
+		if !got[route] {
+			t.Fatalf("routes = %v, want exactly %v", regs, want)
+		}
+	}
+}
+
+func TestGoRouterGroupPrefixTerminatesOnReboundVariable(t *testing.T) {
+	// The same group variable bound to different prefixes in two functions
+	// (every echo/gin test file) has no file-global fixed point: g flipped
+	// /a <-> /b forever, and a bounded loop then gave one function's prefix to
+	// the other's routes. Each use must see its own function's binding.
+	regs := goRouteRegistrationsWithin(t, `package routes
+
+func a(e *Echo) {
+	g := e.Group("/a")
+	g.GET("/x", handler)
+}
+
+func b(e *Echo) {
+	g := e.Group("/b")
+	g.GET("/y", handler)
+}
+`)
+	assertGoRouteSet(t, regs, "/a/x -> handler", "/b/y -> handler")
+}
+
+func TestGoRouterGroupPrefixTerminatesOnNamingCycle(t *testing.T) {
+	// Across functions api's parent is users and users' parent is api, and c
+	// rebinds g from itself: a file-global name map grew these prefixes forever.
+	// In statement order none of them is a cycle. b's users is a *Group
+	// parameter whose prefix is set by its caller, so /v/y (the bare child
+	// path) would be a fabricated route and is omitted.
+	regs := goRouteRegistrationsWithin(t, `package routes
+
+func a(e *Echo) {
+	api := e.Group("/api")
+	users := api.Group("/users")
+	users.GET("/x", handler)
+}
+
+func b(users *Group) {
+	api := users.Group("/v")
+	api.GET("/y", handler)
+}
+
+func c(e *Echo) {
+	g := e.Group("/g")
+	g = g.Group("/self")
+	g.GET("/z", handler)
+}
+`)
+	assertGoRouteSet(t, regs, "/api/users/x -> handler", "/g/self/z -> handler")
+}
+
+func TestGoRouterGroupPrefixResolvesChainDeclaredInReverse(t *testing.T) {
+	// Package-level initializers may reference later declarations; a chain
+	// written child-first must compose exactly like one written in order.
+	regs := goRouteRegistrationsWithin(t, `package routes
+
+var d = c.Group("/d")
+var c = b.Group("/c")
+var b = a.Group("/b")
+var a = e.Group("/a")
+var e *Echo
+
+func register() {
+	d.GET("/x", handler)
+}
+`)
+	assertGoRouteSet(t, regs, "/a/b/c/d/x -> handler")
+}
+
+func TestGoReboundRouterGroupSnapshotTerminates(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "server_test.go", `package server
+
+import "net/http"
+
+func registerA(e Echo) {
+	g := e.Group("/group")
+	g.GET("/users", showUser)
+}
+
+func registerB(e Echo) {
+	g := e.Group("/books")
+	g.GET("/list", listBooks)
+}
+
+func showUser(w http.ResponseWriter, r *http.Request) {}
+
+func listBooks(w http.ResponseWriter, r *http.Request) {}
+`)
+	// In-process and bounded by the package -timeout; see goRouteRegistrationsWithin.
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/group/users") ||
+		!hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "listBooks", "/books/list") {
+		t.Fatalf("missing per-function group routes: %#v", snapshot.Relations)
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/books/users") ||
+		hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "listBooks", "/group/list") {
+		t.Fatalf("group prefix leaked across functions: %#v", snapshot.Relations)
 	}
 }
 
@@ -12679,7 +12822,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("feature %s should not require network access", feature)
 		}
 	}
-	for _, feature := range []string{"stable_symbol_ids", "semantic_diff", "ndjson_snapshot", "compact_snapshot_ndjson_v1", "scip_snapshot_experimental", "durable_preindex", "focused_neighbors"} {
+	for _, feature := range []string{"stable_symbol_ids", "semantic_diff", "ndjson_snapshot", "compact_snapshot_ndjson_v1", "scip_snapshot_experimental", "durable_preindex", "focused_neighbors", "context_allow_ancestor"} {
 		if !caps.OptionalLocalOnlyFeatures[feature] {
 			t.Fatalf("optional feature %s not advertised: %#v", feature, caps.OptionalLocalOnlyFeatures)
 		}
@@ -13059,7 +13202,7 @@ func TestBuildRelationsUsesSymbolBlockIdentifierLookup(t *testing.T) {
 	recordsByFile[caller.FilePath] = []SymbolRecord{caller}
 	contentByFile[caller.FilePath] = "package pkg\nfunc Caller() {\n\tTargetSymbol()\n}\n"
 
-	relations := buildRelations("repo", files, recordsByFile, mapReader(contentByFile))
+	relations := buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile))
 
 	var sawTargetCall bool
 	for _, relation := range relations {
@@ -13130,7 +13273,7 @@ func TestBuildRelationsDropsAmbiguousCrossFileCallNameCollisions(t *testing.T) {
 		"runtime.ts":    "function sleep(ms: number) {}\n",
 	}
 
-	for _, relation := range buildRelations("repo", files, recordsByFile, mapReader(contentByFile)) {
+	for _, relation := range buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile)) {
 		if relation.Type == "CALLS" && relation.FromID == "caller" {
 			t.Fatalf("ambiguous sleep call should not resolve globally: %#v", relation)
 		}
@@ -13182,7 +13325,7 @@ func TestBuildRelationsResolvesCPlusPlusSameFileOverloadSet(t *testing.T) {
 	}
 
 	var targets []string
-	for _, relation := range buildRelations("repo", files, recordsByFile, mapReader(contentByFile)) {
+	for _, relation := range buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile)) {
 		if relation.Type == "CALLS" && relation.FromID == "caller" {
 			targets = append(targets, relation.ToID)
 			if relation.Resolution != "name_only" || relation.RelationScope != "workspace" {
@@ -13818,6 +13961,81 @@ func writeFile(t *testing.T, repo, path, content string) {
 // handler body. This verifies the command name is indexed as a searchable alias
 // of the handler symbol end to end: the emitted SymbolRecord carries the alias,
 // and a search whose term is the verb scores the handler with an "alias" signal.
+// TestRegistrationAliasDeclinesOnAmbiguousHandlerName is the other half of
+// TestRegistrationTableAliasIndexing. The verb was keyed by the handler's bare
+// name and then assigned to every symbol carrying that name, so one
+// commands/*.json aliased an unrelated method, a Python function and a
+// TypeScript function as if each were the registered command — and the alias
+// scores like an exact symbol-name hit, so all of them outranked real matches.
+// A command with no symbol is better than symbols claiming a command they do
+// not implement, so an ambiguous handler name now carries no verb at all.
+func TestRegistrationAliasDeclinesOnAmbiguousHandlerName(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/commands/getrange.json", `{"function":"getrangeCommand"}`)
+	writeFile(t, repo, "src/t_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+	writeFile(t, repo, "unrelated/other.go", "package unrelated\n\ntype Box struct{}\n\nfunc (b Box) getrangeCommand() {}\n")
+	writeFile(t, repo, "tools/helper.py", "def getrangeCommand():\n    return 1\n")
+	writeFile(t, repo, "web/app.ts", "export function getrangeCommand() { return 1; }\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var aliased []string
+	for _, symbol := range snapshot.Symbols {
+		if slices.Contains(symbol.Aliases, "getrange") {
+			aliased = append(aliased, symbol.Language+" "+symbol.Kind+" "+symbol.QualifiedName+" in "+symbol.FilePath)
+		}
+	}
+	if len(aliased) != 0 {
+		t.Fatalf("ambiguous handler name aliased %d symbols, want none: %v", len(aliased), aliased)
+	}
+}
+
+// TestRegistrationAliasCountsOnlyCallableCandidates is the third side of
+// TestRegistrationTableAliasIndexing and
+// TestRegistrationAliasDeclinesOnAmbiguousHandlerName. The ambiguity count
+// included EVERY symbol sharing the handler's bare name, but a
+// commands/<name>.json entry binds a verb to a callable: a struct, a field, a
+// constant or a variable with that name is not a rival handler. One such symbol
+// anywhere in the corpus took the count to two and suppressed the only real
+// binding, so a command that IS implemented answered its own verb with nothing.
+//
+// The four-callable decline is still pinned by
+// TestRegistrationAliasDeclinesOnAmbiguousHandlerName; this test pins the other
+// direction, and asserts the non-callable namesakes never carry the verb either.
+func TestRegistrationAliasCountsOnlyCallableCandidates(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/commands/getrange.json", `{"function":"getrangeCommand"}`)
+	writeFile(t, repo, "src/t_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+	writeFile(t, repo, "unrelated/other.go", `package unrelated
+
+type getrangeCommand struct {
+	field int
+}
+
+const getrangeCommandLimit = 4
+
+var getrangeCommand2 = 1
+`)
+	writeFile(t, repo, "web/model.ts", "export interface getrangeCommand { id: number }\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var aliased []string
+	for _, symbol := range snapshot.Symbols {
+		if slices.Contains(symbol.Aliases, "getrange") {
+			aliased = append(aliased, symbol.Kind+" "+symbol.Name+" in "+symbol.FilePath)
+		}
+	}
+	want := "function getrangeCommand in src/t_string.go"
+	if len(aliased) != 1 || aliased[0] != want {
+		t.Fatalf("aliased = %v, want exactly [%q]", aliased, want)
+	}
+}
+
 func TestRegistrationTableAliasIndexing(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/commands/substr.json", `{"function":"getrangeCommand"}`)
@@ -13854,6 +14072,80 @@ func getrangeCommand() {}
 	}
 }
 
+// TestRegistrationAliasSymbolsKeepTheirFilesPlaceInTheStream pins WHERE a
+// registration-alias symbol is written, not just what it carries.
+//
+// Deciding a verb's owner needs the whole corpus -- a handler name declared
+// once as a callable owns it, an ambiguous one owns nothing -- and the file
+// pipeline reduces results as workers finish, so the rivals of a symbol are not
+// known when its own file is reduced. Holding the candidate RECORDS back until
+// the file loop ended answered that, and moved them out of their file's place:
+// a symbol from the first file was written after the LAST file's record and its
+// symbols. docs/snapshot-format.md documents the opposite -- "file records,
+// then symbol records (emitted per file as parsing progresses)" -- and a
+// consumer that closes file-scoped state when the next file record arrives has
+// nowhere to put a symbol that arrives after every file. The decision is
+// buffered now instead of the records, so each candidate is written inside its
+// own file's block.
+func TestRegistrationAliasSymbolsKeepTheirFilesPlaceInTheStream(t *testing.T) {
+	streamed := func(t *testing.T, repo string) (stray, aliased []string) {
+		t.Helper()
+		openFile := ""
+		if err := StreamSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true}, func(record any) error {
+			switch typed := record.(type) {
+			case FileRecord:
+				openFile = typed.Path
+			case SymbolRecord:
+				if typed.FilePath != openFile {
+					stray = append(stray, typed.Name+" from "+typed.FilePath+" written while "+openFile+" was the open file")
+				}
+				if slices.Contains(typed.Aliases, "substr") {
+					aliased = append(aliased, typed.Name+" in "+typed.FilePath)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return stray, aliased
+	}
+
+	// The handler is in the FIRST file of the corpus, so a record held back
+	// until the loop ended is written after every other file and its symbols.
+	t.Run("an unambiguous handler is written inside its own file", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "src/commands/substr.json", `{"function":"getrangeCommand"}`)
+		writeFile(t, repo, "src/a_string.go", "package src\n\nfunc getrangeCommand() {}\n\nfunc helper() {}\n")
+		writeFile(t, repo, "src/z_other.go", "package src\n\nfunc other() {}\n")
+
+		stray, aliased := streamed(t, repo)
+		if len(stray) != 0 {
+			t.Errorf("symbols written outside their own file's block: %v; the stream is file records then their symbols, per file, as parsing progresses", stray)
+		}
+		if want := []string{"getrangeCommand in src/a_string.go"}; !reflect.DeepEqual(aliased, want) {
+			t.Errorf("aliased = %v, want %v: the sole callable with the handler's name still carries the verb", aliased, want)
+		}
+	})
+
+	// The other direction: an ambiguous name carries no verb, and both of its
+	// rivals are still written inside their own files.
+	t.Run("an ambiguous handler is declined and still written in place", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "src/commands/substr.json", `{"function":"getrangeCommand"}`)
+		writeFile(t, repo, "src/a_string.go", "package src\n\nfunc getrangeCommand() {}\n")
+		writeFile(t, repo, "src/z_other.go", "package src\n\nfunc other() {}\n")
+		writeFile(t, repo, "web/app.ts", "export function getrangeCommand() { return 1; }\n")
+
+		stray, aliased := streamed(t, repo)
+		if len(stray) != 0 {
+			t.Errorf("symbols written outside their own file's block: %v; the stream is file records then their symbols, per file, as parsing progresses", stray)
+		}
+		if len(aliased) != 0 {
+			t.Errorf("aliased = %v, want none: two callables share the handler's name, so neither is the registered one", aliased)
+		}
+	})
+}
+
 // collectRegistrationAliases maps a handler to the sorted, de-duplicated command
 // verbs bound to it, touching only commands/*.json paths.
 func TestCollectRegistrationAliases(t *testing.T) {
@@ -13874,7 +14166,7 @@ func TestCollectRegistrationAliases(t *testing.T) {
 		return c, ok
 	}
 
-	got := collectRegistrationAliases(paths, read)
+	got := collectRegistrationAliases(nil, paths, read)
 	want := map[string][]string{
 		"getrangeCommand": {"getrange", "substr"},
 		"getCommand":      {"get"},
@@ -14753,6 +15045,300 @@ end
 	}
 	if !has("CONSTRUCTS", fCaller, fWidget) {
 		t.Fatalf("existing Julia constructor resolution changed: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+	}
+}
+
+func TestJuliaSignaturesStopAtDeclarationHeader(t *testing.T) {
+	// tree-sitter-julia keeps body statements as direct children of the
+	// definition, so the generic body cut never fired and every signature
+	// carried the whole definition (a module's carried every member).
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Shapes.jl", `module Shapes
+
+abstract type Shape end
+abstract type Solid <: Shape end
+primitive type Word 32 end
+
+struct Circle <: Shape
+    radius::Float64
+end
+
+mutable struct Counter
+    count::Int
+end
+
+struct Point{T}
+    x::T
+end
+
+mutable struct Box{T} <: Solid
+    item::T
+end
+
+function bump!(n)
+    k = Counter(n)
+    return k
+end
+
+function area(c::Circle)::Float64
+    return pi * c.radius^2
+end
+
+function scale(v::Vector{T}, s::T) where {T<:Real}
+    return v .* s
+end
+
+function clamp_to(x::T, hi::T)::T where T
+    return min(x, hi)
+end
+
+function Base.show(io::IO, p::Point)
+    print(io, p.x)
+end
+
+function spread(a::Int,
+                b::Int)
+    return a + b
+end
+
+macro trace(ex)
+    return esc(ex)
+end
+
+double(x) = 2 * x
+half(x)::Float64 = x / 2
+first_of(p::Point{T}) where T = p.x
+
+end
+
+baremodule Bare
+q(x) = x
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct{ kind, name, signature string }{
+		{"module", "Shapes", "module Shapes"},
+		{"module", "Bare", "baremodule Bare"},
+		{"type", "Shape", "abstract type Shape end"},
+		{"type", "Solid", "abstract type Solid <: Shape end"},
+		{"type", "Word", "primitive type Word 32 end"},
+		{"struct", "Circle", "struct Circle <: Shape"},
+		{"struct", "Counter", "mutable struct Counter"},
+		{"struct", "Point", "struct Point{T}"},
+		{"struct", "Box", "mutable struct Box{T} <: Solid"},
+		{"method", "Shapes.bump!", "function bump!(n)"},
+		{"method", "Shapes.area", "function area(c::Circle)::Float64"},
+		{"method", "Shapes.scale", "function scale(v::Vector{T}, s::T) where {T<:Real}"},
+		{"method", "Shapes.clamp_to", "function clamp_to(x::T, hi::T)::T where T"},
+		{"function", "Base.show", "function Base.show(io::IO, p::Point)"},
+		{"method", "Shapes.spread", "function spread(a::Int, b::Int)"},
+		{"method", "Shapes.trace", "macro trace(ex)"},
+		{"method", "Shapes.double", "double(x)"},
+		{"method", "Shapes.half", "half(x)::Float64"},
+		{"method", "Shapes.first_of", "first_of(p::Point{T}) where T"},
+		{"method", "Bare.q", "q(x)"},
+	} {
+		got := symbolByKindAndName(snapshot.Symbols, want.kind, want.name)
+		if got.ID == "" {
+			t.Fatalf("missing Julia %s %s: %#v", want.kind, want.name, snapshot.Symbols)
+		}
+		if got.Signature != want.signature {
+			t.Errorf("Julia %s %s signature = %q, want %q", want.kind, want.name, got.Signature, want.signature)
+		}
+	}
+}
+
+func TestJuliaAndRubyModulesEmitNoDataFlows(t *testing.T) {
+	// A module's block spans its members, so the DATA_FLOWS pass found each
+	// member's return flows again and attributed them to the module. Only the
+	// members' own edges may remain.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Shapes.jl", `module Shapes
+
+mutable struct Counter
+    count::Int
+end
+
+function area(x)
+    return x * 2
+end
+
+function work(x)
+    return area(x)
+end
+
+function bump!(n)
+    k = Counter(n)
+    return k
+end
+
+end
+`)
+	writeFile(t, repo, "lib/util.rb", `module Util
+  def self.a
+    return b()
+  end
+
+  def self.b
+    1
+  end
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbol := func(kind, name string) SymbolRecord {
+		got := symbolByKindAndName(snapshot.Symbols, kind, name)
+		if got.ID == "" {
+			t.Fatalf("missing %s %s: %#v", kind, name, snapshot.Symbols)
+		}
+		return got
+	}
+	// Both modules must exist, or the endpoint check below passes vacuously.
+	symbol("module", "Shapes")
+	symbol("module", "Util")
+	kindByID := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		kindByID[s.ID] = s.Kind
+	}
+	flows := relationsOfType(snapshot.Relations, "DATA_FLOWS")
+	for _, relation := range flows {
+		if kindByID[relation.FromID] == "module" || kindByID[relation.ToID] == "module" {
+			t.Fatalf("DATA_FLOWS with a module endpoint: %#v", relation)
+		}
+	}
+	for _, want := range []struct {
+		from, to SymbolRecord
+		reason   string
+	}{
+		{symbol("method", "Shapes.area"), symbol("method", "Shapes.work"), "callee return value flows into caller return value"},
+		{symbol("struct", "Counter"), symbol("method", "Shapes.bump!"), "callee return value assigned to local and returned by caller"},
+		{symbol("method", "Util.b"), symbol("method", "Util.a"), "callee return value flows into caller return value"},
+	} {
+		found := false
+		for _, relation := range flows {
+			found = found || relation.FromID == want.from.ID && relation.ToID == want.to.ID && relation.Reason == want.reason
+		}
+		if !found {
+			t.Fatalf("missing member DATA_FLOWS %s -> %s (%s): %#v", want.from.QualifiedName, want.to.QualifiedName, want.reason, flows)
+		}
+	}
+}
+
+func TestJuliaUsesTypeReadsOnlyTheSignature(t *testing.T) {
+	// USES_TYPE matches identifiers in the signature, so a body-laden Julia
+	// signature turned every type named in a body into a USES_TYPE edge. The
+	// construction in the body is CONSTRUCTS, which must survive.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Shapes.jl", `module Shapes
+
+struct Circle
+    radius::Float64
+end
+
+struct Area
+    value::Float64
+end
+
+mutable struct Counter
+    count::Int
+end
+
+function area(c::Circle)::Area
+    return Area(pi * c.radius^2)
+end
+
+function bump!(n)
+    k = Counter(n)
+    return k
+end
+
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbol := func(kind, name string) SymbolRecord {
+		got := symbolByKindAndName(snapshot.Symbols, kind, name)
+		if got.ID == "" {
+			t.Fatalf("missing %s %s: %#v", kind, name, snapshot.Symbols)
+		}
+		return got
+	}
+	circle, areaType, counter := symbol("struct", "Circle"), symbol("struct", "Area"), symbol("struct", "Counter")
+	area, bump := symbol("method", "Shapes.area"), symbol("method", "Shapes.bump!")
+	has := func(relationType string, from, to SymbolRecord) bool {
+		for _, relation := range snapshot.Relations {
+			if relation.Type == relationType && relation.FromID == from.ID && relation.ToID == to.ID {
+				return true
+			}
+		}
+		return false
+	}
+	if has("USES_TYPE", bump, counter) {
+		t.Fatalf("USES_TYPE from a type named only in the body: %#v", relationsOfType(snapshot.Relations, "USES_TYPE"))
+	}
+	if !has("CONSTRUCTS", bump, counter) {
+		t.Fatalf("missing CONSTRUCTS bump! -> Counter: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+	}
+	for _, want := range []struct {
+		relationType string
+		to           SymbolRecord
+	}{
+		{"USES_TYPE", circle},
+		{"PARAM_TYPE", circle},
+		{"USES_TYPE", areaType},
+	} {
+		if !has(want.relationType, area, want.to) {
+			t.Fatalf("missing signature %s area -> %s: %#v", want.relationType, want.to.QualifiedName, snapshot.Relations)
+		}
+	}
+}
+
+func TestJuliaBodyOnlyEditIsBodyChanged(t *testing.T) {
+	// compareEntities checks the signature before the body hash, so while the
+	// signature carried the body every Julia body edit read as a signature
+	// change, on the function and again on its module.
+	source := func(step string) string {
+		return `module Shapes
+
+mutable struct Counter
+    count::Int
+end
+
+function bump!(n)
+    k = Counter(n)
+    k.count = k.count + ` + step + `
+    return k
+end
+
+double(x) = ` + step + ` * x
+
+end
+`
+	}
+	before, _ := TreeSitterParser{}.Parse("src/Shapes.jl", source("1"))
+	after, _ := TreeSitterParser{}.Parse("src/Shapes.jl", source("2"))
+	changes, removed, added := compareEntities(before, after, false)
+	if len(removed) != 0 || len(added) != 0 {
+		t.Fatalf("body-only edit removed=%#v added=%#v", removed, added)
+	}
+	got := map[string]string{}
+	for _, change := range changes {
+		got[change.Kind+":"+change.Name] = change.Type
+	}
+	want := map[string]string{
+		"method:Shapes.bump!":  "body_changed",
+		"method:Shapes.double": "body_changed",
+		"module:Shapes":        "body_changed",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("body-only edit changes = %#v, want %#v (all: %#v)", got, want, changes)
 	}
 }
 
@@ -18083,7 +18669,7 @@ func TestSkipVendoredDirAlwaysExcludesGitDir(t *testing.T) {
 	load := func(content string) ignoreMatcher {
 		t.Helper()
 		var matcher ignoreMatcher
-		if err := matcher.loadContent(content, false); err != nil {
+		if err := matcher.loadContent(content, false, repoIgnoreOrigin(".gitignore")); err != nil {
 			t.Fatal(err)
 		}
 		return matcher
@@ -18922,6 +19508,66 @@ func TestSearchRepositoryStillIndexesSourceTreeNamedLikeAGitDir(t *testing.T) {
 			paths = append(paths, result.FilePath)
 		}
 		t.Errorf("search did not return testdata/parser/objects/loader.go; results = %v", paths)
+	}
+}
+
+// TestSignatureNamesQualifiedMethodUsesTokenBoundaries pins the qualified-name match
+// against both directions of a raw substring test.
+//
+// Matching `Container::Name` with strings.Contains was wrong twice over. It matched too
+// much -- `BA::foo` contains `A::foo`, so an unrelated class's definition was accepted as
+// a declaration's out-of-line body and emitted a CALLS edge to the wrong function -- and
+// too little, because a template definition is spelled `A<T>::foo` and never contains the
+// bare text, leaving those calls resolved to the bodyless declaration whose callers the
+// lookup exists to redirect.
+func TestSignatureNamesQualifiedMethodUsesTokenBoundaries(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name      string
+		signature string
+		container string
+		method    string
+		want      bool
+	}{
+		{"plain qualified definition", "int A::foo(int x)", "A", "foo", true},
+		{"template definition qualifies through its arguments", "int A<T>::foo(int x)", "A", "foo", true},
+		{"spaces around template arguments", "int A <T> ::foo(int x)", "A", "foo", true},
+		{"space after scope operator", "int A<T>:: foo(int x)", "A", "foo", true},
+		{"full namespace owner", "int a::Ledger::foo(int x)", "a::Ledger", "foo", true},
+		{"nested templated owner", "int a::Outer<T>::Inner<U>::foo(int x)", "a::Outer::Inner", "foo", true},
+		{"non-type comparison argument", "int A<(N > 0)>::foo(int x)", "A", "foo", true},
+		{"different namespace owner", "int b::Ledger::foo(int x)", "a::Ledger", "foo", false},
+		{"owner suffix is not the full owner", "int x::a::Ledger::foo(int x)", "a::Ledger", "foo", false},
+		{"a longer class name is not this class", "int BA::foo(int x)", "A", "foo", false},
+		{"a longer method name is not this method", "int A::foobar(int x)", "A", "foo", false},
+		{"a different class does not match", "int B::foo(int x)", "A", "foo", false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := signatureNamesQualifiedMethod(testCase.signature, testCase.container, testCase.method); got != testCase.want {
+				t.Fatalf("signatureNamesQualifiedMethod(%q, %q, %q) = %v, want %v",
+					testCase.signature, testCase.container, testCase.method, got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestSignatureNamesQualifiedMethodPatternOmitsAnyInlineNamespaceSubset(t *testing.T) {
+	t.Parallel()
+	pattern := "api::\x00v1::\x00v2::\x00v3::\x00v4::\x00v5::Client"
+	for _, signature := range []string{
+		"int api::v1::v2::v3::v4::v5::Client::Fetch()",
+		"int api::v1::v3::v4::v5::Client::Fetch()",
+		"int api::v2::v4::Client::Fetch()",
+		"int api::Client::Fetch()",
+	} {
+		if !signatureNamesQualifiedMethodPattern(signature, pattern, "Fetch") {
+			t.Errorf("did not match legal inline-namespace subset in %q", signature)
+		}
+	}
+	if signatureNamesQualifiedMethodPattern("int other::api::Client::Fetch()", pattern, "Fetch") {
+		t.Error("matched an owner suffix under an unrelated outer namespace")
 	}
 }
 

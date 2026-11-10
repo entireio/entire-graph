@@ -45,7 +45,7 @@ func polyglotSnapshot(rustFailures int, pythonFailures int) sem.ProviderSnapshot
 	}
 	snapshot.Header.Warnings = []sem.ProviderWarning{{
 		Code: worktreeProvenanceWarning, Severity: "warning",
-		EffectOnCompleteness: "snapshot records are read from the working tree because --worktree was requested",
+		EffectOnCompleteness: "snapshot records are read from the working tree; this is the default, and working-tree reads are never cached, so --head is the cacheable, committed-tree baseline",
 	}}
 	snapshot.Header.Stats.PartialFailures = len(snapshot.Header.PartialFailures)
 	snapshot.Header.Stats.CompletenessLevel = "degraded"
@@ -250,5 +250,41 @@ func TestWriteIndexCostNotice(t *testing.T) {
 				t.Fatalf("notice printed = %v, want %v: %q", got, testCase.wantNotice, out.String())
 			}
 		})
+	}
+}
+
+func TestScopedCompletenessCrossLanguageRelations(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"Java", "Kotlin"}, {"Java", "Scala"}, {"Java", "Groovy"},
+		{"Java", "Clojure"}, {"Clojure", "ClojureScript"},
+		{"Bash", "Zsh"}, {"C#", "F#"}, {"Swift", "C++"},
+		{"Swift", "Objective-C"}, {"Objective-C++", "C"},
+		{"TypeScript", "JavaScript"}, {"C", "C++"},
+	} {
+		for _, languages := range [][2]string{pair, {pair[1], pair[0]}} {
+			t.Run(languages[0]+"/"+languages[1], func(t *testing.T) {
+				snapshot := sem.ProviderSnapshot{
+					Files: []sem.FileRecord{{Path: "broken", Language: languages[1]}},
+					Header: sem.SnapshotHeader{
+						PartialFailures: []sem.PartialFailure{{FilePath: "broken", Code: "E_PARSE_ERROR"}},
+						Warnings:        []sem.ProviderWarning{{FilePath: "broken", Code: "W_PARSE"}},
+					},
+				}
+				scope := buildCompletenessScope(snapshot, languages[0])
+				if scope.LanguageFailed != 1 || len(scope.InScopeWarnings) != 1 || scope.OtherFailures != 0 {
+					t.Fatalf("related diagnostic hidden: %#v", scope)
+				}
+				var out bytes.Buffer
+				writeScopedCompletenessBlock(&out, scope, snapshot.Header.Warnings, snapshot.Header.PartialFailures, snapshot.Header.Stats)
+				if strings.Contains(out.String(), "cannot affect this answer") || !strings.Contains(out.String(), "E_PARSE_ERROR") {
+					t.Fatalf("misleading completeness banner: %s", out.String())
+				}
+			})
+		}
+	}
+	for _, pair := range [][2]string{{"Rust", "Python"}, {"Java", "ClojureScript"}, {"Go", "C"}} {
+		if diagnosticInScope(pair[0], pair[1], "unrelated") {
+			t.Errorf("unrelated languages made in scope: %v", pair)
+		}
 	}
 }

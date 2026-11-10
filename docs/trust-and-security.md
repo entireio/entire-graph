@@ -37,8 +37,20 @@ other is installation.
   `config.worktree`. Repository-local configuration remains available for
   structural settings Git needs; active `core.worktree` paths are checked by
   the same rooted preflight. Active partial-clone/promisor configuration is
-  refused because supported Git versions before 2.45 can inspect a local or UNC
-  promisor URL before enforcing the transport deny-list. At command scope the
+  admitted only when the Git that runs in the repository is proven to honour
+  `GIT_NO_LAZY_FETCH`: Git 2.45.1 or newer, or, on an older release line,
+  2.39.4+, 2.40.2+, 2.41.1+, 2.42.2+, 2.43.4+ or 2.44.1+ (git/git@7b70e9efb18c). Every
+  provider Git subprocess sets `GIT_NO_LAZY_FETCH=1`, and those releases check
+  it before starting any lazy fetch, so a missing promised object is a local
+  read failure (reported as an unreadable file, or as a command error) and the
+  promisor remote is never contacted; `GIT_ALLOW_PROTOCOL=` stays as a second,
+  independent transport deny-list. Any other Git -- including 2.45.0, whose
+  rename-detection prefetch ignores `GIT_NO_LAZY_FETCH` -- can inspect a local
+  or UNC promisor URL before enforcing the transport deny-list, so partial
+  clones are refused before Git starts. An unknown version is refused too. The
+  version is probed by running `git version` in the repository directory, so a
+  version manager that picks Git per directory is asked about the Git the
+  provider will run there. At command scope the
   provider sets
   `core.fsmonitor=false`, `log.showSignature=false`, `log.mailmap=false`,
   `submodule.recurse=false`, and empty values for `core.excludesFile` and
@@ -169,7 +181,7 @@ a FILENAME only for that reason: a directory named `credentials/` is neither
 excluded by it nor re-admitted when the repository's own `.gitignore` or
 `.graphignore` excludes it.
 
-Both persistent caches (`index`/`search` snapshots and the streamed record
+Both persistent caches (`index`/`query` snapshots and the streamed record
 caches) key on a digest of the effective built-in rules, so a cache entry warmed
 by a build with a different policy is not reachable — an entry written before
 these rules existed misses instead of re-emitting the paths it named.
@@ -197,9 +209,14 @@ these rules existed misses instead of re-emitting the paths it named.
   directory. `os.Root` intentionally keeps using that directory object after a
   move; portable Go cannot pin its lexical ancestry, and a process with that
   namespace authority can already move existing cache artifacts.
-- `init-agents` writes through exactly three repository paths, disclosed in
-  [agent activation](agents.md): `.entire/graph-agent.md` and managed blocks
-  in `AGENTS.md` and `CLAUDE.md`. A repository-committed symlink at one of
+- `setup` writes through three primary repository paths, disclosed in
+  [agent activation](agents.md): `.entire/agent-guide.md` and managed blocks
+  in `AGENTS.md` and `CLAUDE.md`. It also merges one Claude Code hook entry into
+  the per-user `.claude/settings.local.json` (skipped with `--no-claude-hook`);
+  that path is never followed through a symlink or hard link. Existing legacy Graph/Brain guide paths are
+  also checked and rewritten as redirects under the same protections. See
+  [coordination](agent-coordination.md) for detection and migration.
+  A repository-committed symlink at one of
   those paths may redirect the write to another file, which is what makes the
   alias support in the activation guide work; the redirection is confined to
   the project root, and additionally refused when it lands in a git directory —
@@ -212,7 +229,7 @@ these rules existed misses instead of re-emitting the paths it named.
   `.git` component and stats as an ordinary regular file. An inode's other names
   cannot be read back from it, so a managed target is refused unless every name
   it has is `AGENTS.md` or `CLAUDE.md`. Those two instruction files may share
-  one inode; the generated `.entire/graph-agent.md` guide must remain distinct.
+  one inode; the generated `.entire/agent-guide.md` guide must remain distinct.
   This also refuses a hard link to a harmless file, including one outside the
   project. A symlink remains the preferred instruction-file alias.
 - `index --report <path>` writes a Markdown graph report to the path you give
@@ -225,10 +242,10 @@ command does so.
 
 ## What it executes
 
-- Graph queries (`search`, `def`, `explain`, `neighbors`, `impact`) and
+- Graph queries (`query`, `def`, `explain`, `neighbors`, `impact`) and
   streams run `git` subprocesses and parse files. They do not execute
   repository code.
-- `search` **suggests** a `VERIFY:` command derived from repository contents
+- `query` **suggests** a `VERIFY:` command derived from repository contents
   (test names, build files). It does not run it. Anything that later runs
   that command is executing text influenced by repository contents. Read the
   command first in repositories you do not trust.
@@ -258,7 +275,7 @@ What that does **not** give you:
 - It is not authentication. A forged record becomes detectable, not
   impossible; nothing stops a reader that ignores indentation from acting on an
   indented line.
-- The grammar is a closed set covering the records the `search` renderers emit.
+- The grammar is a closed set covering the records the `query` renderers emit.
   `def`, `impact`, `neighbors` and `callsite` print source through their own
   paths and are not covered.
 - `--presearch` echoes a caller-supplied file verbatim and is not inspected.
@@ -281,6 +298,38 @@ can produce missing or unresolved edges. Inventory-only languages get file and
 symbol structure with no semantic relations. `capabilities --json` reports
 which tier a language is in. Files the parser cannot process emit
 machine-readable partial failures rather than disappearing silently.
+
+## Repository-controlled exclusions are disclosed
+
+`.graphignore`, `.gitignore` and `.git/info/exclude` live in the repository, so
+whoever can commit to it decides part of what the graph sees. One committed line
+naming a tracked source file removes that file from every answer.
+
+`query` therefore reports what those rules removed rather than presenting the
+surviving corpus as the whole of it. When repository-controlled rules exclude
+files Git itself lists, the response carries `repo_ignored` (the count, the ignore
+files responsible, and up to ten of the excluded paths),
+`stats.files_excluded_by_repo_ignore_rules`, and a `W_REPO_IGNORED_SOURCE`
+warning; the text and agent payloads print the count and name the paths. A
+repository that excludes nothing adds nothing.
+
+Exclusions **you** asked for with `--ignore-file` are not reported: they are your
+own instruction, and reporting them back would bury the case that is not.
+
+The count is exact except in two cases, and both say so. When enumerating an
+excluded directory tree hits something it cannot read, `repo_ignored` carries
+`count_incomplete` with the paths responsible and the response carries an
+`E_REPO_IGNORE_UNREADABLE` partial failure. When the excluded tree is larger than
+the accounting enumerates — the walk is bounded so that a committed rule over a
+huge tree cannot hand back the cost the prune saved, on every search — the report
+carries `count_incomplete` and an `E_REPO_IGNORE_COUNT_INCOMPLETE` partial
+failure. Either way the number is known to be a lower bound rather than quietly
+understated.
+
+This is disclosure, not prevention. It tells you that files were removed and
+which ones; it does not tell you whether one of them was the answer to your
+query, and deciding that still means reading the file. Commands other than
+`query` do not yet carry the disclosure.
 
 ## Command-family tree semantics
 

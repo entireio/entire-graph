@@ -297,19 +297,19 @@ func route() {
 
 	text := run("--format", "text")
 	for _, want := range []string{
-		"Impact: Orders (app.go:",
-		"Blast radius:",
+		"Orders — function, app.go:",
+		"Summary:\n- 2 production callers",
 		"Callers (",
 		"handler (app.go:",
 		"route (app.go:",
 		"via handler",
 		"Callees (",
 		"sortOrders (app.go:",
-		"Type consumers (",
+		"Types (",
 		"Config (app.go:",
 		"Co-change coupling (",
 		"other.go [files changed together in 2 recent commits]",
-		"Same-container siblings (",
+		"- No sibling coupling found",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("impact text missing %q:\n%s", want, text)

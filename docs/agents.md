@@ -1,22 +1,26 @@
 # Agent activation
 
-This page is the reference for `entire graph init-agents`: what it writes, how
+This page is the reference for `entire graph setup`: what it writes, how
 reruns behave, how Claude inheritance is handled, how to verify that a coding
 agent loaded the guide, and how to recover from invalid instruction files. The
 behavior described here matches the 0.4.0 release target. Run
-`entire graph init-agents --help` for the flags in your installed version.
+`entire graph setup --help` for the flags in your installed version.
 
-## What `init-agents` writes
+See [the coordination contract](agent-coordination.md) for generation-time mode
+selection, read-only previews, legacy-guide migration, and configuration removal.
+
+## What `setup` writes
 
 Activation is per repository. From the repository root:
 
 ```sh
-entire graph init-agents --repo .
+entire graph setup --repo .
 ```
 
-The command manages three repository paths:
+The command manages three repository paths, plus one per-user Claude Code
+settings file:
 
-- `.entire/graph-agent.md`: the complete operating guide for coding agents.
+- `.entire/agent-guide.md`: the complete operating guide for coding agents.
   It is regenerated on every successful run, so manual edits do not survive.
   Its content is identical to `entire graph agent-guide` output.
 - `AGENTS.md`: the canonical cross-agent entry point. The command creates the
@@ -24,20 +28,43 @@ The command manages three repository paths:
   existing managed block while preserving other content.
 - `CLAUDE.md`: a Claude Code entry point whose managed block is selected from
   the repository's existing instruction-file topology.
+- `.claude/settings.local.json`: a Claude Code `SubagentStart` hook running
+  `entire graph hook claude-subagent-start`. Claude Code's built-in Explore and
+  Plan subagents do not load `CLAUDE.md`; the hook adds a short graph directive
+  (the guide's command lines, under 1 KiB) to every subagent's context, and
+  prints nothing outside a git work tree. The file is intended to stay per-user
+  and untracked:
+  existing keys and hooks are preserved, the hook is added once, and a rerun
+  leaves the file unchanged. `setup` refuses, before writing anything,
+  settings that are not a JSON object, and a `.claude` or settings file that is
+  a symlink, hard link or other non-regular file. `--no-claude-hook` skips this
+  file. To remove the hook, delete its `SubagentStart` entry.
+
+The installer preserves your ignore policy; it does not automatically ignore
+`.claude/settings.local.json`. Add `/.claude/settings.local.json` to your root
+`.gitignore` (or repository-local `.git/info/exclude`) before committing files.
+Claude Code only adds its automatic ignore when Claude itself writes the file;
+that does not cover a file created by this installer. See the official
+[local-settings rules](https://code.claude.com/docs/en/settings).
+
+On macOS/Linux the hook uses a POSIX shell wrapper. On Windows it explicitly
+selects PowerShell, with syntax supported by PowerShell 5.1 and later, so it does
+not require Git Bash. Both wrappers suppress an unavailable/older Graph binary's
+error and return success. See Claude's [hook shell selection](https://code.claude.com/docs/en/hooks#command-hook-fields).
 
 The direct managed block contains a pointer to the generated guide. Its
 identifying lines are:
 
 ```markdown
-<!-- entire-graph:begin -->
+<!-- entire-agent:begin -->
 ...
-@.entire/graph-agent.md
-<!-- entire-graph:end -->
+@.entire/agent-guide.md
+<!-- entire-agent:end -->
 ```
 
 A client that resolves `@` imports loads the guide into context. A client that
 treats the block as plain text still receives an instruction to read
-`.entire/graph-agent.md` before exploring code.
+`.entire/agent-guide.md` before exploring code.
 
 ## Claude inheritance
 
@@ -48,16 +75,16 @@ depends on how that file already reaches `AGENTS.md`:
   resolves to the root `AGENTS.md`, its managed block contains only this notice:
 
   ```markdown
-  <!-- entire-graph:begin -->
-  <!-- Entire Graph instructions are inherited through AGENTS.md. -->
-  <!-- entire-graph:end -->
+  <!-- entire-agent:begin -->
+  <!-- Entire agent instructions are inherited through AGENTS.md. -->
+  <!-- entire-agent:end -->
   ```
 
   The user's `AGENTS.md` import remains in place, and the guide is not imported
   directly a second time.
 - If that import is absent or cannot be identified safely, `CLAUDE.md` receives
   the direct guide pointer. Removing or adding a live `AGENTS.md` import and
-  rerunning `init-agents` switches the managed block accordingly.
+  rerunning `setup` switches the managed block accordingly.
 - If `AGENTS.md` and `CLAUDE.md` resolve to the same regular file through a
   symlink or hard link, the shared file receives the direct block once. The
   link topology is preserved.
@@ -65,12 +92,12 @@ depends on how that file already reaches `AGENTS.md`:
 Import detection recognizes standalone relative or absolute paths that resolve
 to the root `AGENTS.md`. Mentions inside inline code, fenced or indented code,
 HTML comments, or the managed block do not count. Ambiguous Markdown keeps the
-direct pointer rather than assuming inheritance. `init-agents` does not create
+direct pointer rather than assuming inheritance. `setup` does not create
 or remove the user-owned `AGENTS.md` import itself.
 
 ## Preflight and rerun behavior
 
-Before its first write, `init-agents` inspects both instruction paths, reads
+Before its first write, `setup` inspects both instruction paths, reads
 each distinct file, validates the marker layout, and renders all managed
 content from that validated snapshot.
 
@@ -97,7 +124,7 @@ appended to it. A target that does not exist yet is still created, which is what
 the dangling-alias case below relies on, and a target this command wrote on an
 earlier run stays writable whatever it is named. Hard links are supported only
 between `AGENTS.md` and `CLAUDE.md`, which may share one inode and are updated
-once. The generated `.entire/graph-agent.md` guide must remain a distinct file.
+once. The generated `.entire/agent-guide.md` guide must remain a distinct file.
 A managed target whose inode carries any other name is refused before anything
 is written, because an inode's other names cannot be read back from the file —
 `ln .git/config CLAUDE.md` resolves to `CLAUDE.md`, spells no `.git` component and looks like an
@@ -119,16 +146,24 @@ alternate separators, absolute NT dot components, trailing dots or spaces, and
 non-DOS device namespaces; an informational extended-path display name alone
 does not change the target Windows resolves.
 
-Each distinct file must contain either no Entire Graph marker tokens or exactly
-one begin marker followed by one end marker. Marker tokens in examples, code
+Each distinct file must contain either no shared Entire agent marker tokens or exactly
+one begin marker followed by one end marker. Legacy Graph and Brain marker pairs
+are independently validated and migrated. Marker tokens in examples, code
 fences, or comments still count because they make the replacement range
 ambiguous.
 
 If either path or marker layout fails preflight, the command stops before
-creating or changing `.entire/graph-agent.md`, `AGENTS.md`, or `CLAUDE.md`.
+creating or changing `.entire/agent-guide.md`, `AGENTS.md`, or `CLAUDE.md`.
+Preflight validates the current inputs, not future write access. Installation is
+not one transaction across the guide and settings files. A later permission,
+disk-full, or concurrent-change error can leave the guides installed without the
+hook. The command returns an error; fix its cause and rerun to finish, or rerun
+with `--no-claude-hook` to keep only guide activation. Existing settings are not
+rolled back over a concurrent writer's changes.
+
 After preflight succeeds, a rerun:
 
-- regenerates `.entire/graph-agent.md`;
+- regenerates `.entire/agent-guide.md`;
 - appends a block to an unmanaged instruction file;
 - replaces one valid managed block in place;
 - preserves all content outside the managed block; and
@@ -141,17 +176,17 @@ The error names the file and the condition that blocked the run. To recover:
 1. Back up `AGENTS.md` and `CLAUDE.md`.
 2. Replace any directory or other non-regular target with a regular file, or
    move it aside if the instruction file should be created.
-3. In each regular file, keep either zero Entire Graph marker tokens or exactly
+3. In each regular file, keep either zero tokens for each managed marker family or exactly
    one complete begin/end pair in that order. Reword marker strings shown in
    examples or comments.
 4. Preserve user-owned text outside the intended managed block.
-5. Rerun `entire graph init-agents --repo .` and confirm that each independent
+5. Rerun `entire graph setup --repo .` and confirm that each independent
    instruction file contains one managed block.
 
 ## Removal
 
 There is no removal command. To deactivate, delete
-`.entire/graph-agent.md` and remove the managed block, including both marker
+`.entire/agent-guide.md` and any legacy guide redirects, and remove the managed block, including both marker
 lines, from `AGENTS.md` and `CLAUDE.md`. Delete `.entire/` or either instruction
 file only if it is otherwise empty.
 
@@ -167,18 +202,18 @@ See the [operations cache guide](operations.md#working-tree-queries).
 ### Claude Code
 
 Claude Code loads the repository's `CLAUDE.md` at session start and resolves
-live `@` imports. The managed direct pointer loads `.entire/graph-agent.md`.
+live `@` imports. The managed direct pointer loads `.entire/agent-guide.md`.
 When `CLAUDE.md` already imports `AGENTS.md`, the inheritance layout avoids a
 second direct guide pointer.
 
 A session opened before activation does not see the new files. Start a fresh
-session or task in the repository after running `init-agents`.
+session or task in the repository after running `setup`.
 
 ### Other clients
 
 Clients that read a root `AGENTS.md` encounter the direct pointer text. Clients
 that do not resolve `@` imports must follow the written instruction and read
-`.entire/graph-agent.md` themselves. Whether they do so depends on the client
+`.entire/agent-guide.md` themselves. Whether they do so depends on the client
 and model, so verify the behavior rather than assuming it.
 
 ## Verifying the activation chain
@@ -189,15 +224,13 @@ Each layer has an observable check:
    the second prints the installed release, such as `v0.4.0`.
 2. **Files.** The three managed paths exist. Each independent instruction file
    has exactly one ordered marker pair, and
-   `diff <(entire graph agent-guide) .entire/graph-agent.md` is empty. If
+   `diff <(entire graph agent-guide) .entire/agent-guide.md` is empty. If
    `CLAUDE.md` imports `AGENTS.md`, confirm its managed block contains the
    inheritance notice rather than another direct guide import.
 3. **Instruction load.** Start a fresh agent session and give it a
    code-location task. The client-side signal depends on the client; behavior
    is checked in the next step.
-4. **Adoption.** The session's first code-locating tool call is
-   `entire graph search ...`, before broad grep, find, or whole-file reading. If
-   the agent starts elsewhere, the guide may not have loaded or may not have
-   been followed. Check the activation files and the client's instruction view.
-5. **Grounding.** The answer cites files and lines opened after the graph query,
-   and any proposed change is checked against focused source or a narrow test.
+4. **Adoption.** The agent follows the generated workflow, reusing existing task
+   context and useful locations without ceremonial queries. Combined mode uses
+   Brain for substantive orientation and Graph for further discovery.
+5. **Grounding.** Claims cite inspected source and executed focused verification.

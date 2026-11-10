@@ -60,7 +60,7 @@ directory. If there are no sessions for the repo it says so and exits 0.
 It is an **estimate with a stated assumption, not a measurement** — but both of its prices are
 measured from the session's own transcript, so only the substitution ratio is assumed:
 
-1. Only **locate** calls are credited — `search`, `neighbors`, `impact`. Bulk verbs
+1. Only **locate** calls are credited — `query`, `neighbors`, `impact`. Bulk verbs
    (`symbols`, `edges`, `snapshot`, `diff`, …) appear in the table but are never credited.
 2. Within each session, both per-call prices are **measured**:
    `graph bytes/call = locate result bytes ÷ locate calls`, and
@@ -90,7 +90,7 @@ Two consequences worth stating to the user:
 - Give the estimate with its label: "estimated; both per-call costs measured from this
   session, 1:1 substitution assumed". Never drop the `~`.
 - If graph calls are 0 while exploration is high, say so plainly and point at the fix:
-  `entire graph init-agents` installs the search-first, verify-once doctrine into `AGENTS.md`/`CLAUDE.md`
+  `entire graph setup` installs the search-first, verify-once doctrine into `AGENTS.md`/`CLAUDE.md`
   so agents in this repo actually use it.
 - Never present the estimate as billed savings; the billed number in the same report is the
   session total, not a saving.

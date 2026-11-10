@@ -364,7 +364,7 @@ type serviceBoundary struct {
 
 var (
 	graphqlOperationRe          = regexp.MustCompile(`(?is)\b(query|mutation|subscription)\s+([A-Za-z_][A-Za-z0-9_]*)`)
-	graphqlOperationSelectionRe = regexp.MustCompile(`(?is)\b(query|mutation|subscription)\b\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*(?:\([^{}]*\))?\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^{}]*\))?\s*)*\{`)
+	graphqlOperationSelectionRe = regexp.MustCompile(`(?is)\b(query|mutation|subscription)\b\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*(?:\((?:[^{}]|\{[^{}]*\})*\))?\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^{}]*\))?\s*)*\{`)
 	graphqlFragmentRe           = regexp.MustCompile(`(?is)\bfragment\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^{}]*\))?\s*)*\{`)
 	trpcProcedureRe             = regexp.MustCompile(`(?m)([A-Za-z_$][\w$]*)\s*:\s*(?:publicProcedure|protectedProcedure|procedure)\s*\.\s*(query|mutation|subscription)\s*\(`)
 )
@@ -459,13 +459,19 @@ func templateLiteralTag(runes []rune, backtick int) string {
 	if backtick <= 0 || runes[backtick] != '`' {
 		return ""
 	}
-	end := backtick
+	// A tag may be separated from its template by whitespace or a newline;
+	// both are still tagged templates.
+	stop := backtick
+	for stop > 0 && (runes[stop-1] == ' ' || runes[stop-1] == '\t' || runes[stop-1] == '\n' || runes[stop-1] == '\r') {
+		stop--
+	}
+	end := stop
 	// The ASCII check comes first: isJSIdentifierPart takes a byte, so a
 	// non-ASCII rune would be truncated before it is rejected.
 	for end > 0 && runes[end-1] < 128 && isJSIdentifierPart(byte(runes[end-1])) {
 		end--
 	}
-	return string(runes[end:backtick])
+	return string(runes[end:stop])
 }
 
 func indexRunes(runes []rune, from int, want string) int {
@@ -857,8 +863,32 @@ func graphqlRootSelectionFields(body string) []string {
 		if depth != 0 || !isJSIdentifierStart(ch) {
 			continue
 		}
+		// A GraphQL Name is /[_A-Za-z][_0-9A-Za-z]*/ — it never starts with
+		// `$`, and it is never introduced by a host-language escape. Both
+		// shapes reach here only from template interpolation:
+		// `${fragments.join("\n  ")}` reads as fields named `$` and `n`.
+		if ch == '$' || (i > 0 && body[i-1] == '\\') {
+			for i+1 < len(body) && isJSIdentifierPart(body[i+1]) {
+				i++
+			}
+			continue
+		}
 		nameStart := i
 		if nameStart >= 3 && body[nameStart-3:nameStart] == "..." {
+			// A fragment spread is not a field; graphqlRootFragmentSpreads
+			// resolves it separately. Skip the WHOLE spread name: `continue`
+			// alone left the loop to resume at its SECOND byte, so
+			// `...ViewerFields` emitted a field named `iewerFields` — a symbol
+			// naming nothing that exists in the document, which is the worst
+			// failure this extractor can produce. The final i-- keeps the
+			// loop's own increment landing ON the byte after the name rather
+			// than past it, so a `#` comment or a bracket that immediately
+			// follows a spread is still seen by the scanner.
+			i++
+			for i < len(body) && isJSIdentifierPart(body[i]) {
+				i++
+			}
+			i--
 			continue
 		}
 		i++
@@ -963,7 +993,7 @@ func asyncCallNames(body symbolBody) []string {
 func returnFlowCallNames(body symbolBody) []string {
 	stripped := body.stripped
 	seen := map[string]struct{}{}
-	for _, match := range returnCallRe.FindAllStringSubmatchIndex(stripped, -1) {
+	for _, match := range body.relationMatchIndices(returnCallRe) {
 		if len(match) < 4 || match[2] < 0 || match[3] < 0 {
 			continue
 		}
@@ -1019,7 +1049,7 @@ type returnFlowCall struct {
 	Direction    string
 }
 
-func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
+func returnFlowCalls(body symbolBody, params map[string]bool, syntax flowSyntax) []returnFlowCall {
 	stripped := body.stripped
 	flows := map[string]returnFlowCall{}
 	for _, name := range returnFlowCallNames(body) {
@@ -1031,17 +1061,17 @@ func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
 			Direction:    "callee_to_caller",
 		}
 	}
-	for _, flow := range ternaryReturnFlows(stripped) {
+	for _, flow := range ternaryReturnFlows(body, syntax) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind] = flow
 	}
-	for _, flow := range fallbackReturnFlows(stripped) {
+	for _, flow := range fallbackReturnFlows(body, syntax) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind] = flow
 	}
-	for _, flow := range expressionAssignedReturnFlows(stripped) {
+	for _, flow := range expressionAssignedReturnFlows(body, syntax) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	assigned := map[string]string{}
-	for _, match := range assignCallRe.FindAllStringSubmatchIndex(stripped, -1) {
+	for _, match := range body.relationMatchIndices(assignCallRe) {
 		if len(match) != 6 {
 			continue
 		}
@@ -1054,7 +1084,7 @@ func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
 			assigned[varName] = callee
 		}
 	}
-	for _, match := range returnVarRe.FindAllStringSubmatchIndex(stripped, -1) {
+	for _, match := range body.relationMatchIndices(returnVarRe) {
 		if len(match) != 4 {
 			continue
 		}
@@ -1074,7 +1104,7 @@ func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
 			Direction:    "callee_to_caller",
 		}
 	}
-	for _, match := range returnPropertyRe.FindAllStringSubmatchIndex(stripped, -1) {
+	for _, match := range body.relationMatchIndices(returnPropertyRe) {
 		if len(match) != 6 {
 			continue
 		}
@@ -1095,16 +1125,16 @@ func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
 			Direction:    "callee_to_caller",
 		}
 	}
-	for _, flow := range branchAssignedReturnFlows(stripped) {
+	for _, flow := range branchAssignedReturnFlows(body) {
 		flows[flow.Name+"\x00assigned_return_flow"] = flow
 	}
-	for _, flow := range argumentForwardingFlows(stripped, params) {
+	for _, flow := range argumentForwardingFlows(body, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range parameterPropertyForwardingFlows(stripped, params) {
+	for _, flow := range parameterPropertyForwardingFlows(body, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range parameterPropertyAliasForwardingFlows(stripped, params) {
+	for _, flow := range parameterPropertyAliasForwardingFlows(body, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	// One alias map, read by the five scanners below. Each derived its own from
@@ -1113,24 +1143,24 @@ func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
 	// so a symbol with no parameters still costs no scan at all.
 	var aliases map[string]string
 	if len(params) > 0 {
-		aliases = parameterAliasMap(stripped, params)
+		aliases = parameterAliasMap(body, params)
 	}
-	for _, flow := range aliasForwardingFlows(stripped, params, aliases) {
+	for _, flow := range aliasForwardingFlows(body, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range destructuredAliasForwardingFlows(stripped, params) {
+	for _, flow := range destructuredAliasForwardingFlows(body, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range objectFieldForwardingFlows(stripped, params, aliases) {
+	for _, flow := range objectFieldForwardingFlows(body, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range collectionElementForwardingFlows(stripped, params, aliases) {
+	for _, flow := range collectionElementForwardingFlows(body, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range callbackElementForwardingFlows(stripped, params, aliases) {
+	for _, flow := range callbackElementForwardingFlows(body, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range directLiteralForwardingFlows(stripped, params, aliases) {
+	for _, flow := range directLiteralForwardingFlows(body, params, aliases) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	out := make([]returnFlowCall, 0, len(flows))
@@ -1161,11 +1191,11 @@ func returnFlowCalls(body symbolBody, params map[string]bool) []returnFlowCall {
 	return out
 }
 
-func ternaryReturnFlows(block string) []returnFlowCall {
+func ternaryReturnFlows(body symbolBody, syntax flowSyntax) []returnFlowCall {
 	seen := map[string]bool{}
 	var flows []returnFlowCall
 	addMatches := func(re *regexp.Regexp) {
-		for _, match := range re.FindAllStringSubmatch(block, -1) {
+		for _, match := range body.relationMatches(re) {
 			if len(match) != 3 {
 				continue
 			}
@@ -1185,8 +1215,12 @@ func ternaryReturnFlows(block string) []returnFlowCall {
 			}
 		}
 	}
-	addMatches(ternaryReturnCallRe)
-	addMatches(pythonIfReturnRe)
+	if syntax.ternary {
+		addMatches(ternaryReturnCallRe)
+	}
+	if syntax.pythonCond {
+		addMatches(pythonIfReturnRe)
+	}
 	if len(flows) == 0 {
 		return nil
 	}
@@ -1196,11 +1230,11 @@ func ternaryReturnFlows(block string) []returnFlowCall {
 	return flows
 }
 
-func fallbackReturnFlows(block string) []returnFlowCall {
+func fallbackReturnFlows(body symbolBody, syntax flowSyntax) []returnFlowCall {
 	seen := map[string]bool{}
 	var flows []returnFlowCall
 	addMatches := func(re *regexp.Regexp) {
-		for _, match := range re.FindAllStringSubmatch(block, -1) {
+		for _, match := range body.relationMatches(re) {
 			if len(match) != 3 {
 				continue
 			}
@@ -1220,8 +1254,12 @@ func fallbackReturnFlows(block string) []returnFlowCall {
 			}
 		}
 	}
-	addMatches(jsFallbackReturnRe)
-	addMatches(pythonOrReturnRe)
+	if syntax.logicalFallback {
+		addMatches(jsFallbackReturnRe)
+	}
+	if syntax.orFallback {
+		addMatches(pythonOrReturnRe)
+	}
 	if len(flows) == 0 {
 		return nil
 	}
@@ -1239,14 +1277,15 @@ type assignmentFlowEvent struct {
 	Pos          int
 }
 
-func expressionAssignedReturnFlows(block string) []returnFlowCall {
-	events := assignmentFlowEvents(block)
+func expressionAssignedReturnFlows(body symbolBody, syntax flowSyntax) []returnFlowCall {
+	block := body.stripped
+	events := assignmentFlowEvents(body, syntax)
 	if len(events) == 0 {
 		return nil
 	}
 	seen := map[string]bool{}
 	var flows []returnFlowCall
-	for _, match := range returnVarRe.FindAllStringSubmatchIndex(block, -1) {
+	for _, match := range body.relationMatchIndices(returnVarRe) {
 		if len(match) != 4 {
 			continue
 		}
@@ -1291,10 +1330,11 @@ func expressionAssignedReturnFlows(block string) []returnFlowCall {
 	return flows
 }
 
-func assignmentFlowEvents(block string) []assignmentFlowEvent {
+func assignmentFlowEvents(body symbolBody, syntax flowSyntax) []assignmentFlowEvent {
+	block := body.stripped
 	var events []assignmentFlowEvent
 	addExpressionMatches := func(re *regexp.Regexp, reason, evidence string) {
-		for _, match := range re.FindAllStringSubmatchIndex(block, -1) {
+		for _, match := range body.relationMatchIndices(re) {
 			if len(match) != 8 {
 				continue
 			}
@@ -1313,11 +1353,19 @@ func assignmentFlowEvents(block string) []assignmentFlowEvent {
 			})
 		}
 	}
-	addExpressionMatches(ternaryAssignCallRe, "callee return value assigned through conditional expression and returned by caller", "conditional_assigned_return_flow")
-	addExpressionMatches(pythonIfAssignRe, "callee return value assigned through conditional expression and returned by caller", "conditional_assigned_return_flow")
-	addExpressionMatches(jsFallbackAssignRe, "callee return value assigned through fallback expression and returned by caller", "fallback_assigned_return_flow")
-	addExpressionMatches(pythonOrAssignRe, "callee return value assigned through fallback expression and returned by caller", "fallback_assigned_return_flow")
-	for _, match := range assignCallRe.FindAllStringSubmatchIndex(block, -1) {
+	if syntax.ternary {
+		addExpressionMatches(ternaryAssignCallRe, "callee return value assigned through conditional expression and returned by caller", "conditional_assigned_return_flow")
+	}
+	if syntax.pythonCond {
+		addExpressionMatches(pythonIfAssignRe, "callee return value assigned through conditional expression and returned by caller", "conditional_assigned_return_flow")
+	}
+	if syntax.logicalFallback {
+		addExpressionMatches(jsFallbackAssignRe, "callee return value assigned through fallback expression and returned by caller", "fallback_assigned_return_flow")
+	}
+	if syntax.orFallback {
+		addExpressionMatches(pythonOrAssignRe, "callee return value assigned through fallback expression and returned by caller", "fallback_assigned_return_flow")
+	}
+	for _, match := range body.relationMatchIndices(assignCallRe) {
 		if len(match) != 6 {
 			continue
 		}
@@ -1332,7 +1380,7 @@ func assignmentFlowEvents(block string) []assignmentFlowEvent {
 			Pos:   match[0],
 		})
 	}
-	for _, match := range destructuredAssignCallRe.FindAllStringSubmatchIndex(block, -1) {
+	for _, match := range body.relationMatchIndices(destructuredAssignCallRe) {
 		if len(match) != 8 {
 			continue
 		}
@@ -1391,8 +1439,8 @@ func destructuredAssignmentVariables(varList string) []string {
 
 var branchAssignedReturnFlowsBranchRe = regexp.MustCompile(`(?s)\bif\s*\([^)]*\)\s*\{(.*?)\}\s*else\s*\{(.*?)\}.*?\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
 
-func branchAssignedReturnFlows(block string) []returnFlowCall {
-	matches := branchAssignedReturnFlowsBranchRe.FindAllStringSubmatch(block, -1)
+func branchAssignedReturnFlows(body symbolBody) []returnFlowCall {
+	matches := body.relationMatches(branchAssignedReturnFlowsBranchRe)
 	if len(matches) == 0 {
 		return nil
 	}
@@ -1448,21 +1496,18 @@ func branchCallAssignments(block, variable string) []string {
 // stripped body, so they share one pattern rather than each compiling it.
 var flowCallSiteRe = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
 
-func argumentForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+func argumentForwardingFlows(body symbolBody, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		name := strings.TrimPrefix(match[1], "$")
+	for _, call := range body.forwardingCallFacts() {
+		name := call.name
 		if dataFlowCallNameIgnored(name) {
 			continue
 		}
-		for _, arg := range splitSimpleArguments(match[2]) {
+		for _, arg := range call.args {
 			arg = strings.TrimPrefix(strings.TrimSpace(arg), "$")
 			if !params[arg] {
 				continue
@@ -1490,21 +1535,18 @@ func argumentForwardingFlows(block string, params map[string]bool) []returnFlowC
 	return flows
 }
 
-func parameterPropertyForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+func parameterPropertyForwardingFlows(body symbolBody, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		name := strings.TrimPrefix(match[1], "$")
+	for _, call := range body.forwardingCallFacts() {
+		name := call.name
 		if dataFlowCallNameIgnored(name) {
 			continue
 		}
-		for _, arg := range splitSimpleArguments(match[2]) {
+		for _, arg := range call.args {
 			paramName, access, ok := forwardedParameterProperty(arg, params)
 			if !ok {
 				continue
@@ -1561,12 +1603,12 @@ func forwardedParameterProperty(arg string, params map[string]bool) (string, str
 
 var parameterPropertyAliasForwardingFlowsAssignmentRe = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(\$?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:"[^"]*"|'[^']*'|[0-9]*)\s*\]))`)
 
-func parameterPropertyAliasForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+func parameterPropertyAliasForwardingFlows(body symbolBody, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
 	aliasToProperty := map[string]string{}
-	for _, match := range parameterPropertyAliasForwardingFlowsAssignmentRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range body.relationMatches(parameterPropertyAliasForwardingFlowsAssignmentRe) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1582,15 +1624,12 @@ func parameterPropertyAliasForwardingFlows(block string, params map[string]bool)
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		name := strings.TrimPrefix(match[1], "$")
+	for _, call := range body.forwardingCallFacts() {
+		name := call.name
 		if dataFlowCallNameIgnored(name) {
 			continue
 		}
-		for _, arg := range splitSimpleArguments(match[2]) {
+		for _, arg := range call.args {
 			alias := strings.TrimPrefix(strings.TrimSpace(arg), "$")
 			property := aliasToProperty[alias]
 			if property == "" {
@@ -1619,7 +1658,7 @@ func parameterPropertyAliasForwardingFlows(block string, params map[string]bool)
 	return flows
 }
 
-func aliasForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
+func aliasForwardingFlows(body symbolBody, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
@@ -1628,15 +1667,12 @@ func aliasForwardingFlows(block string, params map[string]bool, aliases map[stri
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		name := strings.TrimPrefix(match[1], "$")
+	for _, call := range body.forwardingCallFacts() {
+		name := call.name
 		if dataFlowCallNameIgnored(name) {
 			continue
 		}
-		for _, arg := range splitSimpleArguments(match[2]) {
+		for _, arg := range call.args {
 			alias := strings.TrimPrefix(strings.TrimSpace(arg), "$")
 			param := aliases[alias]
 			if param == "" {
@@ -1665,12 +1701,12 @@ func aliasForwardingFlows(block string, params map[string]bool, aliases map[stri
 	return flows
 }
 
-func destructuredAliasForwardingFlows(block string, params map[string]bool) []returnFlowCall {
+func destructuredAliasForwardingFlows(body symbolBody, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
 	aliases := map[string]string{}
-	for _, match := range destructuredParamAliasRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range body.relationMatches(destructuredParamAliasRe) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1690,15 +1726,12 @@ func destructuredAliasForwardingFlows(block string, params map[string]bool) []re
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		name := strings.TrimPrefix(match[1], "$")
+	for _, call := range body.forwardingCallFacts() {
+		name := call.name
 		if dataFlowCallNameIgnored(name) {
 			continue
 		}
-		for _, arg := range splitSimpleArguments(match[2]) {
+		for _, arg := range call.args {
 			alias := strings.TrimPrefix(strings.TrimSpace(arg), "$")
 			param := aliases[alias]
 			if param == "" {
@@ -1746,13 +1779,13 @@ func destructuredObjectAliases(fields string) []string {
 	return sortedStringSet(seen)
 }
 
-func objectFieldForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
+func objectFieldForwardingFlows(body symbolBody, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
-	objectVars := localObjectVars(block)
+	objectVars := localObjectVars(body)
 	fieldParamByObject := map[string]map[string]bool{}
-	for _, match := range objectFieldAssignRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range body.relationMatches(objectFieldAssignRe) {
 		if len(match) != 4 {
 			continue
 		}
@@ -1766,7 +1799,7 @@ func objectFieldForwardingFlows(block string, params map[string]bool, aliases ma
 		}
 		fieldParamByObject[objectName][paramName] = true
 	}
-	for objectName, paramNames := range objectLiteralFieldParams(block, params, aliases) {
+	for objectName, paramNames := range objectLiteralFieldParams(body, params, aliases) {
 		if fieldParamByObject[objectName] == nil {
 			fieldParamByObject[objectName] = map[string]bool{}
 		}
@@ -1779,15 +1812,12 @@ func objectFieldForwardingFlows(block string, params map[string]bool, aliases ma
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		name := strings.TrimPrefix(match[1], "$")
+	for _, call := range body.forwardingCallFacts() {
+		name := call.name
 		if dataFlowCallNameIgnored(name) {
 			continue
 		}
-		for _, arg := range splitSimpleArguments(match[2]) {
+		for _, arg := range call.args {
 			objectName := strings.TrimPrefix(strings.TrimSpace(arg), "$")
 			for paramName := range fieldParamByObject[objectName] {
 				key := name + "\x00" + objectName + "\x00" + paramName
@@ -1814,9 +1844,9 @@ func objectFieldForwardingFlows(block string, params map[string]bool, aliases ma
 	return flows
 }
 
-func objectLiteralFieldParams(block string, params map[string]bool, aliases map[string]string) map[string]map[string]bool {
+func objectLiteralFieldParams(body symbolBody, params map[string]bool, aliases map[string]string) map[string]map[string]bool {
 	out := map[string]map[string]bool{}
-	for _, match := range objectLiteralVarRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range body.relationMatches(objectLiteralVarRe) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1858,13 +1888,13 @@ func objectLiteralParamNames(fields string, params map[string]bool, aliases map[
 	return out
 }
 
-func collectionElementForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
+func collectionElementForwardingFlows(body symbolBody, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
-	collectionVars := localCollectionVars(block)
+	collectionVars := localCollectionVars(body)
 	paramByCollection := map[string]map[string]bool{}
-	for _, match := range collectionAddRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range body.relationMatches(collectionAddRe) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1878,7 +1908,7 @@ func collectionElementForwardingFlows(block string, params map[string]bool, alia
 		}
 		paramByCollection[collectionName][paramName] = true
 	}
-	for _, match := range collectionSetRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range body.relationMatches(collectionSetRe) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1892,7 +1922,7 @@ func collectionElementForwardingFlows(block string, params map[string]bool, alia
 		}
 		paramByCollection[collectionName][paramName] = true
 	}
-	for collectionName, paramNames := range collectionLiteralElementParams(block, params, aliases) {
+	for collectionName, paramNames := range collectionLiteralElementParams(body, params, aliases) {
 		if paramByCollection[collectionName] == nil {
 			paramByCollection[collectionName] = map[string]bool{}
 		}
@@ -1905,15 +1935,12 @@ func collectionElementForwardingFlows(block string, params map[string]bool, alia
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		name := strings.TrimPrefix(match[1], "$")
+	for _, call := range body.forwardingCallFacts() {
+		name := call.name
 		if dataFlowCallNameIgnored(name) {
 			continue
 		}
-		for _, arg := range splitSimpleArguments(match[2]) {
+		for _, arg := range call.args {
 			collectionName := strings.TrimPrefix(strings.TrimSpace(arg), "$")
 			for paramName := range paramByCollection[collectionName] {
 				key := name + "\x00" + collectionName + "\x00" + paramName
@@ -1940,9 +1967,9 @@ func collectionElementForwardingFlows(block string, params map[string]bool, alia
 	return flows
 }
 
-func collectionLiteralElementParams(block string, params map[string]bool, aliases map[string]string) map[string]map[string]bool {
+func collectionLiteralElementParams(body symbolBody, params map[string]bool, aliases map[string]string) map[string]map[string]bool {
 	out := map[string]map[string]bool{}
-	for _, match := range collectionLiteralVarRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range body.relationMatches(collectionLiteralVarRe) {
 		if len(match) != 3 {
 			continue
 		}
@@ -1964,13 +1991,14 @@ func collectionLiteralElementParams(block string, params map[string]bool, aliase
 	return out
 }
 
-func callbackElementForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
+func callbackElementForwardingFlows(body symbolBody, params map[string]bool, aliases map[string]string) []returnFlowCall {
+	block := body.stripped
 	if len(params) == 0 {
 		return nil
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range collectionCallbackRe.FindAllStringSubmatchIndex(block, -1) {
+	for _, match := range body.relationMatchIndices(collectionCallbackRe) {
 		if len(match) != 4 {
 			continue
 		}
@@ -2050,21 +2078,18 @@ func callsWithArgument(block, argName string) []string {
 	return sortedKeys(seen)
 }
 
-func directLiteralForwardingFlows(block string, params map[string]bool, aliases map[string]string) []returnFlowCall {
+func directLiteralForwardingFlows(body symbolBody, params map[string]bool, aliases map[string]string) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
 	var flows []returnFlowCall
 	seen := map[string]bool{}
-	for _, match := range flowCallSiteRe.FindAllStringSubmatch(block, -1) {
-		if len(match) != 3 {
-			continue
-		}
-		name := strings.TrimPrefix(match[1], "$")
+	for _, call := range body.forwardingCallFacts() {
+		name := call.name
 		if dataFlowCallNameIgnored(name) {
 			continue
 		}
-		for _, arg := range splitSimpleArguments(match[2]) {
+		for _, arg := range call.args {
 			for _, paramName := range directLiteralParamNames(arg, params, aliases) {
 				key := name + "\x00" + paramName
 				if seen[key] {
@@ -2090,9 +2115,9 @@ func directLiteralForwardingFlows(block string, params map[string]bool, aliases 
 	return flows
 }
 
-func parameterAliasMap(block string, params map[string]bool) map[string]string {
+func parameterAliasMap(body symbolBody, params map[string]bool) map[string]string {
 	aliases := map[string]string{}
-	for _, match := range aliasAssignRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range body.relationMatches(aliasAssignRe) {
 		if len(match) != 3 {
 			continue
 		}
@@ -2154,9 +2179,9 @@ func collectionLiteralParamNames(items string, params map[string]bool, aliases m
 	return out
 }
 
-func localObjectVars(block string) map[string]bool {
+func localObjectVars(body symbolBody) map[string]bool {
 	vars := map[string]bool{}
-	for _, match := range localObjectVarRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range body.relationMatches(localObjectVarRe) {
 		if len(match) == 2 && match[1] != "" {
 			vars[strings.TrimPrefix(match[1], "$")] = true
 		}
@@ -2164,9 +2189,9 @@ func localObjectVars(block string) map[string]bool {
 	return vars
 }
 
-func localCollectionVars(block string) map[string]bool {
+func localCollectionVars(body symbolBody) map[string]bool {
 	vars := map[string]bool{}
-	for _, match := range localCollectionVarRe.FindAllStringSubmatch(block, -1) {
+	for _, match := range body.relationMatches(localCollectionVarRe) {
 		if len(match) == 2 && match[1] != "" {
 			vars[strings.TrimPrefix(match[1], "$")] = true
 		}
@@ -2734,7 +2759,7 @@ func fieldAccesses(body symbolBody) []fieldAccess {
 	stripped := body.stripped
 	var out []fieldAccess
 	seen := map[string]bool{}
-	for _, m := range fieldAccessRe.FindAllStringSubmatchIndex(stripped, -1) {
+	for _, m := range body.relationMatchIndices(fieldAccessRe) {
 		amp := stripped[m[2]:m[3]]
 		receiver := strings.TrimPrefix(stripped[m[4]:m[5]], "$")
 		field := stripped[m[6]:m[7]]
@@ -2822,7 +2847,7 @@ func receiverCalls(body symbolBody) []receiverCall {
 	stripped := body.stripped
 	var out []receiverCall
 	seen := map[string]bool{}
-	for _, m := range receiverCallRe.FindAllStringSubmatchIndex(stripped, -1) {
+	for _, m := range body.relationMatchIndices(receiverCallRe) {
 		if len(m) < 6 {
 			continue
 		}
@@ -2898,7 +2923,6 @@ var (
 )
 
 func chainedConstructorCalls(body symbolBody) []typedMethodCall {
-	stripped := body.stripped
 	var out []typedMethodCall
 	seen := map[string]bool{}
 	add := func(typeName, method, detail string) {
@@ -2909,20 +2933,19 @@ func chainedConstructorCalls(body symbolBody) []typedMethodCall {
 		seen[key] = true
 		out = append(out, typedMethodCall{TypeName: typeName, Method: method, Detail: detail})
 	}
-	for _, m := range newCtorMethodCallRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(newCtorMethodCallRe) {
 		add(m[1], m[2], "new "+m[1]+"()."+m[2])
 	}
-	for _, m := range ctorMethodCallRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(ctorMethodCallRe) {
 		add(m[1], m[2], m[1]+"()."+m[2])
 	}
 	return out
 }
 
 func returnedReceiverCalls(body symbolBody) []returnedMethodCall {
-	stripped := body.stripped
 	var out []returnedMethodCall
 	seen := map[string]bool{}
-	for _, m := range returnedMethodCallRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(returnedMethodCallRe) {
 		if len(m) != 3 {
 			continue
 		}
@@ -2941,7 +2964,6 @@ func returnedReceiverCalls(body symbolBody) []returnedMethodCall {
 }
 
 func chainedConstructorReturnCalls(body symbolBody) []typedMethodChainCall {
-	stripped := body.stripped
 	var out []typedMethodChainCall
 	seen := map[string]bool{}
 	add := func(typeName, firstMethod, method, detail string) {
@@ -2952,12 +2974,12 @@ func chainedConstructorReturnCalls(body symbolBody) []typedMethodChainCall {
 		seen[key] = true
 		out = append(out, typedMethodChainCall{TypeName: typeName, FirstMethod: firstMethod, Method: method, Detail: detail})
 	}
-	for _, m := range newCtorMethodChainCallRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(newCtorMethodChainCallRe) {
 		if len(m) == 4 {
 			add(m[1], m[2], m[3], "new "+m[1]+"()."+m[2]+"()."+m[3])
 		}
 	}
-	for _, m := range ctorMethodChainCallRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(ctorMethodChainCallRe) {
 		if len(m) == 4 {
 			add(m[1], m[2], m[3], m[1]+"()."+m[2]+"()."+m[3])
 		}
@@ -2966,7 +2988,6 @@ func chainedConstructorReturnCalls(body symbolBody) []typedMethodChainCall {
 }
 
 func chainedConstructorDeepReturnCalls(body symbolBody) []typedMethodDeepChainCall {
-	stripped := body.stripped
 	var out []typedMethodDeepChainCall
 	seen := map[string]bool{}
 	add := func(typeName string, methods []string, detail string) {
@@ -2982,12 +3003,12 @@ func chainedConstructorDeepReturnCalls(body symbolBody) []typedMethodDeepChainCa
 		seen[key] = true
 		out = append(out, typedMethodDeepChainCall{TypeName: typeName, Methods: methods, Detail: detail})
 	}
-	for _, m := range newCtorMethodDeepChainCallRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(newCtorMethodDeepChainCallRe) {
 		if len(m) == 5 {
 			add(m[1], []string{m[2], m[3], m[4]}, "new "+m[1]+"()."+m[2]+"()."+m[3]+"()."+m[4])
 		}
 	}
-	for _, m := range ctorMethodDeepChainCallRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(ctorMethodDeepChainCallRe) {
 		if len(m) == 5 {
 			add(m[1], []string{m[2], m[3], m[4]}, m[1]+"()."+m[2]+"()."+m[3]+"()."+m[4])
 		}
@@ -2996,10 +3017,9 @@ func chainedConstructorDeepReturnCalls(body symbolBody) []typedMethodDeepChainCa
 }
 
 func returnedReceiverChainCalls(body symbolBody) []returnedMethodChainCall {
-	stripped := body.stripped
 	var out []returnedMethodChainCall
 	seen := map[string]bool{}
-	for _, m := range returnedMethodChainCallRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(returnedMethodChainCallRe) {
 		if len(m) != 4 {
 			continue
 		}
@@ -3018,10 +3038,9 @@ func returnedReceiverChainCalls(body symbolBody) []returnedMethodChainCall {
 }
 
 func returnedReceiverDeepChainCalls(body symbolBody) []returnedMethodDeepChainCall {
-	stripped := body.stripped
 	var out []returnedMethodDeepChainCall
 	seen := map[string]bool{}
-	for _, m := range returnedMethodDeepChainRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(returnedMethodDeepChainRe) {
 		if len(m) != 5 {
 			continue
 		}
@@ -3114,19 +3133,18 @@ var (
 // e.g. Python), and `x := Type{...}` / `&Type{...}` (Go). Capitalization keeps
 // the heuristic conservative; results feed type-inferred call resolution.
 func localVarTypes(body symbolBody) map[string]string {
-	stripped := body.stripped
 	out := map[string]string{}
-	for _, m := range newAssignRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(newAssignRe) {
 		out[strings.TrimPrefix(m[1], "$")] = m[2]
 	}
-	for _, m := range ctorAssignRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(ctorAssignRe) {
 		name := strings.TrimPrefix(m[1], "$")
 		if _, exists := out[name]; !exists {
 			out[name] = m[2]
 		}
 	}
 	for _, re := range []*regexp.Regexp{outParamDeclRe, nullableLocalDeclRe} {
-		for _, m := range re.FindAllStringSubmatch(stripped, -1) {
+		for _, m := range body.relationMatches(re) {
 			name := m[2]
 			if _, exists := out[name]; !exists {
 				out[name] = m[1]
@@ -3137,9 +3155,8 @@ func localVarTypes(body symbolBody) map[string]string {
 }
 
 func factoryReturnVarTypes(body symbolBody, filePath string, returnTypesBySymbolNameAndFile map[string]map[string][]string) map[string]string {
-	stripped := body.stripped
 	out := map[string]string{}
-	for _, m := range factoryReturnAssignRe.FindAllStringSubmatch(stripped, -1) {
+	for _, m := range body.relationMatches(factoryReturnAssignRe) {
 		if len(m) != 3 {
 			continue
 		}
@@ -3280,7 +3297,7 @@ var (
 // imports of the file. Package-qualified types are never captured as local
 // symbols, so this is how receiver-call resolution recognises a value of an
 // external type even when its bare type name was never resolved.
-func importedReceiverVarTypes(signature string, body symbolBody, importsByName map[string][]string, goModule string) map[string]string {
+func importedReceiverVarTypes(signature string, body symbolBody, importsByName map[string][]string, goModules goModuleIndex) map[string]string {
 	out := map[string]string{}
 	add := func(matches [][]string) {
 		for _, m := range matches {
@@ -3295,12 +3312,13 @@ func importedReceiverVarTypes(signature string, body symbolBody, importsByName m
 			if len(paths) == 0 {
 				continue
 			}
-			// A receiver qualified by an in-module package (the repo's own
-			// module path — e.g. a sibling package imported from examples/) is
-			// NOT external: its methods are local symbols, so the unique-method
-			// fallback should still resolve them. Only genuinely external
-			// receivers (stdlib/third-party) are recorded for suppression.
-			if importPathsInModule(paths, goModule) {
+			// A receiver qualified by an in-repository package (any module the
+			// repo declares — a sibling package imported from examples/, or a
+			// package in a nested tools/ module) is NOT external: its methods
+			// are local symbols, so the unique-method fallback should still
+			// resolve them. Only genuinely external receivers (stdlib/third-
+			// party) are recorded for suppression.
+			if importPathsInModule(paths, goModules) {
 				continue
 			}
 			out[name] = pkg
@@ -3327,9 +3345,9 @@ func importedReceiverVarTypes(signature string, body symbolBody, importsByName m
 // its implementations share the method name. External (stdlib/third-party)
 // qualifiers are excluded — their methods are not local symbols, and
 // importedReceiverVarTypes already records them for suppression.
-func goInModuleQualifiedReceiverTypes(signature string, body symbolBody, importsByName map[string][]string, goModule string) map[string]pkgQualType {
+func goInModuleQualifiedReceiverTypes(signature string, body symbolBody, importsByName map[string][]string, goModules goModuleIndex) map[string]pkgQualType {
 	out := map[string]pkgQualType{}
-	if goModule == "" {
+	if goModules.empty() {
 		return out
 	}
 	add := func(text string) {
@@ -3344,7 +3362,7 @@ func goInModuleQualifiedReceiverTypes(signature string, body symbolBody, imports
 			if _, exists := out[name]; exists {
 				continue
 			}
-			if !importPathsInModule(importsByName[pkg], goModule) {
+			if !importPathsInModule(importsByName[pkg], goModules) {
 				continue
 			}
 			out[name] = pkgQualType{alias: pkg, typeName: typeName}
@@ -3355,15 +3373,16 @@ func goInModuleQualifiedReceiverTypes(signature string, body symbolBody, imports
 	return out
 }
 
-// importPathsInModule reports whether any resolved import path belongs to the
-// repo's own Go module (equal to the module path or nested under it). Such a
-// qualifier names an in-module package, not an external dependency.
-func importPathsInModule(paths []string, goModule string) bool {
-	if goModule == "" {
-		return false
-	}
+// importPathsInModule reports whether any resolved import path belongs to a Go
+// module THIS REPOSITORY declares — the root module or any nested one. Such a
+// qualifier names in-repository source, not an external dependency.
+//
+// Asking only about the root module misclassified every package of a nested
+// module (tools/go.mod declaring example.com/tool) as third-party, which
+// suppressed its receivers as external and dropped their call edges.
+func importPathsInModule(paths []string, goModules goModuleIndex) bool {
 	for _, p := range paths {
-		if p == goModule || strings.HasPrefix(p, goModule+"/") {
+		if goModules.ownsImport(p) {
 			return true
 		}
 	}

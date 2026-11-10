@@ -1,0 +1,102 @@
+# Contributing to Entire Graph
+
+Thanks for taking the time. Issues and pull requests are both welcome, and
+external contributions are a meaningful share of what lands here.
+
+## Prerequisites
+
+- **Go 1.27 or later.** `go.mod` declares `go 1.27`; older toolchains refuse
+  the module.
+- **cgo, with a working C toolchain.** Entire Graph compiles 13 tree-sitter
+  grammars from C sources vendored under `internal/sem/`, so a build with
+  `CGO_ENABLED=0` fails rather than degrading. Install `gcc` or `clang` on
+  Linux, the Xcode command line tools on macOS, and a MinGW-w64 toolchain on
+  Windows. If you see undefined references to `tree_sitter_*` symbols, cgo is
+  off or no C compiler was found.
+- **Git 2.36 or later** on `PATH`, which is also the runtime requirement.
+
+```sh
+git clone https://github.com/entireio/entire-graph.git
+cd entire-graph
+go build ./cmd/entire-graph
+./entire-graph version
+```
+
+## Before you open a pull request
+
+Run what CI runs:
+
+```sh
+gofmt -s -l .          # must print nothing
+go vet ./...
+go build ./...
+go test ./...
+sh scripts/gen-notices.sh --check
+```
+
+`go test ./...` exercises the full suite and can take several minutes on a cold
+cache. CI additionally runs the POSIX shell suite
+(`sh scripts/entire-graph-statusline_test.sh`) and a sharded Windows run.
+
+## Changes that need more than code
+
+- **A new vendored grammar or a new Go dependency** changes what is statically
+  linked into the released binary, so it changes third-party attribution.
+  Regenerate with `sh scripts/gen-notices.sh` and commit the updated `NOTICES`.
+  The generator refuses to classify a license it does not recognize; if it
+  stops on yours, add the classification deliberately rather than relaxing the
+  check. Release archives are immutable once published, which is why this is a
+  blocking CI check rather than a release-day step.
+- **Vendored grammars** under `internal/sem/grammars` record their origin in
+  `internal/sem/grammars/grammars.json`. Refresh one with
+  `go run ./cmd/grammar-refresh -lang <name> -ref <tag|branch|commit>` (add
+  `-url` for a new grammar); it needs the network, and its output is committed.
+  The go-tree-sitter runtime loads ABI 13-14 only. An entry's `local_build`
+  block makes the tool build the grammar instead of copying it: `patch` (a
+  path under `internal/sem/grammars`) is applied to the checkout, then the
+  parser is regenerated with
+  `npx tree-sitter-cli@<tree_sitter_cli> generate <generate_args>`. Pass
+  `-generate` to add that block to a grammar whose release ships only ABI 15;
+  it defaults to `--abi 14`. Generating needs Node.js (`npx`) on `PATH`.
+  Regenerating the recorded revision reuses the recorded CLI version, so the
+  output matches the vendored files exactly. A new revision uses
+  `tree-sitter-cli@latest` and records the version it ran. `-tree-sitter-cli
+  <version>` overrides both. Tree-sitter can currently still generate ABI 14,
+  but a future release may drop it. If the tool then reports an ABI it cannot
+  vendor, pin an older CLI with `-tree-sitter-cli`. An entry with
+  `local_changes` differs from upstream in ways the tool cannot reapply, so it
+  refuses that grammar unless you pass `-allow-local-changes` and redo the
+  changes by hand. Check the entry's `note` for manual steps, regenerate
+  `NOTICES`, and bump `IdentityRevision` in `internal/sem/provider.go` in the
+  same commit when parse results change.
+- **User-visible behavior** belongs in `CHANGELOG.md` under the unreleased
+  section, grouped by Keep a Changelog heading. Tagged releases publish that
+  section verbatim as their release notes.
+- **Benchmark numbers** carry a documented provenance standard. Read
+  `bench/memory/README.md` and `docs/benchmarks.md` before adding, changing, or
+  quoting one, and never quote a number that has no registered run behind it.
+
+## Pull request conventions
+
+- Commit subjects follow Conventional Commits with a scope, matching existing
+  history: `fix(sem): ...`, `feat(cli): ...`, `docs(readme): ...`,
+  `chore(ci): ...`.
+- Keep a pull request to one concern. Large mechanical changes are easier to
+  review split from behavior changes.
+- Describe how you verified the change, including the command you ran. A claim
+  with no command behind it will be asked for one.
+- Report security-relevant findings through
+  [GitHub Issues](https://github.com/entireio/entire-graph/issues) if they are
+  already public, and privately to the maintainers if they are not.
+
+## Repository orientation
+
+| Path | What lives there |
+| --- | --- |
+| `cmd/entire-graph/` | CLI entry point |
+| `internal/cli/` | Command parsers, help text, and output formats |
+| `internal/sem/` | Semantic analysis, parsers, caches, and vendored grammar sources |
+| `internal/gitutil/` | Git object and worktree access |
+| `docs/` | Public documentation and accepted ADRs |
+| `bench/` | Benchmark harnesses, results, and their provenance records |
+| `scripts/` | Release build, notices generation, and shell test suites |

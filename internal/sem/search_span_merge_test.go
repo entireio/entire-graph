@@ -39,6 +39,41 @@ func spanMergeBody(rank int, path string, start, end int) SearchResult {
 	}
 }
 
+func TestMergedCalleeSpanDoesNotHideNormalResultSlots(t *testing.T) {
+	for _, allCallees := range []bool{false, true} {
+		callee := spanMergeBody(1, "shared.go", 1, 2)
+		callee.Signals = append(callee.Signals, searchCalleeHopSignal)
+		member := spanMergeBody(3, "shared.go", 4, 5)
+		if allCallees {
+			member.Signals = append(member.Signals, searchCalleeHopSignal)
+		}
+		results := []SearchResult{callee, spanMergeBody(2, "other.go", 1, 2), member}
+		merged, spans, _ := mergeSameFileSearchSpans(results, spanMergeFile("shared.go", 10), 0)
+		if spans != 1 || len(merged) != 2 {
+			t.Fatalf("fixture did not merge: %d, %+v", spans, merged)
+		}
+		wantNormal := 2
+		if allCallees {
+			wantNormal = 1
+		}
+		if got := searchTopKResultCount(merged); got != wantNormal {
+			t.Fatalf("allCallees=%v: normal=%d, want %d; signals=%v", allCallees, got, wantNormal, merged[0].Signals)
+		}
+		entry := contractTestEntry()
+		_, _, _, seated, _ := mergeSearchContractContext(merged, searchContractContext{test: &entry}, 100000, 2)
+		wantSeated := 0
+		if allCallees {
+			wantSeated = 1
+		}
+		if seated != wantSeated {
+			t.Fatalf("allCallees=%v: covering seats=%d, want %d", allCallees, seated, wantSeated)
+		}
+		if !hasSearchSignal(callee, searchCalleeHopSignal) {
+			t.Fatal("merge mutated the original callee signals")
+		}
+	}
+}
+
 func wantLineRange(t *testing.T, snippet string, start, end int) {
 	t.Helper()
 	lines := strings.Split(snippet, "\n")

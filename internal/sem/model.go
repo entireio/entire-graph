@@ -16,6 +16,11 @@ type Entity struct {
 	EndLine     int    `json:"end_line"`
 	BodyHash    string `json:"body_hash"`
 	Fingerprint string `json:"fingerprint"`
+	// similaritySource preserves body evidence when Signature is shortened for
+	// display and type analysis (currently Julia declaration headers). Rename
+	// and move fallback matching use it only when exact hashes do not match.
+	// Private parse metadata keeps full definitions out of the frozen schema.
+	similaritySource string
 	// Local marks a callable defined inside another function (a nested/closure
 	// def). It is still a real symbol, but it is only callable from within its
 	// enclosing function, so call resolution must not name-match it across scopes.
@@ -30,6 +35,11 @@ type Entity struct {
 	// being downgraded as ambiguous. Private, like the other parse metadata, so
 	// the frozen schema is unchanged.
 	bodyless bool
+	// cPlusPlusOwners are the declaration's legal lexical C++ owner spellings,
+	// including bounded aliases produced by omitting inline namespaces. Graph
+	// QualifiedName remains based on the immediate container for stable IDs.
+	cPlusPlusOwners         []string
+	cPlusPlusDefinitionName string
 	// cLinkage marks a declaration that sits inside an `extern "C" { ... }`
 	// block (see declaredWithCLinkage). It is the only per-declaration record of
 	// which half of a dual-use C++-labelled header a C translation unit may
@@ -41,6 +51,13 @@ type Entity struct {
 	// intentionally remain line based. A zero start is valid when end > start.
 	sourceStartByte int
 	sourceEndByte   int
+	// nameLine is the 1-based line of the token that NAMES the declaration in the parse tree (the
+	// grammar's `name` field, or the identifier leaf spelled like the name outside comments,
+	// literals and annotations), 0 when the extractor had no parse node for it. It is what renderers
+	// anchor on instead of guessing the naming line from text: an annotation argument, a doc
+	// comment, a raw string or a type spelled like the name is never the name node. Private parse
+	// metadata, like the byte range, so the frozen schema is unchanged.
+	nameLine int
 	// parameterNames holds JS/TS parameter identifiers read from the
 	// declaration's formal_parameters AST node (internal parse metadata, like
 	// the byte range). Signature-string parsing cannot recover these reliably:
@@ -58,19 +75,28 @@ type Entity struct {
 }
 
 type EntityChange struct {
-	Type            string  `json:"type"`
-	Kind            string  `json:"kind"`
-	Name            string  `json:"name"`
-	OldName         string  `json:"old_name,omitempty"`
-	NewName         string  `json:"new_name,omitempty"`
-	OldSignature    string  `json:"old_signature,omitempty"`
-	NewSignature    string  `json:"new_signature,omitempty"`
-	OldPath         string  `json:"old_path,omitempty"`
-	NewPath         string  `json:"new_path,omitempty"`
-	BeforeStartLine int     `json:"before_start_line,omitempty"`
-	AfterStartLine  int     `json:"after_start_line,omitempty"`
-	DependentsCount int     `json:"dependents_count"`
-	Similarity      float64 `json:"similarity,omitempty"`
+	Type            string `json:"type"`
+	Kind            string `json:"kind"`
+	Name            string `json:"name"`
+	OldName         string `json:"old_name,omitempty"`
+	NewName         string `json:"new_name,omitempty"`
+	OldSignature    string `json:"old_signature,omitempty"`
+	NewSignature    string `json:"new_signature,omitempty"`
+	OldPath         string `json:"old_path,omitempty"`
+	NewPath         string `json:"new_path,omitempty"`
+	BeforeStartLine int    `json:"before_start_line,omitempty"`
+	AfterStartLine  int    `json:"after_start_line,omitempty"`
+	DependentsCount int    `json:"dependents_count"`
+	// DependentsEvidence states how much DependentsCount can be trusted. The scan
+	// behind it is always a token-level heuristic (see dependentsEvidenceState in
+	// dependents.go) — it can undercount a caller reached only through an alias,
+	// reflection, or a generated binding whose text never spells the changed
+	// name — so this defaults to "partial" even on a clean scan, and escalates to
+	// "requires_verification" when the scan itself hit a limit (a time budget, an
+	// unreadable or too-large candidate file, or a parse failure) that means some
+	// candidate files were never counted at all.
+	DependentsEvidence EvidenceState `json:"dependents_evidence"`
+	Similarity         float64       `json:"similarity,omitempty"`
 	// Reconciliation carries explicit identity-continuity metadata when a
 	// delete+add pair was reconciled to a single change: RENAMED (same file),
 	// MOVED (across files), or RECONCILED_FROM. Empty for ordinary changes.
@@ -86,11 +112,12 @@ type FileChange struct {
 }
 
 type Result struct {
-	Checkpoint string            `json:"checkpoint,omitempty"`
-	Base       string            `json:"base"`
-	Head       string            `json:"head"`
-	Files      []FileChange      `json:"files"`
-	Warnings   []ProviderWarning `json:"warnings,omitempty"`
+	IdentityRevision string            `json:"identity_revision,omitempty"`
+	Checkpoint       string            `json:"checkpoint,omitempty"`
+	Base             string            `json:"base"`
+	Head             string            `json:"head"`
+	Files            []FileChange      `json:"files"`
+	Warnings         []ProviderWarning `json:"warnings,omitempty"`
 	// SchemaVersion pins the shape of this Result so a copy persisted into
 	// checkpoint metadata can be read back knowing which schema it was written
 	// under. Populated centrally from the package SchemaVersion const at the

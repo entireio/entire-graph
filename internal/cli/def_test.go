@@ -337,3 +337,37 @@ func TestDefMergesPartialDeclarationsButNotUnrelatedNamesakes(t *testing.T) {
 		t.Errorf("unrelated namesake was merged: %#v", namesake)
 	}
 }
+
+// A namesake that sorts BETWEEN two parts of one partial type must not split the
+// type. Matches are ordered by file path, so `Config` in b.cs lands between the
+// parts in a.cs and c.cs; remembering only the newest group per key let the
+// namesake displace the partial group and the part in c.cs was then tested
+// against the namesake alone, producing three declarations.
+func TestDefMergesPartialsSeparatedByANamesake(t *testing.T) {
+	t.Parallel()
+	snapshot := sem.ProviderSnapshot{
+		Header: sem.SnapshotHeader{RepoRoot: "/repo", Profile: "full"},
+		Files:  []sem.FileRecord{{Path: "a.cs"}, {Path: "b.cs"}, {Path: "c.cs"}},
+		Symbols: []sem.SymbolRecord{
+			{ID: "a", Kind: "class", Name: "Config", QualifiedName: "Config", FilePath: "a.cs", StartLine: 3, EndLine: 8, Language: "C#", Signature: "public partial class Config"},
+			{ID: "b", Kind: "class", Name: "Config", QualifiedName: "Config", FilePath: "b.cs", StartLine: 3, EndLine: 4, Language: "C#", Signature: "public class Config"},
+			{ID: "c", Kind: "class", Name: "Config", QualifiedName: "Config", FilePath: "c.cs", StartLine: 3, EndLine: 5, Language: "C#", Signature: "public partial class Config"},
+			{ID: "timeout", Kind: "field", Name: "_timeout", QualifiedName: "Config._timeout", FilePath: "a.cs", StartLine: 5, EndLine: 5, ContainerID: "a", Language: "C#", Signature: "_timeout int"},
+		},
+		Relations: []sem.RelationRecord{
+			{RecordType: "relation", FromID: "a", ToID: "timeout", Type: "CONTAINS", RelationScope: "file"},
+		},
+	}
+	response := buildDefResponse(snapshot, defFlags{Symbol: "Config", MemberLimit: defaultDefMemberLimit})
+	if response.DeclarationTotal != 2 {
+		t.Fatalf("declarations = %d, want 2 (one merged partial type + one namesake)", response.DeclarationTotal)
+	}
+	merged := response.Declarations[0]
+	if merged.FilePath != "a.cs" || len(merged.Parts) != 1 || merged.Parts[0].FilePath != "c.cs" {
+		t.Errorf("partial parts = %#v (anchor %s)", merged.Parts, merged.FilePath)
+	}
+	namesake := response.Declarations[1]
+	if namesake.FilePath != "b.cs" || len(namesake.Parts) != 0 {
+		t.Errorf("namesake was merged or displaced: %#v", namesake)
+	}
+}

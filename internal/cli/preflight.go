@@ -36,13 +36,13 @@ import (
 // through unexpectedArgumentsError, so the preflight's message is the same one the real call would
 // have produced.
 var preflightParsers = map[string]func(version string, args []string) error{
-	"search": func(version string, args []string) error {
+	"query": func(version string, args []string) error {
 		_, rest, err := parseSearchFlags(args)
 		if err != nil {
 			return err
 		}
 		if len(rest) != 0 {
-			return unexpectedArgumentsError("search", version, rest)
+			return unexpectedArgumentsError("query", version, rest)
 		}
 		return nil
 	},
@@ -83,13 +83,89 @@ func preflightCommands() []string {
 	return names
 }
 
+// splitPreflightCommandLine splits an --assert spec into argv. It honours single
+// and double quotes so an argument may contain spaces, which strings.Fields could
+// not express, but a backslash OUTSIDE quotes is an ordinary character: this is a
+// command line, not a shell line, and an unquoted Windows path is a normal input.
+// Escaping there rewrote C:\work\repo into C:workrepo, and an escaped space
+// merged two arguments into one and returned no error, so the preflight approved
+// a command line the caller never wrote. Inside double quotes a backslash still
+// escapes ", \, $ and `, and anything else is kept verbatim so paths survive.
+func splitPreflightCommandLine(spec string) ([]string, error) {
+	var fields []string
+	var field strings.Builder
+	var quote byte
+	started := false
+	for index := 0; index < len(spec); index++ {
+		character := spec[index]
+		if quote == '\'' {
+			if character == '\'' {
+				quote = 0
+			} else {
+				field.WriteByte(character)
+			}
+			started = true
+			continue
+		}
+		if quote == '"' {
+			switch character {
+			case '"':
+				quote = 0
+			case '\\':
+				if index+1 >= len(spec) {
+					return nil, fmt.Errorf("command line ends with an escape")
+				}
+				index++
+				next := spec[index]
+				if next == '"' || next == '\\' || next == '$' || next == '`' {
+					field.WriteByte(next)
+				} else {
+					field.WriteByte('\\')
+					field.WriteByte(next)
+				}
+			default:
+				field.WriteByte(character)
+			}
+			started = true
+			continue
+		}
+		switch character {
+		case '\'', '"':
+			quote = character
+			started = true
+		case ' ', '\t', '\r', '\n':
+			if started {
+				fields = append(fields, field.String())
+				field.Reset()
+				started = false
+			}
+		default:
+			field.WriteByte(character)
+			started = true
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("command line has an unterminated quote")
+	}
+	if started {
+		fields = append(fields, field.String())
+	}
+	return fields, nil
+}
+
 // checkPreflight parses one `<command> [args...]` string and reports whether this binary accepts it.
 func checkPreflight(version, spec string) error {
-	fields := strings.Fields(spec)
+	fields, err := splitPreflightCommandLine(spec)
+	if err != nil {
+		return fmt.Errorf("--assert %q: %w", spec, err)
+	}
 	if len(fields) == 0 {
-		return fmt.Errorf("--assert needs a command line, for example --assert %q", "search --profile full")
+		return fmt.Errorf("--assert needs a command line, for example --assert %q", "query --profile full")
 	}
 	command, args := fields[0], fields[1:]
+	if command == "search" {
+		command = "query"
+	}
 	parse, ok := preflightParsers[command]
 	if !ok {
 		return fmt.Errorf("--assert cannot check %q: this binary can check %s",

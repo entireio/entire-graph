@@ -19,3 +19,8 @@ __pycache__/
 .ruff_cache/
 .env
 .env.local
+
+# Claude Code checks out nested worktrees of this repo here. They are untracked
+# copies of the repository itself, so leaving them visible makes the tree look
+# dirty to tools that gate on a clean worktree.
+.claude/worktrees/

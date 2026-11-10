@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute one immutable Windows test shard through go tool test2json."""
+"""Execute one immutable native test shard through go tool test2json."""
 
 from __future__ import annotations
 
@@ -11,14 +11,18 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import targets
+
 
 PLAN_SCHEMA = "entire-graph.windows-ci.shard-plan.v1"
 RUN_SCHEMA = "entire-graph.windows-ci.shard-run.v1"
-TARGET_ENVIRONMENT = {"CGO_ENABLED": "1", "GOARCH": "amd64", "GOOS": "windows"}
+TARGET_ENVIRONMENT = targets.DEFAULT.environment
+HEARTBEAT_INTERVAL_SECONDS = 60.0
 
 
 def read_json(path: Path) -> Any:
@@ -44,8 +48,7 @@ def sha256_file(path: Path) -> str:
 
 
 def command_line_utf16_units(executable: str, arguments: list[str]) -> int:
-    serialized = subprocess.list2cmdline([executable, *arguments])
-    return len(serialized.encode("utf-16-le")) // 2 + 1
+    return targets.WINDOWS_AMD64.command_line_cost(executable, arguments)
 
 
 def safe_repository_directory(repository: Path, relative: Any) -> Path:
@@ -99,7 +102,10 @@ def checked_repository_sha(repository: Path, environment: dict[str, str]) -> str
 
 
 def checked_go_environment(
-    go: str, repository: Path, environment: dict[str, str]
+    go: str,
+    repository: Path,
+    environment: dict[str, str],
+    target: targets.Target = targets.DEFAULT,
 ) -> tuple[dict[str, str], Path]:
     completed = subprocess.run(
         [go, "env", "-json", "GOOS", "GOARCH", "CGO_ENABLED", "GOTOOLDIR"],
@@ -115,16 +121,16 @@ def checked_go_environment(
     if completed.returncode != 0:
         raise RuntimeError(f"go env exited {completed.returncode}: {completed.stderr.strip()}")
     value = json.loads(completed.stdout)
-    target = {key: value.get(key) for key in ("CGO_ENABLED", "GOARCH", "GOOS")}
-    if target != TARGET_ENVIRONMENT:
-        raise RuntimeError(f"unexpected target Go environment: {target!r}")
+    actual = {key: value.get(key) for key in ("CGO_ENABLED", "GOARCH", "GOOS")}
+    if actual != target.environment:
+        raise RuntimeError(f"unexpected target Go environment: {actual!r}")
     tool_value = value.get("GOTOOLDIR")
     if not isinstance(tool_value, str) or not tool_value:
         raise RuntimeError(f"go env returned an invalid GOTOOLDIR: {tool_value!r}")
     tool_directory = Path(tool_value).resolve(strict=True)
     if not tool_directory.is_dir():
         raise RuntimeError(f"Go tool directory is not a directory: {tool_directory}")
-    return target, tool_directory
+    return actual, tool_directory
 
 
 def require_tracked_worktree_clean(
@@ -159,6 +165,51 @@ def direct_test_environment(
     return result
 
 
+def ensure_executable(binary: Path, target: targets.Target) -> bool:
+    """Restore the owner execute bit that artifact transport drops on POSIX targets.
+
+    actions/upload-artifact stores files in a ZIP without POSIX modes, so a
+    downloaded test binary arrives non-executable. The mode is not part of the
+    binary's identity: the caller has already matched its SHA-256 to the plan,
+    so setting the bit changes nothing that was verified.
+    """
+    if not target.posix or os.access(binary, os.X_OK):
+        return False
+    binary.chmod(binary.stat().st_mode | 0o500)
+    if not os.access(binary, os.X_OK):
+        raise RuntimeError(f"cannot make the compiled test binary executable: {binary.name}")
+    return True
+
+
+def list_binary_names(
+    binary: Path, package_directory: Path, environment: dict[str, str], package: str
+) -> list[str]:
+    """Everything the compiled test binary itself lists, as this runner sees it.
+
+    The plan was made from a listing taken in the compile-and-plan job. Each
+    shard asks its copy of the binary again, with the same launch contract,
+    and records the raw names; the verifier requires every shard's listing to
+    name exactly the plan's roots, so the bundle's inventory is no longer the
+    only witness of what the binary contains.
+    """
+    completed = subprocess.run(
+        [str(binary), "-test.paniconexit0", "-test.list=."],
+        cwd=package_directory,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0 or completed.stderr:
+        raise RuntimeError(
+            f"listing the compiled roots of {package} exited {completed.returncode} or wrote to stderr"
+        )
+    names = [line.strip() for line in completed.stdout.decode("utf-8").splitlines() if line.strip()]
+    if len(names) != len(set(names)):
+        raise RuntimeError(f"the compiled binary of {package} lists a root more than once")
+    return sorted(names)
+
+
 def shard_command_arguments(
     package: str,
     binary: Path,
@@ -184,6 +235,30 @@ def shard_command_arguments(
     return arguments
 
 
+def start_heartbeat(
+    prefix: str, detail: str, started: float, interval: float
+) -> tuple[threading.Event, threading.Thread]:
+    """Print a liveness line to the runner console until the returned event is set."""
+    stop = threading.Event()
+    stream = sys.stderr
+
+    def beat() -> None:
+        while not stop.wait(interval):
+            elapsed = time.monotonic() - started
+            print(f"{prefix} heartbeat {detail} elapsed={elapsed:.1f}s", file=stream, flush=True)
+
+    thread = threading.Thread(target=beat, name="run-shard-heartbeat", daemon=True)
+    thread.start()
+    return stop, thread
+
+
+def stop_heartbeat(stop: threading.Event, thread: threading.Thread, timeout: float = 1.0) -> bool:
+    """Do not let a daemon blocked on console output hold up an assignment or exception."""
+    stop.set()
+    thread.join(timeout=timeout)
+    return not thread.is_alive()
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", type=Path, required=True)
@@ -192,12 +267,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--shard-index", type=int, required=True)
     parser.add_argument("--expected-repository-sha", required=True)
     parser.add_argument("--go-command", default="go")
+    parser.add_argument("--target", default=targets.DEFAULT.name, choices=sorted(targets.TARGETS))
     return parser.parse_args(argv)
 
 
-def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
-    if sys.platform != "win32":
-        raise RuntimeError("run_shard.py must run on native Windows")
+def run(
+    args: argparse.Namespace,
+    metadata: dict[str, Any],
+    heartbeat_interval: float = HEARTBEAT_INTERVAL_SECONDS,
+) -> int:
+    target = targets.resolve(getattr(args, "target", targets.DEFAULT.name))
+    if sys.platform != target.host_platform:
+        raise RuntimeError(f"run_shard.py must run on native {target.host_label}")
     repository = args.repository.resolve(strict=True)
     bundle = args.bundle.resolve(strict=True)
     output = args.output.resolve()
@@ -206,8 +287,8 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
     plan = read_json(plan_path)
     if not isinstance(plan, dict) or plan.get("schema") != PLAN_SCHEMA:
         raise ValueError("unexpected or missing shard plan schema")
-    if plan.get("targetEnvironment") != TARGET_ENVIRONMENT:
-        raise ValueError("shard plan target is not exactly windows/amd64 with CGO_ENABLED=1")
+    if plan.get("targetEnvironment") != target.environment:
+        raise ValueError(f"shard plan target is not exactly {target.description}")
     if not isinstance(args.shard_index, int) or not 0 <= args.shard_index < plan.get("shardCount", -1):
         raise ValueError(f"shard index {args.shard_index} is outside the plan")
     shards = [item for item in plan.get("shards", []) if item.get("index") == args.shard_index]
@@ -224,11 +305,11 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
     command_limit = settings.get("commandLineLimit")
     if not isinstance(timeout, str) or not re.fullmatch(r"[1-9][0-9]*(?:ns|us|µs|ms|s|m|h)", timeout):
         raise ValueError("plan has an invalid timeout")
-    if not isinstance(command_limit, int) or not 1024 <= command_limit <= 32767:
-        raise ValueError("plan has an invalid Windows command-line limit")
+    if not target.valid_command_line_limit(command_limit):
+        raise ValueError(f"plan has an invalid {target.host_label} command-line limit")
 
     environment = dict(os.environ)
-    environment.update({"GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "1"})
+    environment.update(target.environment)
     go_max_procs = settings.get("goMaxProcs")
     if go_max_procs is not None:
         if not isinstance(go_max_procs, int) or isinstance(go_max_procs, bool) or go_max_procs <= 0:
@@ -246,7 +327,9 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
     go_version = checked_go_version(go, repository, environment)
     if go_version != plan.get("goVersion"):
         raise RuntimeError(f"Go toolchain mismatch: runner={go_version!r}, plan={plan.get('goVersion')!r}")
-    target_environment, go_tool_directory = checked_go_environment(go, repository, environment)
+    target_environment, go_tool_directory = checked_go_environment(
+        go, repository, environment, target
+    )
     if target_environment != plan.get("targetEnvironment"):
         raise RuntimeError("runner target Go environment differs from the plan")
     require_tracked_worktree_clean(repository, environment, "tracked worktree precondition")
@@ -331,10 +414,10 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
             command_arguments = shard_command_arguments(
                 package, binary, timeout, run_regex, test_parallel
             )
-            command_units = command_line_utf16_units(go, command_arguments)
+            command_units = target.command_line_cost(go, command_arguments)
             if command_units > command_limit:
                 raise RuntimeError(
-                    f"serialized Windows command line for {package} is {command_units} UTF-16 units, above {command_limit}; refusing implicit batching"
+                    f"serialized {target.host_label} command line for {package} is {command_units} {target.command_line_unit}, above {command_limit}; refusing implicit batching"
                 )
 
             stem = f"{position:02d}-{re.sub(r'[^A-Za-z0-9_.-]', '_', package)}"
@@ -343,17 +426,50 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
             direct_environment = direct_test_environment(
                 environment, package_directory, go_tool_directory
             )
+            argument_area = targets.checked_argument_area(
+                target, [go, *command_arguments], direct_environment, f"launch of {package}"
+            )
+            executable_bit_restored = ensure_executable(binary, target)
+            listed_names = list_binary_names(binary, package_directory, direct_environment, package)
+            prefix = f"shard {args.shard_index} assignment {position + 1}/{len(assignments)}"
+            detail = f"package={json.dumps(package)} roots={len(roots)}"
+            print(f"{prefix} start {detail}", file=sys.stderr, flush=True)
             started = time.monotonic()
             with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-                completed = subprocess.run(
-                    [go, *command_arguments],
-                    cwd=package_directory,
-                    env=direct_environment,
-                    stdout=stdout,
-                    stderr=stderr,
-                    check=False,
+                heartbeat_stop, heartbeat = start_heartbeat(
+                    prefix, detail, started, heartbeat_interval
                 )
-            duration = time.monotonic() - started
+                failure = None
+                try:
+                    completed = subprocess.run(
+                        [go, *command_arguments],
+                        cwd=package_directory,
+                        env=direct_environment,
+                        stdout=stdout,
+                        stderr=stderr,
+                        check=False,
+                    )
+                except BaseException as error:
+                    # Report only the class: the message can carry argv or paths.
+                    failure = type(error).__name__
+                    raise
+                finally:
+                    duration = time.monotonic() - started
+                    heartbeat_stopped = stop_heartbeat(heartbeat_stop, heartbeat)
+                    if failure is not None and heartbeat_stopped:
+                        # The heartbeat is joined, so this line is terminal.
+                        print(
+                            f"{prefix} end {detail} elapsed={duration:.3f}s "
+                            f"exit=exception:{failure}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+            if heartbeat_stopped:
+                print(
+                    f"{prefix} end {detail} elapsed={duration:.3f}s exit={completed.returncode}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             content = stdout_path.read_bytes()
             with combined_events.open("ab") as combined:
                 combined.write(content)
@@ -364,7 +480,8 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
                 "binaryName": binary_name,
                 "binarySha256": actual_binary_hash,
                 "rootCount": len(roots),
-                "commandLineUtf16Units": command_units,
+                "listedNames": listed_names,
+                target.command_line_metric: command_units,
                 "durationSeconds": round(duration, 6),
                 "exitCode": completed.returncode,
                 "paniconexit0": "-test.paniconexit0" in command_arguments,
@@ -376,6 +493,9 @@ def run(args: argparse.Namespace, metadata: dict[str, Any]) -> int:
                 )[0]
                 == str(go_tool_directory),
             }
+            if target.posix:
+                invocation.update(argument_area)
+                invocation["executableBitRestored"] = executable_bit_restored
             metadata["invocations"].append(invocation)
             write_json(output / "shard-metadata.json", metadata)
             if completed.returncode != 0 and final_exit == 0:

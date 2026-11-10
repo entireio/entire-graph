@@ -56,6 +56,15 @@ func TestSearchNeedleCandidatePathsRejectsUnusableRoutes(t *testing.T) {
 		needle string
 	}{
 		{
+			name: "boundary filtered aliases are not substring supersets",
+			index: &searchNeedleIndex{
+				termFiles:             map[string][]string{"int": {"integer.go"}},
+				termFileTotals:        map[string]int{"int": 1},
+				inferredAbbreviations: map[string]bool{"int": true},
+			},
+			needle: "Print",
+		},
+		{
 			name: "truncated list is not a superset",
 			index: &searchNeedleIndex{
 				termFiles:      map[string][]string{"bind": {"a.go"}},

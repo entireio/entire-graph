@@ -7,10 +7,12 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // The search echo: one real search per task. The second and later search of the same task returns
@@ -56,8 +58,19 @@ type searchSession struct {
 // searchSessionReplaySchema changes whenever the persisted replay-safety contract changes. A
 // session written without the current schema must run a real search: its opaque payload cannot be
 // upgraded or inspected safely after the fact.
+//
+// 4: the payload is bound to the binary that rendered it (Producer); see searchSessionProducer.
+//
+// 5: additionally, an exact-name agent answer (search_exact_name.go) is never stored for replay.
+// A schema-4 file may hold one, written by a build that recorded it, whose omission line invites a
+// phrase search that the replay would then answer with the same names-only payload.
+//
+// 6: additionally, the payload is bound to the VERIFY mode it was rendered in (VerifyOmitted), in
+// BOTH modes under this one number. No earlier schema is accepted: a schema-4 or schema-5 reader
+// checks the producer but not the mode, and a schema-4 number was also once used for an off-mode
+// payload with no producer at all, so neither number can safely carry a mode-bound payload.
 const (
-	searchSessionReplaySchema = 2
+	searchSessionReplaySchema = 6
 	// A normal search payload is budgeted in kilobytes. Keep a generous ceiling for callers that
 	// deliberately widen it, but never let an untrusted/stale session file allocate without bound.
 	maxSearchSessionStateBytes = 8 << 20
@@ -74,11 +87,17 @@ type searchSessionState struct {
 	PolicyFingerprint string   `json:"policy_fingerprint,omitempty"`
 	PayloadPaths      []string `json:"payload_paths"`
 	Format            string   `json:"format,omitempty"`
+	// VerifyOmitted records that the payload was rendered with the VERIFY block suppressed. It is
+	// omitted when false, so a schema-6 record without it is an on-mode payload. A record from before
+	// schema 6 is refused on its schema, so a missing field there is never read as a mode.
+	VerifyOmitted bool `json:"verify_omitted,omitempty"`
 	// Repo and Tree are the scope the payload was recorded against. See searchSessionScope: the
 	// state file is what makes an echo possible, and these are what stop it answering for the
 	// wrong repository.
 	Repo string `json:"repo,omitempty"`
 	Tree string `json:"tree,omitempty"`
+	// Producer is the binary that rendered the payload; see searchSessionProducer.
+	Producer string `json:"producer,omitempty"`
 }
 
 // searchSessionScope identifies the repository view and wire format a payload describes.
@@ -108,6 +127,14 @@ type searchSessionScope struct {
 	Tree              string
 	PolicyFingerprint string
 	Format            string
+	// Producer identifies the binary answering now. The payload is rendered output, so its ranking,
+	// snippets and budget are the RECORDING binary's; replaying it after an upgrade serves the old
+	// ranking under a header saying the question was already answered.
+	Producer string
+	// OmitVerify is the resolved `--verify-block off`. It is part of the identity for the same
+	// reason Format is: the payload is opaque rendered bytes, so a payload recorded with VERIFY must
+	// never answer an omit-verify call (it would hand the no-VERIFY arm the block) and vice versa.
+	OmitVerify bool
 }
 
 // matches reports whether a recorded scope may answer for the live one.
@@ -123,7 +150,11 @@ func (recorded searchSessionState) matches(live searchSessionScope) bool {
 		recorded.PolicyFingerprint != live.PolicyFingerprint ||
 		recorded.Format == "" ||
 		live.Format == "" ||
-		recorded.Format != live.Format {
+		recorded.Format != live.Format ||
+		recorded.Producer == "" ||
+		live.Producer == "" ||
+		recorded.Producer != live.Producer ||
+		recorded.VerifyOmitted != live.OmitVerify {
 		return false
 	}
 	// The tree hash alone is not a repository identity: sibling --repo subdirectories share the
@@ -248,7 +279,8 @@ func (s *searchSession) load() (searchSessionState, error) {
 // the echo replays the answer the ranking gave the original question, not the last rephrasing of
 // it. Counting is separate from storing bytes so a response that is too large or whose policy
 // changed mid-search cannot leave a rejected old payload stuck on disk. forceReplace is set when a
-// matching state failed its path-policy check. Persisting is best-effort for the same reason echo is
+// matching state failed its path-policy check or cannot fit the current agent byte budget.
+// Persisting is best-effort for the same reason echo is
 // — a session file that cannot be written costs the cap, not the search.
 func (s *searchSession) record(
 	query string,
@@ -270,6 +302,8 @@ func (s *searchSession) record(
 	state.ReplaySchema = searchSessionReplaySchema
 	state.PolicyFingerprint = live.PolicyFingerprint
 	state.Repo, state.Tree, state.Format = live.Repo, live.Tree, live.Format
+	state.Producer = live.Producer
+	state.VerifyOmitted = live.OmitVerify
 	if state.Payload == "" && replayable && len(payload) <= maxSearchSessionStateBytes {
 		state.Query = query
 		state.Payload = string(payload)
@@ -314,10 +348,67 @@ func (s *searchSession) record(
 	}
 }
 
+// searchReplayFitsByteBudget measures the entire terminal-safe replay, including attribution.
+// Count emitted bytes, not source bytes: persisted input can expand during control escaping.
+// An incompatible opaque response must be replaced, never truncated through source markers.
+func searchReplayFitsByteBudget(state searchSessionState, asked string, budget int) bool {
+	if budget <= 0 {
+		return true
+	}
+	payload := []byte(searchEchoHeader(asked, state.Query) + state.Payload)
+	return len(termsafe.Bytes(payload)) <= budget
+}
+
 // searchEchoHeader is the one line that precedes a replayed payload. It names both questions — the
 // one that was not run, and the one the bytes below actually answer, so the agent is not left
 // reading a payload as if it were a reply to the query it just typed. Then it stops: no alternative
 // verb, no invitation to rephrase.
 func searchEchoHeader(asked, answered string) string {
 	return fmt.Sprintf("(one search per task: %q was not run — below is your first search %q, verbatim)\n", asked, answered)
+}
+
+// searchSessionBuildInfo reads the running binary's build metadata. A package variable so the test
+// package can install an identifiable default (the test binary itself carries no VCS stamp).
+var searchSessionBuildInfo = debug.ReadBuildInfo
+
+// searchSessionProducerFrom identifies a binary for replay from its OWN build metadata only: a VCS
+// revision stamped from an UNMODIFIED tree, "rev:<revision>". Anything else has no identity, which
+// matches nothing, so the binary answers every question for real.
+//
+// Deliberately narrow. The CLI's version string is not used: Run turns an empty version into "dev",
+// so unstamped development binaries all reported "dev" and replayed each other's output. A module
+// version is not used either: two modules (or forks) can share a tag, and a binary built through a
+// local `replace` keeps the same module path and version while its source — and its bytes — change.
+// Anything but an explicit vcs.modified="false" is refused: two different modified builds of one
+// revision are indistinguishable. This is a source-revision identity, not a binary attestation:
+// builds of one clean revision with different flags or toolchains share it. A clean checkout
+// built by scripts/release.sh carries the stamp; `go install module@version` binaries do not and
+// never replay (a deliberate capability tradeoff).
+func searchSessionProducerFrom(info *debug.BuildInfo, ok bool) string {
+	if !ok || info == nil {
+		return ""
+	}
+	revision, clean := "", false
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			// Only the literal "false" is clean: "true", an empty value, or any other text is not.
+			clean = setting.Value == "false"
+		}
+	}
+	if !clean || revision == "" {
+		return ""
+	}
+	return "rev:" + revision
+}
+
+// sessionProducer is the replay identity of the binary serving opts.
+func (opts Options) sessionProducer() string {
+	read := searchSessionBuildInfo
+	if opts.buildInfo != nil {
+		read = opts.buildInfo
+	}
+	return searchSessionProducerFrom(read())
 }

@@ -18,7 +18,9 @@ import "fmt"
 // deliberate, documented exceptions: each is separately capped, because a payload that spent its
 // budget on complete head bodies must not lose one to buy a navigation aid or a warning. Every cost
 // is stated (`stats.*_bytes`), never hidden, and `stats.context_block_bytes` reports the total of
-// everything outside `results` so the true payload size never has to be re-derived.
+// the costed blocks so their combined size never has to be re-derived. It is the budgeted blocks'
+// total, not the whole off-`results` payload — see searchContextBlockBytes for what it leaves out
+// and why.
 //
 // What is IN the default payload, and why
 // ---------------------------------------
@@ -143,11 +145,29 @@ import "fmt"
 // allowance of its own because it is displacement-funded and so can never grow a payload.
 const searchContextBlockAdditiveCap = searchContainerMapMaxBytes
 
-// searchContextBlockBytes totals every byte a response carries outside `results`. It is what
-// stats.context_block_bytes reports, and it is the number Validate checks the ceiling against.
+// searchContextBlockBytes totals the COSTED context blocks — every block that carries a *Bytes
+// counter in SearchStats. It is what stats.context_block_bytes reports, and it is the number
+// Validate checks the per-block accounting against.
+//
+// It is NOT "every byte outside `results`", which is what this function and the field it feeds both
+// used to claim. Two corrections:
+//
+//  1. The FILE OUTLINE block was missing from the sum. It is built, emitted and priced —
+//     stats.file_outline_bytes is assigned from SearchFileOutlineCost — and its own field doc says
+//     it exists "so its price is attributable like every other block's rather than emergent", yet
+//     the one summary that totals the blocks left it out, so up to searchOutlineMaxBytes of payload
+//     was free in every report. It is counted here now.
+//  2. What remains outside this total is named rather than implied: the coverage note (which has a
+//     cost function, searchCoverageNoteCost, but no SearchStats counter to report it through), the
+//     repo-ignore disclosure, `warnings`, `partial_failures`, `completeness`, and the scalar header
+//     fields. Measured on a real payload, everything outside `results` came to ~6.2x what this
+//     counter reported. Closing that gap needs new per-section counters in SearchStats, which is a
+//     schema addition, not an accounting fix; until it lands, read this number as the cost of the
+//     budgeted blocks, which is exactly what the budget policy above spends.
 func searchContextBlockBytes(stats SearchStats) int {
 	return stats.SignatureTypeBytes + stats.TypeCardBytes + stats.ContainerMapBytes +
-		stats.LiteralClusterBytes + stats.VerifyCommandBytes + stats.ClosedSetBytes
+		stats.LiteralClusterBytes + stats.FileOutlineBytes + stats.VerifyCommandBytes +
+		stats.ClosedSetBytes
 }
 
 // validateSearchContextBlockBudget enforces the policy above on a finished response.
@@ -182,9 +202,7 @@ func validateSearchContextBlockBudget(response SearchResponse) error {
 		return fmt.Errorf("search container map exceeds its allowance: %d > %d",
 			stats.ContainerMapBytes, searchContextBlockAdditiveCap)
 	}
-	// The three agent-asked blocks are additive like the map, so each one is held to its own cap
-	// here. Their measured cost per block is the whole reason they are allowed to be additive: a
-	// warning that cannot fit is a warning that never arrives.
+	// Additive blocks have independent caps rather than displacing ranked source.
 	for _, additive := range []struct {
 		name  string
 		bytes int
@@ -200,6 +218,7 @@ func validateSearchContextBlockBudget(response SearchResponse) error {
 		},
 		{name: "verify command", bytes: stats.VerifyCommandBytes, cap: searchVerifyCommandMaxBytes + stats.VerifyExplainSuffixBytes},
 		{name: "closed set", bytes: stats.ClosedSetBytes, cap: searchClosedSetMaxBytes},
+		{name: "file outline", bytes: stats.FileOutlineBytes, cap: searchOutlineMaxBytes},
 	} {
 		if additive.bytes > additive.cap {
 			return fmt.Errorf("search %s exceeds its allowance: %d > %d",
@@ -218,14 +237,17 @@ func validateSearchContextBlockBudget(response SearchResponse) error {
 		return fmt.Errorf("search closed set byte accounting mismatch: %d != %d",
 			stats.ClosedSetBytes, actual)
 	}
+	if actual := SearchFileOutlineCost(response.FileOutlines); stats.FileOutlineBytes != actual {
+		return fmt.Errorf("search file outline byte accounting mismatch: %d != %d",
+			stats.FileOutlineBytes, actual)
+	}
 	if total := searchContextBlockBytes(stats); stats.ContextBlockBytes != total {
 		return fmt.Errorf("search context block byte accounting mismatch: %d != %d",
 			stats.ContextBlockBytes, total)
 	}
-	// The ceiling. The container map is excluded by policy (it is the additive block, capped
-	// above); every other block is funded from inside the ceiling, so their combined cost plus
-	// the ranking must fit. Checking them one at a time — which is what each funder does on its
-	// own — passes while the sum overshoots.
+	// The displacement-funded blocks and ranked results share a ceiling. Additive blocks
+	// are checked against their independent caps above. Check the funded sum as well as
+	// each component so individually affordable blocks cannot overspend together.
 	if stats.ContextBudgetBytes > 0 {
 		funded := stats.ResultBytes + stats.TypeCardBytes + stats.SignatureTypeBytes
 		if funded > stats.ContextBudgetBytes {
