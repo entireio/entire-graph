@@ -652,6 +652,9 @@ func openExactSearchStore(ctx context.Context, cacheDir, key, tree string) (exac
 	if meta.Tree != tree {
 		return fail(searchStoreTreeMismatch(tree, meta.Tree))
 	}
+	// A store read builds nothing, so the version directory's mtime never shows
+	// it. Record the use so a newer build sharing this cache root keeps it.
+	noteCacheVersionRead(cacheDir, "search", searchSnapshotCacheVersion)
 	return exactSearchStore{path: path, entryDigest: storedDigest, meta: meta}, db, nil
 }
 
