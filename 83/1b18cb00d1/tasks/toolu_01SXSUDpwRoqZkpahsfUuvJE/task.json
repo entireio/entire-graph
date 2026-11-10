@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_01SXSUDpwRoqZkpahsfUuvJE",
+  "agent_id": "a243c90394ca0468a",
+  "task_description": "Review and fix PR 398",
+  "token_usage": {
+    "input_tokens": 34,
+    "cache_creation_tokens": 97047,
+    "cache_read_tokens": 1148948,
+    "output_tokens": 24811,
+    "api_call_count": 17
+  },
+  "started_at": "2026-11-10T11:21:41.304946+01:00",
+  "completed_at": "2026-11-10T11:26:42.907848+01:00"
+}
