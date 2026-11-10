@@ -1,0 +1,45 @@
+{
+  "cli_version": "0.13.1",
+  "checkpoint_id": "13a6058cea58",
+  "strategy": "manual-commit",
+  "branch": "ci/macos-test-shards",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/13/a6058cea58/0/metadata.json",
+      "transcript": "/13/a6058cea58/0/full.jsonl",
+      "compact_transcript": "/13/a6058cea58/0/transcript.jsonl",
+      "content_hash": "/13/a6058cea58/0/content_hash.txt",
+      "prompt": "/13/a6058cea58/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 18,
+    "cache_creation_tokens": 97262,
+    "cache_read_tokens": 497202,
+    "output_tokens": 7838,
+    "api_call_count": 8,
+    "subagent_tokens": {
+      "input_tokens": 84,
+      "cache_creation_tokens": 2989961,
+      "cache_read_tokens": 20567580,
+      "output_tokens": 72583,
+      "api_call_count": 42
+    }
+  },
+  "redaction": {
+    "replacements": 0,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}
