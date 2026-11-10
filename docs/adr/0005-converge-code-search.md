@@ -2,6 +2,13 @@
 
 Status: Proposed (RFC, open for comment). P2.M1, COR-786
 Date: 2026-08-21
+Refreshed: 2026-11-10 against `main` at `0e6bbba3`. Every statement about entire-graph's own code
+and every `file:line` citation into this repository was re-verified at that commit and corrected
+where it had drifted; the corrections are listed under *Refresh notes* at the end. The proposal,
+the options and the decision are unchanged, and no open question was decided. Where a corrected
+fact changes a design consequence, the consequence is recorded as an open question (10 to 13)
+rather than resolved. Citations into peregrine, entire-api and the MCP repository were **not**
+re-verified: those repositories are not part of this checkout.
 
 ## TLDR
 
@@ -22,7 +29,7 @@ Embedding backbone consolidation is **not** in scope. That is COR-788 and gets i
 | System | Owner | Lang | Role today | Backbone | Deployed? |
 |---|---|---|---|---|---|
 | **peregrine** | Evis | Rust | Lexical code search: trigram index, regex, symbol/fuzzy search, cross-file go-to-def | Trigram postings (Roaring), zstd content. No vectors | Staging only, `eks-staging-us-west-2`, ~114 repos, single replica |
-| **entire-graph** | Us | Go | Structural code graph: typed symbols + 30 relation types, ranked search, impact, diff | Tree-sitter snapshot, tree-hash-keyed cache. No vectors | One-shot local binary, plus brain ingestion |
+| **entire-graph** | Us | Go | Structural code graph: typed symbols + 30 relation types, ranked search, impact, diff | Tree-sitter snapshot, tree-hash-keyed cache, plus an opt-in SQLite search store of the same snapshot (see below). No vectors | One-shot local binary, plus brain ingestion |
 | **entire-search** | Alisha | - | Product-entity search over transcript chunks, commits, PRs. Deliberately strips code | Cohere embed-v4, 1536-dim, Turbopuffer | Yes, serves entire.io |
 | **librarian** | Alex | - | Comms and docs knowledge. No code | nomic-768, pgvector | Yes |
 
@@ -70,6 +77,39 @@ artifacts `manifest.json` / `lexicon.bin` / `postings.bin` (`:26-28`). Confirmed
 callers in the query path. That is a second trigram engine, in a second language, inside the repo
 whose own boundary doc says serving is not its job. This RFD is the decision that closes it.
 
+As of 2026-11-10 neither that branch nor `codex/eg-graphify-query-service` exists on `origin`
+any longer, and no `search_lexical_index.go` or `search_source_pack.go` is on `main`; the line
+counts and offsets above describe the branch as it was when this was written and can no longer
+be re-read from the remote.
+
+**What `main` has added since: a persisted, queryable search store.** This inventory predates
+it, so it is stated here as fact, without a verdict:
+
+- `internal/sem/search_store.go` (759 lines; with `search_store_context.go`,
+  `search_store_ancestor.go` and `search_store_retention.go`, about 2,000 non-test lines)
+  persists the committed-tree search snapshot as a SQLite database (`modernc.org/sqlite`,
+  `searchStoreVersion = "search-store-sqlite-v4"`, `:40`). It is a derived sibling of the
+  existing search-snapshot cache entry and shares its tree-keyed cache key; it is not a trigram
+  or postings index and holds no vectors. `brain_symbol_fts_v1` is a plain SQL view that
+  concatenates symbol fields into a `text` column (`:116`), not an FTS index.
+- The read path is opt-in: the store is served only when `ENTIRE_GRAPH_SEARCH_STORE` is set
+  (`:45-58`); otherwise queries use the gzipped JSON snapshot as before. It is built by
+  `ENTIRE_GRAPH_SEARCH_STORE=1 entire graph index --head`.
+- Two commands read it (`internal/cli/root.go:330,332`). `entire graph store` returns a JSON
+  descriptor (path, entry digest, commit, tree, counts) and never builds;
+  `entire graph context --task "<text>"` returns ranked symbols, relations and test suggestions
+  from the store without parsing, and is documented in source as "deliberately NOT the hybrid
+  search pipeline" (`search_store_context.go:20`). `--allow-ancestor N` can answer a miss from a
+  recent first-parent ancestor's store.
+- `docs/store-contract.md` publishes a versioned read-only SQL surface (`brain_symbols_v1`,
+  `brain_relations_v1`, `brain_files_v1`, `brain_reverse_relations_v1`, `brain_symbol_fts_v1`)
+  for local consumers, with Entire Brain named as the consumer. It is local and single-repo:
+  the descriptor's path must not be persisted as a portable artifact, and nothing is served
+  over a network.
+
+Whether this store sits inside or outside "entire-graph stops building a search engine" is not
+something this RFD has considered; see open question 10.
+
 ### Duplicate 3: no single code-search front door
 
 peregrine is reachable through the entire-api gateway as upstream `"peregrine"`
@@ -93,9 +133,9 @@ slot waiting for a producer.
 
 The producer exists and is **merged**: PR #97 (`ec/candidate-scip-export-v2`) landed on main on
 2026-08-27, adding `snapshot --format scip` emitting a real `scippb.Index` via
-`github.com/scip-code/scip/bindings/go/scip v0.9.0`, deterministically marshalled
-(`internal/sem/compact_snapshot.go:454,462`), with unsupported relations reported in a JSON stderr
-omission note. The half of step 1 that was a merge is therefore done; what remains there is
+`github.com/scip-code/scip/bindings/go/scip` (v0.9.0 at the merge; `main` is now on v0.10.0,
+`go.mod:11`), deterministically marshalled (`internal/sem/compact_snapshot.go:723`), with
+unsupported relations reported in a JSON stderr omission note. The half of step 1 that was a merge is therefore done; what remains there is
 promoting the format out of experimental and freezing the note's compatibility policy.
 
 ## Options considered
@@ -107,13 +147,17 @@ into `.pg` section 6 as `Scip` / `Semantic`, keeping its native layer as fallbac
 
 - Adds a cross-repo build dependency and a new failure mode, a stale or absent feed. Needs an
   explicit freshness contract and fallback or quality silently regresses.
-- **SCIP is a lossy projection.** Only 15 of entire-graph's 30 relation types map to SCIP
-  references (`compact_snapshot.go:540-547`); the rest drop into `UnsupportedRelationCounts`
-  (`:427-429`). Only `Import`, `WriteAccess`, `ReadAccess` get explicit roles (`:549-560`); CALLS,
-  EXTENDS, IMPLEMENTS emit role 0. entire-graph cannot retire its native snapshot format.
+- **SCIP is a lossy projection.** Only 14 of entire-graph's 30 relation types map to SCIP
+  references (`compact_snapshot.go:801-810`); `DEFINES` and `CONTAINS` are carried by symbol
+  metadata and definition occurrences, and the remaining 14 drop into
+  `UnsupportedRelationCounts` (`:649-651`). Only `Import`, `WriteAccess`, `ReadAccess` get
+  explicit roles (`:821-832`); CALLS, EXTENDS, IMPLEMENTS emit role 0, though the inheritance
+  family (`IMPLEMENTS`, `INHERITS`, `EXTENDS`, `OVERRIDES`) is additionally emitted as
+  `SymbolInformation.relationships` (`:813-819`). entire-graph cannot retire its native
+  snapshot format.
 - **The monikers are not portable.** The exporter hardcodes scheme `"entire-graph"`, package
-  manager `"."`, package name = repo key (`:660-664`), and embeds `shortDigest(record.ID)`, an
-  internal ID, in the descriptor (`:613-636`). Syntactically valid SCIP carrying
+  manager `"."`, package name = repo key (`:932-942`), and embeds `shortDigest(record.ID)`, an
+  internal ID, in the descriptor (`:885-908`). Syntactically valid SCIP carrying
   entire-graph-specific identity, not monikers another indexer resolves to the same symbol.
 - PR #97 "materializes one complete SCIP index in memory before writing it," an unvalidated scale
   risk on a monorepo. It also couples release cadences: peregrine's build waits on an
@@ -129,9 +173,10 @@ Delete peregrine, serve everything from entire-graph. Cons, close to disqualifyi
   search is inherently multi-repo fan-out.
 - entire-graph is a one-shot, no-egress binary, not a serving system. Caches key on the git
   **tree** hash, "deliberately tree-only, not commit-keyed"
-  (`internal/sem/search_cache.go:485-489`), monolithic, with **no incremental indexing**: a
+  (`internal/sem/search_cache.go:1234-1238`), monolithic, with **no incremental indexing**: a
   one-character change alters the tree hash and forces a full rebuild. Per-file invalidation is
-  "unbuilt, not declined" per the boundary doc.
+  "unbuilt, not declined" per the boundary doc. The SQLite search store added since shares that
+  tree-keyed cache key and is likewise rebuilt whole.
 - It discards a working, benchmarked engine. peregrine indexes are roughly 4.9x smaller than
   Zoekt's with about 4x faster exact search (README), it does `git diff-tree` incremental indexing
   with surgical section splices (`src/index/patch.rs:1-6`), and it is already wired through the
@@ -172,7 +217,7 @@ output: it declares which relations and languages were skipped, which is what le
 decide per-language whether to trust the feed.
 
 Being contract, it is versioned like one. The note already carries a version field
-(`"version": "entire-graph-scip-omissions/v1"`, `internal/sem/compact_snapshot.go:299`), so
+(`"version": "entire-graph-scip-omissions/v1"`, `internal/sem/compact_snapshot.go:362`), so
 "freeze the schema" in step 1 means freezing a compatibility **policy**, not a field list. ADR
 0001's `1.x` rules (`docs/adr/0001-ga-schema-contract.md`) extend to the note unchanged: the
 major is the compatibility boundary and a consumer refuses an unknown one; minors are additive
@@ -186,7 +231,8 @@ rename. Retagging to `/v1.0` would therefore be a breaking change performed in t
 additive freeze, and it would fail the very test that guards the contract.
 
 The minor is carried **beside** the tag instead, as a new optional integer field that a tolerant
-reader may ignore -- which is exactly the additive move `1.x` allows. The tag stays
+reader may ignore -- which is exactly the additive move `1.x` allows. (That field is proposed
+here; `SCIPOmissionNote` on `main` at `0e6bbba3` does not carry one yet.) The tag stays
 `entire-graph-scip-omissions/v1`, exact-match consumers keep working, the pinning test keeps
 passing, and a reader that wants to distinguish compatible evolution from a break has a field to
 read. A breaking change is still `/v2` with a migration note, and is out of scope for the feed's
@@ -204,8 +250,8 @@ commit-versioned even though the `.pg` store is not.
 
 **Object-format scope: SHA-1 only, for now.** `indexed_commit` is `[u8; 20]`, which holds a
 SHA-1 object id and nothing else, while entire-graph reads SHA-256 repositories
-(`internal/gitutil/git.go:1529-1530` sizes tree metadata for 64-hex object ids;
-`internal/gitutil/git_test.go:1582` branches on `rev-parse --show-object-format`). A 32-byte
+(`internal/gitutil/git.go:2190-2191` sizes tree metadata for 64-hex object ids;
+`internal/gitutil/git_test.go:1583` branches on `rev-parse --show-object-format`). A 32-byte
 commit id cannot be carried in that header, and the exact-commit join above is the whole
 freshness contract, so this is scoped rather than fudged: **the feed is defined for SHA-1
 repositories only.** The publisher must refuse to publish a feed for a SHA-256 repository rather
@@ -217,14 +263,14 @@ must record each repository's object format, so the scope note is confirmed rath
 
 **Delivery, and the no-egress boundary.** entire-graph does not write to the object store.
 The provider is no-egress by ratified contract -- "never add remote fetches, hosted API calls,
-telemetry, or runtime grammar downloads" (`AGENTS.md:224`) -- and this RFD's own case against
+telemetry, or runtime grammar downloads" (`AGENTS.md:262`) -- and this RFD's own case against
 Option B rests on it being "a one-shot, no-egress binary". A producer that had to hold
 object-store credentials and reach the network would spend exactly the property that makes its
 output trustworthy, and would change that boundary by implication in an implementation review
 rather than on purpose here. So the write is split three ways:
 
 - **entire-graph** runs `snapshot --format scip`, which writes the SCIP protobuf to stdout and
-  the omission note to stderr (`internal/cli/root.go:271,445`). It has no file sink, no network
+  the omission note to stderr (`internal/cli/root.go:537,798`). It has no file sink, no network
   client and no credentials, and needs none: both halves of the artifact leave over pipes.
 - **A publisher wrapper**, deployment-side and not the graph binary, captures those two streams
   and uploads them to the same object store as the `.pg` index, under the `(repo_id, commit_sha)`
@@ -254,25 +300,36 @@ is a header change and would need one.
    revision. A language reported skipped or degraded falls back for that language only, not for
    the whole index.
 
-   **A failure record carries no language, and the fallback is a join, not a field read.** The
-   record is `code`, `severity`, `file_path`, `effect_on_semantic_completeness`, `detail`
-   (`internal/sem/provider.go:255-261`) -- there is no `language`. That is deliberate rather than
-   an omission to correct: `PartialFailure` is one shared record type across every entire-graph
+   **A failure record's language is optional and usually absent, so the fallback is a join, not
+   a field read.** The record is `code`, `severity`, `file_path`, `language`,
+   `effect_on_semantic_completeness`, `detail` (`internal/sem/provider.go:342-349`). An earlier
+   revision of this item said the record had no language field at all; that stopped being true
+   when schema 1.3 added `language` on `main` (commit `1ce3bbf5`), described by ADR 0001 as "an
+   optional partial-failure `language` for source classification when no file record is
+   available". The field is omitted when empty, and at `0e6bbba3` exactly one producer sets it:
+   an `E_FILE_READ` failure on a file whose language was routed from its shebang
+   (`internal/sem/provider_parallel.go:178-187`). Every other failure record leaves it out,
+   including the parse-skipped ones (`E_MINIFIED`, `E_FILE_TOO_LARGE`, `E_PARSE_ERROR`) this
+   contract exists for. `PartialFailure` is one shared record type across every entire-graph
    surface, and several of its producers have no language in hand at all (an ignored subtree that
-   could not be read, a git listing that failed). A language field on it would be blank often
-   enough that a consumer routing per-language fallback on it would fall back for nothing, which
-   is worse than an explicit join. So the consumer resolves the language by joining
+   could not be read, a git listing that failed). The field is therefore blank often enough that
+   a consumer routing per-language fallback on it alone would fall back for nothing, which is
+   worse than an explicit join. So the consumer resolves the language by joining
    `partial_failures[].file_path` to the SCIP `Document` with the same `relative_path`; the export
-   emits a Document for every discovered file, including one whose parse was skipped, and sets its
-   `language` from the same file record the tier was derived from
-   (`internal/sem/compact_snapshot.go:451-464`).
+   emits a Document for every file that has a file record, including one whose parse was skipped,
+   and sets its `language` from the same file record the tier was derived from
+   (`internal/sem/compact_snapshot.go:515-528`).
+
+   The join does not reach every record. A file whose read failed outright gets no file record
+   and so no Document, which is the case the optional `language` was added for. How a consumer
+   should combine the field and the join is not decided here; see open question 11.
 
    One wrinkle the ingestion step must be told rather than left to discover: `Document.language` is
    the SCIP enum name while `language_tiers` is keyed by entire-graph's own language name, and the
    two differ for a fixed, closed set (`C++`/`CPP`, `C#`/`CSharp`, `F#`/`FSharp`,
    `Objective-C`/`Objective_C`, `Protocol Buffers`/`Protobuf`, `Starlark`/`Skylark`, `Bash`/
    `ShellScript`, and the rest, enumerated in full at
-   `internal/sem/compact_snapshot.go:852-892`). The mapping is total and one-way, so it belongs in
+   `internal/sem/compact_snapshot.go:968-1008`). The mapping is total and one-way, so it belongs in
    the written contract of open question 2 next to the moniker scheme, not re-derived in each
    consumer.
 3. Relation loss is expected and bounded: the feed supplies **symbols and resolution**, not
@@ -328,7 +385,10 @@ Nothing is removed before step 7 has held for two release cycles. Then:
   `codex/eg-graphify-query-service` are closed rather than merged.
   `docs/brain-and-graph-boundaries.md` gains a verdict entry recording that full-text and
   multi-repo code search is peregrine's job. entire-graph's own `search` stays, scoped to
-  single-repo structural ranking, as `docs/search.md` already describes.
+  single-repo structural ranking, as `docs/search.md` already describes. (On `main` the command
+  is now `entire graph query`; `search` remains as a hidden alias, `internal/cli/help.go:197`.
+  Neither named branch exists on `origin` as of 2026-11-10. The SQLite search store and the
+  `store` / `context` commands are not addressed by this list; see open question 10.)
 - **Front door**: `search_entire_code` becomes the one code-search tool. Its dropped `usages` mode
   should be reinstated: the MCP ADR recorded "peregrine has no such endpoint today"
   (`docs/adrs/20260721-mcp-curated-product-surface.md:145`), now stale, since `/api/usages` exists
@@ -393,7 +453,9 @@ Nothing is removed before step 7 has held for two release cycles. Then:
    the project's own declared version from its root manifest (`package.json`, `Cargo.toml`,
    `pyproject.toml`), falling back to `0` -- the common case for Go, whose `go.mod` carries a
    module path and not a version. A regression test pins it, and commit provenance moved to
-   `Metadata` and the omission note. Consumers must now take `(repo, commit)` from the
+   the omission note's `commit` and `tree`; SCIP `Metadata` has no revision field and carries
+   only worktree provenance, as `--worktree` in `ToolInfo.arguments`
+   (`compact_snapshot.go:738-752`). Consumers must now take `(repo, commit)` from the
    envelope, never from the symbol.
 
    **Still open.** Four things that must move together, because each rewrites every symbol's
@@ -431,7 +493,8 @@ Nothing is removed before step 7 has held for two release cycles. Then:
    magnitude this question assumed. A multiplier measured on a mid-size repository does not
    carry to a monorepo, where the absolute figure is what decides, so the corpus in the test
    gates must still include one monorepo large enough to settle it -- but this is now a
-   sizing question, not an unknown.
+   sizing question, not an unknown. (The RSS figures were not re-measured in the 2026-11-10
+   refresh; at `0e6bbba3` the same export emits 17,205 definitions and 43,548 references.)
 5. **Who owns the parity harness?** It must be trusted by both sides, which argues against either
    side owning it alone. Unassigned, and the biggest scheduling risk here.
 6. **Publisher runtime placement.** The producer itself is settled -- entire-graph emits over
@@ -461,6 +524,42 @@ Nothing is removed before step 7 has held for two release cycles. Then:
 
    Deciding this late is the expensive option: step 9 is the irreversible one, and it is the step
    that discovers the answer.
+
+The four items below were added by the refresh against `main` at `0e6bbba3` on 2026-11-10. Each
+records a consequence of a corrected fact or a review point that the text did not yet carry.
+None is decided here.
+
+10. **Open question (raised by refresh against main): where does the SQLite search store fall?**
+    Since this RFD was written `main` has gained an opt-in persisted search store and two
+    commands that read it, `store` and `context` (see *Duplicate 2*). It is tree-keyed,
+    single-repo, local, and published to Entire Brain through a versioned read-only SQL contract
+    (`docs/store-contract.md`). The decision says entire-graph "stops building a search engine"
+    and should "stop growing a serving surface", and the removal list names only the two
+    `codex/eg-graphify-*` branches. The RFD does not say whether the store is part of the
+    understand-structure engine that stays, a serving surface that the decision covers, or out
+    of scope. The inventory and the removal list need an explicit answer either way.
+11. **Open question (raised by refresh against main): how should a consumer use the optional
+    `partial_failures[].language`?** Freshness item 2 was written when the record had no
+    language field and prescribed the join to the SCIP `Document` as the only route. The field
+    now exists, is set by one producer, and covers a case the join cannot: a file with no file
+    record and so no Document. Open: whether the contract tells the consumer to prefer the field
+    when present and join otherwise, to join only and ignore the field, or to treat a failure
+    that resolves by neither route as a reason to fall back more broadly; and which language
+    name the field uses relative to `language_tiers` keys and `Document.language` (it carries
+    entire-graph's own name, not the SCIP enum name).
+12. **Open question (raised in review, not yet recorded): binding the note to the protobuf.**
+    The artifact is two streams, and nothing binds them cryptographically. The note carries
+    `commit` and `tree`, and freshness item 1 makes an exact `indexed_commit` match mandatory,
+    but a note paired with the wrong protobuf of the same commit is not detectable. The PR
+    discussion left "an artifact digest binding the two files atomically" as a residual
+    belonging to the publisher wrapper's contract. It is listed here so that it is decided with
+    open question 6 rather than lost.
+13. **Open question (raised in review, not yet recorded): the language-name mapping has no
+    home.** Freshness item 2 says the entire-graph-name to SCIP-enum-name mapping "belongs in
+    the written contract of open question 2", but open question 2 lists four identity items and
+    this is not one of them, and nothing on the wire carries the mapping. Open: whether it is
+    written into the contract as a table, emitted in the note, or removed by keying
+    `language_tiers` the same way as `Document.language`.
 
 ## Consequences
 
@@ -511,11 +610,17 @@ Nothing is removed before step 7 has held for two release cycles. Then:
 
 **entire-graph** (`entireio/entire-graph`, Go)
 
-- `internal/sem/provider.go:34` `SchemaVersion = "1.1"`; `:50-81` the 30 relation types.
+- `internal/sem/provider.go:47` `SchemaVersion = "1.5"` (it was `1.1` when this was first
+  written); `:97-128` the 30 relation types; `:342-349` `PartialFailure`, six fields including
+  the optional `language` added by schema 1.3.
   `docs/adr/0001-ga-schema-contract.md` `1.x` frozen GA, additive-only minors, tolerant readers.
-- `docs/adr/0002-committed-tree-cache-key.md` and `internal/sem/search_cache.go:485-489`
-  "deliberately tree-only, not commit-keyed"; `records_cache.go:89-90` cache paths. No
-  incremental reuse.
+- `docs/adr/0002-committed-tree-cache-key.md` and `internal/sem/search_cache.go:1234-1238`
+  "deliberately tree-only, not commit-keyed"; `records_cache.go:269,273` records cache entries.
+  No incremental reuse.
+- `internal/sem/search_store.go:40` `search-store-sqlite-v4`, `:45-58` opt-in read gate
+  `ENTIRE_GRAPH_SEARCH_STORE`; `search_store_context.go:117` `QuerySearchStoreContext`;
+  `internal/cli/root.go:330,332` the `store` and `context` commands; `docs/store-contract.md`
+  the read-only SQL contract. Added on `main` after this RFD was written.
 - `docs/language-support.md` 185 supported / 36 semantic / 149 inventory-only, covering all 15 of
   peregrine's tier-1 set; live `capabilities --json` now agrees (185 / 36 / 149, 30 relation
   types), so the drift noted in open question 1 is reconciled.
@@ -523,19 +628,21 @@ Nothing is removed before step 7 has held for two release cycles. Then:
 - `docs/brain-and-graph-boundaries.md` MCP surface and multi-repo graph are "Brain's job";
   per-file incremental invalidation is "unbuilt, not declined".
 - PR #97 `ec/candidate-scip-export-v2`, MERGED 2026-08-27, so the following are on main.
-  `internal/cli/root.go:255`
-  `--format scip`, `:262-269` snapshot-mode only. `internal/sem/compact_snapshot.go:454,462`
-  deterministic marshal; `:345-365` Documents; `:384-404` SymbolInformation and definition
-  occurrences; `:407-420` external symbols; `:540-547` only 15 of 30 relations map; `:549-560`
-  only Import/WriteAccess/ReadAccess get roles; `:427-429` `UnsupportedRelationCounts`;
-  `:613-636,660-664` entire-graph-specific monikers. `go.mod:6` `scip-code/scip/bindings/go/scip
-  v0.9.0`.
-- Branch `codex/eg-graphify-lexical-sidecar` commit `5442ed87`, not on main:
+  `internal/cli/root.go:523`
+  `--format scip`, `:530-535` snapshot-mode only. `internal/sem/compact_snapshot.go:723`
+  deterministic marshal; `:503-529` Documents; `:566-592` SymbolInformation and definition
+  occurrences; `:596-609` external symbols; `:801-810` only 14 of 30 relations map as
+  references; `:813-819` the inheritance family also becomes relationships; `:821-832`
+  only Import/WriteAccess/ReadAccess get roles; `:649-651` `UnsupportedRelationCounts`;
+  `:885-908,932-942` entire-graph-specific monikers. `go.mod:11` `scip-code/scip/bindings/go/scip
+  v0.10.0`.
+- Branch `codex/eg-graphify-lexical-sidecar` commit `5442ed87`, not on main and, as of
+  2026-11-10, no longer on `origin`, so the following could not be re-read:
   `internal/sem/search_lexical_index.go:35-36` `EGLEXI1`/`EGPOST1`, `:26-28` postings artifacts,
   `:657,751` trigram API. Zero callers in the query path.
 - SCIP is on main since #97; the note's version tag is `entire-graph-scip-omissions/v1`
-  (`internal/sem/compact_snapshot.go:299`), and `--format scip` writes the protobuf to stdout and
-  the note to stderr (`internal/cli/root.go:271,445`), with no file or network sink.
+  (`internal/sem/compact_snapshot.go:362`), and `--format scip` writes the protobuf to stdout and
+  the note to stderr (`internal/cli/root.go:537,798`), with no file or network sink.
   Current CLI is `entire graph ...`; `entire sem ...` is the deprecated old name.
 
 **entire-api / mcp** (the front door, and where the P2.M3 surface lands)
@@ -552,3 +659,47 @@ Nothing is removed before step 7 has held for two release cycles. Then:
   `withBrainRepo` adapter, `:299-369` `registerBrainTools`, registered once at `server.go:293`;
   shared routing and auth via `entireAPIPlane` at `gitplane.go:41-61`.
 - `grep -rni "entire-graph"` across the MCP repo returns zero hits.
+
+## Refresh notes (2026-11-10, `main` at `0e6bbba3`)
+
+Facts corrected by the refresh. Nothing here changes the proposal or decides an open question.
+
+| Statement | Was | On `main` at `0e6bbba3` |
+|---|---|---|
+| `PartialFailure` fields | five, "there is no `language`" (`provider.go:255-261`) | six, with an optional `language` set by one producer (`provider.go:342-349`, added by `1ce3bbf5`, schema 1.3) |
+| Relation types mapped to SCIP references | 15 of 30 | 14 of 30 (`compact_snapshot.go:801-810`); the count was 14 at the PR's own head too |
+| Inheritance family in SCIP | described as role-0 reference occurrences only | also `SymbolInformation.relationships` (`:813-819`) |
+| SCIP binding | v0.9.0 (`go.mod:6`) | v0.10.0 (`go.mod:11`) |
+| `SchemaVersion` | `1.1` (`provider.go:34`) | `1.5` (`provider.go:47`) |
+| Commit provenance | "`Metadata` and the omission note" | the omission note only; `Metadata` has no revision field |
+| Search engines and paths in entire-graph | tree-keyed snapshot cache only | plus the opt-in SQLite search store and the `store` / `context` commands |
+| `codex/eg-graphify-lexical-sidecar`, `codex/eg-graphify-query-service` | on `origin`, not on main | neither on `origin`; nothing from them on main |
+| entire-graph's search command | `search` | `query`, with `search` a hidden alias |
+| No-egress quote | `AGENTS.md:224` | `AGENTS.md:262` |
+
+Every other `file:line` citation into this repository was moved to its current line; the cited
+code is unchanged in substance. `capabilities --json` still reports 185 supported / 36 semantic
+/ 149 inventory-only languages and 30 relation types, and `--format scip` is still documented as
+experimental. The proposed optional minor field beside the note's version tag is not on `main`.
+
+Not re-verified: every citation into peregrine, entire-api and the MCP repository, and the RSS
+measurement in open question 4.
+
+Review points from the PR discussion and where they stand in this text:
+
+- Object-store write assigned to the producer: resolved in *Delivery*.
+- Omission note frozen as an unversioned shape: resolved in *The interface*, as a proposal.
+- Zero-to-zero Kotlin baseline: resolved by the absolute floor in the test gates.
+- `indexed_commit` is SHA-1 only: resolved by the object-format scope paragraph.
+- Aggregate counts cannot drive per-language fallback, and inventory-only symbols advertised as
+  semantic: resolved in freshness item 2 and *Precision must follow the tier*.
+- Feed-off cannot survive step 9: unresolved, recorded as open question 9.
+- `partial_failures` carries no language: the correction made for it was overtaken by `main`;
+  recorded as open question 11.
+- Note not cryptographically bound to the protobuf: unresolved, now recorded as open question 12.
+- Language-name mapping between `language_tiers` and `Document.language`: unresolved, now
+  recorded as open question 13.
+- Option A still calls in-memory materialization "an unvalidated scale risk on a monorepo" while
+  open question 4 reports a mid-size measurement: left as is, both are true in their own scope.
+- ADR numbering: `main` holds 0001-0004, so 0005 is free; RFD 0006 (PR #152) stays contiguous
+  only if this lands first.
