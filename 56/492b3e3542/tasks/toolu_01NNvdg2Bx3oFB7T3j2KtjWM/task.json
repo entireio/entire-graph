@@ -1,0 +1,17 @@
+{
+  "tool_use_id": "toolu_01NNvdg2Bx3oFB7T3j2KtjWM",
+  "agent_id": "ab35b6bab36ede7a1",
+  "task_description": "Adversarial review: split tests",
+  "files": [
+    "internal/cli/zz_probe_test.go"
+  ],
+  "token_usage": {
+    "input_tokens": 38,
+    "cache_creation_tokens": 82624,
+    "cache_read_tokens": 1216761,
+    "output_tokens": 13990,
+    "api_call_count": 19
+  },
+  "started_at": "2026-11-10T17:11:29.783952+01:00",
+  "completed_at": "2026-11-10T17:25:47.293434+01:00"
+}
