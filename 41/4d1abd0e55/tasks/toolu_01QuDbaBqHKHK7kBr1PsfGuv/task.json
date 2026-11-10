@@ -1,0 +1,14 @@
+{
+  "tool_use_id": "toolu_01QuDbaBqHKHK7kBr1PsfGuv",
+  "agent_id": "a7fe1864ca4f4dd55",
+  "task_description": "Port CI test sharding to macOS",
+  "token_usage": {
+    "input_tokens": 134,
+    "cache_creation_tokens": 782036,
+    "cache_read_tokens": 13379838,
+    "output_tokens": 133073,
+    "api_call_count": 66
+  },
+  "started_at": "2026-11-10T14:25:16.712127+01:00",
+  "completed_at": "2026-11-10T15:02:25.009825+01:00"
+}
