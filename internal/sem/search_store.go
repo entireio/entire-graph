@@ -850,9 +850,9 @@ const SearchStoreUnavailableCode = "W_SEARCH_STORE_UNAVAILABLE"
 // rather than a diagnostic of the graph: today only SearchStoreUnavailableCode,
 // a sqlite store this run could not write while the graph it built is
 // complete. Renderers keep such a warning out of every coverage and
-// completeness count and print it after the answer instead (def, explain,
-// neighbors, impact and query, through writeRunWarningLines; def writes its
-// own lines and explain has its own text path). The prompt-context
+// completeness count and print it after the answer instead: neighbors,
+// impact and query through writeRunWarningLines, def with its own lines,
+// and explain through its own text path. The prompt-context
 // hook's clean() (scripts/entire-graph-prompt-context.py) matches the same codes.
 func IsRunWarning(code string) bool {
 	return code == SearchStoreUnavailableCode
