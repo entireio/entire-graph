@@ -7,20 +7,14 @@ and `shard-events.jsonl`), takes every top-level root's terminal elapsed time
 as measured on the real runner, and writes the roots at or above a threshold.
 Roots below it keep the settings' default weight.
 
-A weight estimates what a root adds to its shard's wall time, which is what
-the planner balances. A root that calls `t.Parallel()` overlaps the other
-parallel roots of its process, so its elapsed time overstates that. The
-evidence says which roots paused for `t.Parallel()` and how long each test
-process really took, so the measured overlap is
+The planner balances estimated wall time, and a root that calls `t.Parallel()`
+overlaps the other parallel roots of its process. The evidence says which
+roots paused for `t.Parallel()` and how long each test process really took, so
+this also records each root's `parallel` flag and the `parallelism` that best
+explains the run under the planner's own model (`plan_shards.process_seconds`):
 
-    parallelism = parallel elapsed / (process wall time - serial elapsed)
-
-over the whole run, and a parallel root's weight is its elapsed time divided
-by it. A serial root's weight is its elapsed time.
-
-The evidence must be one complete, successful run of one target: every shard
-index present once, every exit zero, one repository commit, and exactly one
-terminal event per root. Anything else is refused rather than averaged.
+    process wall = serial elapsed + max(longest parallel root,
+                                        parallel elapsed / parallelism)
 """
 
 from __future__ import annotations
@@ -45,30 +39,45 @@ def read_json(path: Path) -> Any:
 
 
 class Evidence:
-    """One complete run: per-root elapsed, which roots are parallel, and process wall time."""
+    """One complete run: per-root elapsed, which roots are parallel, and each test process."""
 
     def __init__(self) -> None:
         self.elapsed: dict[tuple[str, str], float] = {}
         self.parallel: set[tuple[str, str]] = set()
-        self.process_seconds = 0.0
+        # (shard index, package) -> measured wall seconds of that test process.
+        self.processes: dict[tuple[Any, str], float] = {}
+        self.shard_of: dict[tuple[str, str], Any] = {}
         self.commit = ""
         self.shard_count = 0
 
     def parallelism(self) -> float:
-        """Measured overlap of parallel roots; 1.0 when the evidence cannot show any."""
-        parallel = sum(seconds for key, seconds in self.elapsed.items() if key in self.parallel)
-        serial = sum(seconds for key, seconds in self.elapsed.items() if key not in self.parallel)
-        remaining = self.process_seconds - serial
-        if parallel <= 0 or remaining <= 0:
-            return 1.0
-        return max(1.0, parallel / remaining)
+        """The overlap of parallel roots that best explains the measured process times.
 
-    def weights(self) -> dict[tuple[str, str], float]:
-        factor = self.parallelism()
-        return {
-            key: seconds / factor if key in self.parallel else seconds
-            for key, seconds in self.elapsed.items()
-        }
+        Searched on a fixed grid so the result is deterministic; 1.0 when the
+        evidence holds no parallel root.
+        """
+        shapes: dict[tuple[Any, str], list[float]] = {key: [0.0, 0.0, 0.0] for key in self.processes}
+        for key, seconds in self.elapsed.items():
+            shape = shapes.get((self.shard_of[key], key[0]))
+            if shape is None:
+                continue
+            if key in self.parallel:
+                shape[1] += seconds
+                shape[2] = max(shape[2], seconds)
+            else:
+                shape[0] += seconds
+        if not any(shape[1] > 0 for shape in shapes.values()):
+            return 1.0
+        best = (math.inf, 1.0)
+        for step in range(20, 641):
+            candidate = step / 20
+            error = sum(
+                abs(self.processes[key] - plan_shards.process_seconds(*shape, candidate))
+                for key, shape in shapes.items()
+            )
+            if error < best[0]:
+                best = (error, candidate)
+        return best[1]
 
 
 def collect(evidence: Path, target: targets.Target) -> Evidence:
@@ -97,14 +106,17 @@ def collect(evidence: Path, target: targets.Target) -> Evidence:
             raise ValueError(f"{metadata_path}: shard records no test process")
         for invocation in invocations:
             seconds = invocation.get("durationSeconds") if isinstance(invocation, dict) else None
+            package_name = invocation.get("package") if isinstance(invocation, dict) else None
             if (
                 not isinstance(seconds, (int, float))
                 or isinstance(seconds, bool)
                 or not math.isfinite(float(seconds))
                 or float(seconds) < 0
+                or not isinstance(package_name, str)
+                or (metadata.get("shardIndex"), package_name) in result.processes
             ):
-                raise ValueError(f"{metadata_path}: test process has no valid durationSeconds")
-            result.process_seconds += float(seconds)
+                raise ValueError(f"{metadata_path}: test process has no valid package and durationSeconds")
+            result.processes[(metadata.get("shardIndex"), package_name)] = float(seconds)
         events_path = metadata_path.with_name("shard-events.jsonl")
         try:
             handle = events_path.open(encoding="utf-8-sig")
@@ -143,6 +155,7 @@ def collect(evidence: Path, target: targets.Target) -> Evidence:
                 if key in elapsed:
                     raise ValueError(f"root {package}::{test} has more than one terminal event")
                 elapsed[key] = float(seconds)
+                result.shard_of[key] = metadata.get("shardIndex")
     if len(commits) != 1 or not isinstance(next(iter(commits)), str):
         raise ValueError(f"evidence spans repository commits {sorted(map(str, commits))!r}")
     if len(shard_counts) != 1 or not isinstance(next(iter(shard_counts)), int):
@@ -157,23 +170,25 @@ def collect(evidence: Path, target: targets.Target) -> Evidence:
     return result
 
 
-def render(
-    weights: dict[tuple[str, str], float], minimum_seconds: float, source_commit: str, source: str
-) -> str:
+def render(evidence: Evidence, minimum_seconds: float, source: str) -> str:
     rows = sorted(
-        (package, name, round(seconds, 2))
-        for (package, name), seconds in weights.items()
+        (package, name, round(seconds, 2), (package, name) in evidence.parallel)
+        for (package, name), seconds in evidence.elapsed.items()
         if seconds >= minimum_seconds
     )
     lines = [
         "{",
         f'  "schema": {json.dumps(plan_shards.WEIGHTS_SCHEMA)},',
-        f'  "sourceCommit": {json.dumps(source_commit)},',
+        f'  "sourceCommit": {json.dumps(evidence.commit)},',
         f'  "source": {json.dumps(source, ensure_ascii=False)},',
+        f'  "parallelism": {json.dumps(evidence.parallelism())},',
         '  "weights": [',
     ]
-    for position, (package, name, seconds) in enumerate(rows):
-        row = json.dumps({"package": package, "name": name, "seconds": seconds}, ensure_ascii=False)
+    for position, (package, name, seconds, parallel) in enumerate(rows):
+        record: dict[str, Any] = {"package": package, "name": name, "seconds": seconds}
+        if parallel:
+            record["parallel"] = True
+        row = json.dumps(record, ensure_ascii=False)
         lines.append("    " + row + ("," if position < len(rows) - 1 else ""))
     lines += ["  ]", "}"]
     return "\n".join(lines) + "\n"
@@ -196,15 +211,14 @@ def main(argv: list[str] | None = None) -> int:
         if not math.isfinite(args.minimum_seconds) or args.minimum_seconds < 0:
             raise ValueError("--minimum-seconds must be finite and non-negative")
         evidence = collect(args.evidence.resolve(strict=True), target)
-        weights = evidence.weights()
+        weights = evidence.elapsed
         run = f" of CI run {args.run}" if args.run else ""
         source = (
             f"Top-level terminal elapsed from the {evidence.shard_count} {target.name} shard evidence"
-            f" artifacts{run}; t.Parallel roots are divided by their measured overlap"
-            f" ({evidence.parallelism():.2f}); roots below {args.minimum_seconds:g} seconds"
-            " intentionally use the configured default."
+            f" artifacts{run}; roots below {args.minimum_seconds:g} seconds intentionally use the"
+            " configured default."
         )
-        text = render(weights, args.minimum_seconds, evidence.commit, source)
+        text = render(evidence, args.minimum_seconds, source)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text, encoding="utf-8", newline="\n")
         plan_shards.load_weights(args.output)
@@ -214,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     kept = [seconds for seconds in weights.values() if seconds >= args.minimum_seconds]
     rest = [seconds for seconds in weights.values() if seconds < args.minimum_seconds]
     print(f"wrote {len(kept)} of {len(weights)} roots from commit {evidence.commit} to {args.output}")
-    print(f"measured t.Parallel overlap: {evidence.parallelism():.2f}")
+    print(f"fitted t.Parallel parallelism: {evidence.parallelism():.2f}")
     if rest:
         print(f"mean weight of the {len(rest)} unrecorded roots: {sum(rest) / len(rest):.3f} s")
     return 0

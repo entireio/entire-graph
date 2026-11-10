@@ -124,17 +124,26 @@ standard ephemeral hosted runners.
 ## Historical weights
 
 Weights are per target and only balance shards; they never decide what runs.
-A weight estimates what a root adds to its shard's wall time on the real CI
-runner. For a serial root that is its top-level elapsed time. Roots that call
-`t.Parallel()` overlap inside one test process, so their elapsed time is
-divided by the overlap the evidence shows: parallel elapsed over the process
-wall time left after the serial roots (about 2.1 on the three-core hosted macOS
-runner and 2.3 on Windows). Without that, a shard full of serial
-`internal/sem` roots was planned as equal to one full of parallel
-`internal/cli` sweeps and took half as long again. Roots below half a second
-are not recorded and use `defaultWeightSeconds`, which is set to their measured
-mean (0.05 s) so that the thousands of quick roots do not outweigh the slow
-ones.
+A weight is a root's top-level elapsed time on the real CI runner, and the
+planner balances estimated wall time rather than summed weights. A shard runs
+one test process per heavy package, and `go test` runs a binary's serial roots
+one at a time and then its `t.Parallel()` roots together, so the planner
+estimates each process as
+
+    serial elapsed + max(longest parallel root, parallel elapsed / parallelism)
+
+and gives each root, slowest first, to the shard that would finish soonest
+with it. The weights file marks the roots that call `t.Parallel()` and records
+the `parallelism` that best explains the measured process times (about 2.5 on
+the three-core hosted macOS runner and 2.75 on Windows). Planning by summed
+elapsed instead made a shard of serial `internal/sem` roots look equal to one
+of overlapping `internal/cli` sweeps, and it took half as long again. A weights
+file without those fields plans every root as serial, which is plain
+longest-processing-time-first.
+
+Roots below half a second are not recorded and use `defaultWeightSeconds`,
+which is set to their measured mean (0.05 s) so that the thousands of quick
+roots do not outweigh the slow ones.
 
 Refresh the weights from a green run whenever the shards drift apart, or after
 adding or splitting a slow test:
@@ -155,7 +164,9 @@ with more than one terminal event), so a partial download cannot skew a plan.
 
 A shard cannot be shorter than its slowest root. When one root approaches half
 of a shard's time, split it into several top-level tests that together make
-the same assertions; the planner can then spread them.
+the same assertions; the planner can then spread them. One slow runner in the
+evidence run inflates the weights of the roots it ran, so prefer a run whose
+shards finished close together.
 
 ## Running a target locally
 

@@ -185,14 +185,47 @@ def load_settings(path: Path) -> dict[str, Any]:
     return result
 
 
-def load_weights(path: Path) -> tuple[dict[tuple[str, str], float], dict[str, Any]]:
+class Weights(dict):
+    """Per-root elapsed seconds, plus what is known about `t.Parallel()` roots.
+
+    `parallel` names the roots that call `t.Parallel()`; `parallelism` is how
+    many of them effectively run at once on the target's runner. A plain dict
+    carries neither, which plans every root as serial.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.parallel: set[tuple[str, str]] = set()
+        self.parallelism = 1.0
+
+
+def process_seconds(serial: float, parallel: float, longest_parallel: float, parallelism: float) -> float:
+    """Estimated wall time of one test process.
+
+    `go test` runs a binary's serial roots first, one at a time, and then its
+    `t.Parallel()` roots together. The parallel phase can end no sooner than
+    its longest root and no sooner than its total work spread over the cores.
+    """
+    return serial + max(longest_parallel, parallel / parallelism)
+
+
+def load_weights(path: Path) -> tuple[Weights, dict[str, Any]]:
     value = read_json(path)
     if not isinstance(value, dict) or value.get("schema") != WEIGHTS_SCHEMA:
         raise ValueError(f"{path}: unexpected historical-weight schema")
     rows = value.get("weights")
     if not isinstance(rows, list):
         raise ValueError(f"{path}: weights must be a list")
-    weights: dict[tuple[str, str], float] = {}
+    parallelism = value.get("parallelism", 1.0)
+    if (
+        not isinstance(parallelism, (int, float))
+        or isinstance(parallelism, bool)
+        or not math.isfinite(float(parallelism))
+        or not 1.0 <= float(parallelism) <= 1024.0
+    ):
+        raise ValueError(f"{path}: parallelism must be from 1 through 1024")
+    weights = Weights()
+    weights.parallelism = float(parallelism)
     for position, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"{path}: weights[{position}] is not an object")
@@ -209,13 +242,20 @@ def load_weights(path: Path) -> tuple[dict[tuple[str, str], float], dict[str, An
         key = (package, name)
         if key in weights:
             raise ValueError(f"{path}: duplicate weight for {package}::{name}")
+        parallel = row.get("parallel", False)
+        if not isinstance(parallel, bool):
+            raise ValueError(f"{path}: weights[{position}] parallel must be a boolean")
         weights[key] = float(seconds)
+        if parallel:
+            weights.parallel.add(key)
     metadata = {
         "path": path.name,
         "sha256": sha256_file(path),
         "sourceCommit": value.get("sourceCommit"),
         "source": value.get("source"),
         "entryCount": len(weights),
+        "parallelism": weights.parallelism,
+        "parallelCount": len(weights.parallel),
     }
     return weights, metadata
 
@@ -423,6 +463,8 @@ def create_plan(
     if len(repository_shas) != 1 or len(go_versions) != 1:
         raise ValueError("compiled inventories disagree on repository or Go version")
 
+    parallel_roots = getattr(weights, "parallel", frozenset())
+    parallelism = float(getattr(weights, "parallelism", 1.0))
     work: list[dict[str, Any]] = []
     used_weight_keys: set[tuple[str, str]] = set()
     for inventory in inventories:
@@ -445,6 +487,8 @@ def create_plan(
                     "kind": root["kind"],
                     "weightSeconds": round(float(weight), 6),
                     "weightSource": source,
+                    # A root with no history is planned as serial.
+                    "parallel": key in weights and key in parallel_roots,
                 }
             )
 
@@ -454,12 +498,31 @@ def create_plan(
     work.sort(key=lambda item: (-item["weightSeconds"], item["importPath"], item["name"]))
     bins: list[list[dict[str, Any]]] = [[] for _ in range(shard_count)]
     totals = [0.0] * shard_count
+    # A shard runs one process per package, one after another, so its estimated
+    # wall time is the sum of its processes'. Each root, slowest first, goes to
+    # the shard that would finish soonest with it. With no parallel roots this
+    # is longest-processing-time-first; a parallel root is free wherever it
+    # hides beneath a longer one or beneath the cores' share of the work.
+    processes: list[dict[str, list[float]]] = [{} for _ in range(shard_count)]
+
+    def placed(index: int, item: dict[str, Any]) -> tuple[float, list[float]]:
+        serial, parallel, longest = processes[index].get(item["importPath"], [0.0, 0.0, 0.0])
+        before = process_seconds(serial, parallel, longest, parallelism)
+        if item["parallel"]:
+            parallel += item["weightSeconds"]
+            longest = max(longest, item["weightSeconds"])
+        else:
+            serial += item["weightSeconds"]
+        after = process_seconds(serial, parallel, longest, parallelism)
+        return totals[index] - before + after, [serial, parallel, longest]
+
     for item in work:
         destination = min(
-            range(shard_count), key=lambda index: (totals[index], len(bins[index]), index)
+            range(shard_count),
+            key=lambda index: (placed(index, item)[0], len(bins[index]), index),
         )
+        totals[destination], processes[destination][item["importPath"]] = placed(destination, item)
         bins[destination].append(item)
-        totals[destination] += item["weightSeconds"]
 
     shards: list[dict[str, Any]] = []
     for index, roots in enumerate(bins):
@@ -482,6 +545,7 @@ def create_plan(
                             "kind": item["kind"],
                             "weightSeconds": item["weightSeconds"],
                             "weightSource": item["weightSource"],
+                            **({"parallel": True} if item["parallel"] else {}),
                         }
                         for item in package_roots
                     ],
@@ -512,7 +576,7 @@ def create_plan(
     ]
     return {
         "schema": PLAN_SCHEMA,
-        "algorithm": "deterministic-longest-processing-time-first-v1",
+        "algorithm": "deterministic-greedy-process-wall-time-v2",
         "repositorySha": next(iter(repository_shas)),
         "goVersion": next(iter(go_versions)),
         "targetEnvironment": {
