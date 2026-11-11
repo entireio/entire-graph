@@ -198,8 +198,12 @@ passes only against a Brain checkout that carries the same wording. The
 `remember --path` rule is an example: the Brain-enabled guides say that each
 path segment uses only lowercase letters, digits and underscores
 (`project.ci_cache.layout`, not `project.ci-cache.layout`), and Brain states the
-same sentence verbatim (entireio/entire-brain#605). A parity failure against a
-Brain checkout without the matching half reports that missing half, not a
-regression here. Without `BRAIN_INTEGRATION_REQUIRE_GUIDE_PARITY=1`, Brain's
-`compareGuideText` accepts only the exact legacy wording of the Graph release it
-pins, so the default leg does not establish parity for a new change.
+same sentence verbatim (entireio/entire-brain#605). The COR-2308 memories-first
+wording is another: the Brain-enabled guides say that memories are the default
+retrieval surface, that the brief's precedent section lists each surfaced
+memory's source sessions, and that transcript history is an explicit
+escalation, in the same words Brain main already ships. A parity failure
+against a Brain checkout without the matching half reports that missing half,
+not a regression here. The matching Brain pin of this wording drops the last
+`compareGuideText` allowance, so both the default integration leg and
+`BRAIN_INTEGRATION_REQUIRE_GUIDE_PARITY=1` require exact equality.

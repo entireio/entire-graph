@@ -149,6 +149,14 @@ with query and not from the brief's memories sample alone:
 
     entire brain recall "<question>" --json
 
+Memories are the default retrieval surface. The brief's precedent section lists
+each surfaced memory's source sessions (session, transcript, commit,
+checkpoint); follow those anchors when you need the detail behind a memory.
+The brief does not search transcript history. Search transcripts only as an
+explicit escalation, when memories and their anchors miss:
+
+    entire brain query --source history "<question>" --json
+
 Use Brain retrieval for recorded knowledge. Use entities history when connecting
 code changes to earlier checkpoints or sessions. ALWAYS retrieve relevant prior
 decisions and attempts before proposing to replace an existing approach.
