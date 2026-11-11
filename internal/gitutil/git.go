@@ -2789,7 +2789,7 @@ func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) 
 	// name the repository Git opens, rather than an inherited GIT_DIR or object
 	// store silently replacing it.
 	cmd.Env = gitSubprocessEnvironment(cmd.Environ(), dir)
-	HideConsoleWindow(cmd)
+	hideConsoleWindow(cmd)
 	return cmd
 }
 
@@ -2978,7 +2978,7 @@ func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
 		env = gitSubprocessEnvironment(env, dir)
 	}
 	cmd.Env = append(env, "LC_ALL=C", "LANG=C")
-	HideConsoleWindow(cmd)
+	hideConsoleWindow(cmd)
 	return cmd
 }
 

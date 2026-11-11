@@ -11,7 +11,7 @@ import (
 
 var procGetConsoleProcessList = modkernel32.NewProc("GetConsoleProcessList")
 
-// HideConsoleWindow keeps cmd from opening a visible console window when
+// hideConsoleWindow keeps cmd from opening a visible console window when
 // entire-graph itself has no console attached. Windows gives a console program
 // a new, visible console when its parent has none, so a status line render
 // started without one would flash a window, and steal focus, for every
@@ -22,7 +22,7 @@ var procGetConsoleProcessList = modkernel32.NewProc("GetConsoleProcessList")
 // still reaches the whole tree and no extra conhost.exe starts per call.
 // Otherwise CREATE_NO_WINDOW is ORed into the creation flags and HideWindow is
 // set; every other SysProcAttr field is kept.
-func HideConsoleWindow(cmd *exec.Cmd) {
+func hideConsoleWindow(cmd *exec.Cmd) {
 	if consoleAttached() {
 		return
 	}

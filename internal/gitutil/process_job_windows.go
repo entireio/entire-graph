@@ -147,7 +147,7 @@ func (launch *pathOutputLaunch) close() {
 
 // pathOutputChildSysProcAttr copies the caller's attributes, names the
 // creation parent, and always sets CREATE_NO_WINDOW and HideWindow, even when
-// the caller has a console, unlike HideConsoleWindow. Created under the
+// the caller has a console, unlike hideConsoleWindow. Created under the
 // suspended surrogate parent, the child cannot join a console the caller
 // created: without CREATE_NO_WINDOW, a caller that owns its console, with no
 // window or a hidden one, gets a child that fails to start with
