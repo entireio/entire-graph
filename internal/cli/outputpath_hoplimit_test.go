@@ -39,7 +39,7 @@ func TestOutsideRouteHopLimitNeverExceedsTheHostPathnameLimit(t *testing.T) {
 	}
 
 	// A caller-owned destination: outside the repository, so this is the unconfined walk.
-	err := writeOutputFileUnder(t.TempDir(), route, []byte("x"), 0o644, false)
+	err := writeOutputFileUnder(t.TempDir(), route, []byte("x"), 0o644)
 	if err == nil {
 		t.Fatalf("the walk followed a %d-link chain that %s itself refuses (host limit %d): "+
 			"a fixed hop budget lets this machine's ELOOP become a write",

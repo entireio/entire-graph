@@ -160,7 +160,7 @@ func runIndexCommand(ctx context.Context, opts Options, args []string, health bo
 		// under the control of the scanned repository, which may have committed a
 		// symlink there. ctx is passed because the boundary is the checkout's git
 		// top level, which --repo does not have to name. See outputpath.go.
-		if err := writeOutputFile(ctx, repo, flags.Report, []byte(renderGraphReport(snapshot)), 0o644, false); err != nil {
+		if err := writeOutputFile(ctx, repo, flags.Report, []byte(renderGraphReport(snapshot)), 0o644); err != nil {
 			return fmt.Errorf("write graph report %q: %w", flags.Report, err)
 		}
 	}

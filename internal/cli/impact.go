@@ -57,6 +57,14 @@ type impactEntry struct {
 	// overview, so it reports the LINE only and never quotes source; use
 	// `neighbors --direction in` for the conditions around a call.
 	CallSite *callSite `json:"call_site,omitempty"`
+	// EvidenceState states how much this entry can be trusted at face value: a
+	// structural fact (a sibling, or a resolved single-target relation) is
+	// "confirmed"; an edge produced by inference, fan-out, or a documented
+	// heuristic relation kind is "partial"; a bare name/text match or a pattern
+	// the graph flagged as weak is "requires_verification" (see
+	// sem.RelationEvidenceState). It never changes Relation/Detail/Endpoint —
+	// it is a read of data the graph already computed, not a new judgment.
+	EvidenceState sem.EvidenceState `json:"evidence_state"`
 
 	// Evidence span and written call text, kept only to resolve CallSite after
 	// the graph query. Not part of the wire format.
@@ -76,6 +84,10 @@ type impactSection struct {
 	In         int           `json:"in,omitempty"`
 	Out        int           `json:"out,omitempty"`
 	Entries    []impactEntry `json:"entries"`
+	// EvidenceState rolls every entry in this section up to the single most cautious
+	// verdict, computed over ALL matching relations before the --limit cap (an entry
+	// pushed out of Entries by the cap can still make the section requires_verification).
+	EvidenceState sem.EvidenceState `json:"evidence_state"`
 }
 
 type impactResponse struct {
@@ -102,8 +114,19 @@ type impactResponse struct {
 	FuzzyMatchKind string `json:"fuzzy_match_kind,omitempty"`
 	// Degenerate reports that the answer carries no blast radius worth reading, with the reason. It is
 	// the same verdict the text marker prints, so a JSON consumer can act on it without parsing text.
-	Degenerate             bool                   `json:"degenerate,omitempty"`
-	DegenerateReason       string                 `json:"degenerate_reason,omitempty"`
+	Degenerate       bool   `json:"degenerate,omitempty"`
+	DegenerateReason string `json:"degenerate_reason,omitempty"`
+	// EvidenceState is the answer-wide verdict: the worst state among every section below,
+	// escalated to requires_verification when the focus sits in a language the graph only
+	// inventories (no call/reference resolution ran at all) or when the answer is Degenerate
+	// (a zero or bundle-only blast radius is exactly the shape dynamic dispatch, reflection,
+	// or generated code leaves behind — see impactEvidenceVerificationNote). It is computed
+	// once, on the finished response, so text and JSON can never disagree about it.
+	EvidenceState sem.EvidenceState `json:"evidence_state,omitempty"`
+	// EvidenceNote explains, when EvidenceState is requires_verification, what to do about
+	// it: the source/test verification path a reader should follow instead of trusting the
+	// counts above as complete. Empty whenever EvidenceState is not requires_verification.
+	EvidenceNote           string                 `json:"evidence_note,omitempty"`
 	MatchBodies            []symbolMatchBody      `json:"match_bodies,omitempty"`
 	DisambiguationRequired bool                   `json:"disambiguation_required"`
 	Definitions            []neighborEndpoint     `json:"definitions,omitempty"`
@@ -206,6 +229,7 @@ func analyzeImpact(ctx context.Context, opts Options, flags impactFlags, report 
 	if reason := impactDegenerateReason(response); reason != "" {
 		response.Degenerate, response.DegenerateReason = true, reason
 	}
+	finalizeImpactEvidence(&response)
 	report.update("Preparing results", "Grouping callers and tests; formatting the summary")
 	queryLatency := time.Since(queryStarted)
 	response.IndexCacheHit = cacheHit
@@ -501,6 +525,7 @@ func buildImpactResponseFromReader(
 		seenTouching[key] = true
 		*entries = append(*entries, impactEntry{
 			Endpoint: endpoint, Relation: relation.Type, Direction: direction, Depth: 1,
+			EvidenceState: sem.RelationEvidenceState(relation),
 		})
 	}
 	for _, relation := range snapshot.Relations {
@@ -516,6 +541,7 @@ func buildImpactResponseFromReader(
 					seenCallee[key] = true
 					callees = append(callees, impactEntry{
 						Endpoint: endpoint, Relation: relation.Type, Direction: "out", Depth: 1,
+						EvidenceState: sem.RelationEvidenceState(relation),
 					})
 				}
 			}
@@ -537,6 +563,7 @@ func buildImpactResponseFromReader(
 				seenCochange[otherID] = true
 				cochangeEntries = append(cochangeEntries, impactEntry{
 					Endpoint: endpoint, Relation: relation.Type, Detail: relation.Reason,
+					EvidenceState: sem.RelationEvidenceState(relation),
 				})
 			}
 		}
@@ -579,6 +606,7 @@ func buildImpactResponseFromReader(
 				seenCaller[relation.FromID] = true
 				entry := impactEntry{
 					Endpoint: endpoint, Relation: relation.Type, Direction: "in", Depth: depth,
+					EvidenceState: sem.RelationEvidenceState(relation),
 				}
 				// Keep the caller-body span and written call text so the call
 				// LINE can replace the definition line in the answer.
@@ -614,9 +642,16 @@ func buildImpactResponseFromReader(
 		}
 		switch {
 		case focus.ContainerID != "" && symbol.ContainerID == focus.ContainerID:
-			siblings = append(siblings, impactEntry{Endpoint: endpointForSymbol(symbol), Detail: "sibling"})
+			// Sibling/member is a structural fact read straight off container membership,
+			// not a resolved relation the graph could have gotten wrong through dynamic
+			// dispatch or reflection, so it is always Confirmed.
+			siblings = append(siblings, impactEntry{
+				Endpoint: endpointForSymbol(symbol), Detail: "sibling", EvidenceState: sem.EvidenceConfirmed,
+			})
 		case symbol.ContainerID == focus.ID:
-			siblings = append(siblings, impactEntry{Endpoint: endpointForSymbol(symbol), Detail: "member"})
+			siblings = append(siblings, impactEntry{
+				Endpoint: endpointForSymbol(symbol), Detail: "member", EvidenceState: sem.EvidenceConfirmed,
+			})
 		}
 	}
 
@@ -707,6 +742,7 @@ func impactSectionOf(entries []impactEntry, limit int) impactSection {
 		return entries[left].Relation < entries[right].Relation
 	})
 	section := impactSection{Total: len(entries)}
+	states := make([]sem.EvidenceState, 0, len(entries))
 	for _, entry := range entries {
 		switch {
 		case entry.Direction == "in" && entry.Depth > 1:
@@ -717,7 +753,12 @@ func impactSectionOf(entries []impactEntry, limit int) impactSection {
 		case entry.Direction == "out":
 			section.Out++
 		}
+		states = append(states, entry.EvidenceState)
 	}
+	// Rolled up over every matching relation, not just the entries the --limit cap kept: an
+	// entry pushed out of the visible list by the cap must still be able to make the section
+	// (and therefore the whole answer) say requires_verification.
+	section.EvidenceState = sem.WorstEvidenceState(states...)
 	if limit > 0 && len(entries) > limit {
 		entries = entries[:limit]
 	}
@@ -877,6 +918,13 @@ func writeImpactSection(out io.Writer, header string, section impactSection, arr
 		if entry.Detail == impactMentionDetail {
 			annotations = append(annotations, impactMentionDetail)
 		}
+		// Silent for Confirmed and Partial -- a resolved edge or a documented heuristic
+		// (type-inferred fan-out, a heuristic relation kind) is not new information the
+		// reader has to act on. Only the bare name/text match or weak-pattern match that
+		// RelationEvidenceState calls RequiresVerification earns a visible flag here.
+		if entry.EvidenceState == sem.EvidenceRequiresVerification {
+			annotations = append(annotations, "requires_verification")
+		}
 		if len(annotations) > 0 {
 			fmt.Fprintf(out, " [%s]", strings.Join(annotations, ", "))
 		}
@@ -1006,5 +1054,50 @@ func writeImpactDegenerate(out io.Writer, response impactResponse, reason string
 		if note := valueReferenceNote(response.Warnings, response.Focus.Name); note != "" {
 			fmt.Fprintln(out, note)
 		}
+	}
+	// A degenerate answer is the one a reader is most likely to mistake for
+	// "nothing depends on this", so the verdict is repeated here rather than left
+	// to the overview, which this path never reaches.
+	if response.EvidenceState == sem.EvidenceRequiresVerification && response.EvidenceNote != "" {
+		fmt.Fprintf(out, "Evidence: requires_verification -- %s\n", response.EvidenceNote)
+	}
+}
+
+// EVIDENCE STATE
+// ==============
+//
+// A "0 callers" or "bundle-only" answer and a resolved-but-heuristic edge are two different
+// shades of the same problem this file otherwise treats separately (impactDegenerateReason
+// above, RelationEvidenceState per entry): the graph presenting a necessarily incomplete
+// static approximation as though it were the whole truth. finalizeImpactEvidence folds both
+// into the one verdict a consumer actually needs — can this count be trusted as-is, or does it
+// need a human/test check — computed once on the finished response so text and JSON agree.
+
+// finalizeImpactEvidence computes the answer-wide evidence verdict and, when it lands on
+// requires_verification, the guidance note that names a concrete way to check it. It runs
+// AFTER impactDegenerateReason because a degenerate verdict escalates the evidence state: a
+// zero or bundle-only blast radius is exactly the shape dynamic dispatch past its fan-out
+// limit, reflection, or generated/vendored code leaves behind, and must not be read as a
+// confirmed "nothing depends on this."
+func finalizeImpactEvidence(response *impactResponse) {
+	if response == nil || response.Focus == nil {
+		return
+	}
+	worst := sem.WorstEvidenceState(
+		response.Callers.EvidenceState, response.Callees.EvidenceState,
+		response.TypeConsumers.EvidenceState, response.DataFlows.EvidenceState,
+		response.CoChanges.EvidenceState, response.Siblings.EvidenceState,
+	)
+	if response.Degenerate {
+		worst = sem.WorstEvidenceState(worst, sem.EvidenceRequiresVerification)
+	}
+	worst = sem.WorstEvidenceState(worst, sem.LanguageEvidenceState(response.Focus.Language))
+	response.EvidenceState = worst
+	if worst == sem.EvidenceRequiresVerification {
+		name := response.Query
+		if display := endpointDisplayName(*response.Focus); display != "" {
+			name = display
+		}
+		response.EvidenceNote = sem.EvidenceVerificationNote(name)
 	}
 }

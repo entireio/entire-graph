@@ -36,8 +36,9 @@ func valueReferenceDisclosure(focus neighborEndpoint) (sem.ProviderWarning, bool
 		return sem.ProviderWarning{}, false
 	}
 	return sem.ProviderWarning{
-		Code:     valueReferenceDisclosureCode,
-		Severity: "info",
+		Code:        valueReferenceDisclosureCode,
+		Severity:    "info",
+		EffectScope: sem.DiagnosticEffectScope(valueReferenceDisclosureCode, ""),
 		EffectOnCompleteness: "references to " + focus.Name + " as a value (assigned to a variable, passed as an argument, " +
 			"stored in a struct field or map) are not modelled, so code that reaches it only through such a value is " +
 			"missing from its callers and impact",

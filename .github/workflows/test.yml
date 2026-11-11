@@ -9,6 +9,15 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that pull request's superseded run; its
+# checks belong to the old head commit, so they can never read as passing on the
+# new one. Every other run (a push to main, a manual dispatch) gets a group of
+# its own and always completes: a shared group would let a newer run on main
+# replace an older one that is still waiting.
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   locate-benchmark-guards:
     runs-on: depot-ubuntu-24.04-4
@@ -95,15 +104,15 @@ jobs:
         with: { go-version: "1.27.x" }
       - run: go build ./...
 
+  # Linux is the only target still tested as one job. Windows and macOS are
+  # sharded below; their aggregate jobs keep the "test (<os>)" check names.
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
         include:
           - os: ubuntu-latest
             runner: depot-ubuntu-24.04-8
-          - os: macos-latest
-            runner: macos-latest
     # The explicit name keeps matrix.runner out of the default display name:
     # "test (<os>)" is a required check on main.
     name: test (${{ matrix.os }})
@@ -114,7 +123,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
-      # Keep the named package budget consistent with the Windows shard policy.
+      # Keep the named package budget consistent with the shard policy.
       - run: go test -timeout 30m ./...
 
   # The sidecar/full-load equivalence guard runs every lookup verb concurrently
@@ -135,25 +144,75 @@ jobs:
         with: { go-version: "1.27.x" }
       - run: go test -race -count=1 -timeout 25m -run '^TestLookupsAnswerIdenticallyFromSidecarAndFullLoad$' ./internal/cli
 
+  # Job timeouts on the sharded targets (Windows here, macOS below) bound how
+  # long a hang can hold a required check without ever killing a slow but
+  # passing run:
+  #   - A shard launches its packages' test binaries one after another, each
+  #     with the harness's 30-minute `-test.timeout`, the same package budget as
+  #     `go test -timeout 30m ./...`. A hung test is therefore reported by the
+  #     test binary itself, with its goroutine dump, after 30 minutes. The job
+  #     timeout of 35 leaves room for setup and the packages that ran first, so
+  #     the dump is normally what fails the shard, and a second hanging package
+  #     cannot add another 30 minutes. A whole shard takes two to four minutes
+  #     today, so 35 is about ten times the slowest one measured.
+  #   - The non-heavy job runs `go test` with the same 30-minute budget for
+  #     packages that take under a minute, so it gets the same 35.
+  #   - compile-and-plan and vet have no package budget; 15 and 10 minutes are
+  #     several times their cold-cache worst case (about four and three).
+  # Runners: the Windows test chain and both aggregate jobs run on GitHub-hosted
+  # runners. Depot's Windows machines ran the tests about 1.5 times faster, but
+  # each job waited 80 to 90 seconds for a runner and the chain pays that twice
+  # (compile and plan, then a shard). Over five interleaved pairs of runs the
+  # hosted chain finished about 95 seconds earlier (median 409 s against 494 s
+  # after trigger). The aggregates are hosted for the same reason: they sit at
+  # the tail of the chain and waited up to 185 s for a Depot runner.
   windows-test-prepare:
     name: test (windows-latest) / compile and plan
-    runs-on: depot-windows-2025-8
-    timeout-minutes: 30
+    runs-on: windows-latest
+    timeout-minutes: 15
     outputs:
       shard-matrix: ${{ steps.shard-matrix.outputs.value }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      # Build cache for this job only. setup-go's own cache is keyed on go.sum
+      # alone, is saved once by whichever job finishes first, and is never
+      # refreshed, so it drifts away from the code and may never have held
+      # compiled test packages. Instead: every push to main saves a fresh entry
+      # under its commit, and every run restores the newest one, falling back to
+      # an older go.sum, then to any entry of this job, then to a setup-go entry
+      # (same two directories, so the archive is compatible; that key format is
+      # setup-go's, and if it changes this merely compiles cold). Pull requests
+      # only restore, so they do not pile up entries. Go's build cache is
+      # content-addressed: a stale or missing entry costs time, never
+      # correctness.
       - uses: actions/setup-go@v7.0.0
+        id: setup-go
         with:
           go-version: "1.27.x"
-          cache-dependency-path: go.sum
+          cache: false
+      - name: Locate the Go caches
+        id: go-caches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "modcache=$(go env GOMODCACHE)" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "buildcache=$(go env GOCACHE)" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Restore the newest compile-and-plan build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go-caches.outputs.modcache }}
+            ${{ steps.go-caches.outputs.buildcache }}
+          key: test-prepare-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            test-prepare-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+            test-prepare-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-
+            setup-go-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - name: Validate the Windows sharding harness
-        run: python -B -m unittest discover -s tools/ci-bench/windows-production/tests -p "test_*.py" -v
       - name: Compile once and inventory default-runnable roots
         shell: pwsh
         run: |
@@ -189,15 +248,25 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
+      # Saved after the bundle is uploaded. Shards wait for this job to finish, so
+      # on main this costs them the few seconds the save takes.
+      - name: Save the build cache for later runs
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go-caches.outputs.modcache }}
+            ${{ steps.go-caches.outputs.buildcache }}
+          key: test-prepare-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
   windows-test-shards:
     name: test (windows-latest) / shard ${{ matrix.shard }}
     needs: windows-test-prepare
-    runs-on: depot-windows-2025-8
-    timeout-minutes: 105
+    runs-on: windows-latest
+    timeout-minutes: 35
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 16
       matrix:
         shard: ${{ fromJSON(needs.windows-test-prepare.outputs.shard-matrix) }}
     steps:
@@ -211,7 +280,7 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
@@ -241,8 +310,8 @@ jobs:
   windows-test-other:
     name: test (windows-latest) / non-heavy packages
     needs: windows-test-prepare
-    runs-on: depot-windows-2025-4
-    timeout-minutes: 40
+    runs-on: windows-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -254,10 +323,14 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-test-bundle
           path: ${{ runner.temp }}/windows-test-bundle
+      # The harness unit tests run natively here, not in compile-and-plan: this
+      # job is far shorter than a shard, so they cost the workflow no wall time.
+      - name: Validate the sharding harness
+        run: python -B -m unittest discover -s tools/ci-bench/windows-production/tests -p "test_*.py" -v
       - name: Run every target-Windows non-heavy package once
         shell: pwsh
         run: |
@@ -282,8 +355,8 @@ jobs:
 
   windows-test-vet:
     name: test (windows-latest) / vet
-    runs-on: depot-windows-2025-4
-    timeout-minutes: 30
+    runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -294,12 +367,349 @@ jobs:
           cache-dependency-path: go.sum
       - run: go vet ./...
 
-  windows-test-verify:
-    name: test (windows-latest) / coverage and integrity
-    needs: [windows-test-prepare, windows-test-shards, windows-test-other]
-    if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
-    runs-on: depot-ubuntu-24.04-4
+  # The aggregate keeps the former matrix check identity: "test (windows-latest)" is a
+  # required check on main. It also runs the verifier itself rather than waiting
+  # for a separate verify job, which saves one runner start at the end of the
+  # critical path. The verifier runs whenever the plan exists, so a failed shard
+  # still gets a coverage report; the last step then requires every component.
+  windows-test:
+    name: test (windows-latest)
+    needs:
+      [windows-test-prepare, windows-test-shards, windows-test-other, windows-test-vet]
+    if: always()
+    runs-on: ubuntu-latest
     timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/ci-bench/windows-production
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
+        with:
+          name: windows-test-bundle
+          path: ${{ runner.temp }}/windows-test-bundle
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
+        with:
+          pattern: windows-test-shard-*
+          path: ${{ runner.temp }}/windows-test-shards
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
+        with:
+          name: windows-test-other
+          path: ${{ runner.temp }}/windows-test-other
+      - name: Verify exact root, package, process, and artifact coverage
+        if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
+        run: |
+          python -B tools/ci-bench/windows-production/verify_results.py \
+            --bundle "${{ runner.temp }}/windows-test-bundle" \
+            --shard-results "${{ runner.temp }}/windows-test-shards" \
+            --other-results "${{ runner.temp }}/windows-test-other" \
+            --output "${{ runner.temp }}/windows-test-verification.json" \
+            --expected-repository-sha '${{ github.sha }}'
+      - name: Upload verification report
+        if: ${{ always() && needs.windows-test-prepare.result == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-test-verification
+          path: ${{ runner.temp }}/windows-test-verification.json
+          if-no-files-found: error
+          retention-days: 3
+      - name: Require every Windows test component
+        if: always()
+        env:
+          PREPARE_RESULT: ${{ needs.windows-test-prepare.result }}
+          SHARDS_RESULT: ${{ needs.windows-test-shards.result }}
+          OTHER_RESULT: ${{ needs.windows-test-other.result }}
+          VET_RESULT: ${{ needs.windows-test-vet.result }}
+        run: |
+          for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT" "$VET_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "A required Windows test component ended with: $result" >&2
+              exit 1
+            fi
+          done
+
+  # macOS runs the same sharding harness as Windows, for darwin/arm64, so the
+  # slowest leg no longer sets CI wall time as one 17-20 minute job.
+  #
+  # Capacity: these jobs stay on GitHub-hosted macos-latest (see the Depot note
+  # on the build matrix), where concurrent macOS jobs are capped per account.
+  # Once the plan exists the workflow runs the shards plus one job for the
+  # non-heavy packages and vet, and nothing else on macOS. Change the shard
+  # count in tools/ci-bench/windows-production/settings.darwin-arm64.json
+  # together with max-parallel below, and check each shard job's queued-to-
+  # started gap afterwards: a shard that queues costs more than it saves. With
+  # twelve shards, thirteen macOS jobs started within two seconds of the plan
+  # (runs 42840857648 and 42843364246), so the cap is above that.
+  macos-test-prepare:
+    name: test (macos-latest) / compile and plan
+    runs-on: macos-latest
+    timeout-minutes: 15
+    outputs:
+      shard-matrix: ${{ steps.shard-matrix.outputs.value }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # Build cache for this job only. setup-go's own cache is keyed on go.sum
+      # alone, is saved once by whichever job finishes first, and is never
+      # refreshed, so it drifts away from the code and may never have held
+      # compiled test packages. Instead: every push to main saves a fresh entry
+      # under its commit, and every run restores the newest one, falling back to
+      # an older go.sum, then to any entry of this job, then to a setup-go entry
+      # (same two directories, so the archive is compatible; that key format is
+      # setup-go's, and if it changes this merely compiles cold). Pull requests
+      # only restore, so they do not pile up entries. Go's build cache is
+      # content-addressed: a stale or missing entry costs time, never
+      # correctness.
+      - uses: actions/setup-go@v7.0.0
+        id: setup-go
+        with:
+          go-version: "1.27.x"
+          cache: false
+      - name: Locate the Go caches
+        id: go-caches
+        shell: bash
+        run: |
+          echo "modcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "buildcache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+      - name: Restore the newest compile-and-plan build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go-caches.outputs.modcache }}
+            ${{ steps.go-caches.outputs.buildcache }}
+          key: test-prepare-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            test-prepare-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+            test-prepare-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-
+            setup-go-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Compile once and inventory default-runnable roots
+        shell: bash
+        run: |
+          python -B tools/ci-bench/windows-production/prepare.py \
+            --target darwin/arm64 \
+            --repository "$PWD" \
+            --output "$RUNNER_TEMP/macos-test-bundle" \
+            --settings tools/ci-bench/windows-production/settings.darwin-arm64.json \
+            --weights tools/ci-bench/windows-production/historical-weights.darwin-arm64.json \
+            --expected-repository-sha '${{ github.sha }}'
+      - name: Export the authoritative shard matrix
+        id: shard-matrix
+        shell: bash
+        run: |
+          matrix="$(python -B -c '
+          import json, sys
+          plan = json.load(open(sys.argv[1], encoding="utf-8"))
+          indexes = [shard["index"] for shard in plan["shards"]]
+          if not indexes or len(indexes) != plan["shardCount"]:
+              raise SystemExit("plan shard indexes do not match shardCount")
+          print(json.dumps(indexes, separators=(",", ":")))
+          ' "$RUNNER_TEMP/macos-test-bundle/plan.json")"
+          echo "value=$matrix" >> "$GITHUB_OUTPUT"
+      # The artifact ZIP drops POSIX modes, so the test binaries arrive without
+      # their execute bit; the shard runner restores it after matching each binary's
+      # SHA-256 to the plan.
+      - name: Upload immutable macOS test bundle
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-test-bundle
+          path: ${{ runner.temp }}/macos-test-bundle
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 3
+      # Saved after the bundle is uploaded. Shards wait for this job to finish, so
+      # on main this costs them the few seconds the save takes.
+      - name: Save the build cache for later runs
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go-caches.outputs.modcache }}
+            ${{ steps.go-caches.outputs.buildcache }}
+          key: test-prepare-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+
+  macos-test-shards:
+    name: test (macos-latest) / shard ${{ matrix.shard }}
+    needs: macos-test-prepare
+    runs-on: macos-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: ${{ fromJSON(needs.macos-test-prepare.outputs.shard-matrix) }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-test-bundle
+          path: ${{ runner.temp }}/macos-test-bundle
+      - name: Execute the assigned compiled roots
+        shell: bash
+        run: |
+          python -B tools/ci-bench/windows-production/run_shard.py \
+            --target darwin/arm64 \
+            --repository "$PWD" \
+            --bundle "$RUNNER_TEMP/macos-test-bundle" \
+            --output "$RUNNER_TEMP/macos-test-shard-${{ matrix.shard }}" \
+            --shard-index '${{ matrix.shard }}' \
+            --expected-repository-sha '${{ github.sha }}'
+      - name: Upload shard evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-test-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/macos-test-shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 3
+
+  macos-test-other:
+    name: test (macos-latest) / non-heavy packages and vet
+    needs: macos-test-prepare
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.27.x"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-test-bundle
+          path: ${{ runner.temp }}/macos-test-bundle
+      # The harness unit tests run natively here, not in compile-and-plan: this
+      # job is far shorter than a shard, so they cost the workflow no wall time.
+      - name: Validate the sharding harness
+        shell: bash
+        run: python -B -m unittest discover -s tools/ci-bench/windows-production/tests -p "test_*.py" -v
+      - name: Run every target-macOS non-heavy package once
+        shell: bash
+        run: |
+          python -B tools/ci-bench/windows-production/run_other.py \
+            --target darwin/arm64 \
+            --repository "$PWD" \
+            --bundle "$RUNNER_TEMP/macos-test-bundle" \
+            --output "$RUNNER_TEMP/macos-test-other" \
+            --expected-repository-sha '${{ github.sha }}'
+      - name: Upload non-heavy package evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-test-other
+          path: ${{ runner.temp }}/macos-test-other
+          if-no-files-found: error
+          retention-days: 3
+      # The harness compiles and runs with -vet=off, and lint vets only the files
+      # Go selects on Linux. Files selected only on darwin (the *_darwin and *_bsd
+      # sources and tests, and the !linux fallbacks) were vetted solely by the
+      # former monolithic `go test ./...`, so they keep a native vet. It is a
+      # step of this short job rather than a job of its own so that it does not
+      # hold a macOS runner the shards could use.
+      - name: Vet the darwin-selected files natively
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: go vet ./...
+
+  # The aggregate keeps the former matrix check identity: "test (macos-latest)" is a
+  # required check on main. It also runs the verifier itself rather than waiting
+  # for a separate verify job, which saves one runner start at the end of the
+  # critical path. The verifier runs whenever the plan exists, so a failed shard
+  # still gets a coverage report; the last step then requires every component.
+  macos-test:
+    name: test (macos-latest)
+    needs:
+      [macos-test-prepare, macos-test-shards, macos-test-other]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/ci-bench/windows-production
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
+        with:
+          name: macos-test-bundle
+          path: ${{ runner.temp }}/macos-test-bundle
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
+        with:
+          pattern: macos-test-shard-*
+          path: ${{ runner.temp }}/macos-test-shards
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
+        with:
+          name: macos-test-other
+          path: ${{ runner.temp }}/macos-test-other
+      - name: Verify exact root, package, process, and artifact coverage
+        if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
+        run: |
+          python -B tools/ci-bench/windows-production/verify_results.py \
+            --target darwin/arm64 \
+            --bundle "${{ runner.temp }}/macos-test-bundle" \
+            --shard-results "${{ runner.temp }}/macos-test-shards" \
+            --other-results "${{ runner.temp }}/macos-test-other" \
+            --output "${{ runner.temp }}/macos-test-verification.json" \
+            --expected-repository-sha '${{ github.sha }}'
+      - name: Upload verification report
+        if: ${{ always() && needs.macos-test-prepare.result == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-test-verification
+          path: ${{ runner.temp }}/macos-test-verification.json
+          if-no-files-found: error
+          retention-days: 3
+      - name: Require every macOS test component
+        if: always()
+        env:
+          PREPARE_RESULT: ${{ needs.macos-test-prepare.result }}
+          SHARDS_RESULT: ${{ needs.macos-test-shards.result }}
+          OTHER_RESULT: ${{ needs.macos-test-other.result }}
+        run: |
+          for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "A required macOS test component ended with: $result" >&2
+              exit 1
+            fi
+          done
+
+  # The sharding harness is what decides that every test ran. This applies each
+  # listed fail-open edit of it (accept a root that never ran, skip a hash
+  # check, drop an anchor from a run expression, ...) to a copy and requires the
+  # harness unit tests to fail, so a guarantee cannot silently lose its test. It
+  # takes about a minute and nothing waits for it.
+  harness-mutation-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -307,56 +717,7 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
-        with:
-          name: windows-test-bundle
-          path: ${{ runner.temp }}/windows-test-bundle
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: windows-test-shard-*
-          path: ${{ runner.temp }}/windows-test-shards
-      - uses: actions/download-artifact@v8
-        with:
-          name: windows-test-other
-          path: ${{ runner.temp }}/windows-test-other
-      - name: Verify exact root, package, process, and artifact coverage
-        run: |
-          python -B tools/ci-bench/windows-production/verify_results.py \
-            --bundle "${{ runner.temp }}/windows-test-bundle" \
-            --shard-results "${{ runner.temp }}/windows-test-shards" \
-            --other-results "${{ runner.temp }}/windows-test-other" \
-            --output "${{ runner.temp }}/windows-test-verification.json"
-      - name: Upload verification report
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: windows-test-verification
-          path: ${{ runner.temp }}/windows-test-verification.json
-          if-no-files-found: error
-          retention-days: 3
-
-  # Keep the former matrix check identity stable for required-check migration.
-  windows-test:
-    name: test (windows-latest)
-    needs:
-      [windows-test-prepare, windows-test-shards, windows-test-other, windows-test-vet, windows-test-verify]
-    if: always()
-    runs-on: depot-ubuntu-24.04-4
-    steps:
-      - name: Require every Windows test component
-        env:
-          PREPARE_RESULT: ${{ needs.windows-test-prepare.result }}
-          SHARDS_RESULT: ${{ needs.windows-test-shards.result }}
-          OTHER_RESULT: ${{ needs.windows-test-other.result }}
-          VET_RESULT: ${{ needs.windows-test-vet.result }}
-          VERIFY_RESULT: ${{ needs.windows-test-verify.result }}
-        run: |
-          for result in "$PREPARE_RESULT" "$SHARDS_RESULT" "$OTHER_RESULT" "$VET_RESULT" "$VERIFY_RESULT"; do
-            if [ "$result" != success ]; then
-              echo "A required Windows test component ended with: $result" >&2
-              exit 1
-            fi
-          done
+      - run: python -B tools/ci-bench/windows-production/mutation_check.py
 
   bm25-adapter:
     runs-on: depot-ubuntu-24.04-4

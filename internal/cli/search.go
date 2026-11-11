@@ -2062,8 +2062,12 @@ func writeAgentSearchPayload(out interface{ Write([]byte) (int, error) }, respon
 		payload = []byte(fmt.Sprintf("Index: cache-%s\n", cacheState))
 	}
 	if len(compactDiagnostics) > 0 {
+		// The same level decision as the full coverage line: this rung used to
+		// print !D for any partial failure, so a payload too small for the line
+		// called a repository of minified JSON degraded while the roomy form of
+		// the same response said notice.
 		marker := "!N"
-		if len(response.PartialFailures) > 0 {
+		if agentFailuresDegradeCoverage(response.PartialFailures) {
 			marker = "!D"
 		}
 		// The exclusion count degrades WITH the marker rather than being dropped
@@ -2203,7 +2207,7 @@ func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
 	}
 	languages, files := searchCompletenessCounts(response.Completeness)
 	level := "notice"
-	if len(response.PartialFailures) > 0 {
+	if agentFailuresDegradeCoverage(response.PartialFailures) {
 		level = "degraded"
 	}
 	var full bytes.Buffer
@@ -2257,6 +2261,22 @@ func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
 	compact := []byte(fmt.Sprintf("!%s W%d F%d L%d/%d%s\n",
 		marker, len(response.Warnings), len(response.PartialFailures), languages, files, excluded))
 	return full.Bytes(), compact
+}
+
+// agentFailuresDegradeCoverage decides the coverage line's level. "degraded"
+// claims that a fact the answer could have used may be missing, so it fires only
+// for a failure that can remove a code fact: one not confined to a single file
+// (a narrowed corpus, a spent budget), or one confined to a source file. A
+// minified JSON fixture or an oversized data file holds no code facts, so a
+// repository full of them stays at "notice". Every failure is still counted on
+// the line and listed exactly as before; only the level depends on this.
+func agentFailuresDegradeCoverage(failures []sem.PartialFailure) bool {
+	for _, failure := range failures {
+		if sem.PartialFailureAffectsCode(failure) {
+			return true
+		}
+	}
+	return false
 }
 
 // repoIgnoreDisclosureWarning is the code of the warning that names a file the

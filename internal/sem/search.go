@@ -1333,6 +1333,12 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 			}
 			completeness = cachedSnapshot.Header.Completeness
 			symbolsConsidered = len(cachedSnapshot.Symbols)
+		} else {
+			// No graph was built or loaded, so there is no file to weigh. State
+			// that with the same function every other path uses instead of
+			// leaving health unset, so a reader keyed on health.status never
+			// meets an empty status.
+			completeness.Health = calculateGraphHealth(nil, nil, ProviderStats{})
 		}
 		return SearchResponse{
 			Query:                 query,
@@ -1366,8 +1372,8 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 				SearchLatencyMS:           totalLatency,
 			},
 			RepoIgnored:     selection.repoIgnored,
-			Warnings:        withRepoIgnoreDisclosure(warnings, selection.repoIgnored),
-			PartialFailures: withRepoIgnorePartialFailures(partialFailures, selection.repoIgnored),
+			Warnings:        withWarningEffectScopes(withRepoIgnoreDisclosure(warnings, selection.repoIgnored)),
+			PartialFailures: withFailureEffectScopes(withRepoIgnorePartialFailures(partialFailures, selection.repoIgnored)),
 			Completeness:    completeness,
 		}, nil
 	}
@@ -2158,8 +2164,8 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		CoverageNote:          coverageNote,
 		RepoIgnored:           selection.repoIgnored,
 		Stats:                 stats,
-		Warnings:              withRepoIgnoreDisclosure(diagnostics.Warnings, selection.repoIgnored),
-		PartialFailures:       withRepoIgnorePartialFailures(partialFailures, selection.repoIgnored),
+		Warnings:              withWarningEffectScopes(withRepoIgnoreDisclosure(diagnostics.Warnings, selection.repoIgnored)),
+		PartialFailures:       withFailureEffectScopes(withRepoIgnorePartialFailures(partialFailures, selection.repoIgnored)),
 		Completeness:          diagnostics.Completeness,
 		replayProvenancePaths: replayProvenancePaths,
 	}, nil

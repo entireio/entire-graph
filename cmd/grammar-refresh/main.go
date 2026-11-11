@@ -9,9 +9,18 @@
 //	go run ./cmd/grammar-refresh -lang zig -ref v1.1.2
 //	go run ./cmd/grammar-refresh -lang fsharp -ref <commit> -path fsharp -allow-local-changes
 //	go run ./cmd/grammar-refresh -lang newlang -ref v1.0.0 -url https://github.com/o/tree-sitter-newlang
+//	go run ./cmd/grammar-refresh -lang rust -ref v0.24.2 -url https://github.com/tree-sitter/tree-sitter-rust -generate
+//	go run ./cmd/grammar-refresh -lang csharp -ref v0.24.0 -tree-sitter-cli 0.26.7
 //
-// The ref must contain generated sources (src/parser.c) built for ABI 13-14,
-// the range the go-tree-sitter runtime loads. binding.go is never touched, so
+// The vendored src/parser.c must be within the ABI range the go-tree-sitter
+// runtime loads (minABI-maxABI). A manifest entry's local_build block, or
+// -generate, builds it instead of copying it: the entry's patch is applied to
+// the checkout, then `npx tree-sitter-cli@<version> generate <args>` runs
+// (default --abi maxABI), which needs Node.js. The recorded revision
+// regenerates with the recorded version; a new revision uses @latest and
+// records the version it ran. -tree-sitter-cli pins one, which is the fix if
+// a future tree-sitter release stops generating maxABI. binding.go is never
+// touched, so
 // a new language still needs one. A grammar that changes parse results needs
 // an IdentityRevision bump (internal/sem/provider.go) in the same commit.
 //
@@ -22,6 +31,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -40,13 +50,26 @@ func main() {
 		manifestPath = flag.String("manifest", "internal/sem/grammars/grammars.json", "path to the grammar manifest")
 		grammarsDir  = flag.String("dir", "internal/sem/grammars", "directory holding vendored grammars")
 		allowLocal   = flag.Bool("allow-local-changes", false, "overwrite a grammar whose manifest entry records local changes; they must then be reapplied by hand")
+		generateFlag = flag.Bool("generate", false, "regenerate the parser with tree-sitter-cli (via npx) even if the manifest entry records no local build")
+		cliFlag      = flag.String("tree-sitter-cli", "", "tree-sitter-cli version to generate with; implies -generate")
 	)
 	flag.Parse()
 	if *lang == "" || *ref == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := refresh(*lang, *ref, *url, *subdir, *manifestPath, *grammarsDir, *allowLocal); err != nil {
+	o := options{
+		Lang:              *lang,
+		Ref:               *ref,
+		URL:               *url,
+		Subdir:            *subdir,
+		ManifestPath:      *manifestPath,
+		GrammarsDir:       *grammarsDir,
+		AllowLocalChanges: *allowLocal,
+		Generate:          *generateFlag,
+		TreeSitterCLI:     *cliFlag,
+	}
+	if err := refresh(o); err != nil {
 		fmt.Fprintln(os.Stderr, "grammar-refresh:", err)
 		os.Exit(1)
 	}
@@ -54,7 +77,21 @@ func main() {
 
 var languageNamePattern = regexp.MustCompile(`^[a-z0-9_]+$`)
 
-func refresh(lang, ref, url, subdir, manifestPath, grammarsDir string, allowLocalChanges bool) error {
+// options holds one run's settings. An empty URL or Subdir falls back to the
+// manifest entry.
+type options struct {
+	Lang, Ref, URL, Subdir    string
+	ManifestPath, GrammarsDir string
+	AllowLocalChanges         bool
+	// Generate regenerates the parser even when the entry records no
+	// tree-sitter-cli; TreeSitterCLI overrides the version chosen.
+	Generate      bool
+	TreeSitterCLI string
+}
+
+func refresh(o options) error {
+	lang, ref, url, subdir := o.Lang, o.Ref, o.URL, o.Subdir
+	manifestPath, grammarsDir := o.ManifestPath, o.GrammarsDir
 	if !languageNamePattern.MatchString(lang) {
 		return fmt.Errorf("invalid -lang %q: use the lower-case directory name under %s", lang, grammarsDir)
 	}
@@ -83,8 +120,39 @@ func refresh(lang, ref, url, subdir, manifestPath, grammarsDir string, allowLoca
 	if subdir != "" && !filepath.IsLocal(subdir) {
 		return fmt.Errorf("invalid path %q for %s in %s: must be a relative path inside the repository", subdir, lang, manifestPath)
 	}
-	if existing.LocalChanges && !allowLocalChanges {
+	if existing.LocalChanges && !o.AllowLocalChanges {
 		return fmt.Errorf("%s has local changes that a verbatim refresh would discard (%s); pass -allow-local-changes to overwrite it, then reapply them by hand", lang, existing.Note)
+	}
+	build := existing.LocalBuild
+	var patchFile string
+	if build != nil && build.Patch != "" {
+		if !filepath.IsLocal(build.Patch) {
+			return fmt.Errorf("invalid patch %q for %s in %s: must be a relative path inside %s", build.Patch, lang, manifestPath, grammarsDir)
+		}
+		if patchFile, err = filepath.Abs(filepath.Join(grammarsDir, build.Patch)); err != nil {
+			return err
+		}
+	}
+	generating := wantsGeneration(existing, o)
+	if patchFile != "" && !generating {
+		// #357 vendored a Swift parser built from a hand-applied grammar.js
+		// patch, and nothing in the tree said the two were connected. The tool
+		// now applies that patch itself, which is only half the job: applying
+		// it to grammar.js and then copying upstream's committed parser.c
+		// discards it silently and reports success.
+		orphaned, err := patchPathsNeedingGeneration(patchFile)
+		if err != nil {
+			return err
+		}
+		if len(orphaned) > 0 {
+			return fmt.Errorf("%s patches %s, which reaches the vendored grammar only through a regenerated parser; set local_build.tree_sitter_cli for %s in %s, or pass -generate",
+				build.Patch, strings.Join(orphaned, ", "), lang, manifestPath)
+		}
+	}
+	if generating {
+		if err := findNPX(); err != nil {
+			return err
+		}
 	}
 
 	tmp, err := os.MkdirTemp("", "grammar-refresh-")
@@ -105,8 +173,29 @@ func refresh(lang, ref, url, subdir, manifestPath, grammarsDir string, allowLoca
 	if err != nil {
 		return err
 	}
+	if patchFile != "" {
+		if err := applyPatch(tmp, subdir, patchFile); err != nil {
+			return fmt.Errorf("%s at %s: %w", url, ref, err)
+		}
+	}
+	var version string
+	if generating {
+		grammarRoot := filepath.Join(tmp, subdir)
+		if version, err = resolveCLI(grammarRoot, cliVersion(existing, revision, o)); err != nil {
+			return err
+		}
+		args := generateArgs(build)
+		if err := generate(grammarRoot, version, args); err != nil {
+			return err
+		}
+		build = recordedLocalBuild(build, version)
+	}
 
 	files, abi, err := vendor(tmp, subdir, filepath.Join(grammarsDir, lang))
+	var unsupported abiError
+	if generating && errors.As(err, &unsupported) {
+		return fmt.Errorf("%s at %s: %w; tree-sitter-cli %s may no longer generate ABI %d, so pass -tree-sitter-cli <older version>", url, ref, err, version, maxABI)
+	}
 	if err != nil {
 		return fmt.Errorf("%s at %s: %w", url, ref, err)
 	}
@@ -122,6 +211,7 @@ func refresh(lang, ref, url, subdir, manifestPath, grammarsDir string, allowLoca
 		// are due. A note the new revision makes obsolete is removed by hand.
 		LocalChanges: existing.LocalChanges,
 		Note:         existing.Note,
+		LocalBuild:   build,
 	})
 	if err := saveManifest(manifestPath, grammars); err != nil {
 		return err
@@ -142,6 +232,46 @@ func git(dir string, args ...string) error {
 	cmd.Dir = dir
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// applyPatch applies patchFile to the grammar at subdir inside checkout; the
+// patch's paths are relative to the grammar directory.
+func applyPatch(checkout, subdir, patchFile string) error {
+	args := []string{"apply"}
+	if subdir != "" {
+		args = append(args, "--directory="+filepath.ToSlash(subdir))
+	}
+	args = append(args, "--", patchFile)
+	cmd := exec.Command("git", args...)
+	cmd.Dir = checkout
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("apply %s: %w\n%s", patchFile, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+var errNoNPX = errors.New("tree-sitter generation needs Node.js; npx was not found on PATH")
+
+// npx and findNPX are variables so tests can stand in for Node.
+var (
+	npx     = runNPX
+	findNPX = func() error {
+		if _, err := exec.LookPath("npx"); err != nil {
+			return errNoNPX
+		}
+		return nil
+	}
+)
+
+func runNPX(dir string, args ...string) (string, error) {
+	cmd := exec.Command("npx", append([]string{"--yes"}, args...)...)
+	cmd.Dir = dir
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if errors.Is(err, exec.ErrNotFound) {
+		err = errNoNPX
+	}
+	return strings.TrimSpace(string(out)), err
 }
 
 func gitOutput(dir string, args ...string) (string, error) {

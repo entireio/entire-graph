@@ -34,18 +34,27 @@ import (
 )
 
 const (
-	// SchemaVersion 1.4 adds optional derived relation provenance; 1.3 added
-	// source-file health accounting; 1.2 added
+	// SchemaVersion 1.6 adds the optional effect_scope on warnings and partial
+	// failures. 1.5 added the optional `dependents_evidence` field on
+	// EntityChange (persisted Result payload — diff/analyze/checkpoint), which
+	// states whether a dependents_count value is a heuristic estimate or one
+	// degraded further by a scan limit. 1.4 added optional derived relation
+	// provenance; 1.3 added source-file health accounting; 1.2 added
 	// optional parser identity metadata.
 	// Schema 1.1 added the snapshot fields introduced
 	// alongside boundary source locations (the `external` flag on external records
 	// and the per-symbol source-location fields). The shape is backward compatible
 	// for tolerant readers; the bump lets consumers detect the new fields.
-	SchemaVersion         = "1.4"
+	SchemaVersion         = "1.6"
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
+	//
+	// Revision 8: recover PostgreSQL identity columns, named CHECK constraints,
+	// and DO blocks with LANGUAGE clauses while preserving static declarations.
+	// Stop treating identifier prefixes as constraints. Invalidate cached partial
+	// snapshots so previously excluded migrations are indexed for unchanged trees.
 	//
 	// Revision 7: repair Swift 0.7.4 conditional attributes, ownership switches,
 	// multiline constraints, type-body and switch-prefix diagnostics, comment
@@ -77,7 +86,7 @@ const (
 	// `C.helper` (kind "method"). This re-keys every Python nested-callable
 	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
 	// real same-named members.
-	IdentityRevision     = "7"
+	IdentityRevision     = "8"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
@@ -123,6 +132,17 @@ var relationTypes = []string{
 	"DATA_FLOWS",
 	"FILE_CHANGES_WITH",
 }
+
+// heuristicRelationTypes are relation kinds the graph documents as pattern/heuristic matches
+// rather than resolved code relationships (routing tables, event names, near-clone detection,
+// and the like — see CapabilityReport.HeuristicRelationTypes). Declared once here and reused
+// by both Capabilities() and RelationEvidenceState (evidence.go) so the two readings of "this
+// relation kind is not ground truth" cannot drift apart.
+var heuristicRelationTypes = []string{
+	"HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "HANDLES_TOOL", "SIMILAR_TO", "TESTS",
+}
+
+var heuristicRelationTypeSet = relationTypeSet(heuristicRelationTypes...)
 
 // ooRelationSupport lists the additional (non-structural) relation types the
 // provider can extract for each language, used by the capabilities matrix.
@@ -241,6 +261,7 @@ var schemaFeatures = []string{
 	"completeness_breakdown",
 	"completeness_health",
 	"language_versions",
+	"partial_failure_effect_scope",
 	"relation_evidence",
 	"relation_evidence_dropped",
 	"relation_provenance",
@@ -322,7 +343,12 @@ type ProviderWarning struct {
 	Severity             string `json:"severity"`
 	FilePath             string `json:"file_path,omitempty"`
 	EffectOnCompleteness string `json:"effect_on_semantic_completeness"`
-	Detail               string `json:"detail,omitempty"`
+	// EffectScope is the machine-readable bound on what this diagnostic can
+	// affect: EffectScopeFile or EffectScopeSnapshot (schema 1.6). It is
+	// always DiagnosticEffectScope(Code, FilePath), stamped where diagnostics
+	// leave the provider (see withWarningEffectScopes).
+	EffectScope string `json:"effect_scope,omitempty"`
+	Detail      string `json:"detail,omitempty"`
 }
 
 type PartialFailure struct {
@@ -331,7 +357,9 @@ type PartialFailure struct {
 	FilePath             string `json:"file_path,omitempty"`
 	Language             string `json:"language,omitempty"`
 	EffectOnCompleteness string `json:"effect_on_semantic_completeness"`
-	Detail               string `json:"detail,omitempty"`
+	// EffectScope: see ProviderWarning.EffectScope (schema 1.6).
+	EffectScope string `json:"effect_scope,omitempty"`
+	Detail      string `json:"detail,omitempty"`
 }
 
 // AnalysisBudgetExceededCode marks a snapshot that did not run to completion:
@@ -811,7 +839,7 @@ func Capabilities() CapabilityReport {
 		SupportedRelationTypes:          append([]string(nil), relationTypes...),
 		RelationSupportByLanguage:       relationSupportByLanguage(),
 		RelationSupportByProfile:        relationSupportByProfile(),
-		HeuristicRelationTypes:          []string{"HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "HANDLES_TOOL", "SIMILAR_TO", "TESTS"},
+		HeuristicRelationTypes:          append([]string(nil), heuristicRelationTypes...),
 		OptionalLocalOnlyFeatures: map[string]bool{
 			"stable_symbol_ids":          true,
 			"semantic_diff":              true,
@@ -826,6 +854,10 @@ func Capabilities() CapabilityReport {
 			// `graph context --allow-ancestor`: a consumer passes the flag only
 			// when this is true, so an older provider (key absent) is a plain no.
 			"context_allow_ancestor": true,
+			// effect_scope ("file" or "snapshot") on every partial failure and
+			// warning, including `graph diff` warnings. Absent key: the field is
+			// not populated and the scope must be read as unknown.
+			"partial_failure_effect_scope": true,
 		},
 		FeaturesRequiringNetworkAccess: map[string]bool{
 			"grammar_download":  false,
@@ -1449,6 +1481,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	languageSet := map[string]struct{}{}
 	completenessLangs := map[string]LanguageCompleteness{}
 	var failures []PartialFailure
+	var fileWarnings []ProviderWarning
 	var files []FileRecord
 	recordsByFile := map[string][]SymbolRecord{}
 	structuralByFile := map[string][]structuralSymbol{}
@@ -1495,6 +1528,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		},
 		func(result providerFileResult) error {
 			failures = append(failures, result.failures...)
+			fileWarnings = append(fileWarnings, result.warnings...)
 			if result.hasPrecomputedImports {
 				precomputedImports[result.path] = result.precomputedImports
 			}
@@ -1712,6 +1746,12 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		}
 	}
 	warnings := sc.warnings
+	if len(fileWarnings) > 0 {
+		// Per-file warnings follow the source-listing warnings, in path order.
+		// The selective view derived from this snapshot places them the same
+		// way (selectiveSearchSnapshotFromFull), so cold and warm agree.
+		warnings = append(append([]ProviderWarning{}, sc.warnings...), fileWarnings...)
+	}
 	if warnings == nil {
 		warnings = []ProviderWarning{}
 	}
@@ -1728,8 +1768,8 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		RecordType:      "summary",
 		Languages:       sortedKeys(languageSet),
 		LanguageTiers:   languageTiers(languageSet),
-		Warnings:        warnings,
-		PartialFailures: failures,
+		Warnings:        withWarningEffectScopes(warnings),
+		PartialFailures: withFailureEffectScopes(failures),
 		Stats: ProviderStats{
 			Files:           len(files),
 			ParsedFiles:     parsedFileCount,
