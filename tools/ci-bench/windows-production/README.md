@@ -112,6 +112,13 @@ the parsed structure and fails the test; its `MUTATIONS` table applies each
 such edit to the real file and requires that it is reported. Changing the test
 path means changing that table in the same commit.
 
+Action references are compared by name and pin strength, not by release, so a
+version bump needs no change to the table. `actions/checkout`, `setup-go` and
+`setup-python` may name any full release tag (`vX.Y.Z`) or a commit SHA, never
+a moving ref such as `v7` or `main`. The actions that move artifacts and caches
+between jobs must stay on a 40-character commit SHA. Swapping an action for a
+different one, or loosening a pin, fails the test.
+
 CI runners have no YAML library, so `tests/workflow_yaml.py` reads the subset
 of YAML the workflow is written in and refuses anything else with the line
 number. Where Ruby is installed, a test checks that it parses the workflow

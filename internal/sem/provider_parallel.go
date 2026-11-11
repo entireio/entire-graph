@@ -20,6 +20,9 @@ type providerFileResult struct {
 	hasPrecomputedImports bool
 	parsed                bool
 	failures              []PartialFailure
+	// warnings are per-file diagnostics that are not coverage failures (a Go
+	// grammar gap). The reducer replays them in path order like failures.
+	warnings []ProviderWarning
 }
 
 func defaultProviderWorkerCount() int {
@@ -271,7 +274,12 @@ func processProviderFile(
 	// E_FILE_TOO_LARGE/E_MINIFIED, which are in intentionalSkipFailureCodes
 	// because the parser never opened the file, a partial result means the graph
 	// tried, succeeded in part, and is missing declarations it should have had.
-	if parseStatus.ParseError || parseStatus.Partial {
+	if parseStatus.GrammarGap {
+		// Valid source the bundled grammar could not fully parse: a warning,
+		// not a partial failure, so it neither counts against completeness nor
+		// claims that this file failed to parse.
+		result.warnings = append(result.warnings, goGrammarGapWarning(path, parseStatus))
+	} else if parseStatus.ParseError || parseStatus.Partial {
 		code := parseStatus.Code
 		if code == "" {
 			code = "E_PARSE_ERROR"
@@ -467,4 +475,19 @@ func runIndexedPipeline[T any](
 		}
 	}
 	return nil
+}
+
+// goGrammarGapWarning is the snapshot's diagnostic for a Go file go/parser
+// accepts but the bundled tree-sitter grammar recovered from errors. It names no
+// remedy because the file needs none.
+func goGrammarGapWarning(path string, status ParseStatus) ProviderWarning {
+	return ProviderWarning{
+		Code:     GoGrammarGapCode,
+		Severity: "warning",
+		FilePath: path,
+		EffectOnCompleteness: "the file is valid Go (go/parser accepts it) that the bundled tree-sitter Go grammar cannot fully parse; " +
+			"symbols and relations inside the construct the grammar could not parse may be missing, and the rest of the file " +
+			"was extracted from the grammar's recovered tree",
+		Detail: status.Detail,
+	}
 }
