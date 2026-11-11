@@ -273,8 +273,9 @@ func goReferenceParse(src []byte) (*goast.File, bool) {
 //
 // Declarations are matched as a multiset on the names the Go entity walk
 // assigns (a function by name, a method as Receiver.Name, a type by name), so
-// two init functions need two entities. Type aliases are skipped: the entity
-// walk does not emit them from a clean parse either. A naming mismatch can only
+// two init functions need two entities. Type aliases and top-level var and
+// const declarations are skipped: the entity walk does not emit them from a
+// clean parse either, so there is no symbol to lose. A naming mismatch can only
 // err towards reporting a loss, which keeps the pre-existing E_PARSE_ERROR.
 func goDeclarationsLost(file *goast.File, entities []Entity) []string {
 	recovered := map[string]int{}
