@@ -71,6 +71,57 @@ provider version, source commit, and tree are unchanged. Older cache entries are
 rebuilt rather than replayed without the new feature. Parser identity revision,
 stable symbol IDs, and the persisted diff/checkpoint `Result` shape are unchanged.
 
+## Diagnostic effect scope (schema 1.6)
+
+Schema 1.6 adds the optional `effect_scope` field to every warning and partial
+failure: in snapshot headers and summaries, in search, index and relation-verb
+responses, and in the `warnings` of `diff`, `commit` and `checkpoint` results.
+The snapshot header advertises it as `partial_failure_effect_scope` in
+`schema_features`, and `capabilities --json` as
+`optional_local_only_features.partial_failure_effect_scope: true`.
+
+| Value | Meaning |
+|---|---|
+| `file` | The loss is confined to what the graph reads from `file_path`: symbols defined there, and relations that start or end at them, may be missing or partial. Every other file was read in full. |
+| `snapshot` | No file bound: the diagnostic describes the run or the corpus (a narrowed corpus, a spent budget, a working-tree read, ...). Treat any fact as possibly affected. |
+
+The value is a function of `code` and `file_path` alone
+(`sem.DiagnosticEffectScope`): a code is `file` only when it is classified as
+file-confined and the record names a file. Some snapshot-scoped codes name a
+path anyway, as an example rather than a bound: the repo-ignore shortfalls,
+`W_REPO_IGNORED_SOURCE`, `W_INDEX_POLICY_CHANGED` and `W_MOVE_AMBIGUOUS`. A
+test fails when any code in the source has no classification. An absent field
+means a producer older than 1.6: read it as unknown, not as `file`.
+
+`effect_on_semantic_completeness` is unchanged and stays the human explanation.
+The schema minor bump selects new raw-record and search cache keys, so entries
+written without the field are rebuilt rather than replayed. Parser identity
+revision and stable symbol IDs are unchanged; the persisted `Result` gains the
+field on its `warnings` only.
+
+### Coverage level in `query --format agent`
+
+The `Coverage:` line (compact `!N` / `!D`) has two levels, decided by
+`sem.PartialFailureAffectsCode`. It reads `degraded` when at least one partial
+failure can have removed a code fact:
+
+- its `effect_scope` is `snapshot` (a repo-ignore shortfall, a spent analysis
+  budget), or
+- it is confined to a source file, or to a file whose language cannot be
+  resolved.
+
+It reads `notice` when every failure is confined to a data, configuration or
+documentation file (JSON, YAML, TOML, XML, Markdown and the like). "Source" is
+the policy health accounting uses for `completeness.health`. There is no
+percentage threshold: one syntax error in one source file gives `degraded`.
+Every failure is still counted on the line and listed at either level.
+
+Known gap, tracked as a follow-up: configuration formats are exempt as a
+whole, including those in the semantic tier of `capabilities --json`. A parse
+failure in a Terraform `.tf` file, a Compose or Kubernetes YAML manifest, or a
+CUE file therefore gives `notice`, although the graph extracts resources and
+relations from such files.
+
 ## Streaming NDJSON
 
 The `snapshot`/`symbols`/`edges` commands stream records to stdout as they are

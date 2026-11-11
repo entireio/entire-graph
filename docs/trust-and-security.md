@@ -137,8 +137,7 @@ source parser, caches or responses. The `diff`, `analyze`, `commit` and
 `checkpoint` families analyze requested Git ranges rather than the graph/search
 corpus, so they can read credential-store paths and report content-derived
 metadata about them. Those built-in operations remain local under the provider's
-no-egress contract. `verify` runs caller-supplied commands with the caller's
-privileges and is outside this exclusion boundary.
+no-egress contract.
 
 The list covers `.env` and its `.env.<environment>` variants, `.envrc`,
 `.npmrc`, `.netrc`/`_netrc`, `.pgpass`, `.htpasswd`, `.pypirc`, `.dockercfg`,
@@ -234,8 +233,6 @@ these rules existed misses instead of re-emitting the paths it named.
   project. A symlink remains the preferred instruction-file alias.
 - `index --report <path>` writes a Markdown graph report to the path you give
   it.
-- `verify --record-baseline <path>` creates parent directories as needed and
-  writes a JSON baseline to the path you give it.
 
 No other command family writes into the repository unless a caller-provided
 command does so.
@@ -249,10 +246,8 @@ command does so.
   (test names, build files). It does not run it. Anything that later runs
   that command is executing text influenced by repository contents. Read the
   command first in repositories you do not trust.
-- `entire graph verify` executes the test command the caller provides and
-  adjudicates the result. With `--setup <command>`, it executes that setup
-  command first. Both run with your privileges; pass only commands you would
-  run yourself.
+- No command executes repository code or a caller-supplied command. The only
+  subprocess this binary starts is `git`.
 
 ## Payload integrity (`text` and `agent` formats)
 

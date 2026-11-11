@@ -14,14 +14,14 @@ import (
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
-// These cover the two caller-named output files — `index --report` and
-// `verify --record-baseline` — in BOTH directions, because the fix is a
-// conditional rule and either half alone would be a regression:
+// These cover the caller-named output file — `index --report` — in BOTH
+// directions, because the fix is a conditional rule and either half alone
+// would be a regression:
 //
 //   - a path inside the scanned repository is repository-controlled, so a symlink
 //     committed there must be refused rather than followed;
-//   - a path outside it is caller-owned and documented (the verify help advertises
-//     `--record-baseline /tmp/base.json`), so it must keep working, symlinked
+//   - a path outside it is caller-owned and documented (`--report
+//     /tmp/GRAPH_REPORT.md`), so it must keep working, symlinked
 //     parent directories included — /tmp is a symlink on macOS.
 
 // symlinkRepo skips on Windows, where creating a symlink needs either Developer
@@ -48,15 +48,6 @@ func runIndexReport(t *testing.T, repo, report string) error {
 		Env:     EntireEnv{RepoRoot: repo, PluginDataDir: t.TempDir()},
 		Stdout:  &bytes.Buffer{},
 	}, []string{"index", "--repo", repo, "--format", "json", "--report", report})
-}
-
-func runVerifyRecord(t *testing.T, repo, baseline string) error {
-	t.Helper()
-	return Run(t.Context(), Options{
-		Version: "test-version",
-		Env:     EntireEnv{RepoRoot: repo},
-		Stdout:  &bytes.Buffer{},
-	}, []string{"verify", "--repo", repo, "--test", "true", "--record-baseline", baseline})
 }
 
 // plantVictim writes the file a hostile repository aims the write at, outside the
@@ -156,54 +147,6 @@ func TestIndexReportWritesInsideTheRepository(t *testing.T) {
 	}
 }
 
-// TestVerifyRecordBaselineRefusesRepositoryCommittedSymlink is the same finding on
-// the other verb: --record-baseline writes JSON through whatever the repository
-// left at the path.
-func TestVerifyRecordBaselineRefusesRepositoryCommittedSymlink(t *testing.T) {
-	requireSymlinkSupport(t)
-	repo := outputPathRepo(t)
-	victim, victimContent := plantVictim(t)
-	baseline := filepath.Join(repo, "baseline.json")
-	if err := os.Symlink(victim, baseline); err != nil {
-		t.Fatal(err)
-	}
-	git(t, repo, "add", ".")
-	git(t, repo, "commit", "-m", "hostile baseline path")
-
-	err := runVerifyRecord(t, repo, baseline)
-	if err == nil {
-		t.Fatal("verify --record-baseline followed a symlink committed inside the repository")
-	}
-	if !strings.Contains(err.Error(), "symbolic link") {
-		t.Fatalf("refusal does not say why: %v", err)
-	}
-	assertVictimIntact(t, victim, victimContent)
-}
-
-// TestVerifyRecordBaselineWritesToCallerOwnedPaths pins the documented example —
-// `--record-baseline /tmp/base.json` — and the documented parent creation, on both
-// sides of the boundary, since the confined path has its own MkdirAll.
-func TestVerifyRecordBaselineWritesToCallerOwnedPaths(t *testing.T) {
-	repo := outputPathRepo(t)
-	outside := filepath.Join(t.TempDir(), "nested", "base.json")
-	if err := runVerifyRecord(t, repo, outside); err != nil {
-		t.Fatalf("verify --record-baseline outside the repository failed: %v", err)
-	}
-	inside := filepath.Join(repo, ".graph", "base.json")
-	if err := runVerifyRecord(t, repo, inside); err != nil {
-		t.Fatalf("verify --record-baseline inside the repository failed: %v", err)
-	}
-	for _, path := range []string{outside, inside} {
-		content, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(content), `"format_version": 1`) {
-			t.Fatalf("baseline at %s is not the recorded JSON:\n%s", path, content)
-		}
-	}
-}
-
 // TestOutputPathClassificationHandlesSymlinkedRoots pins the two ways a purely
 // lexical or purely resolved comparison gets the boundary wrong.
 func TestOutputPathClassificationHandlesSymlinkedRoots(t *testing.T) {
@@ -240,7 +183,7 @@ func TestOutputPathClassificationHandlesSymlinkedRoots(t *testing.T) {
 		t.Fatalf("a path under a committed symlinked directory was classified caller-owned: %#v", target)
 	}
 	// And the confined write refuses it rather than escaping through the directory.
-	if err := writeOutputFile(t.Context(), repo, filepath.Join(repo, "out", "GRAPH_REPORT.md"), []byte("x"), 0o644, false); err == nil {
+	if err := writeOutputFile(t.Context(), repo, filepath.Join(repo, "out", "GRAPH_REPORT.md"), []byte("x"), 0o644); err == nil {
 		t.Fatal("write escaped the repository through a symlinked directory")
 	}
 	if _, err := os.Stat(filepath.Join(escape, "GRAPH_REPORT.md")); !os.IsNotExist(err) {
@@ -423,9 +366,9 @@ func TestConfinementRootResolvesTheGitTopLevel(t *testing.T) {
 }
 
 // TestConfinementRootFallsBackOutsideAGitRepository is the other half of that
-// resolution, and it is a REQUIREMENT, not a defensive branch: verify runs the
-// caller's test command in whatever directory they name, which need not be a git
-// repository, so the fallback keeps the verb working there instead of erroring.
+// resolution, and it is a REQUIREMENT, not a defensive branch: --repo need not
+// name a git repository, so the fallback keeps the write working there instead
+// of erroring.
 func TestConfinementRootFallsBackOutsideAGitRepository(t *testing.T) {
 	plain := t.TempDir()
 	// The premise, established independently of the code under test: the temporary
@@ -441,26 +384,26 @@ func TestConfinementRootFallsBackOutsideAGitRepository(t *testing.T) {
 	}
 }
 
-// TestVerifyRecordBaselineOutsideAGitRepository drives that requirement through
-// the verb: a non-git working directory records a baseline to a caller-owned path
-// and to one beneath the directory itself.
-func TestVerifyRecordBaselineOutsideAGitRepository(t *testing.T) {
+// TestWriteOutputFileOutsideAGitRepository drives that requirement through the
+// write sink itself: with a non-git --repo, a caller-owned path and one beneath
+// the directory itself must both keep working.
+func TestWriteOutputFileOutsideAGitRepository(t *testing.T) {
 	plain := t.TempDir()
-	outside := filepath.Join(t.TempDir(), "base.json")
-	if err := runVerifyRecord(t, plain, outside); err != nil {
-		t.Fatalf("verify --record-baseline outside a git repository failed: %v", err)
+	outside := filepath.Join(t.TempDir(), "out.md")
+	if err := writeOutputFile(t.Context(), plain, outside, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write outside a git repository failed: %v", err)
 	}
-	inside := filepath.Join(plain, "nested", "base.json")
-	if err := runVerifyRecord(t, plain, inside); err != nil {
-		t.Fatalf("verify --record-baseline beneath a non-git --repo failed: %v", err)
+	inside := filepath.Join(plain, "out.md")
+	if err := writeOutputFile(t.Context(), plain, inside, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write beneath a non-git --repo failed: %v", err)
 	}
 	for _, path := range []string{outside, inside} {
 		content, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(content), `"format_version": 1`) {
-			t.Fatalf("baseline at %s is not the recorded JSON:\n%s", path, content)
+		if string(content) != "x" {
+			t.Fatalf("file at %s is not the written output:\n%s", path, content)
 		}
 	}
 }
@@ -492,20 +435,20 @@ func TestOutputPathClassificationFollowsALinkIntoTheRepository(t *testing.T) {
 	if err := os.Symlink(victim, filepath.Join(repo, "sub", "GRAPH_REPORT.md")); err != nil {
 		t.Fatal(err)
 	}
-	err = writeOutputFile(t.Context(), repo, filepath.Join(link, "GRAPH_REPORT.md"), []byte("x"), 0o644, false)
+	err = writeOutputFile(t.Context(), repo, filepath.Join(link, "GRAPH_REPORT.md"), []byte("x"), 0o644)
 	if err == nil {
 		t.Fatal("write followed a symlink committed inside the repository")
 	}
 	assertVictimIntact(t, victim, victimContent)
 }
 
-// TestVerifyRecordBaselineRefusesARepositoryLinkAfterAnExternalAlias is the
+// TestIndexReportRefusesARepositoryLinkAfterAnExternalAlias is the
 // regression for a route that neither containment chain can classify on its own.
 // A caller-owned alias enters a repository BELOW its root, then a symlink committed
 // in that subdirectory leaves the repository again. The named chain never visits
 // the repository root, while the resolved chain is already outside it; treating
 // that route as caller-owned follows the repository's link and rewrites the victim.
-func TestVerifyRecordBaselineRefusesARepositoryLinkAfterAnExternalAlias(t *testing.T) {
+func TestIndexReportRefusesARepositoryLinkAfterAnExternalAlias(t *testing.T) {
 	requireSymlinkSupport(t)
 	repo := outputPathRepo(t)
 	sub := filepath.Join(repo, "sub")
@@ -523,10 +466,10 @@ func TestVerifyRecordBaselineRefusesARepositoryLinkAfterAnExternalAlias(t *testi
 	if err := os.Symlink(sub, alias); err != nil {
 		t.Fatal(err)
 	}
-	baseline := filepath.Join(alias, "out", filepath.Base(victim))
-	err := runVerifyRecord(t, repo, baseline)
+	report := filepath.Join(alias, "out", filepath.Base(victim))
+	err := runIndexReport(t, repo, report)
 	if err == nil {
-		t.Fatal("verify --record-baseline followed a repository symlink after an external alias")
+		t.Fatal("index --report followed a repository symlink after an external alias")
 	}
 	if !strings.Contains(err.Error(), "symbolic link") {
 		t.Fatalf("refusal does not say why: %v", err)
@@ -589,27 +532,6 @@ func TestOutputPathsResolveDotDotThroughSymlinksLikeTheKernel(t *testing.T) {
 		}
 	})
 
-	// `verify --record-baseline` is documented to CREATE its parents, so the ".."
-	// there is followed by a directory that does not exist yet and the mkdir has to
-	// agree with the write. Before this fix the two disagreed even on main, which
-	// created the parent beside the link and then failed to open the file inside the
-	// link's target.
-	t.Run("record-baseline creates its parent where the path resolves", func(t *testing.T) {
-		repo := outputPathRepo(t)
-		home := t.TempDir()
-		link := linkOver(t, home, "sub")
-		if err := runVerifyRecord(t, repo, dotDotPath(link, "created", "base.json")); err != nil {
-			t.Fatal(err)
-		}
-		onDisk := filepath.Join(home, "real", "created", "base.json")
-		if _, err := os.Stat(onDisk); err != nil {
-			t.Errorf("baseline did not land where the path resolves on disk (%s): %v", onDisk, err)
-		}
-		if _, err := os.Stat(filepath.Join(home, "created")); err == nil {
-			t.Error("baseline created its parent beside the link, at the path filepath.Clean invented")
-		}
-	})
-
 	// The confinement half, and the reason this is not merely cosmetic. A
 	// caller-owned link whose ".." step lands back INSIDE the checkout names a
 	// repository-controlled file. TestOutputPathClassificationFollowsALinkIntoThe
@@ -640,7 +562,7 @@ func TestOutputPathsResolveDotDotThroughSymlinksLikeTheKernel(t *testing.T) {
 		if err := os.Symlink(victim, filepath.Join(repo, "sub", "GRAPH_REPORT.md")); err != nil {
 			t.Fatal(err)
 		}
-		if err := writeOutputFile(t.Context(), repo, given, []byte("x"), 0o644, false); err == nil {
+		if err := writeOutputFile(t.Context(), repo, given, []byte("x"), 0o644); err == nil {
 			t.Error("write followed a symlink committed inside the repository")
 		}
 		assertVictimIntact(t, victim, victimContent)
@@ -733,8 +655,7 @@ func TestRealOutputPathWithoutDotDotIsPlainAbs(t *testing.T) {
 // peeled the not-yet-existing tail back onto the resolved prefix with
 // filepath.Join, which CLEANS — so `missing/..` collapsed to nothing and the
 // destination silently became `x` beside it. That turned the previous ENOENT into a
-// truncating write of a DIFFERENT existing file, for both `--report` and
-// `--record-baseline`.
+// truncating write of a DIFFERENT existing file.
 //
 // The refusal belongs to the platforms that TRAVERSE the missing component.
 // Windows removes `missing\..` while normalising the path in user mode, so the
@@ -763,7 +684,7 @@ func TestOutputPathsRefuseDotDotThroughAMissingDirectory(t *testing.T) {
 
 	// Inside the repository: the confined write path, which reaches the same
 	// resolution helper. The bystander here is a TRACKED source file.
-	t.Run("record-baseline does not truncate a tracked file inside the repository", func(t *testing.T) {
+	t.Run("report does not truncate a tracked file inside the repository", func(t *testing.T) {
 		repo := outputPathRepo(t)
 		tracked := filepath.Join(repo, "auth.go")
 		before, err := os.ReadFile(tracked)
@@ -772,7 +693,7 @@ func TestOutputPathsRefuseDotDotThroughAMissingDirectory(t *testing.T) {
 		}
 		given := dotDotPath(filepath.Join(repo, "missing"), "auth.go")
 
-		if err := runVerifyRecord(t, repo, given); err == nil {
+		if err := runIndexReport(t, repo, given); err == nil {
 			t.Error("write through a missing directory succeeded; the kernel would have returned ENOENT")
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("error is not a not-exist error: %v", err)
@@ -788,8 +709,8 @@ func TestOutputPathsRefuseDotDotThroughAMissingDirectory(t *testing.T) {
 			t.Errorf("realOutputPath through a missing directory: err = %v, want a not-exist error", err)
 		}
 		// A ".." after a directory that DOES exist is ordinary and must still
-		// resolve — including when the leaf directories do not exist yet, which is
-		// the documented `--record-baseline` case.
+		// resolve — including when the leaf directories do not exist yet, since
+		// classification runs before the write reports them as ENOENT.
 		if err := os.MkdirAll(filepath.Join(home, "present"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -887,7 +808,7 @@ func TestIndexReportRefusesSymlinkInACheckoutNamedWithATrailingSpace(t *testing.
 // path in USER MODE before the filesystem sees it, removing `missing\..` the way
 // filepath.Clean does, so the same spelling names `x` beside it and OPENS it. The
 // refusal is therefore correct on Unix and a regression on Windows, where a
-// `--report` or `--record-baseline` path that wrote its file before would now
+// `--report` path that wrote its file before would now
 // return a not-exist error.
 //
 // Both halves run on one machine because the platform rule is a parameter.
@@ -990,36 +911,11 @@ func TestIndexReportRefusesACommittedSymlinkedParentDirectory(t *testing.T) {
 	}
 }
 
-// TestVerifyRecordBaselineRefusesACommittedSymlinkedParentDirectory drives the same
-// component rule through the other verb, which additionally CREATES its parent
-// directories — so the check has to come before that creation walks the link too.
-func TestVerifyRecordBaselineRefusesACommittedSymlinkedParentDirectory(t *testing.T) {
-	requireSymlinkSupport(t)
-	repo := outputPathRepo(t)
-	if err := os.Symlink(".git", filepath.Join(repo, "reports")); err != nil {
-		t.Fatal(err)
-	}
-	git(t, repo, "add", ".")
-	git(t, repo, "commit", "-m", "hostile baseline directory")
-
-	err := runVerifyRecord(t, repo, filepath.Join(repo, "reports", "nested", "base.json"))
-	if err == nil {
-		t.Fatal("verify --record-baseline followed a symlinked directory committed inside the repository")
-	}
-	if !strings.Contains(err.Error(), "symbolic link") {
-		t.Fatalf("refusal does not say why: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(repo, ".git", "nested")); !os.IsNotExist(err) {
-		t.Fatalf("parent creation walked through the committed link into .git: %v", err)
-	}
-}
-
 // TestOutputPathsOutsideTheRepositoryKeepWorkingThroughLinkedDirectories is the
 // DO-NOT-OVER-CORRECT pin, and it passes both before and after the component rule
 // above: refusing symlinked components must apply only INSIDE the repository. A
 // caller-owned destination reached through a symlinked parent — /tmp on macOS, and
-// the `--record-baseline /tmp/base.json` the verify help advertises — is unconfined
-// by design and must still be written, parents created and all.
+// every /tmp example in the help — is unconfined by design and must still be written.
 func TestOutputPathsOutsideTheRepositoryKeepWorkingThroughLinkedDirectories(t *testing.T) {
 	requireSymlinkSupport(t)
 	repo := outputPathRepo(t)
@@ -1031,22 +927,12 @@ func TestOutputPathsOutsideTheRepositoryKeepWorkingThroughLinkedDirectories(t *t
 	if err := runIndexReport(t, repo, filepath.Join(link, "GRAPH_REPORT.md")); err != nil {
 		t.Fatalf("index --report through a caller-owned symlinked directory failed: %v", err)
 	}
-	if err := runVerifyRecord(t, repo, filepath.Join(link, "nested", "base.json")); err != nil {
-		t.Fatalf("verify --record-baseline through a caller-owned symlinked directory failed: %v", err)
-	}
 	report, err := os.ReadFile(filepath.Join(real, "GRAPH_REPORT.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(string(report), "# Graph report") {
 		t.Fatalf("report content is wrong:\n%s", report)
-	}
-	baseline, err := os.ReadFile(filepath.Join(real, "nested", "base.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(baseline), `"format_version": 1`) {
-		t.Fatalf("baseline is not the recorded JSON:\n%s", baseline)
 	}
 }
 
@@ -1177,13 +1063,6 @@ func TestOutputPathsRefuseASymlinkTraversedByDotDot(t *testing.T) {
 		if info.Mode()&os.ModeSymlink == 0 {
 			t.Fatal("the repository's symlink was replaced by a regular file")
 		}
-	})
-
-	// The other verb creates its parents, so the refusal has to come before that
-	// walk too — this spelling would otherwise mkdir inside the git directory.
-	t.Run("verify --record-baseline", func(t *testing.T) {
-		repo, given, victim, before := hostile(t)
-		assertRefused(t, runVerifyRecord(t, repo, given), victim, before)
 	})
 
 	// The relative spelling reaches the same place through os.Getwd rather than
@@ -1335,12 +1214,6 @@ func TestOutputPathsKeepTheKernelDestinationThroughACallerOwnedLink(t *testing.T
 		assertLandedOnTheKernelDestination(t, runIndexReport(t, repo, given), kernelDest, inRepo, "# Graph report")
 	})
 
-	// The other verb creates its parents, so this also pins that the parents get
-	// created under the kernel's destination rather than inside the repository.
-	t.Run("verify --record-baseline", func(t *testing.T) {
-		repo, given, kernelDest, inRepo := scene(t, "nested", "base.json")
-		assertLandedOnTheKernelDestination(t, runVerifyRecord(t, repo, given), kernelDest, inRepo, "{")
-	})
 }
 
 // TestOutputPathsRefuseASpellingThatNamesADirectory is the regression for the
@@ -1382,7 +1255,7 @@ func TestOutputPathsRefuseASpellingThatNamesADirectory(t *testing.T) {
 	t.Run("absent target", func(t *testing.T) {
 		repo := outputPathRepo(t)
 		absent := filepath.Join(repo, "absent.md")
-		if err := runVerifyRecord(t, repo, absent+sep); err == nil {
+		if err := runIndexReport(t, repo, absent+sep); err == nil {
 			t.Fatal("a path naming a directory was accepted as an output file")
 		}
 		if _, err := os.Lstat(absent); !os.IsNotExist(err) {
@@ -1505,18 +1378,17 @@ func TestConfinementRootFindsTheCheckoutWhenGitCannotBeAsked(t *testing.T) {
 
 	assertSameDirectory(t, confinementRoot(t.Context(), sub), repo, "confinement root")
 	// The other direction: where there is no checkout to find, the fallback to
-	// --repo stands, so `verify --record-baseline` in a plain directory keeps
-	// working exactly as it is documented to.
+	// --repo stands, so a write under a plain directory keeps working.
 	if got := confinementRoot(t.Context(), plain); got != plain {
 		t.Fatalf("a directory inside no checkout did not fall back to --repo: %q", got)
 	}
 }
 
-// TestRecordBaselineStaysConfinedWhenRepoIsACommittedSymlinkOutOfTheCheckout drives
-// the same hole through the real verb, with git present and working the whole time:
+// TestWriteStaysConfinedWhenRepoIsACommittedSymlinkOutOfTheCheckout drives
+// the same hole through the write sink, with git present and working the whole time:
 // the REPOSITORY decides that `rev-parse --show-toplevel` fails, by committing the
 // subdirectory --repo names as a link to somewhere that is not a checkout.
-func TestRecordBaselineStaysConfinedWhenRepoIsACommittedSymlinkOutOfTheCheckout(t *testing.T) {
+func TestWriteStaysConfinedWhenRepoIsACommittedSymlinkOutOfTheCheckout(t *testing.T) {
 	requireSymlinkSupport(t)
 	parent := t.TempDir()
 	outside := filepath.Join(parent, "notarepository")
@@ -1525,8 +1397,8 @@ func TestRecordBaselineStaysConfinedWhenRepoIsACommittedSymlinkOutOfTheCheckout(
 	}
 	repo := outputPathRepoAt(t, filepath.Join(parent, "checkout"))
 	victim, victimContent := plantVictim(t)
-	baseline := filepath.Join(repo, "GRAPH_REPORT.md")
-	if err := os.Symlink(victim, baseline); err != nil {
+	report := filepath.Join(repo, "GRAPH_REPORT.md")
+	if err := os.Symlink(victim, report); err != nil {
 		t.Fatal(err)
 	}
 	sub := filepath.Join(repo, "subdir")
@@ -1539,16 +1411,12 @@ func TestRecordBaselineStaysConfinedWhenRepoIsACommittedSymlinkOutOfTheCheckout(
 	if _, err := gitutil.RepoRoot(t.Context(), sub); err == nil {
 		t.Fatal("git reported a top level for a directory outside every checkout")
 	}
-	err := Run(t.Context(), Options{
-		Version: "test-version",
-		Env:     EntireEnv{RepoRoot: repo},
-		Stdout:  &bytes.Buffer{},
-	}, []string{"verify", "--repo", sub, "--test", "true", "--record-baseline", baseline})
+	err := writeOutputFile(t.Context(), sub, report, []byte("x"), 0o644)
 	if err == nil {
-		t.Fatal("verify --record-baseline followed a symlink committed inside the repository")
+		t.Fatal("the write followed a symlink committed inside the repository")
 	}
 	assertVictimIntact(t, victim, victimContent)
-	info, lstatErr := os.Lstat(baseline)
+	info, lstatErr := os.Lstat(report)
 	if lstatErr != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("the repository's own entry was replaced rather than refused: %v", lstatErr)
 	}
@@ -1607,8 +1475,8 @@ func TestOutputPathRefusesARepositoryLinkOnARouteThatLeavesTheRepository(t *test
 			if err := runIndexReportWithRepoFlag(t, repo, given); err == nil {
 				t.Fatal("index --report resolved a symlink committed inside the repository")
 			}
-			// The same route reaches --record-baseline, so the refusal is pinned at
-			// the classifier both verbs share rather than at one of them.
+			// The refusal is also pinned at
+			// the classifier itself rather than only at the verb.
 			if _, err := classifyOutputPath(repo, given); err == nil {
 				t.Fatal("classifyOutputPath accepted a route through a repository-committed symlink")
 			}
@@ -1682,7 +1550,7 @@ func TestWriteOutputFileDoesNotFollowALinkSwappedInAfterTheCheck(t *testing.T) {
 
 	target := filepath.Join(parent, "config")
 	for range 40000 {
-		_ = writeOutputFileUnder(repo, target, []byte("SWAPPED IN AFTER THE CHECK\n"), 0o644, false)
+		_ = writeOutputFileUnder(repo, target, []byte("SWAPPED IN AFTER THE CHECK\n"), 0o644)
 	}
 	close(stop)
 	<-swapped
@@ -1696,26 +1564,7 @@ func TestWriteOutputFileDoesNotFollowALinkSwappedInAfterTheCheck(t *testing.T) {
 	}
 }
 
-// pathWithoutGit returns a PATH directory holding `sh` and nothing else.
-//
-// `verify` runs its test command through `sh -c`, so emptying PATH outright would
-// fail the verb for a reason that has nothing to do with the boundary. Keeping the
-// shell and dropping git reproduces the configuration confinementRoot is written
-// for: a machine where `verify` works and `rev-parse` cannot be asked.
-func pathWithoutGit(t *testing.T) string {
-	t.Helper()
-	shell, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skip("this machine has no sh to run the verify test command with")
-	}
-	dir := t.TempDir()
-	if err := os.Symlink(shell, filepath.Join(dir, "sh")); err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
-// TestRecordBaselineStaysConfinedWhenRepoAliasesIntoAnotherCheckout is the
+// TestWriteStaysConfinedWhenRepoAliasesIntoAnotherCheckout is the
 // regression for the seventh spelling of the original escape, and it attacks the
 // function that closed the fourth.
 //
@@ -1723,13 +1572,13 @@ func pathWithoutGit(t *testing.T) string {
 // ancestor holding a `.git` entry. Point --repo at a link that lives in one
 // checkout and resolves into another, and that first hit is the checkout the scan
 // never reads: the tree that IS indexed then sits entirely outside the boundary, so
-// `--record-baseline <indexed>/GRAPH_REPORT.md` classified as caller-owned and took
+// `<indexed>/GRAPH_REPORT.md` classified as caller-owned and took
 // the unconfined write straight through the link the clone committed there.
 //
-// Git has to be unaskable for the lexical search to decide at all, which is not a
-// contrivance — `verify` needs no git, and that is exactly why the search exists.
+// Git has to be unaskable for the lexical search to decide at all — no git on PATH
+// is an ordinary configuration, and that is exactly why the search exists.
 // The premise is checked at runtime before it is relied on.
-func TestRecordBaselineStaysConfinedWhenRepoAliasesIntoAnotherCheckout(t *testing.T) {
+func TestWriteStaysConfinedWhenRepoAliasesIntoAnotherCheckout(t *testing.T) {
 	requireSymlinkSupport(t)
 	parent := t.TempDir()
 	unrelated := outputPathRepoAt(t, filepath.Join(parent, "unrelated"))
@@ -1739,8 +1588,8 @@ func TestRecordBaselineStaysConfinedWhenRepoAliasesIntoAnotherCheckout(t *testin
 		t.Fatal(err)
 	}
 	victim, victimContent := plantVictim(t)
-	baseline := filepath.Join(indexed, "GRAPH_REPORT.md")
-	if err := os.Symlink(victim, baseline); err != nil {
+	report := filepath.Join(indexed, "GRAPH_REPORT.md")
+	if err := os.Symlink(victim, report); err != nil {
 		t.Fatal(err)
 	}
 	alias := filepath.Join(unrelated, "alias")
@@ -1748,27 +1597,23 @@ func TestRecordBaselineStaysConfinedWhenRepoAliasesIntoAnotherCheckout(t *testin
 		t.Fatal(err)
 	}
 
-	t.Setenv("PATH", pathWithoutGit(t))
+	t.Setenv("PATH", t.TempDir())
 	if _, err := gitutil.RepoRoot(t.Context(), alias); err == nil {
 		t.Fatal("git still ran; the premise of this test is that it cannot be asked")
 	}
 
-	err := Run(t.Context(), Options{
-		Version: "test-version",
-		Env:     EntireEnv{RepoRoot: indexed},
-		Stdout:  &bytes.Buffer{},
-	}, []string{"verify", "--repo", alias, "--test", "true", "--record-baseline", baseline})
+	err := writeOutputFile(t.Context(), alias, report, []byte("x"), 0o644)
 	if err == nil {
-		t.Fatal("verify --record-baseline followed a symlink committed in the checkout it indexed")
+		t.Fatal("the write followed a symlink committed in the checkout it indexed")
 	}
 	assertVictimIntact(t, victim, victimContent)
-	info, lstatErr := os.Lstat(baseline)
+	info, lstatErr := os.Lstat(report)
 	if lstatErr != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("the repository's own entry was replaced rather than refused: %v", lstatErr)
 	}
 }
 
-// TestRecordBaselineStaysConfinedInTheCheckoutThatCommittedTheAlias is the same
+// TestWriteStaysConfinedInTheCheckoutThatCommittedTheAlias is the same
 // escape from the other side, and it needs no failure of git at all.
 //
 // `rev-parse --show-toplevel` answers about the directory the alias RESOLVES into,
@@ -1777,7 +1622,7 @@ func TestRecordBaselineStaysConfinedWhenRepoAliasesIntoAnotherCheckout(t *testin
 // alias and the report link therefore had its own root-level files classified as
 // caller-owned while git was working perfectly, which is why one boundary was never
 // enough.
-func TestRecordBaselineStaysConfinedInTheCheckoutThatCommittedTheAlias(t *testing.T) {
+func TestWriteStaysConfinedInTheCheckoutThatCommittedTheAlias(t *testing.T) {
 	requireSymlinkSupport(t)
 	parent := t.TempDir()
 	hostile := outputPathRepoAt(t, filepath.Join(parent, "hostile"))
@@ -1787,8 +1632,8 @@ func TestRecordBaselineStaysConfinedInTheCheckoutThatCommittedTheAlias(t *testin
 		t.Fatal(err)
 	}
 	victim, victimContent := plantVictim(t)
-	baseline := filepath.Join(hostile, "GRAPH_REPORT.md")
-	if err := os.Symlink(victim, baseline); err != nil {
+	report := filepath.Join(hostile, "GRAPH_REPORT.md")
+	if err := os.Symlink(victim, report); err != nil {
 		t.Fatal(err)
 	}
 	alias := filepath.Join(hostile, "alias")
@@ -1805,27 +1650,23 @@ func TestRecordBaselineStaysConfinedInTheCheckoutThatCommittedTheAlias(t *testin
 	}
 	assertSameDirectory(t, top, other, "git top level")
 
-	err = Run(t.Context(), Options{
-		Version: "test-version",
-		Env:     EntireEnv{RepoRoot: hostile},
-		Stdout:  &bytes.Buffer{},
-	}, []string{"verify", "--repo", alias, "--test", "true", "--record-baseline", baseline})
+	err = writeOutputFile(t.Context(), alias, report, []byte("x"), 0o644)
 	if err == nil {
-		t.Fatal("verify --record-baseline followed a symlink committed by the checkout --repo was spelled through")
+		t.Fatal("the write followed a symlink committed by the checkout --repo was spelled through")
 	}
 	assertVictimIntact(t, victim, victimContent)
-	info, lstatErr := os.Lstat(baseline)
+	info, lstatErr := os.Lstat(report)
 	if lstatErr != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("the repository's own entry was replaced rather than refused: %v", lstatErr)
 	}
 }
 
-// TestRecordBaselineChecksTheRouteAgainstEveryImplicatedCheckout is the mirror
+// TestWriteChecksTheRouteAgainstEveryImplicatedCheckout is the mirror
 // direction: the first boundary owns the destination, while the second boundary
 // owns the link that chose it. Stopping at the first boundary hides that link and
 // lets the checkout the caller spelled through redirect the write into the other
 // checkout's Git configuration.
-func TestRecordBaselineChecksTheRouteAgainstEveryImplicatedCheckout(t *testing.T) {
+func TestWriteChecksTheRouteAgainstEveryImplicatedCheckout(t *testing.T) {
 	requireSymlinkSupport(t)
 	parent := t.TempDir()
 	hostile := outputPathRepoAt(t, filepath.Join(parent, "hostile"))
@@ -1859,13 +1700,9 @@ func TestRecordBaselineChecksTheRouteAgainstEveryImplicatedCheckout(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = Run(t.Context(), Options{
-		Version: "test-version",
-		Env:     EntireEnv{RepoRoot: hostile},
-		Stdout:  &bytes.Buffer{},
-	}, []string{"verify", "--repo", alias, "--test", "true", "--record-baseline", filepath.Join(linkedGitDir, "config")})
+	err = writeOutputFile(t.Context(), alias, filepath.Join(linkedGitDir, "config"), []byte("x"), 0o644)
 	if err == nil {
-		t.Fatal("verify --record-baseline followed a route symlink owned by the second checkout")
+		t.Fatal("the write followed a route symlink owned by the second checkout")
 	}
 	if !strings.Contains(err.Error(), "symbolic link") {
 		t.Fatalf("refusal does not say why: %v", err)
@@ -1972,7 +1809,7 @@ func TestWriteOutputFileDoesNotWriteOutsideThroughALinkSwappedDuringClassificati
 
 	given := dotDotPath(link, "zshrc")
 	for range 40000 {
-		_ = writeOutputFileUnder(repo, given, []byte("SWAPPED DURING CLASSIFICATION\n"), 0o644, false)
+		_ = writeOutputFileUnder(repo, given, []byte("SWAPPED DURING CLASSIFICATION\n"), 0o644)
 	}
 	close(stop)
 	<-swapped

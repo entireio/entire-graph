@@ -117,6 +117,7 @@ func newerSchemaMinorWarning(declared string) ProviderWarning {
 		Code:                 "W_NEWER_SCHEMA_MINOR",
 		Severity:             "warning",
 		EffectOnCompleteness: "additive fields or record kinds introduced after this build's schema were not read",
+		EffectScope:          DiagnosticEffectScope("W_NEWER_SCHEMA_MINOR", ""),
 		Detail: fmt.Sprintf(
 			"artifact declares schema %s; this build reads %s",
 			declared, SchemaVersion,

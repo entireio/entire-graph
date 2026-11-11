@@ -30,7 +30,7 @@ var linkTargetAnchorNames = map[linkTargetAnchor]string{
 //	C:file                 neither           IsAbs FALSE   no anchor at all
 //
 // `\dir\file` is the defect. IsAbs reports false for it, so the components were appended to the
-// link's PARENT instead of to a volume root: an unconfined `--report` or `--record-baseline` routed
+// link's PARENT instead of to a volume root: an unconfined `--report` routed
 // through such a link wrote to a file the caller never named. `C:file` is the shape that must NOT
 // restart — it is resolved against that drive's own working directory, which is process-global
 // state this walk has no handle on — and it is refused instead.
@@ -144,7 +144,7 @@ func TestLinkTargetAnchorAgreesWithFilepathOnThisHost(t *testing.T) {
 // IO_REPARSE_TAG_GLOBAL_REPARSE. A ModeSymlink-only test read each of those as an ordinary
 // component, so the walk opened the ALIAS and then compared the object it received against the name
 // it had asked for — a comparison a redirect cannot survive — and refused a caller-owned `--report`
-// or `--record-baseline` path Windows resolves perfectly well.
+// path Windows resolves perfectly well.
 //
 // The predicate says "classify this", not "this is an alias": the tags that merely ANNOTATE a file
 // are ModeIrregular too, and the raw reparse tag is what separates them. The limit is the same one

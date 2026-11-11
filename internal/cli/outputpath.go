@@ -15,16 +15,15 @@ import (
 	"github.com/entireio/entire-graph/internal/sem"
 )
 
-// Caller-named output files: `index --report` and `verify --record-baseline`
-// ==========================================================================
+// Caller-named output files: `index --report`
+// ============================================
 //
-// Both verbs write ONE file to a path the CALLER names, and both are documented
-// to take a path anywhere on the machine: docs/trust-and-security.md says each
-// writes "to the path you give it", and the verify help itself advertises
-// `--record-baseline /tmp/base.json`. That freedom is the feature; confining
-// every write under the repository would break the documented invocation, break
-// `--report ../reports/x.md` in CI, and break every /tmp example on macOS, where
-// /tmp is itself a symlink.
+// The verb writes ONE file to a path the CALLER names, documented to take a path
+// anywhere on the machine: docs/trust-and-security.md says it writes "to the path
+// you give it". That freedom is the feature; confining every write under the
+// repository would break the documented invocation, break `--report
+// ../reports/x.md` in CI, and break every /tmp example on macOS, where /tmp is
+// itself a symlink.
 //
 // The hazard is the other end of that range. When the named path lands INSIDE the
 // scanned repository — `--report GRAPH_REPORT.md`, the in-repo spelling the tool
@@ -96,8 +95,7 @@ func (target repoOutputTarget) insideRepo() bool { return target.root != "" }
 // root-level file caller-owned and write through whatever the clone left there.
 //
 // The fallback — repoRoot unchanged — is load-bearing rather than defensive.
-// `verify` runs the caller's own test command in any directory they name, and
-// that directory is not required to be a git repository at all; a bare repository
+// --repo is not required to name a git repository at all; a bare repository
 // and a plain directory must both keep working.
 //
 // It is NOT, as this comment used to claim, free of consequence for being a
@@ -109,7 +107,7 @@ func (target repoOutputTarget) insideRepo() bool { return target.root != "" }
 //
 // Asking git is not a reliable way to find that out, because
 // the question is answered by an EXTERNAL PROGRAM that fails for reasons which have
-// nothing to do with the answer: no git on PATH (`verify` needs none, and indexing a
+// nothing to do with the answer: no git on PATH (indexing a
 // mounted tree from a minimal image is an ordinary way to run this), a checkout whose
 // files another uid owns, so every git command in it stops at `detected dubious
 // ownership`, or a --repo that is a committed symlink to a directory outside the
@@ -626,8 +624,8 @@ func splitFinalComponent(path string) (parent, last string) {
 // the final component — that component is the symlink a confined write exists to
 // refuse — so the walk starts at the target's parent and the final component stays
 // a name. Ancestors that do not exist yet simply fail to match and the walk
-// continues past them, which is the ordinary case: `verify --record-baseline` is
-// documented to create its parent directories.
+// continues past them: classification runs before existence is enforced, and a
+// missing parent is reported by the write itself, as ENOENT.
 //
 // The walk runs over BOTH the named chain and the resolved one, and inside wins,
 // because each chain alone is wrong in one direction:
@@ -705,10 +703,10 @@ func lexicalRel(root, target string) (string, bool) {
 // symlinks and re-appends the part that does not exist yet.
 //
 // The tail matters: filepath.EvalSymlinks fails outright when any component is
-// missing, and `verify --record-baseline` is documented to CREATE its parent
-// directories, so the common case is a path whose leaf directories do not exist
-// yet. Returning dir unchanged when nothing resolves is safe — it only costs the
-// resolved walk, and the named one has already run.
+// missing, and classification has to answer for a path whose leaf directories do
+// not exist yet before the write reports them as ENOENT. Returning dir unchanged
+// when nothing resolves is safe — it only costs the resolved walk, and the named
+// one has already run.
 //
 // A ".." reached by this walk is REFUSED rather than resolved, and that is the
 // whole reason the function returns an error. Reaching one means EvalSymlinks
@@ -793,10 +791,8 @@ func refuseSymlinkedComponents(root *os.Root, rel, given string) error {
 		prefix = filepath.Join(prefix, component)
 		info, err := root.Lstat(prefix)
 		if err != nil {
-			// Not on disk yet. `verify --record-baseline` is documented to create
-			// its parents, so missing components are the ordinary case, and a
-			// component that does not exist cannot be a link. Any other error is
-			// left to the open below, which reports it against the caller's path.
+			// Not on disk yet. A component that does not exist cannot be a link;
+			// the open below reports the missing parent against the caller's path.
 			continue
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -939,13 +935,12 @@ func refuseRepositorySymlinks(root *os.Root, confinements []string, target repoO
 }
 
 // writeOutputFile writes one caller-named output file under the rule documented at
-// the top of this file. createParents mirrors `verify --record-baseline`, which is
-// documented to create missing parent directories; `index --report` passes false
-// and keeps its "no such directory" error.
+// the top of this file. Missing parent directories are an error, matching the
+// "no such directory" answer os.WriteFile gives.
 func writeOutputFile(
-	ctx context.Context, repoRoot, path string, data []byte, perm os.FileMode, createParents bool,
+	ctx context.Context, repoRoot, path string, data []byte, perm os.FileMode,
 ) error {
-	return writeOutputFileUnderAny(confinementRoots(ctx, repoRoot), path, data, perm, createParents)
+	return writeOutputFileUnderAny(confinementRoots(ctx, repoRoot), path, data, perm)
 }
 
 // writeOutputFileUnder is writeOutputFile with the boundary already resolved. The
@@ -954,9 +949,9 @@ func writeOutputFile(
 // test that has to repeat the write tens of thousands of times cannot afford to pay
 // per iteration. Nothing else about the write differs.
 func writeOutputFileUnder(
-	confinement, path string, data []byte, perm os.FileMode, createParents bool,
+	confinement, path string, data []byte, perm os.FileMode,
 ) error {
-	return writeOutputFileUnderAny([]string{confinement}, path, data, perm, createParents)
+	return writeOutputFileUnderAny([]string{confinement}, path, data, perm)
 }
 
 // writeOutputFileUnderAny classifies path against every boundary confinementRoots
@@ -969,7 +964,7 @@ func writeOutputFileUnder(
 // route, and that verdict does not become weaker because some other boundary would
 // have called the same path caller-owned.
 func writeOutputFileUnderAny(
-	confinements []string, path string, data []byte, perm os.FileMode, createParents bool,
+	confinements []string, path string, data []byte, perm os.FileMode,
 ) error {
 	var outside repoOutputTarget
 	decided := false
@@ -979,7 +974,7 @@ func writeOutputFileUnderAny(
 			return err
 		}
 		if target.insideRepo() {
-			return writeConfinedOutputFile(confinements, target, data, perm, createParents)
+			return writeConfinedOutputFile(confinements, target, data, perm)
 		}
 		if !decided {
 			outside, decided = target, true
@@ -991,13 +986,13 @@ func writeOutputFileUnderAny(
 		// unconfined, so it is an error rather than a default.
 		return fmt.Errorf("refusing to write %s: no confinement boundary was resolved", path)
 	}
-	return writeUnconfinedOutputFile(confinements, outside, data, perm, createParents)
+	return writeUnconfinedOutputFile(confinements, outside, data, perm)
 }
 
 // writeConfinedOutputFile writes a target under the boundary that owns its
 // destination, after refusing route links owned by any implicated boundary.
 func writeConfinedOutputFile(
-	confinements []string, target repoOutputTarget, data []byte, perm os.FileMode, createParents bool,
+	confinements []string, target repoOutputTarget, data []byte, perm os.FileMode,
 ) error {
 	root, err := os.OpenRoot(target.root)
 	if err != nil {
@@ -1012,7 +1007,7 @@ func writeConfinedOutputFile(
 	if err := refuseRepositorySymlinks(root, confinements, target); err != nil {
 		return err
 	}
-	file, err := openConfinedOutputFile(root, target, perm, createParents)
+	file, err := openConfinedOutputFile(root, target, perm)
 	if err != nil {
 		return err
 	}
@@ -1056,9 +1051,9 @@ func writeConfinedOutputFile(
 // and a caller-owned one is followed, which is the same ownership rule the checks
 // apply — asked here of the objects the write actually uses.
 func writeUnconfinedOutputFile(
-	confinements []string, target repoOutputTarget, data []byte, perm os.FileMode, createParents bool,
+	confinements []string, target repoOutputTarget, data []byte, perm os.FileMode,
 ) error {
-	file, err := openUnconfinedOutputFile(confinements, target, perm, createParents)
+	file, err := openUnconfinedOutputFile(confinements, target, perm)
 	if err != nil {
 		return err
 	}
@@ -1077,13 +1072,13 @@ func writeUnconfinedOutputFile(
 // leaves it as soon as a caller-owned link says to. That is deliberate. The whole
 // point of the outside branch is that the caller may name any path on the machine,
 // and /tmp is itself a symlink on macOS; confining this walk would refuse the
-// documented `--record-baseline /tmp/base.json`.
+// documented `--report /tmp/GRAPH_REPORT.md`.
 //
 // What it does NOT claim: it is not proof that no name on the route ever pointed
 // elsewhere. A walk that loses the race is refused, not silently redirected, and the
 // file it would have hit is untouched.
 func openUnconfinedOutputFile(
-	confinements []string, target repoOutputTarget, perm os.FileMode, createParents bool,
+	confinements []string, target repoOutputTarget, perm os.FileMode,
 ) (*os.File, error) {
 	route := target.traversed
 	if route == "" || !filepath.IsAbs(route) {
@@ -1230,14 +1225,9 @@ func openUnconfinedOutputFile(
 			return openUnconfinedLeaf(directory, component, full, target.given, perm)
 		}
 		if statErr != nil {
-			if !createParents {
-				// The same failure os.WriteFile produced, reported against the path
-				// the caller typed rather than against one component of it.
-				return nil, &fs.PathError{Op: "open", Path: target.path, Err: fs.ErrNotExist}
-			}
-			if err := directory.Mkdir(component, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
-				return nil, err
-			}
+			// The same failure os.WriteFile produced, reported against the path
+			// the caller typed rather than against one component of it.
+			return nil, &fs.PathError{Op: "open", Path: target.path, Err: fs.ErrNotExist}
 		}
 		next, err := directory.OpenRoot(component)
 		if err != nil {
@@ -1263,7 +1253,7 @@ func openUnconfinedOutputFile(
 // cannot decode, IO_REPARSE_TAG_GLOBAL_REPARSE. A ModeSymlink-only test called each of those an
 // ordinary component, so the walk opened the ALIAS and then compared the object it got against the
 // name it asked for — a comparison that cannot hold through a redirect — and refused a
-// caller-owned `--report` or `--record-baseline` path the kernel resolves perfectly well.
+// caller-owned `--report` path the kernel resolves perfectly well.
 //
 // It also contains tags that only ANNOTATE a file — deduplication, WOF compression, a cloud
 // placeholder — which Windows resolves straight through. Those must stay ordinary components, so
@@ -1479,7 +1469,7 @@ func racedOutputPathError(rel, given string) error {
 // name in it ever pointed elsewhere. A write that loses the race is refused, not
 // silently redirected, and the file it would have hit is untouched.
 func openConfinedOutputFile(
-	root *os.Root, target repoOutputTarget, perm os.FileMode, createParents bool,
+	root *os.Root, target repoOutputTarget, perm os.FileMode,
 ) (*os.File, error) {
 	components := pathComponents(target.rel)
 	if len(components) == 0 {
@@ -1498,14 +1488,6 @@ func openConfinedOutputFile(
 			continue
 		}
 		rel = filepath.Join(rel, component)
-		if createParents {
-			// `verify --record-baseline` is documented to create its parents. An
-			// existing entry — including a link the walk is about to refuse — comes
-			// back as EEXIST, which is not an answer to whether it may be used.
-			if err := directory.Mkdir(component, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
-				return nil, err
-			}
-		}
 		next, err := directory.OpenRoot(component)
 		if err != nil {
 			return nil, err
