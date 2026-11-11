@@ -24,6 +24,17 @@ auto-generated notes on
   exact and now refuses a store whose recorded tree differs from its key's.
   `capabilities --json` advertises it as
   `optional_local_only_features.context_allow_ancestor: true`.
+- Every warning and partial failure now carries a machine-readable
+  `effect_scope` (schema 1.6): `file` when what it says may be missing is
+  confined to the file it names (its symbols, and relations that start or end at
+  them), `snapshot` when it is not bounded by one file. This includes the
+  `warnings` of `diff`, `commit` and `checkpoint` results, so a consumer can
+  tell an oversized JSON file from a narrowed corpus without parsing
+  `effect_on_semantic_completeness`. Every code the provider emits is
+  classified. `capabilities --json` advertises it as
+  `optional_local_only_features.partial_failure_effect_scope: true`, and the
+  snapshot header lists `partial_failure_effect_scope` in `schema_features`.
+  The schema minor bump rebuilds cache entries written without the field.
 
 ### Changed
 
@@ -35,8 +46,48 @@ auto-generated notes on
   agent and text output print one line beside the callers with a `grep` the
   reader can run to find those references. A degenerate `impact` ("no callers")
   keeps its marker line and prints the disclosure after it.
+- `query --format agent` labels coverage `degraded` (compact `!D`) only when a
+  partial failure can remove a code fact: one not confined to a single file
+  (repo-ignore shortfalls, a spent analysis budget), or one in a source file.
+  Failures confined to data, configuration or documentation files (JSON, YAML,
+  TOML, XML, Markdown and the like) now give `Coverage: notice` (`!N`); they are
+  still counted and listed. A repository whose only failures were minified JSON
+  fixtures no longer opens every answer with `Coverage: degraded`. The marker a
+  very small `--max-context-bytes` budget falls back to follows the same rule;
+  it used to print `!D` for any partial failure. Known gap, tracked as a
+  follow-up: configuration formats are exempt as a whole, so a parse failure in
+  a file the graph does extract facts from (Terraform `.tf`, Compose or
+  Kubernetes YAML, CUE) also gives `notice`.
+- A `query` that matches nothing when no graph is built or cached now reports
+  an explicit `completeness.health.status: ok` instead of omitting `health`.
 
 ### Fixed
+
+- `query`'s `VERIFY:` block no longer names an ancestor Gradle build for a file in
+  a Gradle project directory that build does not own. With `include ':app'` in the
+  root settings script and an undeclared `lib/build.gradle`, an edit in `lib/` used
+  to be answered with `./gradlew :test --tests …` or `./gradlew test` at the root,
+  which runs without compiling `lib/`; it now reports that no command is derivable,
+  while a Maven or Node build above the directory is still consulted. A settings
+  script that renames the project (`project(':lib').name = 'core'`, `setName`), or
+  renames or relocates one of its parent projects, declines the same way instead of
+  emitting a project path Gradle does not have. A settings script between the
+  wrapper and the project is now recognised as its build root and addressed as
+  `./gradlew -p modules :core:test`. Repositories whose settings script computes its
+  includes get no Gradle command for files in subproject directories, where the
+  root suite was offered before.
+
+- Valid Go that the bundled tree-sitter grammar cannot fully parse (Go 1.26's
+  `new(expr)`, for example `new(0)`) is no longer reported as an `E_PARSE_ERROR`
+  partial failure. When `go/parser` accepts the file, snapshots, search and
+  `diff` report a `W_GO_GRAMMAR_GAP` warning naming it instead: it does not
+  count against completeness, and its effect says facts inside the construct the
+  grammar could not parse may be missing. The downgrade applies only while the
+  recovered tree still yields every top-level function, method and type
+  `go/parser` finds: a valid file whose recovery lost a declaration keeps its
+  counted `E_PARSE_ERROR` partial failure, with the lost names in `detail`. Go
+  that `go/parser` rejects keeps `E_PARSE_ERROR`. Records and search caches are versioned so a cached
+  `E_PARSE_ERROR` for such a file is not replayed.
 
 - PostgreSQL anonymous `DO` blocks accept a `LANGUAGE` clause before or after
   the dollar-quoted body while retaining static DDL declarations and source
