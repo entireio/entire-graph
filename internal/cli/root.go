@@ -345,8 +345,6 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runImpact(ctx, opts, args[1:])
 	case "risk":
 		return runRisk(ctx, opts, args[1:])
-	case "verify":
-		return runVerify(ctx, opts, args[1:])
 	case "stats":
 		return runStats(ctx, opts, args[1:])
 	case "agent-guide":

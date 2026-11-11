@@ -11,10 +11,15 @@ each entry is such an edit, applied to the real file, and must be reported.
 
 Changing the workflow's test path therefore means changing the table here in
 the same commit, which is the point of a contract.
+
+The one thing the table does not fix is an action's release: a step must run the
+same action, pinned at least as firmly, and `ACCEPTED_ACTION_BUMPS` proves that a
+version bump alone is not reported.
 """
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,12 +36,21 @@ WORKFLOW = REPOSITORY / ".github" / "workflows" / "test.yml"
 HARNESS = Path(__file__).resolve().parents[1]
 H = "tools/ci-bench/windows-production"
 
-CHECKOUT = "actions/checkout@v7.0.1"
-SETUP_GO = "actions/setup-go@v7.0.0"
-SETUP_PYTHON = "actions/setup-python@v7.1.0"
-UPLOAD = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
-DOWNLOAD = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
-CACHE = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+# The contract names which action each step runs and how it must be pinned, not
+# which release: a version bump (Dependabot's or anyone's) is not a change to the
+# test path. `<version>` accepts a full release tag (`v7.0.1`) or a commit SHA,
+# never a moving ref such as `v7` or `main`. `<sha>` accepts only a 40-character
+# commit SHA, for the actions that move artifacts and caches between jobs.
+VERSION = "<version>"
+SHA = "<sha>"
+CHECKOUT = f"actions/checkout@{VERSION}"
+SETUP_GO = f"actions/setup-go@{VERSION}"
+SETUP_PYTHON = f"actions/setup-python@{VERSION}"
+UPLOAD = f"actions/upload-artifact@{SHA}"
+DOWNLOAD = f"actions/download-artifact@{SHA}"
+CACHE = SHA
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+RELEASE_TAG = re.compile(r"v\d+\.\d+\.\d+")
 UNIT_TESTS = f'python -B -m unittest discover -s {H}/tests -p "test_*.py" -v'
 AGGREGATE_RUNNER = "ubuntu-latest"
 
@@ -434,6 +448,23 @@ def expected_jobs():
     return jobs
 
 
+def uses_differences(expected, actual, where):
+    """A step's action: the same action, pinned at least as firmly as the contract asks."""
+    name, _, pin = expected.partition("@")
+    if not isinstance(actual, str) or "@" not in actual:
+        return [f"{where}: {actual!r}, want {expected!r}"]
+    actual_name, _, ref = actual.partition("@")
+    if actual_name != name:
+        return [f"{where}: {actual!r} is not the action {name!r}"]
+    if COMMIT_SHA.fullmatch(ref):
+        return []
+    if pin == SHA:
+        return [f"{where}: {actual!r} must be pinned to a 40-character commit SHA"]
+    if pin == VERSION and RELEASE_TAG.fullmatch(ref):
+        return []
+    return [f"{where}: {actual!r} must name a full release tag (vX.Y.Z) or a commit SHA"]
+
+
 def differences(expected, actual, where):
     """Every path at which two parsed values differ, as readable lines."""
     if isinstance(expected, dict) and isinstance(actual, dict):
@@ -443,6 +474,8 @@ def differences(expected, actual, where):
                 found.append(f"{where}.{key}: missing, want {expected[key]!r}")
             elif key not in expected:
                 found.append(f"{where}.{key}: unexpected {actual[key]!r}")
+            elif key == "uses" and isinstance(expected[key], str):
+                found += uses_differences(expected[key], actual[key], f"{where}.{key}")
             else:
                 found += differences(expected[key], actual[key], f"{where}.{key}")
         return found
@@ -530,6 +563,39 @@ def replace_once(old, new):
         return text.replace(old, new)
 
     return mutate
+
+
+def replace_every(pattern, new):
+    """Replace every match of a regular expression; at least one must match."""
+
+    def mutate(text):
+        mutated, count = re.subn(pattern, new, text)
+        if count == 0:
+            raise AssertionError(f"mutation anchor never occurs: {pattern!r}")
+        return mutated
+
+    return mutate
+
+
+# Edits to action references that are not a change to the test path: a newer
+# release tag, a newer commit, or a tag tightened to a commit.
+ACCEPTED_ACTION_BUMPS = [
+    ("setup-python release bump", replace_every(r"actions/setup-python@v\d+\.\d+\.\d+", "actions/setup-python@v99.1.2")),
+    ("checkout release bump", replace_every(r"actions/checkout@v\d+\.\d+\.\d+", "actions/checkout@v99.0.0")),
+    ("setup-go release bump", replace_every(r"actions/setup-go@v\d+\.\d+\.\d+", "actions/setup-go@v99.0.0")),
+    ("checkout tightened to a commit", replace_every(
+        r"actions/checkout@v\d+\.\d+\.\d+", "actions/checkout@" + "ab" * 20 + " # v99.0.0"
+    )),
+    ("download-artifact commit bump", replace_every(
+        r"actions/download-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+", "actions/download-artifact@" + "cd" * 20 + " # v99.0.0"
+    )),
+    ("upload-artifact commit bump", replace_every(
+        r"actions/upload-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+", "actions/upload-artifact@" + "ef" * 20 + " # v99.0.0"
+    )),
+    ("cache commit bump", replace_every(
+        r"actions/cache/(restore|save)@[0-9a-f]{40} # v\d+\.\d+\.\d+", r"actions/cache/\1@" + "01" * 20 + " # v99.0.0"
+    )),
+]
 
 
 def replace_in_job(job, old, new, count=1):
@@ -691,6 +757,22 @@ def workflow_mutations():
             "      - run: python -B tools/ci-bench/windows-production/mutation_check.py || true\n",
         )),
         ("an anchor the reader cannot parse", replace_once("permissions:\n", "permissions: &p\n")),
+        ("download-artifact unpinned to a tag", replace_every(
+            r"actions/download-artifact@[0-9a-f]{40} # (v\d+\.\d+\.\d+)", r"actions/download-artifact@\1"
+        )),
+        ("upload-artifact unpinned to a moving tag", replace_every(
+            r"actions/upload-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+", "actions/upload-artifact@v7"
+        )),
+        ("cache unpinned to a tag", replace_every(
+            r"actions/cache/(restore|save)@[0-9a-f]{40} # (v\d+\.\d+\.\d+)", r"actions/cache/\1@\2"
+        )),
+        ("download-artifact swapped for another action", replace_every(
+            r"actions/download-artifact@", "someone-else/download-artifact@"
+        )),
+        ("checkout swapped for another action", replace_every(r"actions/checkout@", "actions/checkout-fork@")),
+        ("checkout on a moving major tag", replace_every(r"actions/checkout@v\d+\.\d+\.\d+", "actions/checkout@v7")),
+        ("setup-go on a branch", replace_every(r"actions/setup-go@v\d+\.\d+\.\d+", "actions/setup-go@main")),
+        ("setup-python without a ref", replace_every(r"actions/setup-python@v\d+\.\d+\.\d+", "actions/setup-python")),
     ]
     return mutations
 
@@ -712,6 +794,13 @@ class WorkflowContractTests(unittest.TestCase):
                 mutated = mutate(self.text)
                 self.assertNotEqual(mutated, self.text)
                 self.assertNotEqual(contract_failures(mutated), [], f"{label}: not reported")
+
+    def test_action_version_bumps_are_not_contract_changes(self):
+        for label, mutate in ACCEPTED_ACTION_BUMPS:
+            with self.subTest(bump=label):
+                bumped = mutate(self.text)
+                self.assertNotEqual(bumped, self.text)
+                self.assertEqual(contract_failures(bumped), [], label)
 
     def test_mutations_cover_both_targets_equally(self):
         counts = {prefix: sum(1 for label, _ in MUTATIONS if label.endswith(f"[{prefix}]")) for prefix in TARGETS}
