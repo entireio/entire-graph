@@ -258,9 +258,10 @@ func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 	type response struct {
 		CacheHit bool `json:"index_cache_hit"`
 		Warnings []struct {
-			Code     string `json:"code"`
-			Severity string `json:"severity"`
-			Detail   string `json:"detail"`
+			Code        string `json:"code"`
+			Severity    string `json:"severity"`
+			Detail      string `json:"detail"`
+			EffectScope string `json:"effect_scope"`
 		} `json:"warnings"`
 	}
 	requireWarning := func(t *testing.T, output []byte) {
@@ -274,6 +275,10 @@ func TestColdIndexSurfacesStoreWriteFailureAsWarning(t *testing.T) {
 		}
 		for _, warning := range got.Warnings {
 			if warning.Code == "W_SEARCH_STORE_UNAVAILABLE" && warning.Severity == "warning" && warning.Detail != "" {
+				// Every published warning carries an effect scope (schema 1.6).
+				if warning.EffectScope != "snapshot" {
+					t.Fatalf("W_SEARCH_STORE_UNAVAILABLE effect_scope = %q, want %q: %s", warning.EffectScope, "snapshot", output)
+				}
 				return
 			}
 		}

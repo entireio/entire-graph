@@ -884,7 +884,9 @@ func searchStoreUnavailableWarning(err error) ProviderWarning {
 		Code:                 SearchStoreUnavailableCode,
 		Severity:             "warning",
 		EffectOnCompleteness: "none: the graph is complete, but its sqlite search store could not be written, so `graph store` and `graph context` report store_unavailable and lookups fall back to the full snapshot load (correct, slower)",
-		Detail:               err.Error(),
+		// Appended after the header's warnings were stamped, so it is stamped here.
+		EffectScope: DiagnosticEffectScope(SearchStoreUnavailableCode, ""),
+		Detail:      err.Error(),
 	}
 }
 
