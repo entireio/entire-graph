@@ -3309,8 +3309,8 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 // verification as a passing one. That is the severe direction of the error: a verification tool
 // reporting success on a run that actually failed.
 //
-// `set -o pipefail` is NOT the fix here. The emitted line is run by whatever shell the caller has,
-// and the only shell this binary itself invokes is `sh -c` (see runVerifyShell). On Debian-family
+// `set -o pipefail` is NOT the fix here. The emitted line is run by whatever shell the caller has —
+// this binary itself invokes no shell at all. On Debian-family
 // systems /bin/sh is dash, where `set -o pipefail` is not merely absent but fatal:
 //
 //	$ dash -c 'set -o pipefail; echo REACHED'
