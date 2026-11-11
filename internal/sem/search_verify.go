@@ -721,6 +721,9 @@ func deriveSearchVerifySuiteGradle(dir string, subject searchVerifySubject, evid
 	if !ok {
 		return nil
 	}
+	if searchVerifyGradleUnownedBelow(dir, wrapperDir, subject.sourcePath, evidence) {
+		return nil
+	}
 	if wrapperDir == dir {
 		return searchVerifySuiteCommand(wrapperDir, "./gradlew test", manifest+" + "+wrapperPath)
 	}
@@ -736,40 +739,99 @@ func deriveSearchVerifySuiteGradle(dir string, subject searchVerifySubject, evid
 	// is the root build when the root settings declares <dir>, and a different, sibling-less build
 	// when it does not — where `project(":core")` dependencies no longer resolve. A `build.gradle`
 	// sitting in a subdirectory says nothing about which of the two it is.
-	relative, inside := searchVerifyRelative(wrapperDir, dir)
-	if !inside {
-		return nil
-	}
-	if settingsPath, _, own := searchVerifyGradleSettings(dir, evidence); own {
-		// The directory carries its own settings script, so it IS a build root and that is the
-		// settings file Gradle finds first when started there. `-p` is the spelling for that.
-		return searchVerifySuiteCommand(
-			wrapperDir,
-			"./gradlew -p "+shellQuotePath(relative)+" test",
-			manifest+" + "+wrapperPath+" + "+settingsPath,
-		)
-	}
-	settingsPath, settings, found := searchVerifyGradleSettings(wrapperDir, evidence)
-	project := ":" + strings.ReplaceAll(relative, "/", ":")
-	if !found || !searchVerifyGradleSettingsIncludes(settings, project) {
+	arguments, settingsPath, owned := searchVerifyGradleProjectTest(dir, wrapperDir, evidence)
+	if !owned {
 		// Nothing in the tree says this directory is a build Gradle can be pointed at, so there is
 		// no command to emit. Silence costs a lookup; a `-p` that quietly ran a different build
 		// would report a pass the edit never earned.
 		return nil
 	}
-	if searchVerifyGradleSettingsRemapsProject(settings, project) {
-		// The project path is declared, but the settings script moves it somewhere else on disk, so
-		// the path derived from THIS directory names a different tree. `./gradlew :lib:test` would
-		// run, and pass, about code the edit never touched — which is worse than emitting nothing.
-		return nil
+	return searchVerifySuiteCommand(wrapperDir, "./gradlew "+arguments, manifest+" + "+wrapperPath+" + "+settingsPath)
+}
+
+// searchVerifyGradleProjectTest returns the `./gradlew` arguments that run the `test` task of the
+// project at dir when the wrapper is started in wrapperDir, an ancestor of dir, together with the
+// settings script that licenses them. It is the one notion of project OWNERSHIP both tiers share,
+// and it reports false when the tree does not establish any:
+//
+//   - the directory carries its OWN settings script, so it IS a build root and that is the settings
+//     file Gradle finds first when started there. `-p` is the spelling for that;
+//   - the settings script beside the wrapper declares the project path — the documented spelling,
+//     `gradle :subproject:taskName`, from the root of the build that declares it;
+//   - a settings script BETWEEN the two declares it. That directory is then the build root, reached
+//     with `-p`, and the project path is relative to it: `-p modules :core:test`. Only the nearest
+//     one is asked, because it is the one Gradle finds walking up from the directory.
+//
+// A declaration is not enough when the same settings script moves or renames the project, or one of
+// its parents: the path derived from the directory then names another tree or no project at all.
+func searchVerifyGradleProjectTest(dir, wrapperDir string, evidence *searchVerifyEvidence) (string, string, bool) {
+	relative, inside := searchVerifyRelative(wrapperDir, dir)
+	if !inside || relative == "" {
+		return "", "", false
 	}
-	// An included subproject is addressed by its project path from the root of the build that
-	// declares it — the documented spelling, `gradle :subproject:taskName`.
-	return searchVerifySuiteCommand(
-		wrapperDir,
-		"./gradlew "+shellQuote(project+":test"),
-		manifest+" + "+wrapperPath+" + "+settingsPath,
-	)
+	if settingsPath, _, own := searchVerifyGradleSettings(dir, evidence); own {
+		return "-p " + shellQuotePath(relative) + " test", settingsPath, true
+	}
+	project := ":" + strings.ReplaceAll(relative, "/", ":")
+	if settingsPath, settings, found := searchVerifyGradleSettings(wrapperDir, evidence); found &&
+		searchVerifyGradleSettingsIncludes(settings, project) {
+		if searchVerifyGradleSettingsRemapsProject(settings, project) {
+			// The project path is declared, but the settings script moves or renames it, so the
+			// path derived from THIS directory names a different tree or nothing. `./gradlew
+			// :lib:test` about code the edit never touched is worse than emitting nothing.
+			return "", "", false
+		}
+		return shellQuote(project + ":test"), settingsPath, true
+	}
+	root := dir
+	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
+		if root = searchVerifyStartDir(root); root == wrapperDir {
+			break
+		}
+		settingsPath, settings, found := searchVerifyGradleSettings(root, evidence)
+		if !found {
+			continue
+		}
+		buildRoot, _ := searchVerifyRelative(wrapperDir, root)
+		nested, _ := searchVerifyRelative(root, dir)
+		project = ":" + strings.ReplaceAll(nested, "/", ":")
+		if !searchVerifyGradleSettingsIncludes(settings, project) || searchVerifyGradleSettingsRemapsProject(settings, project) {
+			return "", "", false
+		}
+		return "-p " + shellQuotePath(buildRoot) + " " + shellQuote(project+":test"), settingsPath, true
+	}
+	return "", "", false
+}
+
+// searchVerifyGradleUnownedBelow reports whether a Gradle project directory that no settings script
+// can be shown to own lies between filePath and dir, an ancestor directory holding a build script.
+//
+// Both tiers decline AT such a directory, and the manifest walk then carries on to its parent. A
+// Gradle build standing there must not answer in its place: `./gradlew test` at the root of a build
+// whose settings script reads `include ':app'` does not compile `lib/`, so for an edit in `lib/` it
+// runs, and passes, about code the edit never touched. The directory has a build script, so it is
+// SOME Gradle project; when nothing says whose, no Gradle build above it is this file's build. Only
+// Gradle stops here — a `pom.xml` or `package.json` further out is still asked.
+//
+// A directory without a build script is not a project, and one the build does own is a subproject
+// the ancestor build really contains, so neither ends the walk.
+func searchVerifyGradleUnownedBelow(dir, wrapperDir, filePath string, evidence *searchVerifyEvidence) bool {
+	if _, inside := searchVerifyRelative(dir, filePath); filePath == "" || !inside {
+		return false
+	}
+	below := filePath
+	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
+		if below = searchVerifyStartDir(below); below == dir || below == "" {
+			return false
+		}
+		if !evidence.exists(searchVerifyJoin(below, "build.gradle")) && !evidence.exists(searchVerifyJoin(below, "build.gradle.kts")) {
+			continue
+		}
+		if _, _, owned := searchVerifyGradleProjectTest(below, wrapperDir, evidence); !owned {
+			return true
+		}
+	}
+	return false
 }
 
 // searchVerifyGradleSettings returns the settings script that makes a directory a Gradle build root,
@@ -807,7 +869,14 @@ func searchVerifyGradleSettingsIncludes(settings, project string) bool {
 
 // searchVerifyGradleSettingsRemapsProject reports whether the settings script MOVES the project's
 // directory, with `project(':lib').projectDir = file('other')` or the block spelling of the same
-// assignment.
+// assignment, or RENAMES it, with `project(':lib').name = 'core'`.
+//
+// A rename breaks the derivation from the other side: the directory is still the project's, but its
+// path is now `:core`, and `./gradlew :lib:test` answers "Project 'lib' not found in root project".
+// Either assignment on a PARENT project counts too. A project path is the names of its ancestors,
+// so renaming `:modules` re-keys `:modules:lib`; and whether moving a parent moves its children
+// depends on whether they were included before or after the assignment, which this does not model
+// and so declines.
 //
 // A project path is derived here from a directory, and `include ':lib'` alone says that derivation
 // holds. A remap breaks it: `:lib` is then a different tree, and `./gradlew :lib:test` for an edit
@@ -851,14 +920,57 @@ func searchVerifyGradleSettingsRemapsProject(settings, project string) bool {
 		}
 		named := false
 		for _, argument := range arguments {
-			if strings.TrimPrefix(argument, ":") == want {
+			argument = strings.TrimPrefix(argument, ":")
+			if argument != "" && (argument == want || strings.HasPrefix(want, argument+":")) {
 				named = true
 				break
 			}
 		}
 		index += width
-		if named && searchVerifyGradleAssignsProjectDir(searchVerifyGradleStatementTail(script[index:])) {
+		if !named {
+			continue
+		}
+		tail := searchVerifyGradleStatementTail(script[index:])
+		if searchVerifyGradleAssignsProjectDir(tail) || searchVerifyGradleRenamesProject(tail) {
 			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyGradleRenamesProject reports whether a statement assigns a project's `name`, by the
+// property or by the setter it is sugar for.
+//
+// It reads identifiers rather than searching for the word: `buildFileName = …` is another property,
+// `.name)` and `.name == 'lib'` only read this one, and a `name = …` inside a string literal is
+// text. A rename it cannot tell from a named argument is read as a rename, which costs a command.
+func searchVerifyGradleRenamesProject(statement string) bool {
+	for index := 0; index < len(statement); {
+		character := statement[index]
+		if character == '\'' || character == '"' {
+			if width := searchVerifyGradleLiteralWidth(statement[index:]); width > 0 {
+				index += width
+				continue
+			}
+			index++
+			continue
+		}
+		if !searchVerifyScriptIdentifierByte(character) {
+			index++
+			continue
+		}
+		start := index
+		for index < len(statement) && searchVerifyScriptIdentifierByte(statement[index]) {
+			index++
+		}
+		switch statement[start:index] {
+		case "setName":
+			return true
+		case "name":
+			after := strings.TrimLeft(statement[index:], " \t\r\n")
+			if strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") {
+				return true
+			}
 		}
 	}
 	return false
@@ -2594,14 +2706,16 @@ func searchVerifyModuleLabel(dir string) string {
 // declares it: in a build whose settings script reads `include ':app'`, `./gradlew :lib:test`
 // answers "Project 'lib' not found in root project". So this tier asks the same question the SUITE
 // tier asks, through the same two predicates, and the two tiers now share one notion of what
-// declares a project. The three answers are the suite tier's three, with `--tests` on them:
+// declares a project, searchVerifyGradleProjectTest. The answers are the suite tier's, with
+// `--tests` on them:
 //
 //   - the directory carries its OWN settings script, so it is a separate build root and Gradle is
 //     pointed at it with `-p`;
 //   - the root settings script declares the project path, which is the documented
-//     `gradle :subproject:taskName` spelling;
-//   - nothing declares it, or the settings script REMAPS the project onto another tree, and the
-//     tier emits nothing.
+//     `gradle :subproject:taskName` spelling — or a settings script between the root and the
+//     directory does, and that build root is reached with `-p`;
+//   - nothing declares it, or the settings script REMAPS or RENAMES the project, and the tier
+//     emits nothing — here and at every Gradle build above (searchVerifyGradleUnownedBelow).
 //
 // The remap case is the one that is not merely loud: `project(':lib').projectDir = file('other')`
 // leaves `./gradlew :lib:test` runnable, and passing, about code the edit never touched.
@@ -2627,6 +2741,12 @@ func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence 
 	if _, inside := searchVerifyRelative(dir, subject.testPath); !inside {
 		return nil
 	}
+	// The source and the test class must both belong to THIS build: a project directory below here
+	// that the build cannot be shown to own is not answered for by the project above it.
+	if searchVerifyGradleUnownedBelow(dir, "", subject.sourcePath, evidence) ||
+		searchVerifyGradleUnownedBelow(dir, "", subject.testPath, evidence) {
+		return nil
+	}
 	class := searchVerifyStem(subject.testPath)
 	classArg := shellQuote(class)
 	if classArg == class {
@@ -2646,20 +2766,11 @@ func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence 
 		// The root project is the build. Nothing has to declare it.
 		return command(shellQuote(":test"), derived)
 	}
-	if settingsPath, _, own := searchVerifyGradleSettings(dir, evidence); own {
-		// The directory carries its own settings script, so it IS a build root and that is the
-		// settings file Gradle finds first when started there. `-p` is the spelling for that.
-		return command("-p "+shellQuotePath(dir)+" test", derived+" + "+settingsPath)
-	}
-	settingsPath, settings, found := searchVerifyGradleSettings("", evidence)
-	project := ":" + strings.ReplaceAll(dir, "/", ":")
-	if !found || !searchVerifyGradleSettingsIncludes(settings, project) {
+	arguments, settingsPath, owned := searchVerifyGradleProjectTest(dir, "", evidence)
+	if !owned {
 		return nil
 	}
-	if searchVerifyGradleSettingsRemapsProject(settings, project) {
-		return nil
-	}
-	return command(shellQuote(project+":test"), derived+" + "+settingsPath)
+	return command(arguments, derived+" + "+settingsPath)
 }
 
 // searchVerifyNodeRunners maps a declared dependency or test script to the invocation that runs ONE

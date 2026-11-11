@@ -63,6 +63,20 @@ auto-generated notes on
 
 ### Fixed
 
+- `query`'s `VERIFY:` block no longer names an ancestor Gradle build for a file in
+  a Gradle project directory that build does not own. With `include ':app'` in the
+  root settings script and an undeclared `lib/build.gradle`, an edit in `lib/` used
+  to be answered with `./gradlew :test --tests …` or `./gradlew test` at the root,
+  which runs without compiling `lib/`; it now reports that no command is derivable,
+  while a Maven or Node build above the directory is still consulted. A settings
+  script that renames the project (`project(':lib').name = 'core'`, `setName`), or
+  renames or relocates one of its parent projects, declines the same way instead of
+  emitting a project path Gradle does not have. A settings script between the
+  wrapper and the project is now recognised as its build root and addressed as
+  `./gradlew -p modules :core:test`. Repositories whose settings script computes its
+  includes get no Gradle command for files in subproject directories, where the
+  root suite was offered before.
+
 - Valid Go that the bundled tree-sitter grammar cannot fully parse (Go 1.26's
   `new(expr)`, for example `new(0)`) is no longer reported as an `E_PARSE_ERROR`
   partial failure. When `go/parser` accepts the file, snapshots, search and
