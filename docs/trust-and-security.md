@@ -219,7 +219,10 @@ these rules existed misses instead of re-emitting the paths it named.
   `<cache>/statusline/`: the session's figures, the per-session stats memo, and
   the resume checkpoints (`resume-*.json`), which hold tool-use and message IDs
   and the file paths that results named and reads touched. Files unused for a
-  week are swept.
+  week are swept. The statusline directory and nested memo directories use
+  the same redirect and identity checks as snapshot cache writes; reads,
+  atomic writes and cleanup operate through held directory handles. A refused
+  cache leaves the status line rendering without persistence.
 - `setup` writes through three primary repository paths, disclosed in
   [agent activation](agents.md): `.entire/agent-guide.md` and managed blocks
   in `AGENTS.md` and `CLAUDE.md`. It also merges one Claude Code hook entry

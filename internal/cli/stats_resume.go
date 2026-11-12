@@ -7,7 +7,6 @@ import (
 	"hash"
 	"io"
 	"os"
-	"path/filepath"
 )
 
 // transcriptResume keeps one checkpoint per transcript under <cache>/statusline, so the render
@@ -16,7 +15,7 @@ import (
 // Only a transcript of statsCacheMinTranscriptBytes or more gets one: a smaller one parses in a few
 // milliseconds, and a checkpoint per small subagent transcript would only add files to sweep.
 type transcriptResume struct {
-	dir  string // <cache>/statusline
+	dir  string // caller-selected cache root
 	salt string // statsCacheSalt: a checkpoint other parsing code wrote is never resumed
 }
 
@@ -26,7 +25,7 @@ func newTranscriptResume(cacheDir, version string) *transcriptResume {
 	if cacheDir == "" {
 		return nil
 	}
-	return &transcriptResume{dir: filepath.Join(cacheDir, "statusline"), salt: statsCacheSalt(version)}
+	return &transcriptResume{dir: cacheDir, salt: statsCacheSalt(version)}
 }
 
 // transcriptCheckpoint is a fileScanner paused at Offset, the end of a transcript's last complete
@@ -41,7 +40,7 @@ type transcriptCheckpoint struct {
 }
 
 func (r *transcriptResume) path(identity string) string {
-	return filepath.Join(r.dir, "resume-"+statsCacheKey(identity)+".json")
+	return "resume-" + statsCacheKey(identity) + ".json"
 }
 
 // summarise returns what summariseTranscript returns for path's current bytes. When path's
@@ -70,7 +69,7 @@ func (r *transcriptResume) summarise(path string) (fileSummary, bool) {
 	if !stopped && consumed > 0 {
 		// Saved now, encoded before the tail below changes the scanner: a later append may
 		// complete that line.
-		saveStatuslineJSON(r.path(path), transcriptCheckpoint{
+		saveStatuslineJSON(r.dir, r.path(path), transcriptCheckpoint{
 			Salt: r.salt, Identity: path, Offset: offset + consumed,
 			Prefix: hex.EncodeToString(digest.Sum(nil)), Scanner: scanner,
 		})
@@ -86,7 +85,7 @@ func (r *transcriptResume) summarise(path string) (fileSummary, bool) {
 // no longer has.
 func (r *transcriptResume) resumeAt(handle *os.File, path string, digest hash.Hash) (*fileScanner, int64) {
 	checkpoint := transcriptCheckpoint{Scanner: newFileScanner()}
-	if !loadStatuslineJSON(r.path(path), &checkpoint) || checkpoint.Salt != r.salt ||
+	if !loadStatuslineJSON(r.dir, r.path(path), &checkpoint) || checkpoint.Salt != r.salt ||
 		checkpoint.Identity != path || checkpoint.Offset <= 0 || checkpoint.Scanner == nil {
 		return nil, 0
 	}

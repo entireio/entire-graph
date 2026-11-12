@@ -242,9 +242,9 @@ func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (t
 	if cacheDir != "" {
 		if headKey, unborn, keyed = sem.HeadKeyWithoutGit(repo); keyed {
 			key = statsCacheKey(statuslineGitCacheSchema, statsCacheSalt(version), repo, cacheDir, headKey)
-			path = filepath.Join(cacheDir, "statusline", "git-"+statsCacheKey(repo)+".json")
+			path = "git-" + statsCacheKey(repo) + ".json"
 			var record statuslineGitRecord
-			if loadStatuslineJSON(path, &record) && record.Key == key {
+			if loadStatuslineJSON(cacheDir, path, &record) && record.Key == key {
 				return record.Tree, record.Entries, record.Behind, true
 			}
 		}
@@ -279,7 +279,7 @@ func statuslineHeadState(ctx context.Context, repo, cacheDir, version string) (t
 	// still shows its answer, it just does not keep it.
 	if path != "" && resolved && ctx.Err() == nil {
 		if again, _, stable := sem.HeadKeyWithoutGit(repo); stable && again == headKey {
-			saveStatuslineJSON(path, statuslineGitRecord{Key: key, Tree: tree, Entries: head, Behind: behind})
+			saveStatuslineJSON(cacheDir, path, statuslineGitRecord{Key: key, Tree: tree, Entries: head, Behind: behind})
 		}
 	}
 	return tree, head, behind, true
@@ -332,20 +332,15 @@ func statuslineFiguresFor(transcript, repo, tree, cacheDir, version string) (sta
 	key := statsCacheKey(keyParts...)
 	path := ""
 	if cacheDir != "" {
-		path = filepath.Join(cacheDir, "statusline", statsCacheKey(transcript)+".json")
+		path = statsCacheKey(transcript) + ".json"
 		var cached statuslineFigures
-		if loadStatuslineJSON(path, &cached) && cached.Key == key {
+		if loadStatuslineJSON(cacheDir, path, &cached) && cached.Key == key {
 			return cached, true
 		}
 	}
 
 	collector := newStatsCollector()
-	memoDir := ""
-	if cacheDir != "" {
-		// Under statusline/, so the sweep removes a finished session's memo with its figures.
-		memoDir = filepath.Join(cacheDir, "statusline")
-	}
-	collector.cache = openStatsCache(memoDir, transcript, version, files)
+	collector.cache = openStatsCacheIn(cacheDir, "statusline", transcript, version, files)
 	collector.resume = newTranscriptResume(cacheDir, version)
 	collector.run(files, time.Time{})
 	report := statsResponse{RepoRoot: repo}
@@ -358,45 +353,53 @@ func statuslineFiguresFor(transcript, repo, tree, cacheDir, version string) (sta
 		NetAvailable: report.SessionsWithSavingsComparison > 0,
 	}
 	if path != "" {
-		saveStatuslineJSON(path, figures)
+		saveStatuslineJSON(cacheDir, path, figures)
 	}
 	return figures, true
 }
 
 // loadStatuslineJSON decodes a status line cache file into value. Every read or decode failure is
 // a miss.
-func loadStatuslineJSON(path string, value any) bool {
-	data, err := os.ReadFile(path) //nolint:gosec // path is derived from the resolved cache directory
+func loadStatuslineJSON(cacheDir, name string, value any) bool {
+	directory, err := sem.OpenCacheDirectory(cacheDir, "statusline")
 	if err != nil {
+		return false
+	}
+	defer directory.Close()
+	file, err := sem.OpenCacheRegularFile(directory, name)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, statsCacheMaxBytes+1))
+	if err != nil || len(data) > statsCacheMaxBytes {
 		return false
 	}
 	return json.Unmarshal(data, value) == nil
 }
 
-// saveStatuslineJSON writes atomically and best effort: Claude Code cancels an in-flight render
-// when a newer update arrives, so a killed write must never leave a torn file in place.
-func saveStatuslineJSON(path string, value any) {
+// saveStatuslineJSON writes atomically through a held, validated cache directory. A cancelled
+// render cannot leave a torn record, and a redirecting statusline child is never followed.
+func saveStatuslineJSON(cacheDir, name string, value any) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return
 	}
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return
-	}
-	temporary, err := os.CreateTemp(directory, ".statusline-*.tmp")
+	directory, err := sem.OpenCacheDirectory(cacheDir, "statusline")
 	if err != nil {
 		return
 	}
-	name := temporary.Name()
-	_, writeErr := temporary.Write(data)
-	if err := temporary.Close(); err != nil || writeErr != nil {
-		_ = os.Remove(name)
+	defer directory.Close()
+	temporary, temporaryName, err := sem.CreateCacheTemp(directory, "statusline")
+	if err != nil {
 		return
 	}
-	if err := os.Rename(name, path); err != nil {
-		_ = os.Remove(name)
+	defer directory.Remove(temporaryName)
+	_, writeErr := temporary.Write(data)
+	if err := temporary.Close(); err != nil || writeErr != nil {
+		return
 	}
+	_ = directory.Rename(temporaryName, name)
 }
 
 const (
@@ -424,7 +427,7 @@ func sweepStatuslineCache(cacheDir string, now time.Time) {
 	if cacheDir == "" {
 		return
 	}
-	root, err := os.OpenRoot(filepath.Join(cacheDir, "statusline"))
+	root, err := sem.OpenCacheDirectory(cacheDir, "statusline")
 	if err != nil {
 		return
 	}
@@ -433,7 +436,14 @@ func sweepStatuslineCache(cacheDir string, now time.Time) {
 		now.Sub(info.ModTime()) < statuslineSweepEvery {
 		return
 	}
-	if root.WriteFile(statuslineSweepStamp, nil, 0o600) != nil {
+	// Replace the stamp atomically: never truncate a planted hard link or follow a symlink.
+	stamp, stampName, err := sem.CreateCacheTemp(root, "sweep")
+	if err != nil {
+		return
+	}
+	closeErr := stamp.Close()
+	if err := root.Rename(stampName, statuslineSweepStamp); err != nil || closeErr != nil {
+		_ = root.Remove(stampName)
 		return
 	}
 	_ = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, err error) error {
@@ -445,7 +455,8 @@ func sweepStatuslineCache(cacheDir string, now time.Time) {
 			return nil
 		}
 		limit := statuslineSweepAge
-		if strings.HasSuffix(entry.Name(), ".tmp") {
+		if strings.HasSuffix(entry.Name(), ".tmp") || strings.HasPrefix(entry.Name(), ".statusline-") ||
+			strings.HasPrefix(entry.Name(), ".stats-") || strings.HasPrefix(entry.Name(), ".sweep-") {
 			limit = statuslineSweepTempAge
 		}
 		if now.Sub(info.ModTime()) > limit {
