@@ -318,6 +318,9 @@ func loadOrBuildSearchSnapshotPersisting(
 	if headErr != nil {
 		return uncached()
 	}
+	// Every uncached route has returned by now, so this query really uses the
+	// cache: record that, and reclaim older version directories nothing uses.
+	noteCacheVersionUse(cacheDir, "search", searchSnapshotCacheVersion)
 	repositoryKey := repoKey(ctx, absRepo)
 	// A selective snapshot is DERIVED from the complete one for the same tree, so
 	// it is addressed beneath the complete entry rather than beside it. That is
@@ -651,6 +654,9 @@ func preindexProviderSnapshotWithPersistenceVerifier(
 	if err != nil {
 		return ProviderSnapshot{}, false, fmt.Errorf("resolve committed HEAD for preindex: %w", err)
 	}
+	// A forced rebuild skips the query pipeline, which is where a use is
+	// otherwise noted; noting it here covers both, and the second is a no-op.
+	noteCacheVersionUse(cacheDir, "search", searchSnapshotCacheVersion)
 	repositoryKey := repoKey(ctx, absRepo)
 	var snapshot ProviderSnapshot
 	var cacheHit bool
