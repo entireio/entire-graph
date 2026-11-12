@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -632,7 +631,7 @@ func openExactSearchStore(ctx context.Context, cacheDir, key, tree string) (exac
 func openExactSearchStoreForEntry(ctx context.Context, entry cacheEntry, tree string, entryDigest func(cacheEntry) (cacheDigest, error), trustStamp bool) (exactSearchStore, *sql.DB, error) {
 	store := searchStoreEntryFor(entry)
 	path := filepath.Join(store.root, store.relative)
-	if _, err := os.Stat(path); err != nil {
+	if !searchStoreFileIsRegular(path) {
 		return exactSearchStore{}, nil, ErrSearchStoreMissing
 	}
 	// Without trustStamp the entry is hashed before the sidecar is opened, as

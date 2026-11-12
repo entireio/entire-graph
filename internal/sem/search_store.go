@@ -400,6 +400,14 @@ func sqliteURLPath(path string) string {
 	return (&url.URL{Path: filepath.ToSlash(path)}).EscapedPath()
 }
 
+// searchStoreFileIsRegular rejects FIFOs and other non-regular sidecars before SQLite opens
+// them. Its filesystem open can block before a query context can cancel it. Stat follows links
+// so a link to a FIFO is rejected too, while existing links to regular stores keep working.
+func searchStoreFileIsRegular(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 // loadSearchStore reads a store written by buildSearchStore back into the
 // cachedSearchSnapshot it was built from. wantEntryDigest, when non-empty,
 // must match the digest the store was built against. Row JSON decodes on all
@@ -407,6 +415,9 @@ func sqliteURLPath(path string) string {
 // nature, and the parallel row decode is where the load-time win comes from
 // until consumers stop materializing the whole snapshot.
 func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedSearchSnapshot, error) {
+	if !searchStoreFileIsRegular(path) {
+		return cachedSearchSnapshot{}, ErrSearchStoreMissing
+	}
 	db, err := sql.Open("sqlite", "file:"+sqliteURLPath(path)+"?immutable=1&mode=ro")
 	if err != nil {
 		return cachedSearchSnapshot{}, err
