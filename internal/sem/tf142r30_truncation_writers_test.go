@@ -65,6 +65,11 @@ func TestEverySearchSnapshotWriterRefusesATruncatedSnapshot(t *testing.T) {
 					return cacheDigest{}, nil
 				})
 		}},
+		// The counts writer refuses on its own, so a caller that skips the refusal (the index hit's
+		// backfill) still cannot record a truncated snapshot's size.
+		{"writeSearchSnapshotCounts", func(entry cacheEntry) error {
+			return writeSearchSnapshotCounts(entry, cache)
+		}},
 	}
 	for _, writer := range writers {
 		t.Run(writer.name, func(t *testing.T) {
@@ -75,6 +80,10 @@ func TestEverySearchSnapshotWriterRefusesATruncatedSnapshot(t *testing.T) {
 			}
 			if _, err := readSearchSnapshot(entry); err == nil {
 				t.Fatalf("%s left a readable entry behind", writer.name)
+			}
+			// A refused write leaves no counts file either.
+			if _, _, ok := IndexEntryCounts(IndexEntry{Root: entry.root, Relative: entry.relative}); ok {
+				t.Fatalf("%s left a counts file behind", writer.name)
 			}
 		})
 	}

@@ -39,7 +39,8 @@ everything and `--cache-dir` relocates the memo. Requires the `entire-graph` plu
 ## What it reads
 
 Coding-agent session transcripts already on disk: `~/.claude/projects/<repo-path-slug>/**/*.jsonl`
-(the slug is the repo's absolute path with non-alphanumerics folded to `-`). Nothing is
+(under `$CLAUDE_CONFIG_DIR/projects/` when that is set; the slug is the repo's absolute path with
+non-alphanumerics folded to `-`). Nothing is
 uploaded and no model is called; the only thing written is the summary memo under the cache
 directory. If there are no sessions for the repo it says so and exits 0.
 
@@ -97,28 +98,42 @@ Two consequences worth stating to the user:
 
 ## Status line
 
-The same numbers render as a live one-line Claude Code badge:
+The same numbers render as a live Claude Code status line, in estimated tokens only, after the
+indexed graph's size:
 
 ```text
-[GRAPH] ↗ 2.1M saved · 28 search · 9 impact · graph-first ✓ · 75% of locates · 12% of session
+◤ entire graph · 17,271 nodes | 86,038 edges · ~184K tok gross · ~12.4K net
 ```
 
-If the user wants it on, add to `~/.claude/settings.json` (project-local: `.claude/settings.json`):
+It shows only what the user acts on: the graph's size when HEAD itself is indexed (the
+`counts.symbols` and `counts.relations` that `entire graph index` reported, numbers in full), the
+gross figure once the session has made a graph lookup, the net figure when stats has a comparison,
+and, when HEAD has no index, `index N commits behind` (a first-parent ancestor at most 5 commits
+back has one) or `not indexed`, each followed by `run entire graph index`. The size is never shown
+beside those two. The line shows no index state when there is no commit yet, when git cannot be run
+on the checkout (metadata validation or the HEAD read fails), or when the index state cannot be
+read.
+
+The status line is opt-in. `entire graph setup` asks at a terminal (default no) before installing
+it in the repository's `.claude/settings.local.json`; `entire graph setup --statusline` installs it
+without asking. If the user already has a status line in `.claude/settings.json` or their user
+settings (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`), setup keeps theirs
+and does not ask; `--statusline` replaces it in this repository only. To set it by hand:
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "sh /path/to/entire-graph/scripts/entire-graph-statusline.sh"
+    "command": "entire graph statusline"
   }
 }
 ```
 
-Under the plugin, the path is `sh "$CLAUDE_PLUGIN_ROOT/scripts/entire-graph-statusline.sh"`.
-The plugin manifest declares the same block, but Claude Code drops non-allowlisted
-plugin-provided settings (`statusLine` is not on the list as of 2.1.219), so the settings.json
-entry is what actually enables it.
+Installing the Claude Code plugin does not turn it on: the settings entry is the only switch. A
+settings file that still runs `scripts/entire-graph-statusline.sh` keeps working: that script is
+now a shim that runs the subcommand.
 
-The badge is scoped to the CURRENT session via `--transcript` and is cached on the transcript's
-size+mtime, so it costs one bounded transcript scan rather than a re-scan of every session in the
-project. Its savings number carries exactly the caveats above — same estimator, same assumption.
+The line is scoped to the CURRENT session (its transcript and subagent transcripts) and caches
+its figures until a transcript, HEAD's tree or the binary changes, so a render does not re-scan
+every session in the project; after an append it parses only the appended lines. Its net number
+carries exactly the caveats above — same estimator, same assumption.

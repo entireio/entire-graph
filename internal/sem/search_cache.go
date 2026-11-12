@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -537,7 +540,15 @@ func loadOrBuildSearchSnapshotPersisting(
 	// Cache persistence is best effort. Retrieval correctness never depends on
 	// a writable cache directory.
 	if generationKnown && persistBuilt {
-		_ = writeSearchSnapshot(entry, newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot, ctx))
+		cache := newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot, ctx)
+		if err := writeSearchSnapshot(entry, cache); err == nil && len(options.OnlyFiles) == 0 {
+			// A complete entry gets its counts here too: this is where a cold
+			// lookup (`def`, `neighbors`, `impact`, `explain` with --head)
+			// persists, and without them the status line shows no size until
+			// `index` runs. Best effort, and only once the entry has landed (see
+			// writeSearchSnapshotCounts, which refuses a truncated snapshot).
+			_ = writeSearchSnapshotCounts(entry, cache)
+		}
 	}
 	return snapshot, false, nil
 }
@@ -694,6 +705,13 @@ func preindexProviderSnapshotWithPersistenceVerifier(
 		if err := repairSearchStoreSidecarForEntry(ctx, entry); err != nil {
 			return ProviderSnapshot{}, false, fmt.Errorf("build store sidecar for cached preindex entry: %w", err)
 		}
+		// The counts file holds what this run reports. It may be missing (an entry from an
+		// earlier build) or differ: the key covers the tree, but a full-profile hit recomputes
+		// Stats.Relations from this commit's history. Best effort, like every counts write.
+		stats := snapshot.Header.Stats
+		if symbols, relations, ok := readSearchSnapshotCounts(entry); !ok || symbols != stats.Symbols || relations != stats.Relations {
+			_ = writeSearchSnapshotCounts(entry, cachedSearchSnapshot{Snapshot: snapshot})
+		}
 		return snapshot, true, nil
 	}
 	if options.ForceRebuild {
@@ -769,6 +787,9 @@ func persistVerifiedSearchSnapshot(
 		case stored != written:
 			verifyErr = errors.New("persisted entry does not match the bytes written")
 		default:
+			// The entry landed and verified, so its counts may describe it now
+			// (writeSearchSnapshotCounts); best effort.
+			_ = writeSearchSnapshotCounts(entry, cache)
 			// The explicit prebuild is exactly where a reader expects the
 			// sidecar to exist; best effort, like writeSearchSnapshot's.
 			_ = writeSearchStoreSidecar(ctx, entry, written.String(), &cache)
@@ -1269,6 +1290,15 @@ func searchSnapshotKeyForSchema(schemaVersion, absRepo, repositoryKey, providerV
 // searchSnapshotKeyForVersions also takes the cache version explicitly, so a test
 // can address the entry an earlier build wrote for the same tree.
 func searchSnapshotKeyForVersions(cacheVersion, schemaVersion, absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions, contexts ...context.Context) (string, error) {
+	return searchSnapshotKeyForScope(cacheVersion, schemaVersion, absRepo, repositoryKey, providerVersion, tree, options, func() string {
+		return cacheCheckoutScope(absRepo, contexts...)
+	})
+}
+
+// searchSnapshotKeyForScope is the key itself. scope supplies the repository-scope term at the
+// point the key hashes it: cacheCheckoutScope for every reader and writer, and an already strictly
+// derived term for HeadIndexEntries, which must not key on cacheCheckoutScope's path: fallback.
+func searchSnapshotKeyForScope(cacheVersion, schemaVersion, absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions, scope func() string) (string, error) {
 	if options.Worktree {
 		return "", errors.New("working-tree snapshots cannot have persistent cache keys")
 	}
@@ -1295,7 +1325,7 @@ func searchSnapshotKeyForVersions(cacheVersion, schemaVersion, absRepo, reposito
 	// each is served as the other: a root query after a subdir one reported a hit
 	// with none of the root's symbols. Two worktrees or clones at the same tree and
 	// the same prefix still share; that is what the path-free key is for.
-	writeCacheKeyString(hash, "repository-scope", cacheCheckoutScope(absRepo, contexts...))
+	writeCacheKeyString(hash, "repository-scope", scope())
 	writeCacheKeyString(hash, "provider-version", providerVersion)
 	writeCacheKeyString(hash, "tree", tree)
 	writeCacheKeyString(hash, "profile", string(options.Profile))
@@ -1405,6 +1435,20 @@ func cacheCheckoutScope(absRepo string, contexts ...context.Context) string {
 		}
 	}
 	return "path:" + filepath.Clean(absRepo)
+}
+
+// cacheCheckoutScopeStrict is cacheCheckoutScope for a caller that keeps the answer it keys: metadata
+// git may not run on, or a failed `--show-prefix`, is an error rather than the path: fallback, so a
+// transient failure cannot be recorded as a different entry key.
+func cacheCheckoutScopeStrict(ctx context.Context, absRepo string) (string, error) {
+	if !gitMetadataSafeForSubprocessContext(ctx, absRepo) {
+		return "", gitMetadataRefusalError(absRepo)
+	}
+	prefix, err := gitutil.RepoPrefix(ctx, absRepo)
+	if err != nil {
+		return "", err
+	}
+	return "prefix:" + filepath.ToSlash(prefix), nil
 }
 
 // searchCacheRepositoryKeyTerm is the repository-identity term of a search
@@ -1712,6 +1756,113 @@ func refuseTruncatedSnapshot(cache cachedSearchSnapshot) error {
 	return nil
 }
 
+// searchSnapshotCountsMaxBytes bounds a counts file read; the file is two small integers.
+const searchSnapshotCountsMaxBytes = 4 << 10
+
+// searchSnapshotCounts is a complete entry's size as `index` reports it in counts: symbol nodes
+// and relations. It is stored beside the entry as raw JSON, so the status line reads it without
+// decoding the entry.
+type searchSnapshotCounts struct {
+	Symbols   *int `json:"symbols"`
+	Relations *int `json:"relations"`
+}
+
+// searchSnapshotCountsEntryFor is the ONE place the counts file's name is derived from its entry:
+// the entry's relative path with .counts.json replacing .json.gz, as searchStoreEntryFor derives
+// the sqlite sidecar. It does not end in .json.gz, so it is never taken for an entry.
+func searchSnapshotCountsEntryFor(entry cacheEntry) cacheEntry {
+	counts := entry
+	counts.relative = strings.TrimSuffix(entry.relative, ".json.gz") + ".counts.json"
+	return counts
+}
+
+// writeSearchSnapshotCounts records cache.Snapshot.Header.Stats' symbol and relation counts beside
+// a COMPLETE entry, through the confined entry directory (ADR 0004). Every complete entry writer
+// calls it only once the entry has landed (renamed into place, and for `index` verified), so the
+// counts never describe a build that was not published; a render between the two renames sees
+// the previous counts or none. A selective view must never reach it, since its stats count a
+// subset. It calls refuseTruncatedSnapshot itself and writes nothing on a refusal, so a caller
+// that does not refuse first (the index hit's backfill) is guarded too. It is best effort: its
+// error never fails a write, an `index` or a lookup. A failed write only leaves the status line
+// without a size (on Windows a render holding the old file open can make the replacing rename
+// fail).
+func writeSearchSnapshotCounts(entry cacheEntry, cache cachedSearchSnapshot) error {
+	if err := refuseTruncatedSnapshot(cache); err != nil {
+		return err
+	}
+	stats := cache.Snapshot.Header.Stats
+	data, err := json.Marshal(searchSnapshotCounts{Symbols: &stats.Symbols, Relations: &stats.Relations})
+	if err != nil {
+		return err
+	}
+	counts := searchSnapshotCountsEntryFor(entry)
+	directory, err := openCacheEntryDirectory(counts)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	temporary, temporaryName, err := createRootTemp(directory, "counts")
+	if err != nil {
+		return err
+	}
+	removeTemporary := true
+	defer func() {
+		if removeTemporary {
+			_ = directory.Remove(temporaryName)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := directory.Rename(temporaryName, filepath.Base(counts.relative)); err != nil {
+		return err
+	}
+	removeTemporary = false
+	return nil
+}
+
+// readSearchSnapshotCounts reads the counts file beside entry through the cache root, bounded at
+// searchSnapshotCountsMaxBytes. Anything but a regular file holding both counts, neither negative,
+// is ok=false. The path is Lstat'ed through the root and opened only when it is a regular file, as
+// exists() checks an entry, because opening a FIFO there would block the render that reads it.
+func readSearchSnapshotCounts(entry cacheEntry) (symbols, relations int, ok bool) {
+	path := searchSnapshotCountsEntryFor(entry)
+	root, err := os.OpenRoot(path.root)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer root.Close()
+	if info, err := root.Lstat(path.relative); err != nil || !info.Mode().IsRegular() {
+		return 0, 0, false
+	}
+	file, err := openRootBoundedRegularFile(root, path.relative)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer file.Close()
+	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
+		return 0, 0, false
+	}
+	data, err := io.ReadAll(io.LimitReader(file, searchSnapshotCountsMaxBytes+1))
+	if err != nil || len(data) > searchSnapshotCountsMaxBytes {
+		return 0, 0, false
+	}
+	var counts searchSnapshotCounts
+	if json.Unmarshal(data, &counts) != nil || counts.Symbols == nil || counts.Relations == nil ||
+		*counts.Symbols < 0 || *counts.Relations < 0 {
+		return 0, 0, false
+	}
+	return *counts.Symbols, *counts.Relations, true
+}
+
 // writeSearchSnapshotAndStore persists a COMPLETE entry plus its sqlite
 // sidecar. Derived selective views stay on writeSearchSnapshot: they are small
 // per-query artifacts whose JSON decode was never the cost the store exists to
@@ -1728,6 +1879,8 @@ func writeSearchSnapshotAndStore(ctx context.Context, entry cacheEntry, cache ca
 	if err != nil {
 		return err
 	}
+	// Best effort, and only once the entry has landed (see writeSearchSnapshotCounts).
+	_ = writeSearchSnapshotCounts(entry, cache)
 	_ = writeSearchStoreSidecar(ctx, entry, digest.String(), &cache)
 	return nil
 }

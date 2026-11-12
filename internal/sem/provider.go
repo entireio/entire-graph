@@ -29678,6 +29678,26 @@ func absoluteRepoPath(repo string) string {
 	return absolute
 }
 
+// repoKeyStrict is repoKey for a caller that keeps the answer it keys: metadata git may not run on,
+// or a failed remote lookup, is an error rather than the local/<basename> fallback. A repository
+// with no remote configured is not a failure and keys as local/<basename>, as in repoKey.
+func repoKeyStrict(ctx context.Context, repo string) (string, error) {
+	repo = absoluteRepoPath(repo)
+	if !gitMetadataSafeForSubprocessContext(ctx, repo) {
+		return "", gitMetadataRefusalError(repo)
+	}
+	urls, err := gitutil.RemoteURLsStrict(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	for _, remoteURL := range urls {
+		if key, ok := githubRepoKey(remoteURL); ok {
+			return key, nil
+		}
+	}
+	return "local/" + filepath.Base(repo), nil
+}
+
 func githubRemoteURLs(ctx context.Context, repo string) []string {
 	urls, err := gitutil.RemoteURLs(ctx, repo)
 	if err != nil {

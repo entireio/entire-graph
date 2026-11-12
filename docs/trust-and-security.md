@@ -117,9 +117,12 @@ other is installation.
   implicit discovery fails closed. All selected-repository subprocesses
   discard it.
 - For `stats` only: local coding-agent session transcripts
-  (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
+  (`~/.claude/projects/<path-slug>/*.jsonl`, under
+  `$CLAUDE_CONFIG_DIR/projects/` when that is set, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the
-  report is read-only and local. No other command reads transcripts.
+  report is read-only and local. Only `entire graph statusline` also reads
+  transcripts, the current session's and its subagents', to total the same
+  estimated token figures.
 
 ### Credential-store path exclusions
 
@@ -190,7 +193,11 @@ these rules existed misses instead of re-emitting the paths it named.
 - Derivative caches, under `--cache-dir`, else `ENTIRE_PLUGIN_DATA_DIR`, else
   (for most query commands) the per-user cache directory. Cache entries are
   compressed snapshots rebuilt from repository state; deleting them costs a
-  rebuild, nothing else. Queries never modify repository source files. The
+  rebuild, nothing else. Each complete committed-tree snapshot entry also gets
+  a small uncompressed `<key>.counts.json` beside it, holding only its symbol
+  and relation counts; it is written through the same confined directory walk
+  as the entry, and `entire graph statusline` reads it through `os.Root`,
+  bounded at 4 KiB, to show the graph's size. Queries never modify repository source files. The
   cache directory you name is the trust boundary: it is resolved as given and
   may itself be a symlink. Everything below it is named by Entire Graph — a
   family, a version, and a SHA-256 digest. Writes open each family and version
@@ -208,12 +215,30 @@ these rules existed misses instead of re-emitting the paths it named.
   directory. `os.Root` intentionally keeps using that directory object after a
   move; portable Go cannot pin its lexical ancestry, and a process with that
   namespace authority can already move existing cache artifacts.
+- `entire graph statusline` keeps transcript-derived state in its cache, under
+  `<cache>/statusline/`: the session's figures, the per-session stats memo, and
+  the resume checkpoints (`resume-*.json`), which hold tool-use and message IDs
+  and the file paths that results named and reads touched. Files unused for a
+  week are swept. The statusline directory and nested memo directories use
+  the same redirect and identity checks as snapshot cache writes; reads,
+  atomic writes and cleanup operate through held directory handles. A refused
+  cache leaves the status line rendering without persistence.
 - `setup` writes through three primary repository paths, disclosed in
   [agent activation](agents.md): `.entire/agent-guide.md` and managed blocks
-  in `AGENTS.md` and `CLAUDE.md`. It also merges one Claude Code hook entry into
-  the per-user `.claude/settings.local.json` (skipped with `--no-claude-hook`);
-  that path is never followed through a symlink or hard link. Existing legacy Graph/Brain guide paths are
-  also checked and rewritten as redirects under the same protections. See
+  in `AGENTS.md` and `CLAUDE.md`. It also merges one Claude Code hook entry
+  (skipped with `--no-claude-hook`) and, only when the user chooses it at the
+  prompt or with `--statusline`, a `statusLine` into the per-user
+  `.claude/settings.local.json`; that path is never followed through a symlink
+  or hard link. To decide whether a status line is already set, it only reads
+  `.claude/settings.local.json` and `.claude/settings.json` (under the same
+  symlink, hard-link and regular-file refusals) and the user's
+  `settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when that is set, else
+  `~/.claude/settings.json`), in that order, stopping at the first one that
+  defines a `statusLine`. It does this whether or not a terminal is attached,
+  and also with `--statusline` (which additionally validates
+  `settings.local.json` before writing); only `--no-statusline` reads none of
+  them. Existing legacy Graph/Brain guide paths are also checked and rewritten
+  as redirects under the same protections. See
   [coordination](agent-coordination.md) for detection and migration.
   A repository-committed symlink at one of
   those paths may redirect the write to another file, which is what makes the
