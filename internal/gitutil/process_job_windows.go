@@ -20,12 +20,14 @@ const (
 )
 
 var (
-	modkernel32Job               = syscall.NewLazyDLL("kernel32.dll")
-	procCreateJobObjectW         = modkernel32Job.NewProc("CreateJobObjectW")
-	procAssignProcessToJobObject = modkernel32Job.NewProc("AssignProcessToJobObject")
-	procSetInformationJobObject  = modkernel32Job.NewProc("SetInformationJobObject")
-	procTerminateJobObject       = modkernel32Job.NewProc("TerminateJobObject")
-	procIsProcessInJob           = modkernel32Job.NewProc("IsProcessInJob")
+	// modkernel32 is this package's one kernel32 handle, shared with
+	// console_windows.go.
+	modkernel32                  = syscall.NewLazyDLL("kernel32.dll")
+	procCreateJobObjectW         = modkernel32.NewProc("CreateJobObjectW")
+	procAssignProcessToJobObject = modkernel32.NewProc("AssignProcessToJobObject")
+	procSetInformationJobObject  = modkernel32.NewProc("SetInformationJobObject")
+	procTerminateJobObject       = modkernel32.NewProc("TerminateJobObject")
+	procIsProcessInJob           = modkernel32.NewProc("IsProcessInJob")
 )
 
 // pathOutputJob is a Windows Job Object that contains a launched process and
@@ -143,12 +145,26 @@ func (launch *pathOutputLaunch) close() {
 	launch.job = pathOutputJob{}
 }
 
+// pathOutputChildSysProcAttr copies the caller's attributes, names the
+// creation parent, and always sets CREATE_NO_WINDOW and HideWindow, even when
+// the caller has a console, unlike hideConsoleWindow. Created under the
+// suspended surrogate parent, the child cannot join a console the caller
+// created: without CREATE_NO_WINDOW, a caller that owns its console, with no
+// window or a hidden one, gets a child that fails to start with
+// STATUS_DLL_INIT_FAILED (0xc0000142). A console inherited from a terminal or
+// a shell does not fail that way, but the flag is set for every caller. With
+// it, the child starts on a windowless console of its own and shows no
+// window. The cost is one console host per path-output Git, which a Ctrl-C on
+// the caller's console does not reach; the job's kill-on-close limit still
+// ends the child when the caller exits.
 func pathOutputChildSysProcAttr(original *syscall.SysProcAttr, parent syscall.Handle) syscall.SysProcAttr {
 	attributes := syscall.SysProcAttr{}
 	if original != nil {
 		attributes = *original
 	}
 	attributes.ParentProcess = parent
+	attributes.CreationFlags |= createNoWindow
+	attributes.HideWindow = true
 	return attributes
 }
 

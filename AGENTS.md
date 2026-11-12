@@ -196,14 +196,20 @@ The legacy 1:1 model (`--verbose`, `estimated_savings_*`) assumes each observed 
 exploration result, priced using that session's average exploration bytes/result, then subtracts
 graph result bytes. The 1:1 substitution is unvalidated; bytes/4 is only a rough token estimate.
 Queries, output truncation and task quality are not controlled, so this does not establish causal
-savings. `estimated_savings_est_tokens_unfloored` keeps negative sessions (the status line reads
-it), and `sessions_with_savings_comparison` distinguishes an available zero from no comparison.
+savings. `estimated_savings_est_tokens_unfloored` keeps negative sessions, and
+`sessions_with_savings_comparison` distinguishes an available zero from no comparison. The status
+line reads `modeled_balance_est_tokens` (net, signed) and `gross_covered_est_tokens` (gross).
 Legacy positive-only savings, percentage and graph-first JSON fields remain for compatibility;
 they are not human-facing evidence of savings or behavior. No network; local parse-cache writes
 can be disabled with `--no-cache`.
 `--transcript <path>` narrows
 the whole report to one session (that transcript plus its `<session>/subagents/*.jsonl`), which is
-what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status line badge.
+the scope `entire graph statusline` renders as a live Claude Code status line, in tokens only,
+after the indexed graph's size (`N nodes | M edges`, shown only when HEAD itself is indexed).
+The status line is opt-in: `entire graph setup` asks at a terminal (default no) before installing
+it in `.claude/settings.local.json`, and never when another settings scope already defines one;
+`entire graph setup --statusline` installs it without asking, overriding a shared or user line,
+and `entire graph setup --no-statusline` skips it.
 
 **When:** a human asks what the graph is buying them. Agents should not run it as part of a coding task.
 

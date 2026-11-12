@@ -1217,9 +1217,9 @@ func TestRoundToRoundsHalfAwayFromZero(t *testing.T) {
 
 // --- the JSON contract ----------------------------------------------------------------------
 
-// TestStatsJSONContractKeepsEveryPublishedKey guards the machine contract. Callers exist —
-// scripts/entire-graph-statusline.sh reads two of these on every prompt render — so keys may be
-// added but never removed or renamed.
+// TestStatsJSONContractKeepsEveryPublishedKey guards the machine contract. Callers exist — status
+// line scripts written against `stats --format json` read these keys — so keys may be added but
+// never removed or renamed.
 func TestStatsJSONContractKeepsEveryPublishedKey(t *testing.T) {
 	t.Parallel()
 	raw, err := json.Marshal(statsResponse{})
@@ -1417,9 +1417,9 @@ func sortedKeys(report map[string]any) []string {
 //
 // Savings are computed per session and the total sums max(0, saved). Wins are kept and losses are
 // discarded, so the headline can only ever move up: a corpus that lost bytes overall still reports
-// a positive saving. The floored total stays — scripts/entire-graph-statusline.sh reads it on every
-// prompt render, and its awk `number()` returns -1 for a MISSING key, so a genuine negative on that
-// key would be indistinguishable from an absent one — and the signed total is published beside it.
+// a positive saving. The floored total stays — it is a published JSON key, and a reader that maps a
+// MISSING key to -1 (as the old awk status line script did) could not tell a genuine negative on it
+// from an absent one — and the signed total is published beside it.
 //
 // Two sessions, one of each sign: s1 saves 500 B, s2 loses 1,900 B. Floored: +500. Truth: -1,400.
 func TestStatsUnflooredSavingsKeepsTheLosses(t *testing.T) {
@@ -1786,5 +1786,24 @@ func TestCombinedRedirectIsARedirectNotAStatementBoundary(t *testing.T) {
 	// A real backgrounding `&` is still a boundary.
 	if stages := pipelineHeadStages(`sleep 1 & grep -rn foo .`); len(stages) != 2 {
 		t.Fatalf("a backgrounding & must still split statements, got %q", stages)
+	}
+}
+
+// TestStatsFindsTranscriptsUnderClaudeConfigDir catches the sessions directory looked up under
+// ~/.claude when CLAUDE_CONFIG_DIR moves Claude Code's data: without --sessions-dir, stats reads
+// $CLAUDE_CONFIG_DIR/projects/<slug>, where Claude Code files this repository's sessions.
+func TestStatsFindsTranscriptsUnderClaudeConfigDir(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	repo := t.TempDir()
+	writeTranscript(t, filepath.Join(configDir, "projects", sessionSlugCandidates(repo)[0]), "s1.jsonl",
+		toolUseLine(t, statsTime(0), "Bash", "toolu_1", map[string]any{"command": "entire graph query --query 'where is A'"}))
+	report := runStatsRawJSON(t, "--repo", repo, "--since", "all", "--format", "json", "--no-cache")
+	dir, _ := report["sessions_dir"].(string)
+	if found, _ := report["sessions_dir_found"].(bool); !found || !strings.HasPrefix(dir, configDir) {
+		t.Fatalf("sessions_dir = %q (found %v), want a directory under %s", dir, found, configDir)
+	}
+	if got := rawInt(t, report, "transcripts"); got != 1 {
+		t.Fatalf("transcripts = %d, want the 1 under %s", got, configDir)
 	}
 }
