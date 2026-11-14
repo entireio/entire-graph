@@ -239,6 +239,13 @@ recall ranks decisions, rejected approaches, invariants and gotchas first. query
 mixes memories with history and documentation and can rank documentation above the
 recorded decision.
 
+The brief's precedent section lists each surfaced memory's source sessions.
+Follow those anchors when you need the detail behind a memory; the brief does
+not search transcript history. Search transcripts only as an explicit
+escalation when memories and their anchors miss:
+
+    entire brain query --source history "<question>" --json
+
 Reuse useful code locations from the brief. Use Brain retrieval for previous
 decisions, attempts, documentation, and durable memories - Brain's episodic record
 of what was decided, what went wrong before, and what must stay true. Record one

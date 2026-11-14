@@ -113,6 +113,14 @@ auto-generated notes on
   Graph renders the same guide text as a Brain that includes
   entireio/entire-brain#605, so a repository's `.entire/agent-guide.md` no
   longer depends on which product ran `setup` last.
+- The Brain-enabled agent guide now states the COR-2308 memories-first rule
+  already on Brain main: memories are the default retrieval surface, the brief's
+  precedent section lists each surfaced memory's source-session anchors, and
+  transcript history is searched only as an explicit escalation
+  (`entire brain query --source history`). With this, Graph renders the same
+  guide text as current Brain (including the remember `--path` rule), so a
+  repository's `.entire/agent-guide.md` no longer depends on which product ran
+  `setup` last.
 
 ### Fixed
 
