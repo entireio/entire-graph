@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const combinedReplayIdentityReviewSchema = 6
+const combinedReplayIdentityReviewSchema = 7
 
 func combinedReplayIdentityReviewScope(producer string, omitVerify bool) searchSessionScope {
 	return searchSessionScope{
@@ -64,6 +64,7 @@ func TestCombinedReplayIdentityReviewMatchesProducerAndVerifyMode(t *testing.T) 
 
 	// Schemas 3 and 4 had different meanings on the two parent branches, and
 	// the assembled pre-VERIFY baseline used 5 without a verify-mode identity.
+	// Schema 6 bound producer and VERIFY mode, but not semantic configuration.
 	// Reject every earlier value even when all newly combined fields are present
 	// and internally consistent.
 	for schema := 0; schema < combinedReplayIdentityReviewSchema; schema++ {

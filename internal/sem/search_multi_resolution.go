@@ -1,6 +1,9 @@
 package sem
 
-import "sort"
+import (
+	"slices"
+	"sort"
+)
 
 // MULTI-RESOLUTION RETRIEVAL
 //
@@ -102,6 +105,13 @@ func applyProseResolutionPromotions(results []SearchResult, order []prosePromoti
 		}
 		promotedFrom[promotion.parent][promotion.passage] = true
 	}
+	// A FUSED ranking is authoritative as delivered. When the semantic channel fused this list,
+	// rows are deliberately not in score order (a semantic-only row has Score 0 and may be rank 1;
+	// embedding-first can seat a low-scoring lexical row above a higher one), and a sort by Score
+	// would silently undo fusion. So each promotion is inserted directly after its own parent —
+	// exactly where the stable sort below settles it on a monotone list — and nothing else moves.
+	// An unfused ranking keeps the stable sort, byte-for-byte what it always did.
+	fused := searchResultsFused(results)
 	expanded := make([]SearchResult, 0, len(results)+count)
 	for index := range results {
 		parent := results[index]
@@ -118,6 +128,19 @@ func applyProseResolutionPromotions(results []SearchResult, order []prosePromoti
 			parent.Passages = kept
 		}
 		expanded = append(expanded, parent)
+		if fused {
+			for _, promotion := range order[:count] {
+				if promotion.parent == index {
+					expanded = append(expanded, proseResolutionResult(results[index], results[index].Passages[promotion.passage]))
+				}
+			}
+		}
+	}
+	if fused {
+		for index := range expanded {
+			expanded[index].Rank = index + 1
+		}
+		return expanded
 	}
 	for _, promotion := range order[:count] {
 		expanded = append(expanded, proseResolutionResult(results[promotion.parent], results[promotion.parent].Passages[promotion.passage]))
@@ -204,4 +227,16 @@ func expandProseResolution(results []SearchResult, topK, budget, reserved int) [
 		return results
 	}
 	return applyProseResolutionPromotions(results, order, low)
+}
+
+// searchResultsFused reports whether the semantic channel fused this ranking: some row carries its
+// signal. Fusion always seats the channel's first row (embedding first), so a fused list is never
+// without one, and an unconfigured search never has one.
+func searchResultsFused(results []SearchResult) bool {
+	for index := range results {
+		if slices.Contains(results[index].Signals, semanticSignal) {
+			return true
+		}
+	}
+	return false
 }

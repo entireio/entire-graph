@@ -13,6 +13,14 @@ benchmark harness's clone phase and `entire plugin install graph` are the
 networked operations, and both are explicit: one is a development tool, the
 other is installation.
 
+An experimental semantic channel is a separate, explicit opt-in. With
+`ENTIRE_GRAPH_SEMANTIC_ENDPOINT` and `ENTIRE_GRAPH_SEMANTIC_MODEL` configured,
+`index --semantic` sends signatures and documentation comments to a loopback
+embedding service, and eligible `query --head` requests send the query text.
+The endpoint must be localhost or a loopback IP; no hosted endpoint is accepted.
+The user manages the local service and its data handling. `--no-network` disables
+the channel for queries and cannot be combined with `index --semantic`.
+
 ## What it reads
 
 - Repository content: the working tree (default for interactive queries) or

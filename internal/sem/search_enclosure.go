@@ -251,14 +251,27 @@ func SearchUnitElisionNote(printedStart, printedEnd, unitStart, unitEnd int) str
 // the measured sonnet sessions), so "the caller asked for the top unit" needs no further test.
 // Every rank past the first is admitted only while its score is still within searchFullUnitGapRatio
 // of rank 1's — one forced unit per genuinely ambiguous answer, not N bodies per search.
+//
+// The gap is measured over LEXICALLY scored rows only. A row the opt-in semantic channel
+// synthesized (SearchResult.SemanticOnly) has no lexical score — its Score 0 is "not measured" —
+// so it can neither set the reference nor sit within a gap of one:
+//   - a semantic-only rank 1 is still rank 1 and keeps its unconditional unit, but it separates
+//     nothing, so no further rank is admitted (a 0 reference must not read as "every rank ties");
+//   - a semantic-only row past rank 1 ends the admitted prefix like any row outside the gap.
+//
+// The callee hop shares this rule (searchCalleeHopRanks), so the same holds for its depth.
 func searchFullUnitForceRanks(results []SearchResult, top int) int {
 	if top <= 0 || len(results) == 0 {
 		return 0
 	}
 	limit := minInt(top, len(results))
 	ranks := 1
+	if results[0].SemanticOnly() {
+		return ranks
+	}
 	for index := 1; index < limit; index++ {
-		if !searchScoresWithinGap(results[0].Score, results[index].Score, searchFullUnitGapRatio) {
+		if results[index].SemanticOnly() ||
+			!searchScoresWithinGap(results[0].Score, results[index].Score, searchFullUnitGapRatio) {
 			break
 		}
 		ranks = index + 1
