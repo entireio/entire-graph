@@ -30,7 +30,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
         with: { go-version: "1.27.x" }
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with: { python-version: "3.12" }
       - run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: go build -o entire-graph ./cmd/entire-graph
@@ -192,7 +192,7 @@ jobs:
             test-prepare-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
             test-prepare-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-
             setup-go-Windows-x64-go-${{ steps.setup-go.outputs.go-version }}-
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - name: Compile once and inventory default-runnable roots
@@ -259,7 +259,7 @@ jobs:
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -302,7 +302,7 @@ jobs:
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -366,7 +366,7 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: tools/ci-bench/windows-production
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -471,7 +471,7 @@ jobs:
             test-prepare-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
             test-prepare-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-
             setup-go-macOS-arm64-go-${{ steps.setup-go.outputs.go-version }}-
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - name: Compile once and inventory default-runnable roots
@@ -538,7 +538,7 @@ jobs:
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -577,7 +577,7 @@ jobs:
         with:
           go-version: "1.27.x"
           cache-dependency-path: go.sum
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -634,7 +634,7 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: tools/ci-bench/windows-production
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -696,7 +696,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - run: python -B tools/ci-bench/windows-production/mutation_check.py
@@ -707,7 +707,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - run: python -B -m pip install --disable-pip-version-check rank-bm25==0.2.2
@@ -721,7 +721,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - run: python -B -m unittest bench.memory.ci.test_summarize_run
