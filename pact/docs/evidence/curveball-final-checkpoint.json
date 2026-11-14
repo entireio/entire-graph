@@ -1,0 +1,30 @@
+{
+  "checkpoint_id": "90d4a736f01e",
+  "session_id": "01a075de-fbc5-7b60-b38c-b14cb13816a0",
+  "created_at": "2026-09-06T08:44:54.210951Z",
+  "verified_at": "2026-09-06T08:46:13.091231+00:00",
+  "reviewed_sha": "e3b512e293bb29f7cd06963a6d8122648e4de065",
+  "product_implementation_sha": "fed20634613006b1661996de29e07d457b139fcf",
+  "capture_method": "Entire supported manual attachment of actual fresh Codex verification session, without force/amend",
+  "unique_checkpoint_count": 1,
+  "transcript_sha256": "097ea456db083585f98a2ec42542cb8490aec9909ebbc5c30e9b021537a497d9",
+  "transcript_bytes": 1345819,
+  "stored_substantive_review_verified": true,
+  "verified_review_topics": [
+    "e3b512e293bb29f7cd06963a6d8122648e4de065",
+    "D1 fallback adds R1/R3",
+    "D2 passes all ten candidate assertions",
+    "all five existing jobs are `SUCCESS`",
+    "01f1a9ce-b798-1a0a-90c5-4d7ae2b7a3df",
+    "not complete program coverage"
+  ],
+  "scope": "Authentic later final verification and reconstruction of adaptation; not retroactive original implementation or pre-noon capture",
+  "remaining_limitations": [
+    "Missing original policy/pre-noon capture",
+    "Native continuous hooks not verified",
+    "Team-authored registered-policy fixture only",
+    "Judge access and submission are not established"
+  ],
+  "read_command": "entire checkpoint explain 90d4a736f01e --json",
+  "transcript_command": "entire checkpoint explain 90d4a736f01e --transcript"
+}

@@ -1,0 +1,14 @@
+{
+  "format": "gif",
+  "method": "Live CUA browser screenshot recording sampled at approximately 2 fps. No generated or edited UI frames.",
+  "start_epoch_ms": 1788678861978,
+  "duration_ms": 23512,
+  "frames": 44,
+  "viewport": [
+    1280,
+    720
+  ],
+  "sha256": "fc48b8f3c534cbc8fc9632f937579b65c25df06ead45c73bfa69ca5657532e74",
+  "implementation_sha": "fed2063",
+  "scenario": "Local D0 \u2192 D1 regression, conservative fallback, D0 \u2192 D2 correction. Source and analysis gaps remain visible."
+}

@@ -8,6 +8,18 @@ __pycache__/
 # Per-run benchmark reports are local-only working data, not version-controlled.
 /bench/results/
 
+# PACT local runtime, credentials and build output.
+/.venv/
+/.venv
+/pact/runs/
+/pact/dist/
+/pact/build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.env
+.env.local
+
 # Claude Code checks out nested worktrees of this repo here. They are untracked
 # copies of the repository itself, so leaving them visible makes the tree look
 # dirty to tools that gate on a clean worktree.

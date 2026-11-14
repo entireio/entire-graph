@@ -1,0 +1,1205 @@
+{
+  "base": "3a2a715fad1948e83dc7ebe0d307377ba29e065a",
+  "head": "41805b7",
+  "files": [
+    {
+      "path": "pact/demo/workspace_app/__init__.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "module",
+          "name": "pact/demo/workspace_app/__init__.py",
+          "after_start_line": 1,
+          "dependents_count": 0
+        }
+      ]
+    },
+    {
+      "path": "pact/demo/workspace_app/app.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "dispatch",
+          "new_signature": "def dispatch(request)",
+          "after_start_line": 5,
+          "dependents_count": 20
+        }
+      ]
+    },
+    {
+      "path": "pact/demo/workspace_app/export.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "export_document",
+          "new_signature": "def export_document(request)",
+          "after_start_line": 4,
+          "dependents_count": 2
+        }
+      ]
+    },
+    {
+      "path": "pact/demo/workspace_app/permissions.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "can_access",
+          "new_signature": "def can_access(request)",
+          "after_start_line": 1,
+          "dependents_count": 3
+        }
+      ]
+    },
+    {
+      "path": "pact/demo/workspace_app/preview.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "preview_document",
+          "new_signature": "def preview_document(request)",
+          "after_start_line": 4,
+          "dependents_count": 2
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/__init__.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "module",
+          "name": "pact/src/btw_pact/__init__.py",
+          "after_start_line": 1,
+          "dependents_count": 0
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/checkpoints.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "export",
+          "new_signature": "def export(repo, *args)",
+          "after_start_line": 10,
+          "dependents_count": 244
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "read_sources",
+          "new_signature": "def read_sources(repo, commit)",
+          "after_start_line": 18,
+          "dependents_count": 4
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/cli.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "main",
+          "new_signature": "def main()",
+          "after_start_line": 13,
+          "dependents_count": 206
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/contracts.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "now",
+          "new_signature": "def now() -\u003e str",
+          "after_start_line": 14,
+          "dependents_count": 103
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "canonical",
+          "new_signature": "def canonical(value) -\u003e str",
+          "after_start_line": 18,
+          "dependents_count": 53
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "digest",
+          "new_signature": "def digest(value) -\u003e str",
+          "after_start_line": 24,
+          "dependents_count": 39
+        },
+        {
+          "type": "added",
+          "kind": "class",
+          "name": "Record",
+          "new_signature": "class Record(BaseModel)",
+          "after_start_line": 28,
+          "dependents_count": 14
+        },
+        {
+          "type": "added",
+          "kind": "class",
+          "name": "Source",
+          "new_signature": "class Source(Record)",
+          "after_start_line": 33,
+          "dependents_count": 15
+        },
+        {
+          "type": "added",
+          "kind": "class",
+          "name": "Requirement",
+          "new_signature": "class Requirement(Record)",
+          "after_start_line": 45,
+          "dependents_count": 13
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Requirement.key",
+          "new_signature": "def key(self) -\u003e str",
+          "after_start_line": 63,
+          "dependents_count": 343
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Requirement.validate_policy",
+          "new_signature": "def validate_policy(self)",
+          "after_start_line": 67,
+          "dependents_count": 1
+        },
+        {
+          "type": "added",
+          "kind": "class",
+          "name": "Scenario",
+          "new_signature": "class Scenario(Record)",
+          "after_start_line": 82,
+          "dependents_count": 6
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Scenario.request",
+          "new_signature": "def request(self) -\u003e dict",
+          "after_start_line": 89,
+          "dependents_count": 92
+        },
+        {
+          "type": "added",
+          "kind": "class",
+          "name": "ReviewRequest",
+          "new_signature": "class ReviewRequest(Record)",
+          "after_start_line": 93,
+          "dependents_count": 11
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "ReviewRequest.unique_requirements",
+          "new_signature": "def unique_requirements(self)",
+          "after_start_line": 105,
+          "dependents_count": 1
+        },
+        {
+          "type": "added",
+          "kind": "class",
+          "name": "Observation",
+          "new_signature": "class Observation(Record)",
+          "after_start_line": 116,
+          "dependents_count": 5
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Observation.valid_decision",
+          "new_signature": "def valid_decision(self)",
+          "after_start_line": 129,
+          "dependents_count": 1
+        },
+        {
+          "type": "added",
+          "kind": "class",
+          "name": "AssertionResult",
+          "new_signature": "class AssertionResult(Record)",
+          "after_start_line": 135,
+          "dependents_count": 2
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/evaluator.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "evaluate",
+          "new_signature": "def evaluate(requirements, cases, observations, side, run_id)",
+          "after_start_line": 5,
+          "dependents_count": 5
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "classify",
+          "new_signature": "def classify(results, requirements, paths)",
+          "after_start_line": 33,
+          "dependents_count": 16
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/evidence.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "seal",
+          "new_signature": "def seal(payload)",
+          "after_start_line": 11,
+          "dependents_count": 2
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "unseal",
+          "new_signature": "def unseal(bundle)",
+          "after_start_line": 15,
+          "dependents_count": 1
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "replay",
+          "new_signature": "def replay(bundle)",
+          "after_start_line": 21,
+          "dependents_count": 42
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "write_json",
+          "new_signature": "def write_json(path: Path, value)",
+          "after_start_line": 36,
+          "dependents_count": 17
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/fixture_worker.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "module",
+          "name": "pact/src/btw_pact/fixture_worker.py",
+          "after_start_line": 1,
+          "dependents_count": 0
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/gitutil.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "git",
+          "new_signature": "def git(repo, *args, binary=False)",
+          "after_start_line": 11,
+          "dependents_count": 679
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "resolve",
+          "new_signature": "def resolve(repo, ref)",
+          "after_start_line": 18,
+          "dependents_count": 164
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "fixture_files",
+          "new_signature": "def fixture_files(repo, sha) -\u003e dict[str, str]",
+          "after_start_line": 25,
+          "dependents_count": 3
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "write_fixture",
+          "new_signature": "def write_fixture(root: Path, files: dict[str, str])",
+          "after_start_line": 46,
+          "dependents_count": 1
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/graph_adapter.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "entire",
+          "new_signature": "def entire(repo, *args)",
+          "after_start_line": 11,
+          "dependents_count": 183
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "snapshot",
+          "new_signature": "def snapshot(repo: Path, sha: str) -\u003e dict",
+          "after_start_line": 18,
+          "dependents_count": 724
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "analyse",
+          "new_signature": "def analyse(repo: Path, base: str, head: str) -\u003e dict",
+          "after_start_line": 47,
+          "dependents_count": 2
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/remote_worker.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "run",
+          "new_signature": "def run(envelope, spark, remote_run_id=None)",
+          "after_start_line": 10,
+          "dependents_count": 520
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "persist",
+          "new_signature": "def persist(table, rows)",
+          "after_start_line": 40,
+          "dependents_count": 28
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "row",
+          "new_signature": "def row(identity, item, side=\"\", requirement=\"\", scenario=\"\", role=\"\", status=\"\", rid=run_id)",
+          "after_start_line": 56,
+          "dependents_count": 83
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/review.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "review",
+          "new_signature": "def review(request: ReviewRequest, output: Path, *, remote=None, run_id=None)",
+          "after_start_line": 20,
+          "dependents_count": 32
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "recover",
+          "new_signature": "def recover(run_id: str, output: Path)",
+          "after_start_line": 103,
+          "dependents_count": 16
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "benchmark",
+          "new_signature": "def benchmark(request: ReviewRequest, output: Path)",
+          "after_start_line": 115,
+          "dependents_count": 40
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/runners/__init__.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "module",
+          "name": "pact/src/btw_pact/runners/__init__.py",
+          "after_start_line": 1,
+          "dependents_count": 0
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/runners/databricks.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "client",
+          "new_signature": "def client()",
+          "after_start_line": 13,
+          "dependents_count": 57
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "namespace",
+          "new_signature": "def namespace()",
+          "after_start_line": 18,
+          "dependents_count": 137
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "package",
+          "new_signature": "def package()",
+          "after_start_line": 25,
+          "dependents_count": 655
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "execute_remote",
+          "new_signature": "def execute_remote(bundle, chosen, run_id, *, workspace=None, wait_seconds=180, pending_dir=None)",
+          "after_start_line": 36,
+          "dependents_count": 1
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "remote_history",
+          "new_signature": "def remote_history()",
+          "after_start_line": 130,
+          "dependents_count": 2
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/runners/local.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "execute",
+          "new_signature": "def execute(files, cases, run_id, side, sha, backend=\"local\", timeout=30)",
+          "after_start_line": 13,
+          "dependents_count": 36
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/scenarios.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "matrix",
+          "new_signature": "def matrix() -\u003e list[Scenario]",
+          "after_start_line": 6,
+          "dependents_count": 24
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "matches",
+          "new_signature": "def matches(requirement: Requirement, scenario: Scenario) -\u003e bool",
+          "after_start_line": 13,
+          "dependents_count": 135
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "proposed_requirements",
+          "new_signature": "def proposed_requirements(include_feature: bool = True) -\u003e list[Requirement]",
+          "after_start_line": 18,
+          "dependents_count": 7
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/selector.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "binding",
+          "new_signature": "def binding(symbol)",
+          "after_start_line": 7,
+          "dependents_count": 113
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "select",
+          "new_signature": "def select(requirements, analysis, strategy=\"graph\", max_depth=8)",
+          "after_start_line": 11,
+          "dependents_count": 64
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/static/app.css",
+      "status": "A",
+      "language": "CSS",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "selector",
+          "name": "dialog",
+          "new_signature": "css selector dialog",
+          "after_start_line": 3,
+          "dependents_count": 1
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/static/app.js",
+      "status": "A",
+      "language": "JavaScript",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "$",
+          "new_signature": "$ = s =\u003e",
+          "after_start_line": 1,
+          "dependents_count": 225
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "esc",
+          "new_signature": "esc = v =\u003e",
+          "after_start_line": 2,
+          "dependents_count": 7
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "api",
+          "new_signature": "async function api(path, body)",
+          "after_start_line": 4,
+          "dependents_count": 113
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "notice",
+          "new_signature": "function notice(text, error=false)",
+          "after_start_line": 10,
+          "dependents_count": 24
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "refresh",
+          "new_signature": "async function refresh()",
+          "after_start_line": 11,
+          "dependents_count": 23
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "open",
+          "new_signature": "open=async()=\u003e",
+          "after_start_line": 17,
+          "dependents_count": 192
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "show",
+          "new_signature": "function show(r,recorded=false)",
+          "after_start_line": 21,
+          "dependents_count": 63
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "start",
+          "new_signature": "async function start(compare)",
+          "after_start_line": 29,
+          "dependents_count": 409
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "assertionTable",
+          "new_signature": "function assertionTable(r)",
+          "after_start_line": 34,
+          "dependents_count": 1
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "remoteSummary",
+          "new_signature": "function remoteSummary(r)",
+          "after_start_line": 36,
+          "dependents_count": 1
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "comparison",
+          "new_signature": "async function comparison(ids)",
+          "after_start_line": 37,
+          "dependents_count": 27
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "editPolicy",
+          "new_signature": "function editPolicy(key)",
+          "after_start_line": 38,
+          "dependents_count": 1
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/storage.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "class",
+          "name": "Store",
+          "new_signature": "class Store",
+          "after_start_line": 9,
+          "dependents_count": 18
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Store.__init__",
+          "new_signature": "def __init__(self, path: Path)",
+          "after_start_line": 10,
+          "dependents_count": 44
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Store.connect",
+          "new_signature": "def connect(self)",
+          "after_start_line": 23,
+          "dependents_count": 10
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Store.add",
+          "new_signature": "def add(self, requirement: Requirement)",
+          "after_start_line": 26,
+          "dependents_count": 453
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Store.requirements",
+          "new_signature": "def requirements(self, history=False) -\u003e list[Requirement]",
+          "after_start_line": 31,
+          "dependents_count": 50
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Store.confirm",
+          "new_signature": "def confirm(self, key: str, actor: str, *, amendments: dict | None = None) -\u003e Requirement",
+          "after_start_line": 38,
+          "dependents_count": 8
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Store.review_requirements",
+          "new_signature": "def review_requirements(self) -\u003e list[Requirement]",
+          "after_start_line": 62,
+          "dependents_count": 5
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Store.save_run",
+          "new_signature": "def save_run(self, report: dict)",
+          "after_start_line": 76,
+          "dependents_count": 5
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Store.run",
+          "new_signature": "def run(self, run_id: str) -\u003e dict",
+          "after_start_line": 80,
+          "dependents_count": 520
+        },
+        {
+          "type": "added",
+          "kind": "method",
+          "name": "Store.runs",
+          "new_signature": "def runs(self) -\u003e list[dict]",
+          "after_start_line": 87,
+          "dependents_count": 139
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/templates/index.html",
+      "status": "A",
+      "language": "HTML",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "document",
+          "name": "index",
+          "new_signature": "html document index",
+          "after_start_line": 1,
+          "dependents_count": 711
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "review",
+          "new_signature": "html id review",
+          "after_start_line": 5,
+          "dependents_count": 32
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "base",
+          "new_signature": "html id base",
+          "after_start_line": 6,
+          "dependents_count": 333
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "benchmark",
+          "new_signature": "html id benchmark",
+          "after_start_line": 6,
+          "dependents_count": 40
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "head",
+          "new_signature": "html id head",
+          "after_start_line": 6,
+          "dependents_count": 338
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "run",
+          "new_signature": "html id run",
+          "after_start_line": 6,
+          "dependents_count": 520
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "runner",
+          "new_signature": "html id runner",
+          "after_start_line": 6,
+          "dependents_count": 47
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "notice",
+          "new_signature": "html id notice",
+          "after_start_line": 7,
+          "dependents_count": 24
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "results",
+          "new_signature": "html id results",
+          "after_start_line": 8,
+          "dependents_count": 296
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "actor",
+          "new_signature": "html id actor",
+          "after_start_line": 9,
+          "dependents_count": 18
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "requirement-list",
+          "new_signature": "html id requirement-list",
+          "after_start_line": 9,
+          "dependents_count": 0
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "requirements",
+          "new_signature": "html id requirements",
+          "after_start_line": 9,
+          "dependents_count": 50
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "load-sources",
+          "new_signature": "html id load-sources",
+          "after_start_line": 10,
+          "dependents_count": 0
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "source-commit",
+          "new_signature": "html id source-commit",
+          "after_start_line": 10,
+          "dependents_count": 0
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "source-list",
+          "new_signature": "html id source-list",
+          "after_start_line": 10,
+          "dependents_count": 0
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "sources",
+          "new_signature": "html id sources",
+          "after_start_line": 10,
+          "dependents_count": 29
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "cloud-history",
+          "new_signature": "html id cloud-history",
+          "after_start_line": 11,
+          "dependents_count": 0
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "history",
+          "new_signature": "html id history",
+          "after_start_line": 11,
+          "dependents_count": 26
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "refresh",
+          "new_signature": "html id refresh",
+          "after_start_line": 11,
+          "dependents_count": 23
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "remote-history",
+          "new_signature": "html id remote-history",
+          "after_start_line": 11,
+          "dependents_count": 0
+        },
+        {
+          "type": "added",
+          "kind": "element",
+          "name": "run-history",
+          "new_signature": "html id run-history",
+          "after_start_line": 11,
+          "dependents_count": 0
+        }
+      ]
+    },
+    {
+      "path": "pact/src/btw_pact/web.py",
+      "status": "A",
+      "language": "Python",
+      "changes": [
+        {
+          "type": "added",
+          "kind": "class",
+          "name": "Confirm",
+          "new_signature": "class Confirm(BaseModel)",
+          "after_start_line": 21,
+          "dependents_count": 8
+        },
+        {
+          "type": "added",
+          "kind": "class",
+          "name": "Start",
+          "new_signature": "class Start(BaseModel)",
+          "after_start_line": 27,
+          "dependents_count": 40
+        },
+        {
+          "type": "added",
+          "kind": "class",
+          "name": "LinkSource",
+          "new_signature": "class LinkSource(BaseModel)",
+          "after_start_line": 35,
+          "dependents_count": 2
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "create_app",
+          "new_signature": "def create_app(repo: Path, data: Path | None = None)",
+          "after_start_line": 41,
+          "dependents_count": 2
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "local_mutation",
+          "new_signature": "async def local_mutation(request: Request, call_next)",
+          "after_start_line": 56,
+          "dependents_count": 1
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "index",
+          "new_signature": "def index()",
+          "after_start_line": 66,
+          "dependents_count": 711
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "state",
+          "new_signature": "def state()",
+          "after_start_line": 70,
+          "dependents_count": 229
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "history",
+          "new_signature": "def history()",
+          "after_start_line": 80,
+          "dependents_count": 26
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "confirm",
+          "new_signature": "def confirm(key: str, body: Confirm)",
+          "after_start_line": 84,
+          "dependents_count": 8
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "sources",
+          "new_signature": "def sources(commit: str = \"pact-H1\")",
+          "after_start_line": 91,
+          "dependents_count": 29
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "link_source",
+          "new_signature": "def link_source(body: LinkSource): # Re-read the real exporter; do not accept client-authored evidence text.",
+          "after_start_line": 98,
+          "dependents_count": 1
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "start",
+          "new_signature": "def start(body: Start)",
+          "after_start_line": 112,
+          "dependents_count": 409
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "work",
+          "new_signature": "def work()",
+          "after_start_line": 126,
+          "dependents_count": 38
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "run",
+          "new_signature": "def run(run_id: str)",
+          "after_start_line": 144,
+          "dependents_count": 520
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "reproducer",
+          "new_signature": "def reproducer(run_id: str)",
+          "after_start_line": 151,
+          "dependents_count": 6
+        },
+        {
+          "type": "added",
+          "kind": "function",
+          "name": "cloud_history",
+          "new_signature": "def cloud_history()",
+          "after_start_line": 156,
+          "dependents_count": 1
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/clojure/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file may be undercounted because it failed to parse cleanly",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 24605 column 95 near \".\"; error ERROR at line 24606 column 95 near \".\"; error ERROR at line 24607 column 95 near \".\"; error ERROR at line 24608 column 95 near \".\"; error ERROR at line 24609 column 96 near \".\""
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/csharp/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 29629301 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/dart/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 4758698 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/erlang/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file may be undercounted because it failed to parse cleanly",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 4996 column 7 near \"if (('0' \u003c= lookahead \u0026\u0026 lookahead \u003c= '9'))\"; missing identifier at line 5030 column 17 near \"'~', 15,\"; missing identifier at line 5063 column 18 near \"'}', 343,\"; missing identifier at line 5086 column 17 near \"'~', 15,\"; missing identifier at line 5172 column 18 near \"'|', 260,\""
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/fsharp/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 31990757 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/haskell/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 19811235 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/julia/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 54714183 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/objc/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 28242603 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/perl/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 20080466 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/r/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file may be undercounted because it failed to parse cleanly",
+      "detail": "tree-sitter syntax error nodes present: missing identifier at line 3675 column 17 near \"'~', 31,\"; missing identifier at line 3706 column 17 near \"'~', 31,\"; missing identifier at line 3734 column 17 near \"'~', 31,\"; missing identifier at line 4217 column 17 near \"'w', 11,\"; error ERROR at line 149065 column 17 near \"TSLanguage\""
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/zig/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 5843608 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/pgsql/src/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 14524353 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/zsh/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 9737608 bytes, above max parser input 4194304 bytes"
+    }
+  ]
+}

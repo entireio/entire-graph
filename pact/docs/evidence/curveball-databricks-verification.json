@@ -1,0 +1,182 @@
+{
+  "created_at": "2026-09-06T08:41:32.413840+00:00",
+  "comparison_id": "50c63f7812f849e78676000d6d4cf9ac",
+  "records": [
+    {
+      "strategy": "changed_file",
+      "scope": "selected_applicable_scenarios",
+      "local_run": "b8b9dfa4a57a4c3e9b04cae0a0a81b85",
+      "cloud_run": "cb61cc6616c04087a7a52ec9390db95b",
+      "remote_run_id": 962538927251526,
+      "counts": {
+        "base": {
+          "pass": 0,
+          "fail": 0,
+          "not_applicable": 2,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 0
+        },
+        "head": {
+          "pass": 2,
+          "fail": 0,
+          "not_applicable": 0,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 2
+        }
+      },
+      "assertion_parity": true,
+      "selection_context_preserved": true,
+      "idempotent_replay_verified": true,
+      "execution_completion_state": "complete",
+      "review_completion_state": "partial",
+      "run_url": "https://dbc-c3d496ed-7dbd.cloud.databricks.com/?o=7474653723260152#job/679652746926491/run/962538927251526",
+      "report_sha256": "19f548830898c9d2e63120de700afcd2253d5d8891c2fab92acfe23a0b916949",
+      "evidence_context_hash": "880300a52414bd25538e78d838ddd2bcd5230d15463c11593b4079e440e238ad",
+      "published_report": "d1-changed-file-databricks-report.json"
+    },
+    {
+      "strategy": "graph",
+      "scope": "selected_applicable_scenarios",
+      "local_run": "26315c12319e46fe89f58c9085929653",
+      "cloud_run": "ac6f6a4e484441e2a0b17eb64ae3f6b7",
+      "remote_run_id": 380869402049467,
+      "counts": {
+        "base": {
+          "pass": 8,
+          "fail": 0,
+          "not_applicable": 2,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 8
+        },
+        "head": {
+          "pass": 8,
+          "fail": 2,
+          "not_applicable": 0,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 10
+        }
+      },
+      "assertion_parity": true,
+      "selection_context_preserved": true,
+      "idempotent_replay_verified": true,
+      "execution_completion_state": "complete",
+      "review_completion_state": "partial",
+      "run_url": "https://dbc-c3d496ed-7dbd.cloud.databricks.com/?o=7474653723260152#job/111082340501413/run/380869402049467",
+      "report_sha256": "dc947ba695c715676c15156f7309ac8b43d4fa7c4a50687c00c1f97faac0cfb2",
+      "evidence_context_hash": "f458aecac67c4ca4de259698f2e0a4aef365c9da9c0f2581c732773e459135ff",
+      "published_report": "d1-graph-databricks-report.json"
+    },
+    {
+      "strategy": "all",
+      "scope": "selected_applicable_scenarios",
+      "local_run": "8be836493cd44f6c8ecf2a5f253c4f81",
+      "cloud_run": "e5c936d084a5434a85fd3ebdf4255eea",
+      "remote_run_id": 591291185596050,
+      "counts": {
+        "base": {
+          "pass": 8,
+          "fail": 0,
+          "not_applicable": 2,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 8
+        },
+        "head": {
+          "pass": 8,
+          "fail": 2,
+          "not_applicable": 0,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 10
+        }
+      },
+      "assertion_parity": true,
+      "selection_context_preserved": true,
+      "idempotent_replay_verified": true,
+      "execution_completion_state": "complete",
+      "review_completion_state": "partial",
+      "run_url": "https://dbc-c3d496ed-7dbd.cloud.databricks.com/?o=7474653723260152#job/814172048197535/run/591291185596050",
+      "report_sha256": "706aba3fc9dee14c1b2fd016b785a75b459786f616e31f3a1f8d09d9ecbc20c5",
+      "evidence_context_hash": "8239bc95ff7800a37caaf2a6068e9b4d30bd34de7b52bb2b872f26c718059b2b",
+      "published_report": "d1-all-databricks-report.json"
+    },
+    {
+      "strategy": "all",
+      "scope": "full_scenario_matrix",
+      "local_run": "14c812341e804ce499d892aeb2d11c19",
+      "cloud_run": "c0f207be4f31426ca990a50dbd4036f1",
+      "remote_run_id": 357743749677995,
+      "counts": {
+        "base": {
+          "pass": 8,
+          "fail": 0,
+          "not_applicable": 2,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 24
+        },
+        "head": {
+          "pass": 8,
+          "fail": 2,
+          "not_applicable": 0,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 24
+        }
+      },
+      "assertion_parity": true,
+      "selection_context_preserved": true,
+      "idempotent_replay_verified": true,
+      "execution_completion_state": "complete",
+      "review_completion_state": "partial",
+      "run_url": "https://dbc-c3d496ed-7dbd.cloud.databricks.com/?o=7474653723260152#job/120477170423413/run/357743749677995",
+      "report_sha256": "92c07e14b42908bf9d5516867431e0432711c905a7244880cb05f0e0d8556d60",
+      "evidence_context_hash": "1b8c4b6781f3aebd615faed500485d3a6427c3b14ddd3f2bf8fbbb813639a0eb",
+      "published_report": "d1-full-matrix-databricks-report.json"
+    },
+    {
+      "strategy": "graph",
+      "head": "pact-D2",
+      "local_run": "ec2fcc11995d40028feed503eb504a63",
+      "cloud_run": "67fa6364934a44c2a8914b828d6d5500",
+      "remote_run_id": 758723055621736,
+      "counts": {
+        "base": {
+          "pass": 8,
+          "fail": 0,
+          "not_applicable": 2,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 8
+        },
+        "head": {
+          "pass": 10,
+          "fail": 0,
+          "not_applicable": 0,
+          "unresolved": 0,
+          "not_run": 0,
+          "observations": 10
+        }
+      },
+      "selection_context_preserved": true,
+      "assertion_parity": true,
+      "idempotent_replay_verified": true,
+      "execution_completion_state": "complete",
+      "review_completion_state": "partial",
+      "run_url": "https://dbc-c3d496ed-7dbd.cloud.databricks.com/?o=7474653723260152#job/693356911604309/run/758723055621736",
+      "report_sha256": "c420bf79259e9443929fe8e589967bc5331b9fa325e42bac3f87c94d3089dad7",
+      "evidence_context_hash": "dad67c60701a278ba76b0660d9be3cba78068dae7718de544751d0ffc0a72964",
+      "published_report": "d2-graph-databricks-report.json"
+    }
+  ],
+  "delta_history_statement_id": "01f1a9ce-b798-1a0a-90c5-4d7ae2b7a3df",
+  "data_source": "team-authored 24-case permission fixture",
+  "scope": "registered policies only",
+  "verified_implementation_sha": "21aabb9c3d5262bfa46b32fdf03ef95d0e940ce6",
+  "original_script": "pact/runs/curveball/verify.py (local operational script)",
+  "verification": "Five real Databricks jobs; exact local/cloud assertion signatures, preserved evidence context, idempotent replay, and D2 context recovered from Delta history."
+}

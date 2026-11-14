@@ -1,0 +1,10 @@
+{
+  "source": "pact/docs/evidence/curveball-live-walkthrough.gif",
+  "source_sha256": "fc48b8f3c534cbc8fc9632f937579b65c25df06ead45c73bfa69ca5657532e74",
+  "output": "pact/submission/PACT-Demo.mp4",
+  "output_sha256": "0c91b2fdcd5e258ab7c27f841d24b8c090da6de622d8ce25a501d5c0c34140c2",
+  "duration_seconds": 23.5,
+  "format": "H.264 1280x720 yuv420p, 24fps, silent",
+  "transformation": "Transcoded from the genuine sampled browser recording; frame holds resampled for24fps. No generated scene or narration.",
+  "playback_validation": "All564decoded frames read successfully by ffmpeg."
+}

@@ -1,0 +1,151 @@
+{
+  "reviewed_sha": "5a07bd1ead35e31afab521404ed044db501cf541",
+  "base_sha": "a8dd2acb110f2fcb8f30774c79827a31d1ab807a",
+  "created_at": "2026-09-06T09:07:04.112148+00:00",
+  "command": "entire graph diff --repo . --base a8dd2ac --head 5a07bd1 --json",
+  "changed_files": 42,
+  "warnings": [
+    {
+      "code": "W_UNSUPPORTED_FILE",
+      "severity": "info",
+      "file_path": "pact/docs/evidence/curveball-live-walkthrough.gif",
+      "effect_on_semantic_completeness": "file skipped; no parser for this file type, so its changes are not analyzed",
+      "detail": "head version has no supported parser"
+    },
+    {
+      "code": "W_UNSUPPORTED_FILE",
+      "severity": "info",
+      "file_path": "pact/docs/evidence/d1-fallback-ui.png",
+      "effect_on_semantic_completeness": "file skipped; no parser for this file type, so its changes are not analyzed",
+      "detail": "head version has no supported parser"
+    },
+    {
+      "code": "W_UNSUPPORTED_FILE",
+      "severity": "info",
+      "file_path": "pact/docs/evidence/d1-graph-base.ndjson",
+      "effect_on_semantic_completeness": "file skipped; no parser for this file type, so its changes are not analyzed",
+      "detail": "head version has no supported parser"
+    },
+    {
+      "code": "W_UNSUPPORTED_FILE",
+      "severity": "info",
+      "file_path": "pact/docs/evidence/d1-graph-head.ndjson",
+      "effect_on_semantic_completeness": "file skipped; no parser for this file type, so its changes are not analyzed",
+      "detail": "head version has no supported parser"
+    },
+    {
+      "code": "W_UNSUPPORTED_FILE",
+      "severity": "info",
+      "file_path": "pact/docs/evidence/d2-corrected-ui.png",
+      "effect_on_semantic_completeness": "file skipped; no parser for this file type, so its changes are not analyzed",
+      "detail": "head version has no supported parser"
+    },
+    {
+      "code": "W_UNSUPPORTED_FILE",
+      "severity": "info",
+      "file_path": "pact/docs/evidence/d2-graph-base.ndjson",
+      "effect_on_semantic_completeness": "file skipped; no parser for this file type, so its changes are not analyzed",
+      "detail": "head version has no supported parser"
+    },
+    {
+      "code": "W_UNSUPPORTED_FILE",
+      "severity": "info",
+      "file_path": "pact/docs/evidence/d2-graph-head.ndjson",
+      "effect_on_semantic_completeness": "file skipped; no parser for this file type, so its changes are not analyzed",
+      "detail": "head version has no supported parser"
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/clojure/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file may be undercounted because it failed to parse cleanly",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 24605 column 95 near \".\"; error ERROR at line 24606 column 95 near \".\"; error ERROR at line 24607 column 95 near \".\"; error ERROR at line 24608 column 95 near \".\"; error ERROR at line 24609 column 96 near \".\""
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/csharp/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 29629301 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/dart/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 4758698 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/erlang/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file may be undercounted because it failed to parse cleanly",
+      "detail": "tree-sitter syntax error nodes present: error ERROR at line 4996 column 7 near \"if (('0' <= lookahead && lookahead <= '9'))\"; missing identifier at line 5030 column 17 near \"'~', 15,\"; missing identifier at line 5063 column 18 near \"'}', 343,\"; missing identifier at line 5086 column 17 near \"'~', 15,\"; missing identifier at line 5172 column 18 near \"'|', 260,\""
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/fsharp/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 31990757 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/haskell/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 19811235 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/julia/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 54714183 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/objc/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 28242603 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/perl/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 20080466 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_PARSE_ERROR",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/r/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file may be undercounted because it failed to parse cleanly",
+      "detail": "tree-sitter syntax error nodes present: missing identifier at line 3675 column 17 near \"'~', 31,\"; missing identifier at line 3706 column 17 near \"'~', 31,\"; missing identifier at line 3734 column 17 near \"'~', 31,\"; missing identifier at line 4217 column 17 near \"'w', 11,\"; error ERROR at line 149065 column 17 near \"TSLanguage\""
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/grammars/zig/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 5843608 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/pgsql/src/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 14524353 bytes, above max parser input 4194304 bytes"
+    },
+    {
+      "code": "E_FILE_TOO_LARGE",
+      "severity": "warning",
+      "file_path": "internal/sem/zsh/parser.c",
+      "effect_on_semantic_completeness": "dependent references in this file were not counted because it exceeds max parser input",
+      "detail": "file is 9737608 bytes, above max parser input 4194304 bytes"
+    }
+  ],
+  "raw_sha256": "bcd23b78aeed34ec8eb7a4c3ecf92ba614f4ae26abf27ffe1c0a72d803b23f72",
+  "finding": "No additional product defect found in the final independent review. This diff includes docs/report packaging after verified productfed2063. Upstream generated parsers and unsupported evidence assets remain explicitly partial. Final submission SHA will be checked again after the screening package commit."
+}

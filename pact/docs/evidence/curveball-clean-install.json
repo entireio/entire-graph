@@ -1,0 +1,23 @@
+{
+  "package": "btw-pact 0.2.0",
+  "python": "3.12.12",
+  "installation": "fresh isolated /tmp environment, 28 declared packages",
+  "wheel_sha256": "270836a4da61a9d552b34882ed22904308a6cd7d7bd3107158f3464eb2d4dfa7",
+  "replays": [
+    {
+      "fixture": "d1",
+      "exit_code": 1,
+      "head_failures": 2,
+      "review_completion_state": "partial",
+      "saved_analysis_preserved": true
+    },
+    {
+      "fixture": "d2",
+      "exit_code": 0,
+      "head_failures": 0,
+      "review_completion_state": "partial",
+      "saved_analysis_preserved": true
+    }
+  ],
+  "cwd": "clean temporary directory, no repository or cloud credentials needed by replay"
+}
