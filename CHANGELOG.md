@@ -67,6 +67,32 @@ auto-generated notes on
 
 ### Changed
 
+- The sqlite search store is now written and read by default. `index --head`
+  and a cold `--head` lookup (`def`, `neighbors`, `impact`, `explain`) write it
+  beside the gz cache entry, so `graph store` and `graph context` find it without
+  `ENTIRE_GRAPH_SEARCH_STORE=1`. Set `ENTIRE_GRAPH_SEARCH_STORE=0` to turn it off.
+  A store that cannot be written never fails the command and is never silent:
+  `index` (a cold build, or a cache hit rebuilding a missing store) and a cold
+  `def`, `neighbors`, `impact`, `explain` or `query` succeed with a
+  `W_SEARCH_STORE_UNAVAILABLE` warning in their `warnings`, and lookups take the
+  full snapshot load. `explain` gains a `warnings` array for this, present only
+  when there is one, and its text form prints a `- warning` line after the
+  declarations.
+- `--head` `def`, `neighbors`, `impact` and `explain` answer from a focused
+  subgraph read from the sqlite store instead of loading the full snapshot. On
+  the Linux kernel a lookup drops from about 55 s and 16-46 GB of memory to
+  about 1 s and under 200 MB. A name with no exact match still loads the full
+  snapshot for the fuzzy lookup. Output is unchanged.
+- When the search store cannot be written, text and agent `def`, `neighbors`,
+  `impact` and `query` print a `- warning W_SEARCH_STORE_UNAVAILABLE` line after
+  the answer, outside `--max-context-bytes`. The warning is no longer part of the
+  completeness banner, `completeness_scope.in_scope_warnings`, or `query`'s agent
+  `Coverage:` line and compact `!N W` count.
+- `def --format json` keeps `W_SEARCH_STORE_UNAVAILABLE` in `warnings` when it trims
+  its answer to `--max-context-bytes`; it counts against the budget. An answer
+  that still does not fit returns the budget error with no output when one name
+  was asked, and with several names is left out while the rest are written and
+  the command exits non-zero.
 - `stats` without `--sessions-dir` or `--transcript` reads transcripts from
   `$CLAUDE_CONFIG_DIR/projects/` when `CLAUDE_CONFIG_DIR` is set, as Claude Code
   writes them, instead of `~/.claude/projects/`.

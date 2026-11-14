@@ -341,6 +341,11 @@ class T(unittest.TestCase):
                 pc.run_bounded(["graph"], timeout=0.1)
             popen.assert_not_called()
 
+    def test_trailing_run_warning_is_not_injected(self):
+        # query prints a run warning (sem.IsRunWarning) after its answer; it is not repository data.
+        answer = "1. a.go:1 X s=1\nfunc X() {}\n- warning W_SEARCH_STORE_UNAVAILABLE"
+        self.assertEqual(pc.clean(answer), "1. a.go:1 X s=1\nfunc X() {}")
+
     def test_compact_location_and_source_after_verify(self):
         self.assertEqual(pc.clean("VERIFY: go test\n  instructions\na.go:10\n    source"), "a.go:10\n    source")
 

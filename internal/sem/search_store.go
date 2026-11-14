@@ -2,10 +2,12 @@ package sem
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -36,18 +38,23 @@ import (
 // (the store context query's fan-out); v1 entries lack them and are rebuilt.
 // v3 adds the versioned read-only projection used by Brain inspection.
 // v4 fixes the file content identity projection to use the indexed Git blob.
-const searchStoreVersion = "search-store-sqlite-v4"
+// v5 adds the indexed symbol columns name_fold, qname_fold and container_id
+// and the relation_type_counts meta key, with their first reader, the focused
+// lookup load (search_store_focus.go); v4 stores lack them and are rebuilt.
+const searchStoreVersion = "search-store-sqlite-v5"
 
-// searchStoreEnv gates the READ path while the store rolls out: the artifact
-// is written beside complete JSON entries, but it is only served when the
-// operator opts in, so a rollout problem degrades to the measured JSON path
-// rather than to a broken query.
+// searchStoreEnv gates both the write and the read of the sidecar. It is ON
+// unless the operator opts out: the focused lookup reads depend on the store
+// existing without anyone having asked for it. An unset variable means
+// enabled; a set value keeps the original parse, so "", 0, false, off and no
+// disable it and anything else enables it. Disabled, every reader degrades to
+// the gz JSON entry, which stays authoritative either way.
 const searchStoreEnv = "ENTIRE_GRAPH_SEARCH_STORE"
 
 func searchStoreEnabled() bool {
 	value, ok := os.LookupEnv(searchStoreEnv)
 	if !ok {
-		return false
+		return true
 	}
 	switch strings.TrimSpace(strings.ToLower(value)) {
 	case "", "0", "false", "off", "no":
@@ -80,7 +87,10 @@ CREATE TABLE symbols (
 	sig_param_types TEXT,
 	sig_return_types TEXT,
 	has_signature_types INTEGER NOT NULL,
-	record TEXT NOT NULL
+	record TEXT NOT NULL,
+	name_fold TEXT NOT NULL,
+	qname_fold TEXT NOT NULL,
+	container_id TEXT NOT NULL
 );
 CREATE TABLE relations (
 	from_id TEXT NOT NULL,
@@ -120,9 +130,17 @@ CREATE VIEW brain_symbol_fts_v1 AS SELECT id,
 
 // Secondary indexes land WITH their first reader, never speculatively: the
 // relation endpoint indexes serve the store context query's fan-out
-// (searchStoreRelationsForIDs). The symbol name/path columns stay unindexed —
-// their reader scans with Go-side scoring, and a B-tree cannot serve the
-// substring match it does.
+// (searchStoreRelationsForIDs) and the focused load's hops. The raw symbol
+// name/path columns stay unindexed — their reader scans with Go-side scoring,
+// and a B-tree cannot serve the substring match it does. The folded name
+// columns and container_id serve the focused load's starting set and kinship
+// reads; they are created after the rows are inserted, which is cheaper than
+// maintaining them row by row.
+const searchStoreFocusIndexes = `
+CREATE INDEX symbols_name_fold ON symbols(name_fold);
+CREATE INDEX symbols_qname_fold ON symbols(qname_fold);
+CREATE INDEX symbols_container ON symbols(container_id);
+`
 
 // searchStoreRelationExtra carries the two composite RelationRecord fields.
 // WarningCodes is deliberately NOT omitempty: production relations always
@@ -156,7 +174,7 @@ type searchStoreMeta struct {
 // absent rather than serving a stale snapshot. The build runs with journaling
 // off: the file is a temporary the caller renames into place on success and
 // removes on failure, so a crashed build can never be read as an entry.
-func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cachedSearchSnapshot) error {
+func buildSearchStore(ctx context.Context, path, entryDigest string, stamp *searchStoreEntryStamp, cache *cachedSearchSnapshot) error {
 	db, err := sql.Open("sqlite", "file:"+sqliteURLPath(path)+"?_pragma=journal_mode(OFF)&_pragma=synchronous(OFF)")
 	if err != nil {
 		return err
@@ -192,12 +210,16 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 		DerivedFrom:     cache.DerivedFrom,
 		RepoScope:       cache.RepoScope,
 	}
-	for key, value := range map[string]any{
+	metaValues := map[string]any{
 		"store_version": searchStoreVersion,
 		"entry_digest":  entryDigest,
 		"envelope":      meta,
 		"header":        cache.Snapshot.Header,
-	} {
+	}
+	if stamp != nil {
+		metaValues["entry_stamp"] = stamp
+	}
+	for key, value := range metaValues {
 		encoded, err := json.Marshal(value)
 		if err != nil {
 			return err
@@ -258,8 +280,9 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 	putSymbol, err := tx.PrepareContext(ctx, `INSERT INTO symbols(
 		id, name, qualified_name, file_path, kind, local, bodyless, name_line,
 		byte_start, byte_end, param_names, param_names_known,
-		sig_param_types, sig_return_types, has_signature_types, record
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		sig_param_types, sig_return_types, has_signature_types, record,
+		name_fold, qname_fold, container_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -293,6 +316,7 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 			boolToInt(local[symbol.ID]), boolToInt(bodyless[symbol.ID]), cache.SymbolNameLines[symbol.ID],
 			byteStart, byteEnd, paramNames, boolToInt(paramKnown[symbol.ID]),
 			sigParams, sigReturns, boolToInt(hasSignatureTypes), string(record),
+			foldSymbolName(symbol.Name), foldSymbolName(symbol.QualifiedName), symbol.ContainerID,
 		); err != nil {
 			return err
 		}
@@ -306,8 +330,10 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 		return err
 	}
 	defer putRelation.Close()
+	relationTypeCounts := map[string]int{}
 	for index := range cache.Snapshot.Relations {
 		relation := &cache.Snapshot.Relations[index]
+		relationTypeCounts[relation.Type]++
 		var extra any
 		if relation.Evidence != nil || relation.WarningCodes != nil {
 			encoded, err := json.Marshal(searchStoreRelationExtra{
@@ -327,6 +353,17 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 			return err
 		}
 	}
+	// The per-type counts of exactly the rows inserted above. A focused load
+	// holds only part of the relations, yet must report the whole snapshot's
+	// Stats.Relations; reading these is O(1) where counting FILE_CHANGES_WITH
+	// rows in SQL would scan the whole relations table on every lookup.
+	encodedCounts, err := json.Marshal(relationTypeCounts)
+	if err != nil {
+		return err
+	}
+	if _, err := putMeta.ExecContext(ctx, "relation_type_counts", string(encodedCounts)); err != nil {
+		return err
+	}
 
 	putUnmerged, err := tx.PrepareContext(ctx, `INSERT INTO unmerged_data_flow_edges(from_id, to_id) VALUES (?, ?)`)
 	if err != nil {
@@ -338,6 +375,9 @@ func buildSearchStore(ctx context.Context, path, entryDigest string, cache *cach
 		if _, err := putUnmerged.ExecContext(ctx, fromID, toID); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx, searchStoreFocusIndexes); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -360,6 +400,14 @@ func sqliteURLPath(path string) string {
 	return (&url.URL{Path: filepath.ToSlash(path)}).EscapedPath()
 }
 
+// searchStoreFileIsRegular rejects FIFOs and other non-regular sidecars before SQLite opens
+// them. Its filesystem open can block before a query context can cancel it. Stat follows links
+// so a link to a FIFO is rejected too, while existing links to regular stores keep working.
+func searchStoreFileIsRegular(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 // loadSearchStore reads a store written by buildSearchStore back into the
 // cachedSearchSnapshot it was built from. wantEntryDigest, when non-empty,
 // must match the digest the store was built against. Row JSON decodes on all
@@ -367,6 +415,9 @@ func sqliteURLPath(path string) string {
 // nature, and the parallel row decode is where the load-time win comes from
 // until consumers stop materializing the whole snapshot.
 func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedSearchSnapshot, error) {
+	if !searchStoreFileIsRegular(path) {
+		return cachedSearchSnapshot{}, ErrSearchStoreMissing
+	}
 	db, err := sql.Open("sqlite", "file:"+sqliteURLPath(path)+"?immutable=1&mode=ro")
 	if err != nil {
 		return cachedSearchSnapshot{}, err
@@ -394,6 +445,70 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 	if err := readSearchStoreMetaKey(ctx, db, "envelope", &meta); err != nil {
 		return cachedSearchSnapshot{}, err
 	}
+	cache.applySearchStoreMeta(meta)
+	if err := readSearchStoreMetaKey(ctx, db, "header", &cache.Snapshot.Header); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	if err := readSearchStoreFiles(ctx, db, &cache); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	if err := scanSearchStoreRows(ctx, db, `SELECT `+searchStoreExternalColumns+` FROM externals ORDER BY rowid`, func(scan rowScanner) error {
+		external, err := scanSearchStoreExternal(scan)
+		if err != nil {
+			return err
+		}
+		cache.Snapshot.Externals = append(cache.Snapshot.Externals, external)
+		return nil
+	}); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	var symbolRows []searchStoreSymbolRow
+	if err := scanSearchStoreRows(ctx, db, `SELECT `+searchStoreSymbolColumns+` FROM symbols ORDER BY rowid`, func(scan rowScanner) error {
+		row, err := scanSearchStoreSymbolRow(scan)
+		if err != nil {
+			return err
+		}
+		symbolRows = append(symbolRows, row)
+		return nil
+	}); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+	if err := decodeSearchStoreSymbols(&cache, symbolRows); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	if err := scanSearchStoreRows(ctx, db, `SELECT `+searchStoreRelationColumns+` FROM relations ORDER BY rowid`, func(scan rowScanner) error {
+		relation, err := scanSearchStoreRelation(scan)
+		if err != nil {
+			return err
+		}
+		cache.Snapshot.Relations = append(cache.Snapshot.Relations, relation)
+		return nil
+	}); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	if err := scanSearchStoreRows(ctx, db, `SELECT from_id, to_id FROM unmerged_data_flow_edges ORDER BY rowid`, func(scan rowScanner) error {
+		var fromID, toID string
+		if err := scan(&fromID, &toID); err != nil {
+			return err
+		}
+		cache.UnmergedDataFlowEdges = append(cache.UnmergedDataFlowEdges, [2]string{fromID, toID})
+		return nil
+	}); err != nil {
+		return cachedSearchSnapshot{}, err
+	}
+
+	restoreCachedSearchInternals(&cache)
+	return cache, nil
+}
+
+// applySearchStoreMeta restores the envelope scalars a store keeps under its
+// "envelope" meta key.
+func (cache *cachedSearchSnapshot) applySearchStoreMeta(meta searchStoreMeta) {
 	cache.CacheVersion = meta.CacheVersion
 	cache.ProviderVersion = meta.ProviderVersion
 	cache.Commit = meta.Commit
@@ -403,11 +518,30 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 	cache.Worktree = meta.Worktree
 	cache.DerivedFrom = meta.DerivedFrom
 	cache.RepoScope = meta.RepoScope
-	if err := readSearchStoreMetaKey(ctx, db, "header", &cache.Snapshot.Header); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
+}
 
-	if err := scanSearchStoreRows(ctx, db, `SELECT lines, record FROM files ORDER BY rowid`, func(scan rowScanner) error {
+func readSearchStoreMetaKey(ctx context.Context, db *sql.DB, key string, value any) error {
+	var encoded string
+	if err := db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&encoded); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("search store is missing meta key %q", key)
+		}
+		return err
+	}
+	return json.Unmarshal([]byte(encoded), value)
+}
+
+type rowScanner func(dest ...any) error
+
+// The row decoders below are shared by the full load (loadSearchStore) and the
+// focused load (search_store_focus.go), so a focused snapshot's records are
+// decoded byte for byte as the full snapshot's are. Each *Columns constant is
+// the column list its scanner reads, in order.
+
+// readSearchStoreFiles appends every file row, in snapshot order, with its
+// line count restored into FileLines.
+func readSearchStoreFiles(ctx context.Context, db *sql.DB, cache *cachedSearchSnapshot) error {
+	return scanSearchStoreRows(ctx, db, `SELECT lines, record FROM files ORDER BY rowid`, func(scan rowScanner) error {
 		var record string
 		var lines int
 		if err := scan(&lines, &record); err != nil {
@@ -425,51 +559,49 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 			cache.FileLines[file.ID] = lines
 		}
 		return nil
-	}); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
+	})
+}
 
-	if err := scanSearchStoreRows(ctx, db, `SELECT record FROM externals ORDER BY rowid`, func(scan rowScanner) error {
-		var record string
-		if err := scan(&record); err != nil {
-			return err
-		}
-		var external ExternalRecord
-		if err := json.Unmarshal([]byte(record), &external); err != nil {
-			return err
-		}
-		cache.Snapshot.Externals = append(cache.Snapshot.Externals, external)
-		return nil
-	}); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
+const searchStoreExternalColumns = `record`
 
-	type symbolRow struct {
-		record            string
-		local, bodyless   bool
-		nameLine          int
-		byteStart         sql.NullInt64
-		byteEnd           sql.NullInt64
-		paramNames        sql.NullString
-		paramKnown        bool
-		sigParams         sql.NullString
-		sigReturns        sql.NullString
-		hasSignatureTypes bool
+func scanSearchStoreExternal(scan rowScanner) (ExternalRecord, error) {
+	var record string
+	if err := scan(&record); err != nil {
+		return ExternalRecord{}, err
 	}
-	var symbolRows []symbolRow
-	if err := scanSearchStoreRows(ctx, db, `SELECT record, local, bodyless, name_line, byte_start, byte_end,
-		param_names, param_names_known, sig_param_types, sig_return_types, has_signature_types
-		FROM symbols ORDER BY rowid`, func(scan rowScanner) error {
-		var row symbolRow
-		if err := scan(&row.record, &row.local, &row.bodyless, &row.nameLine, &row.byteStart, &row.byteEnd,
-			&row.paramNames, &row.paramKnown, &row.sigParams, &row.sigReturns, &row.hasSignatureTypes); err != nil {
-			return err
-		}
-		symbolRows = append(symbolRows, row)
-		return nil
-	}); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
+	var external ExternalRecord
+	err := json.Unmarshal([]byte(record), &external)
+	return external, err
+}
+
+const searchStoreSymbolColumns = `record, local, bodyless, name_line, byte_start, byte_end,
+	param_names, param_names_known, sig_param_types, sig_return_types, has_signature_types`
+
+// searchStoreSymbolRow is one symbol row before its record is decoded: the
+// record JSON plus the side-map columns the private symbol fields travel in.
+type searchStoreSymbolRow struct {
+	record            string
+	local, bodyless   bool
+	nameLine          int
+	byteStart         sql.NullInt64
+	byteEnd           sql.NullInt64
+	paramNames        sql.NullString
+	paramKnown        bool
+	sigParams         sql.NullString
+	sigReturns        sql.NullString
+	hasSignatureTypes bool
+}
+
+func scanSearchStoreSymbolRow(scan rowScanner) (searchStoreSymbolRow, error) {
+	var row searchStoreSymbolRow
+	err := scan(&row.record, &row.local, &row.bodyless, &row.nameLine, &row.byteStart, &row.byteEnd,
+		&row.paramNames, &row.paramKnown, &row.sigParams, &row.sigReturns, &row.hasSignatureTypes)
+	return row, err
+}
+
+// decodeSearchStoreSymbols decodes rows, in the order given, into
+// cache.Snapshot.Symbols and restores the side maps for exactly those symbols.
+func decodeSearchStoreSymbols(cache *cachedSearchSnapshot, symbolRows []searchStoreSymbolRow) error {
 	// The side maps allocate lazily, exactly like the producer in
 	// newCachedSearchSnapshot: the fidelity pin compares DeepEqual against the
 	// JSON round-trip, and an eagerly allocated empty map would differ from the
@@ -478,7 +610,7 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 	if err := decodeSearchStoreParallel(len(symbolRows), func(index int) error {
 		return json.Unmarshal([]byte(symbolRows[index].record), &cache.Snapshot.Symbols[index])
 	}); err != nil {
-		return cachedSearchSnapshot{}, err
+		return err
 	}
 	for index := range symbolRows {
 		row := &symbolRows[index]
@@ -504,7 +636,7 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 		if row.paramNames.Valid {
 			var names []string
 			if err := json.Unmarshal([]byte(row.paramNames.String), &names); err != nil {
-				return cachedSearchSnapshot{}, err
+				return err
 			}
 			if cache.SymbolParameterNames == nil {
 				cache.SymbolParameterNames = make(map[string][]string)
@@ -524,58 +656,32 @@ func loadSearchStore(ctx context.Context, path, wantEntryDigest string) (cachedS
 			}
 		}
 	}
-
-	if err := scanSearchStoreRows(ctx, db, `SELECT from_id, to_id, type, confidence, reason,
-		relation_scope, resolution, target_kind, evidence_dropped, extra
-		FROM relations ORDER BY rowid`, func(scan rowScanner) error {
-		relation := RelationRecord{RecordType: "relation"}
-		var extra sql.NullString
-		if err := scan(&relation.FromID, &relation.ToID, &relation.Type, &relation.Confidence,
-			&relation.Reason, &relation.RelationScope, &relation.Resolution,
-			&relation.TargetKind, &relation.EvidenceDropped, &extra); err != nil {
-			return err
-		}
-		if extra.Valid {
-			var composite searchStoreRelationExtra
-			if err := json.Unmarshal([]byte(extra.String), &composite); err != nil {
-				return err
-			}
-			relation.Evidence = composite.Evidence
-			relation.WarningCodes = composite.WarningCodes
-		}
-		cache.Snapshot.Relations = append(cache.Snapshot.Relations, relation)
-		return nil
-	}); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
-
-	if err := scanSearchStoreRows(ctx, db, `SELECT from_id, to_id FROM unmerged_data_flow_edges ORDER BY rowid`, func(scan rowScanner) error {
-		var fromID, toID string
-		if err := scan(&fromID, &toID); err != nil {
-			return err
-		}
-		cache.UnmergedDataFlowEdges = append(cache.UnmergedDataFlowEdges, [2]string{fromID, toID})
-		return nil
-	}); err != nil {
-		return cachedSearchSnapshot{}, err
-	}
-
-	restoreCachedSearchInternals(&cache)
-	return cache, nil
+	return nil
 }
 
-func readSearchStoreMetaKey(ctx context.Context, db *sql.DB, key string, value any) error {
-	var encoded string
-	if err := db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&encoded); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("search store is missing meta key %q", key)
-		}
-		return err
-	}
-	return json.Unmarshal([]byte(encoded), value)
-}
+const searchStoreRelationColumns = `from_id, to_id, type, confidence, reason,
+	relation_scope, resolution, target_kind, evidence_dropped, extra`
 
-type rowScanner func(dest ...any) error
+// scanSearchStoreRelation decodes one full relation row: every field the
+// record carries, Evidence and WarningCodes included.
+func scanSearchStoreRelation(scan rowScanner) (RelationRecord, error) {
+	relation := RelationRecord{RecordType: "relation"}
+	var extra sql.NullString
+	if err := scan(&relation.FromID, &relation.ToID, &relation.Type, &relation.Confidence,
+		&relation.Reason, &relation.RelationScope, &relation.Resolution,
+		&relation.TargetKind, &relation.EvidenceDropped, &extra); err != nil {
+		return RelationRecord{}, err
+	}
+	if extra.Valid {
+		var composite searchStoreRelationExtra
+		if err := json.Unmarshal([]byte(extra.String), &composite); err != nil {
+			return RelationRecord{}, err
+		}
+		relation.Evidence = composite.Evidence
+		relation.WarningCodes = composite.WarningCodes
+	}
+	return relation, nil
+}
 
 func scanSearchStoreRows(ctx context.Context, db *sql.DB, query string, each func(rowScanner) error) error {
 	rows, err := db.QueryContext(ctx, query)
@@ -641,10 +747,10 @@ func searchStoreEntryFor(entry cacheEntry) cacheEntry {
 // (search_store_retention.go); the gz entries are never trimmed.
 func writeSearchStoreSidecar(ctx context.Context, entry cacheEntry, entryDigest string, cache *cachedSearchSnapshot) error {
 	if !searchStoreEnabled() {
-		// The write is gated by the same flag as the read: with no reader, an
-		// unconditional sidecar taxed every complete persist with the build
-		// plus ~144MB per cache variant. Enabling the flag costs one rebuild
-		// (`graph index`, or the next cold build) instead.
+		// The write is gated by the same flag as the read: with no reader, a
+		// sidecar taxes every complete persist with the build plus ~144MB per
+		// cache variant. Re-enabling costs one rebuild (`graph index`, or the
+		// next cold build) instead.
 		return nil
 	}
 	directory, err := openCacheEntryDirectory(entry)
@@ -676,7 +782,7 @@ func writeSearchStoreSidecar(ctx context.Context, entry cacheEntry, entryDigest 
 	}
 	directoryPath := filepath.Join(entry.root, filepath.Dir(entry.relative))
 	temporaryPath := filepath.Join(directoryPath, temporaryName)
-	if err := buildSearchStore(ctx, temporaryPath, entryDigest, cache); err != nil {
+	if err := buildSearchStore(ctx, temporaryPath, entryDigest, stampSearchEntry(entry, entryDigest), cache); err != nil {
 		return err
 	}
 	if beforeSearchStorePublish != nil {
@@ -710,17 +816,27 @@ func writeSearchStoreSidecar(ctx context.Context, entry cacheEntry, entryDigest 
 
 // repairSearchStoreSidecarForEntry builds the sidecar for an ALREADY-persisted
 // entry when it is missing or does not match the entry. The explicit prebuild
-// needs this: a gz entry persisted by a run without the store flag (a plain
-// query, or an index before the operator opted in) would otherwise make
-// `entire graph index` with the flag a cache-hit no-op that never creates the
-// store its own degradation message tells the operator to build. The sidecar
-// is built from the raw persisted bytes, not from the request-bound snapshot
-// in memory, so it mirrors the entry exactly as the fidelity contract demands.
-func repairSearchStoreSidecarForEntry(ctx context.Context, entry cacheEntry) error {
+// needs this: a gz entry persisted by a run with the store disabled (or by a
+// build before the sidecar was on by default) would otherwise make
+// `entire graph index` a cache-hit no-op that never creates the store its own
+// degradation message tells the operator to build. The sidecar is built from
+// the raw persisted bytes, not from the request-bound snapshot in memory, so
+// it mirrors the entry exactly as the fidelity contract demands.
+//
+// Whether a sidecar is needed is decided from its meta alone (version, entry
+// digest and tree, the check openExactSearchStore makes), never by loading it:
+// on a no-op index the hit has already decoded the store once, and a second
+// full decode just to learn it exists made the kernel no-op 104s with the
+// store against 51s without. The entry digest is the one that hit already
+// hashed, reused through the run's digest memo; a rebuild hashes the entry
+// afresh because it stamps the digest into the new sidecar.
+func repairSearchStoreSidecarForEntry(ctx context.Context, entry cacheEntry, tree string) error {
 	if !searchStoreEnabled() {
 		return nil
 	}
-	if _, ok := loadSearchStoreForEntry(ctx, entry); ok {
+	memoized := func(entry cacheEntry) (cacheDigest, error) { return memoizedEntryDigest(ctx, entry) }
+	if _, db, err := openExactSearchStoreForEntry(ctx, entry, tree, memoized, false); err == nil {
+		_ = db.Close()
 		return nil
 	}
 	digest, err := entry.digest()
@@ -734,8 +850,181 @@ func repairSearchStoreSidecarForEntry(ctx context.Context, entry cacheEntry) err
 	return writeSearchStoreSidecar(ctx, entry, digest.String(), &raw)
 }
 
+// SearchStoreUnavailableCode names the header warning a command carries when
+// it tried to write the sqlite sidecar and could not: `index` on a hit (the
+// repair) or a miss, and a cold build by a `--head` lookup or `query`. The
+// command itself succeeded; the warning says why `graph store` reports
+// store_unavailable and why lookups on this tree take the full snapshot load.
+const SearchStoreUnavailableCode = "W_SEARCH_STORE_UNAVAILABLE"
+
+// IsRunWarning reports whether code names a warning about one run's own work
+// rather than a diagnostic of the graph: today only SearchStoreUnavailableCode,
+// a sqlite store this run could not write while the graph it built is
+// complete. Renderers keep such a warning out of every coverage and
+// completeness count and print it after the answer instead: neighbors,
+// impact and query through writeRunWarningLines, def with its own lines,
+// and explain through its own text path. The prompt-context
+// hook's clean() (scripts/entire-graph-prompt-context.py) matches the same codes.
+func IsRunWarning(code string) bool {
+	return code == SearchStoreUnavailableCode
+}
+
+// withSearchStoreUnavailable is how every sidecar write site reports its
+// failure: snapshot with a SearchStoreUnavailableCode header warning appended,
+// or snapshot unchanged when err is nil. The slice is fresh because the
+// warnings may share a backing array with a cached or just-persisted snapshot,
+// which must not carry a warning about one run's write.
+func withSearchStoreUnavailable(snapshot ProviderSnapshot, err error) ProviderSnapshot {
+	snapshot.Header.Warnings = appendSearchStoreUnavailable(snapshot.Header.Warnings, err)
+	return snapshot
+}
+
+// appendSearchStoreUnavailable is withSearchStoreUnavailable for a bare
+// warning list, such as a search response's.
+func appendSearchStoreUnavailable(warnings []ProviderWarning, err error) []ProviderWarning {
+	if err == nil {
+		return warnings
+	}
+	fresh := make([]ProviderWarning, 0, len(warnings)+1)
+	fresh = append(fresh, warnings...)
+	return append(fresh, searchStoreUnavailableWarning(err))
+}
+
+func searchStoreUnavailableWarning(err error) ProviderWarning {
+	return ProviderWarning{
+		Code:                 SearchStoreUnavailableCode,
+		Severity:             "warning",
+		EffectOnCompleteness: "none: the graph is complete, but its sqlite search store could not be written, so `graph store` and `graph context` report store_unavailable and lookups fall back to the full snapshot load (correct, slower)",
+		// Appended after the header's warnings were stamped, so it is stamped here.
+		EffectScope: DiagnosticEffectScope(SearchStoreUnavailableCode, ""),
+		Detail:      err.Error(),
+	}
+}
+
+// entryDigestMemo holds the gz entry digests one run has already hashed, so
+// the run's later checks against the same entry do not hash it again. On the
+// Linux kernel the entry is about 400 MB and each hash 0.28-0.31 s
+// (docs/perf-ledger.md, stamp row). It lives on
+// the context of the run that installed it (withEntryDigestMemo) and nowhere
+// else, so a digest never outlives the command that computed it. Only callers
+// that do not write the entry in between may install one.
+type entryDigestMemo struct {
+	mu      sync.Mutex
+	digests map[string]cacheDigest
+}
+
+type entryDigestMemoKey struct{}
+
+func withEntryDigestMemo(ctx context.Context) context.Context {
+	return context.WithValue(ctx, entryDigestMemoKey{}, &entryDigestMemo{digests: map[string]cacheDigest{}})
+}
+
+// memoizedEntryDigest is entry.digest(), served from the context's memo when
+// that entry was hashed before in this run. Without a memo it always hashes.
+func memoizedEntryDigest(ctx context.Context, entry cacheEntry) (cacheDigest, error) {
+	memo, _ := ctx.Value(entryDigestMemoKey{}).(*entryDigestMemo)
+	if memo == nil {
+		return entry.digest()
+	}
+	path := filepath.Join(entry.root, entry.relative)
+	memo.mu.Lock()
+	digest, ok := memo.digests[path]
+	memo.mu.Unlock()
+	if ok {
+		return digest, nil
+	}
+	digest, err := entry.digest()
+	if err != nil {
+		return cacheDigest{}, err
+	}
+	memo.mu.Lock()
+	memo.digests[path] = digest
+	memo.mu.Unlock()
+	return digest, nil
+}
+
+// searchStoreEntryStamp is the gz entry's size and modification time as they
+// were when its sidecar was written, recorded beside the digest (meta key
+// entry_stamp). A lookup that finds the entry with the same stamp takes the
+// recorded digest instead of hashing the entry (openExactSearchStoreForEntry,
+// trustStamp): on the Linux kernel the entry is 400 MB and its hash a fifth of
+// a focused lookup.
+//
+// This is an integrity cache, not a security boundary. The digest check it
+// stands in for catches an entry and a sidecar left by different writes, not
+// tampering: whoever can rewrite the entry can rewrite the sidecar beside it.
+// Every writer replaces the entry by renaming a freshly written file over it,
+// which gives it a new modification time; the bytes written under one key are
+// deterministic; and `index --force` rewrites the entry and the sidecar
+// together. An entry whose size and time to the nanosecond are still the
+// recorded ones is therefore the entry the sidecar was written from, and any
+// difference brings the hash back. A sidecar written without a stamp (an
+// older one, or one whose entry changed while it was stamped) is always
+// checked by hash.
+//
+// "A new modification time" assumes the filesystem's timestamps are finer
+// than the gap between two writes of one entry. On a coarse one (FAT's 2 s,
+// HFS+'s or ext3's 1 s), two same-size writes within one tick keep the stamp,
+// and only the determinism of same-key bytes keeps the recorded digest right.
+type searchStoreEntryStamp struct {
+	Size      int64 `json:"size"`
+	ModTimeNS int64 `json:"mtime_ns"`
+}
+
+func searchEntryStampOf(file *os.File) (searchStoreEntryStamp, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return searchStoreEntryStamp{}, err
+	}
+	return searchStoreEntryStamp{Size: info.Size(), ModTimeNS: info.ModTime().UnixNano()}, nil
+}
+
+// stampSearchEntry returns the entry's stamp for a sidecar that records
+// entryDigest, or nil. The entry is hashed here, once per sidecar write, so a
+// stamp is recorded only for an entry whose bytes are the digest's and whose
+// stamp held across the read: a stamp that does not provably belong to the
+// digest would let a lookup skip the hash for the wrong bytes.
+func stampSearchEntry(entry cacheEntry, entryDigest string) *searchStoreEntryStamp {
+	file, err := entry.open()
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	before, err := searchEntryStampOf(file)
+	if err != nil {
+		return nil
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return nil
+	}
+	after, err := searchEntryStampOf(file)
+	var digest cacheDigest
+	copy(digest[:], hash.Sum(nil))
+	if err != nil || after != before || digest.String() != entryDigest {
+		return nil
+	}
+	return &before
+}
+
+// searchEntryStampMatches reports whether the sidecar on db recorded a stamp
+// and the entry on disk still has it.
+func searchEntryStampMatches(ctx context.Context, db *sql.DB, entry cacheEntry) bool {
+	var recorded searchStoreEntryStamp
+	if err := readSearchStoreMetaKey(ctx, db, "entry_stamp", &recorded); err != nil {
+		return false
+	}
+	file, err := entry.open()
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	current, err := searchEntryStampOf(file)
+	return err == nil && current == recorded
+}
+
 // loadSearchStoreForEntry serves the entry's snapshot from the sqlite sidecar
-// when the operator opted in and the sidecar matches the entry on disk. The
+// when the store is enabled and the sidecar matches the entry on disk. The
 // bool reports whether the store answered; every failure is a quiet miss so
 // the gz entry stays authoritative.
 func loadSearchStoreForEntry(ctx context.Context, entry cacheEntry) (cachedSearchSnapshot, bool) {
@@ -747,7 +1036,7 @@ func loadSearchStoreForEntry(ctx context.Context, entry cacheEntry) (cachedSearc
 	if _, err := os.Stat(path); err != nil {
 		return cachedSearchSnapshot{}, false
 	}
-	digest, err := entry.digest()
+	digest, err := memoizedEntryDigest(ctx, entry)
 	if err != nil {
 		return cachedSearchSnapshot{}, false
 	}

@@ -383,6 +383,11 @@ func loadOrBuildSearchSnapshotPersisting(
 	// selective search without rebuilding the same tree for every query. Keep
 	// the selected file/symbol scope; relation resolution uses the complete graph
 	// and may omit guesses from a selection-only build, as documented below.
+	//
+	// completeStoreErr is the sidecar error of a complete build below that
+	// published its entry. It must reach the snapshot this call finally serves
+	// even when that is not the one derived from the build.
+	var completeStoreErr error
 	if len(options.OnlyFiles) > 0 {
 		deriveFromFull := func(full ProviderSnapshot) (ProviderSnapshot, bool) {
 			selective, deriveErr := selectiveSearchSnapshotFromFull(ctx, absRepo, providerVersion, options, full)
@@ -479,8 +484,12 @@ func loadOrBuildSearchSnapshotPersisting(
 				if buildErr == nil && validateBuiltSearchSnapshot(full, repositoryKey, providerVersion, tree, completeOptions) == nil {
 					full.Header.Commit = commit
 					// Best effort, like every query-time store: an unwritable cache
-					// still serves this query from the snapshot in memory.
-					_ = writeSearchSnapshotAndStore(ctx, fullEntry, newCachedSearchSnapshot(providerVersion, commit, tree, completeOptions, full, ctx))
+					// still serves this query from the snapshot in memory. A sidecar
+					// failure rides on the complete header, which is the header
+					// the query reports (onCompleteDerivation); when the derivation
+					// fails, the fallback below carries it instead.
+					completeStoreErr, _ = writeSearchSnapshotAndStore(ctx, fullEntry, newCachedSearchSnapshot(providerVersion, commit, tree, completeOptions, full, ctx))
+					full = withSearchStoreUnavailable(full, completeStoreErr)
 					if selective, ok := deriveFromFull(full); ok {
 						return selective, false, true, nil
 					}
@@ -497,7 +506,7 @@ func loadOrBuildSearchSnapshotPersisting(
 	// lock (above for a selective view, below for a complete one). Building the
 	// selection itself would parse every file the uncapped grep matched.
 	if options.coldComplete.required && (len(options.OnlyFiles) > 0 || !persistBuilt || !generationKnown) {
-		return ProviderSnapshot{}, false, errColdCompleteUnavailable
+		return ProviderSnapshot{}, false, refuseColdComplete(completeStoreErr)
 	}
 	// A complete query that missed builds exactly the artifact a concurrent cold
 	// query on the same tree is building, so it takes the same lock and re-checks
@@ -541,16 +550,22 @@ func loadOrBuildSearchSnapshotPersisting(
 	// a writable cache directory.
 	if generationKnown && persistBuilt {
 		cache := newCachedSearchSnapshotFrom(providerVersion, commit, tree, derivedFrom, options, snapshot, ctx)
-		if err := writeSearchSnapshot(entry, cache); err == nil && len(options.OnlyFiles) == 0 {
-			// A complete entry gets its counts here too: this is where a cold
-			// lookup (`def`, `neighbors`, `impact`, `explain` with --head)
-			// persists, and without them the status line shows no size until
-			// `index` runs. Best effort, and only once the entry has landed (see
-			// writeSearchSnapshotCounts, which refuses a truncated snapshot).
-			_ = writeSearchSnapshotCounts(entry, cache)
+		if len(options.OnlyFiles) == 0 {
+			// A complete entry gets its sidecar here too, as on the cold-query
+			// path above: this is where a cold lookup (`def`, `neighbors`,
+			// `impact`, `explain` with --head) persists, and without the
+			// sidecar the NEXT lookup on this tree would pay the full gz decode
+			// instead of reading the store. A sidecar failure is surfaced on
+			// the snapshot this call returns; the gz entry stays best effort.
+			storeErr, _ := writeSearchSnapshotAndStore(ctx, entry, cache)
+			snapshot = withSearchStoreUnavailable(snapshot, storeErr)
+		} else {
+			_ = writeSearchSnapshot(entry, cache)
 		}
 	}
-	return snapshot, false, nil
+	// A selective build that fell through from a complete build which
+	// published its entry but could not serve this selection.
+	return withSearchStoreUnavailable(snapshot, completeStoreErr), false, nil
 }
 
 // coldCompleteSnapshotMaxFiles is the largest repository, in source files after
@@ -589,6 +604,23 @@ func completeSnapshotAffordableOnColdQuery(ctx context.Context, absRepo string, 
 // not validate. The search then selects again with the bounded content scan, so
 // the fallback builds exactly what it built before the warm route existed.
 var errColdCompleteUnavailable = errors.New("no complete snapshot for a cold-complete selection")
+
+// coldCompleteRefusal is errColdCompleteUnavailable from a complete build that
+// published its entry but whose sqlite sidecar could not be written. The search
+// retries the selection, and that retry reports storeErr: nothing else will,
+// since the retry finds the published entry and writes no sidecar itself.
+type coldCompleteRefusal struct{ storeErr error }
+
+func (r coldCompleteRefusal) Error() string { return errColdCompleteUnavailable.Error() }
+func (r coldCompleteRefusal) Unwrap() error { return errColdCompleteUnavailable }
+
+// refuseColdComplete is errColdCompleteUnavailable, carrying storeErr when there is one.
+func refuseColdComplete(storeErr error) error {
+	if storeErr == nil {
+		return errColdCompleteUnavailable
+	}
+	return coldCompleteRefusal{storeErr: storeErr}
+}
 
 // coldCompleteSnapshotFits is the corpus-size bound on the cold-complete build. Cold
 // preselection asks it too, so it takes the warm route only where that build can follow.
@@ -665,13 +697,17 @@ func preindexProviderSnapshotWithPersistenceVerifier(
 	repositoryKey := repoKey(ctx, absRepo)
 	var snapshot ProviderSnapshot
 	var cacheHit bool
+	// The load below writes nothing (persistBuilt is false), so a digest it
+	// hashes while checking the store sidecar still describes the entry when
+	// the hit's sidecar repair checks it again.
+	hitCtx := withEntryDigestMemo(ctx)
 	if options.ForceRebuild {
 		// --force: rebuild from HEAD regardless of any cached entry. The fresh
 		// snapshot overwrites that entry below so later queries serve it.
 		snapshot, err = BuildProviderSnapshotWithOptions(ctx, absRepo, providerVersion, options)
 	} else {
 		// The complete entry is persisted below, verified, rather than best effort here.
-		snapshot, cacheHit, err = loadOrBuildSearchSnapshotPersisting(ctx, absRepo, providerVersion, options, cacheDir, false, nil, false)
+		snapshot, cacheHit, err = loadOrBuildSearchSnapshotPersisting(hitCtx, absRepo, providerVersion, options, cacheDir, false, nil, false)
 	}
 	if err != nil {
 		return ProviderSnapshot{}, false, err
@@ -698,12 +734,20 @@ func preindexProviderSnapshotWithPersistenceVerifier(
 		// A hit is returned only after the persisted entry has been fully decoded
 		// and validated, so reading the same artifact again cannot strengthen the
 		// durability guarantee. The store sidecar, though, may be missing when
-		// the entry was persisted by a run without the store flag; the explicit
+		// the entry was persisted by a run with the store disabled; the explicit
 		// prebuild is the documented remedy for that, so it repairs the sidecar
-		// rather than no-op on the hit. Surfaced, not best effort: the operator
-		// asked for the store and would otherwise retry forever.
-		if err := repairSearchStoreSidecarForEntry(ctx, entry); err != nil {
-			return ProviderSnapshot{}, false, fmt.Errorf("build store sidecar for cached preindex entry: %w", err)
+		// rather than no-op on the hit.
+		//
+		// A repair failure does not fail the index: the sidecar is on by
+		// default, so an operator who never asked for it must not see `index`
+		// start failing on, say, a full disk. The complete entry is durable and
+		// every lookup falls back to it. The failure is surfaced as a header
+		// warning instead, never dropped.
+		if err := repairSearchStoreSidecarForEntry(hitCtx, entry, tree); err != nil {
+			if ctx.Err() != nil {
+				return ProviderSnapshot{}, false, ctx.Err()
+			}
+			snapshot = withSearchStoreUnavailable(snapshot, err)
 		}
 		// The counts file holds what this run reports. It may be missing (an entry from an
 		// earlier build) or differ: the key covers the tree, but a full-profile hit recomputes
@@ -720,9 +764,16 @@ func preindexProviderSnapshotWithPersistenceVerifier(
 		snapshot.Header.Commit = commit
 	}
 	cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot, ctx)
-	if err := persistVerifiedSearchSnapshot(ctx, entry, cache, readPersistedDigest); err != nil {
+	storeErr, err := persistVerifiedSearchSnapshot(ctx, entry, cache, readPersistedDigest)
+	if err != nil {
 		return ProviderSnapshot{}, false, fmt.Errorf("persist preindex snapshot: %w", err)
 	}
+	if storeErr != nil && ctx.Err() != nil {
+		return ProviderSnapshot{}, false, ctx.Err()
+	}
+	// A sidecar that could not be written does not fail the index, for the
+	// reason given on the hit path above; it is a header warning instead.
+	snapshot = withSearchStoreUnavailable(snapshot, storeErr)
 	if options.ForceRebuild {
 		// Refreshing the complete entry is not what --force promises. A selective
 		// search is served from its OWN entry before the complete one is ever
@@ -770,15 +821,15 @@ func persistVerifiedSearchSnapshot(
 	entry cacheEntry,
 	cache cachedSearchSnapshot,
 	readPersistedDigest func(cacheEntry) (cacheDigest, error),
-) error {
+) (storeErr, err error) {
 	if err := refuseTruncatedSnapshot(cache); err != nil {
-		return err
+		return nil, err
 	}
 	var verifyErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		written, err := entry.writeDigest("snapshot", cache)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		stored, err := readPersistedDigest(entry)
 		switch {
@@ -791,12 +842,12 @@ func persistVerifiedSearchSnapshot(
 			// (writeSearchSnapshotCounts); best effort.
 			_ = writeSearchSnapshotCounts(entry, cache)
 			// The explicit prebuild is exactly where a reader expects the
-			// sidecar to exist; best effort, like writeSearchSnapshot's.
-			_ = writeSearchStoreSidecar(ctx, entry, written.String(), &cache)
-			return nil
+			// sidecar to exist. Its failure does not fail the persist, as in
+			// writeSearchSnapshotAndStore; it is returned as storeErr.
+			return writeSearchStoreSidecar(ctx, entry, written.String(), &cache), nil
 		}
 	}
-	return verifyErr
+	return nil, verifyErr
 }
 
 // validateBuiltSearchSnapshot closes the transaction between cache keying and
@@ -1480,6 +1531,46 @@ func loadCachedSearchSnapshot(
 	if err != nil {
 		return cachedSearchSnapshot{}, false
 	}
+	return bindCachedSearchSnapshot(cached, storedRelationCountsOf(cached.Snapshot.Relations),
+		absRepo, commit, repositoryKey, providerVersion, tree, options, contexts...)
+}
+
+// storedRelationCounts are the relation counts of a cache entry as stored,
+// before the post-load chain replaces its FILE_CHANGES_WITH relations with
+// fresh history. The chain takes them as inputs rather than reading
+// len(Relations), so a loader that holds only part of the relations still
+// reports the whole snapshot's Stats.Relations.
+type storedRelationCounts struct {
+	total           int
+	fileChangesWith int
+}
+
+// storedRelationCountsOf counts a complete relation slice.
+func storedRelationCountsOf(relations []RelationRecord) storedRelationCounts {
+	counts := storedRelationCounts{total: len(relations)}
+	for index := range relations {
+		if relations[index].Type == "FILE_CHANGES_WITH" {
+			counts.fileChangesWith++
+		}
+	}
+	return counts
+}
+
+// bindCachedSearchSnapshot is the post-load chain every cache read applies
+// once its entry is decoded: the scope check, the local/ namespace rebind, the
+// validity check, the commit restamp and, on the full profile, the
+// FILE_CHANGES_WITH refresh with its warning retirement. A history read that
+// fails is a miss. The full load and the focused sidecar load
+// (search_store_focus.go) both go through it, so neither can drift from the
+// other. stored carries the entry's relation counts; Stats.Relations is
+// derived from them, never from len(cached.Snapshot.Relations).
+func bindCachedSearchSnapshot(
+	cached cachedSearchSnapshot,
+	stored storedRelationCounts,
+	absRepo, commit, repositoryKey, providerVersion, tree string,
+	options ProviderSnapshotOptions,
+	contexts ...context.Context,
+) (cachedSearchSnapshot, bool) {
 	// Restamp the root only between checkouts of the same scope. The key already
 	// separates scopes; this keeps a hand-edited, colliding or pre-scope entry from
 	// being adopted by a checkout whose subtree it does not describe. Same root
@@ -1518,7 +1609,9 @@ func loadCachedSearchSnapshot(
 		// leaves the relations untouched but still retires the warning.
 		cached.Snapshot.Header.Warnings = withoutWarningCode(cached.Snapshot.Header.Warnings, CochangeHistoryUnavailableCode)
 		cached.Snapshot.Relations = refreshed
-		cached.Snapshot.Header.Stats.Relations = len(refreshed)
+		// The splice replaces the stored FILE_CHANGES_WITH block with history, so
+		// for a complete slice this is len(refreshed).
+		cached.Snapshot.Header.Stats.Relations = stored.total - stored.fileChangesWith + len(history)
 		counts := make(map[string]int, len(cached.Snapshot.Header.Completeness.Relations))
 		for kind, count := range cached.Snapshot.Header.Completeness.Relations {
 			if kind != "FILE_CHANGES_WITH" {
@@ -1720,7 +1813,7 @@ func readSearchSnapshot(entry cacheEntry) (cachedSearchSnapshot, error) {
 var ErrTruncatedSnapshotNotCacheable = errors.New("refusing to cache a truncated snapshot (E_ANALYSIS_BUDGET_EXCEEDED)")
 
 // readSearchSnapshotPreferringStore answers from the sqlite sidecar when the
-// operator opted in (ENTIRE_GRAPH_SEARCH_STORE) and the sidecar matches the
+// store is enabled (ENTIRE_GRAPH_SEARCH_STORE, on unless set to 0) and the sidecar matches the
 // entry, and otherwise from the gz JSON entry. The sidecar exists because the
 // monolithic JSON decode is the single largest cost of a warm query; the gz
 // entry remains authoritative and every sidecar problem is a silent fallback.
@@ -1867,20 +1960,20 @@ func readSearchSnapshotCounts(entry cacheEntry) (symbols, relations int, ok bool
 // sidecar. Derived selective views stay on writeSearchSnapshot: they are small
 // per-query artifacts whose JSON decode was never the cost the store exists to
 // remove, so building a store there would spend the build and the disk on
-// queries that had no problem. The sidecar is best effort: the gz entry is
-// authoritative, and writeSearchStoreSidecar removes any previous sidecar on
-// failure so a stale one cannot outlive the entry it mirrored (readers also
-// verify the embedded digest).
-func writeSearchSnapshotAndStore(ctx context.Context, entry cacheEntry, cache cachedSearchSnapshot) error {
+// queries that had no problem. The sidecar never fails the write: the gz entry
+// is authoritative, and writeSearchStoreSidecar removes any previous sidecar
+// on failure so a stale one cannot outlive the entry it mirrored (readers also
+// verify the embedded digest). Its error is returned apart from the entry's,
+// as storeErr, for the caller to surface (withSearchStoreUnavailable).
+func writeSearchSnapshotAndStore(ctx context.Context, entry cacheEntry, cache cachedSearchSnapshot) (storeErr, err error) {
 	if err := refuseTruncatedSnapshot(cache); err != nil {
-		return err
+		return nil, err
 	}
 	digest, err := entry.writeDigest("snapshot", cache)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Best effort, and only once the entry has landed (see writeSearchSnapshotCounts).
 	_ = writeSearchSnapshotCounts(entry, cache)
-	_ = writeSearchStoreSidecar(ctx, entry, digest.String(), &cache)
-	return nil
+	return writeSearchStoreSidecar(ctx, entry, digest.String(), &cache), nil
 }

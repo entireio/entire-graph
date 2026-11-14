@@ -136,6 +136,22 @@ func TestSearchResponseCanReplayRejectsAggregateAgentDiagnostics(t *testing.T) {
 			format:   "agent",
 			response: sem.SearchResponse{Warnings: []sem.ProviderWarning{{Code: "W_FILE_LIMIT"}}},
 		},
+		// A store this run could not write is printed after the answer, outside
+		// the stored payload, so it does not stop a replay; beside a graph
+		// warning, the graph warning still does.
+		{
+			name:     "agent run warning",
+			format:   "agent",
+			response: sem.SearchResponse{Warnings: []sem.ProviderWarning{{Code: sem.SearchStoreUnavailableCode}}},
+			want:     true,
+		},
+		{
+			name:   "agent run warning beside a graph warning",
+			format: "agent",
+			response: sem.SearchResponse{Warnings: []sem.ProviderWarning{
+				{Code: sem.SearchStoreUnavailableCode}, {Code: "W_FILE_LIMIT"},
+			}},
+		},
 		{
 			name:     "agent partial failure",
 			format:   "agent",

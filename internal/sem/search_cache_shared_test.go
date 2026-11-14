@@ -207,3 +207,53 @@ func TestSearchCacheEntryCarriesNoCheckoutPathButTheHeader(t *testing.T) {
 		t.Fatalf("audited %d entries, want the complete entry and at least one derived view", entries)
 	}
 }
+
+// TestFocusedLookupFromARemotelessCloneTranslatesTheStoredNamespace pins the
+// focused half of the shared local/ entry. A clone under another directory name
+// reads the store whose IDs use the first checkout's namespace; a focused lookup
+// by the clone's ID must still find the symbol.
+func TestFocusedLookupFromARemotelessCloneTranslatesTheStoredNamespace(t *testing.T) {
+	t.Setenv(searchStoreEnv, "1")
+	parent := t.TempDir()
+	source := filepath.Join(parent, "ledger-src")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sharedCacheFixture(t, source)
+	clone := filepath.Join(parent, "ledger-clone")
+	if out, err := exec.Command("git", "clone", "-q", source, clone).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+	sourceKey, cloneKey := repoKey(t.Context(), source), repoKey(t.Context(), clone)
+	cacheDir := t.TempDir()
+	options := ProviderSnapshotOptions{NoNetwork: true, Profile: ProfileFull}
+	built, _, err := PreindexProviderSnapshot(t.Context(), source, "test-version", options, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sourceID string
+	for _, symbol := range built.Symbols {
+		if symbol.Name == "Audit" {
+			sourceID = symbol.ID
+		}
+	}
+	if sourceKey == cloneKey || !strings.HasPrefix(sourceID, sourceKey+":") {
+		t.Fatalf("premise lost: want an Audit ID under %q and another key for the clone %q, got %q", sourceKey, cloneKey, sourceID)
+	}
+	cloneID := cloneKey + strings.TrimPrefix(sourceID, sourceKey)
+
+	snapshot, focused, hit, err := LoadFocusedProviderSnapshot(t.Context(), clone, "test-version", options, cacheDir, false,
+		SnapshotFocus{Names: []string{cloneID}})
+	if err != nil || !hit {
+		t.Fatalf("hit=%v err=%v", hit, err)
+	}
+	if !focused {
+		t.Fatal("the clone's lookup was served the full load, not the shared store")
+	}
+	for _, symbol := range snapshot.Symbols {
+		if symbol.ID == cloneID {
+			return
+		}
+	}
+	t.Fatalf("the clone's focused read did not find %s by its ID; it loaded %d symbols", cloneID, len(snapshot.Symbols))
+}

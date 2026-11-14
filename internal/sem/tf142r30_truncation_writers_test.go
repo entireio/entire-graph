@@ -56,14 +56,16 @@ func TestEverySearchSnapshotWriterRefusesATruncatedSnapshot(t *testing.T) {
 			return writeSearchSnapshot(entry, cache)
 		}},
 		{"writeSearchSnapshotAndStore", func(entry cacheEntry) error {
-			return writeSearchSnapshotAndStore(context.Background(), entry, cache)
+			_, err := writeSearchSnapshotAndStore(context.Background(), entry, cache)
+			return err
 		}},
 		{"persistVerifiedSearchSnapshot", func(entry cacheEntry) error {
-			return persistVerifiedSearchSnapshot(context.Background(), entry, cache,
+			_, err := persistVerifiedSearchSnapshot(context.Background(), entry, cache,
 				func(cacheEntry) (cacheDigest, error) {
 					t.Fatal("a truncated snapshot must be refused before anything is written")
 					return cacheDigest{}, nil
 				})
+			return err
 		}},
 		// The counts writer refuses on its own, so a caller that skips the refusal (the index hit's
 		// backfill) still cannot record a truncated snapshot's size.
@@ -106,7 +108,7 @@ func TestCompleteSearchSnapshotStillWrites(t *testing.T) {
 	}
 
 	storeEntry := truncationTestEntry(t)
-	if err := writeSearchSnapshotAndStore(context.Background(), storeEntry, cache); err != nil {
+	if _, err := writeSearchSnapshotAndStore(context.Background(), storeEntry, cache); err != nil {
 		t.Fatalf("writeSearchSnapshotAndStore refused a complete snapshot: %v", err)
 	}
 	if _, err := readSearchSnapshot(storeEntry); err != nil {

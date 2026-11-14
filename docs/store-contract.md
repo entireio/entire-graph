@@ -3,8 +3,22 @@
 `entire graph store --repo <checkout> --profile full` resolves the search store
 for the checkout's committed HEAD and current provider/policy identity. It never
 builds an index. `--ignore-file` and `--include-file` select the same policy variant
-as `graph index` and `graph context`. Build using `graph index --head` with
-`ENTIRE_GRAPH_SEARCH_STORE=1` when no store exists.
+as `graph index` and `graph context`. Build using `graph index --head` when no
+store exists.
+
+The store is written by default: `graph index --head`, and a cold `--head`
+lookup (`def`, `neighbors`, `impact`, `explain`) that persists a complete entry,
+write it beside the gz entry. `ENTIRE_GRAPH_SEARCH_STORE` set to `0`, `false`,
+`off`, `no` or the empty string turns both the write and the read off; unset or
+any other value leaves them on. A no-op `graph index --head` whose store is
+missing or stale rebuilds it from the entry. Whenever a store write fails (a
+full disk, for example), on that rebuild or on a cold build by `index`, a
+`--head` lookup or `query`, the command still succeeds and its `warnings` carry
+`W_SEARCH_STORE_UNAVAILABLE` with the reason (`explain`'s `warnings` is present
+only when it carries one); lookups then take the full snapshot load. After a
+search-store version bump, an existing store is treated
+as missing: lookups fall back to the full snapshot load (correct, slower) until
+`graph index --head` or the next cache-miss write rebuilds the store.
 
 The JSON descriptor carries `contract_version: 1`, an absolute `path`,
 `entry_digest`, indexed `commit` and `tree`, a provider `header`, and file/symbol/
@@ -35,7 +49,9 @@ The file view exposes content_hash as git-blob:<blob> from the indexed file reco
 or an empty string when no blob is available. It never hashes the live working
 tree, which may differ from the committed source.
 
-The search-store cache format is v4 so older stores are rebuilt with the views.
+The search-store cache format is v5 so older stores are rebuilt. v4 added the views; v5
+adds the indexed symbol columns name_fold, qname_fold and container_id and the
+relation_type_counts meta key, for focused `--head` lookups.
 This does not change provider schema 1.x or symbol identity. Release this contract
 before the Brain consumer that retires its duplicate code graph.
 

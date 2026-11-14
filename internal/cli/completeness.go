@@ -57,6 +57,20 @@ type completenessScope struct {
 // read, not that anything failed to parse, so it is presented as provenance.
 const worktreeProvenanceWarning = "W_WORKTREE_SNAPSHOT"
 
+// Neither scope below counts a run warning (sem.IsRunWarning).
+
+// graphWarnings is warnings without the run warnings (sem.IsRunWarning): the
+// graph's own diagnostics, which coverage and completeness lines count.
+func graphWarnings(warnings []sem.ProviderWarning) []sem.ProviderWarning {
+	var kept []sem.ProviderWarning
+	for _, warning := range warnings {
+		if !sem.IsRunWarning(warning.Code) {
+			kept = append(kept, warning)
+		}
+	}
+	return kept
+}
+
 // buildCompletenessScope partitions a snapshot's diagnostics by whether they can
 // affect a query about queryLanguage.
 func buildCompletenessScope(snapshot sem.ProviderSnapshot, queryLanguage string) completenessScope {
@@ -87,6 +101,9 @@ func buildCompletenessScope(snapshot sem.ProviderSnapshot, queryLanguage string)
 	for _, warning := range snapshot.Header.Warnings {
 		if warning.Code == worktreeProvenanceWarning {
 			scope.Worktree = true
+			continue
+		}
+		if sem.IsRunWarning(warning.Code) {
 			continue
 		}
 		language := languageByPath[filepath.ToSlash(warning.FilePath)]
@@ -301,6 +318,9 @@ func completenessScopeOrAll(
 			rebuilt.Worktree = true
 			continue
 		}
+		if sem.IsRunWarning(warning.Code) {
+			continue
+		}
 		if len(rebuilt.InScopeWarnings) < maxScopedDiagnostics {
 			rebuilt.InScopeWarnings = append(rebuilt.InScopeWarnings, warning)
 		}
@@ -312,4 +332,22 @@ func completenessScopeOrAll(
 		}
 	}
 	return rebuilt
+}
+
+// writeRunWarningLines prints, after an answer that ends with written, the
+// warnings about this run's own work rather than the graph (explainWarnings):
+// one "- warning" line each, as def and explain print them. They sit outside
+// --max-context-bytes, which bounds the answer: a budget that dropped one would
+// drop a failure silently.
+func writeRunWarningLines(out io.Writer, written []byte, warnings []sem.ProviderWarning) error {
+	reported := explainWarnings(warnings)
+	if len(reported) == 0 {
+		return nil
+	}
+	var lines []byte
+	if len(written) > 0 && written[len(written)-1] != '\n' {
+		lines = append(lines, '\n')
+	}
+	_, err := out.Write(appendWarningLines(lines, reported))
+	return err
 }

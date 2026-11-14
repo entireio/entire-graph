@@ -97,22 +97,28 @@ func withValueReferenceDisclosure(warnings []sem.ProviderWarning, focus neighbor
 	return append(append(make([]sem.ProviderWarning, 0, len(warnings)+1), warnings...), disclosure)
 }
 
-// snapshotWarnings returns warnings without the query-scoped disclosure, for the completeness
-// banners, which report diagnostics "in this snapshot".
+// snapshotWarnings returns warnings without the two that are not diagnostics of the snapshot, for
+// the completeness banners, which report diagnostics "in this snapshot": the query-scoped
+// disclosure, and a sqlite store this run could not write, which leaves the graph complete and is
+// printed after the answer instead (writeRunWarningLines).
 func snapshotWarnings(warnings []sem.ProviderWarning) []sem.ProviderWarning {
 	for index, warning := range warnings {
-		if warning.Code != valueReferenceDisclosureCode {
+		if !notSnapshotDiagnostic(warning.Code) {
 			continue
 		}
 		kept := append(make([]sem.ProviderWarning, 0, len(warnings)-1), warnings[:index]...)
 		for _, rest := range warnings[index+1:] {
-			if rest.Code != valueReferenceDisclosureCode {
+			if !notSnapshotDiagnostic(rest.Code) {
 				kept = append(kept, rest)
 			}
 		}
 		return kept
 	}
 	return warnings
+}
+
+func notSnapshotDiagnostic(code string) bool {
+	return code == valueReferenceDisclosureCode || sem.IsRunWarning(code)
 }
 
 // hasWarningCode reports whether warnings carry code.

@@ -169,13 +169,13 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	}
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	totalStarted := time.Now()
-	snapshot, cacheHit, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
+	snapshot, cacheHit, err := loadLookupSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Worktree:     flags.Worktree,
 		IgnoreFiles:  flags.IgnoreFile,
 		IncludeFiles: flags.IncludeFile,
 		Profile:      profile,
-	}, cacheDir, flags.DisableCache)
+	}, cacheDir, flags.DisableCache, defLookupFocus(flags, symbols), opts.Env.TraceLoad, opts.Stderr)
 	if err != nil {
 		return err
 	}
@@ -208,6 +208,9 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	// not need go to the names after it.
 	jsonRemaining := flags.MaxContextBytes
 	var jsonUnfit []string
+	// endsLine tracks whether the text written so far ends a line, so the warning lines after it start
+	// one even when a tiny budget cut the last answer mid-line.
+	endsLine := true
 	for position, symbol := range symbols {
 		query := flags
 		query.Symbol = symbol
@@ -251,17 +254,32 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 			}
 			if nameBudget > 0 && answerBudget <= 0 {
 				// The header alone spends this name's share; 0 would mean "unbounded" below.
-				if _, err := termsafe.NewWriter(opts.Stdout).Write(defCutAtLine(section.Bytes(), nameBudget)); err != nil {
+				written := defCutAtLine(section.Bytes(), nameBudget)
+				if _, err := termsafe.NewWriter(opts.Stdout).Write(written); err != nil {
 					return err
 				}
+				endsLine = defEndsLine(written, endsLine)
 				continue
 			}
 			section.Write(renderDefAnswerText(response, readSource, query.From, answerBudget, flags.MaxContextBytes, flags.Worktree))
 			if _, err := termsafe.NewWriter(opts.Stdout).Write(section.Bytes()); err != nil {
 				return err
 			}
+			endsLine = defEndsLine(section.Bytes(), endsLine)
 		default:
 			return fmt.Errorf("def --format must be json, text, or agent, got %q", flags.Format)
+		}
+	}
+	// The text and agent cards report a store this run could not write the way explain's text does: once
+	// per invocation, after every answer and outside --max-context-bytes, which bounds the answers. A
+	// budget that dropped the warning would drop a failure silently. JSON carries it in each answer.
+	if warnings := explainWarnings(snapshot.Header.Warnings); len(warnings) > 0 && (flags.Format == "text" || flags.Format == "agent") {
+		var lines []byte
+		if !endsLine {
+			lines = append(lines, '\n')
+		}
+		if _, err := opts.Stdout.Write(appendWarningLines(lines, warnings)); err != nil {
+			return err
 		}
 	}
 	if len(jsonUnfit) > 0 {
@@ -269,6 +287,15 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 			flags.MaxContextBytes, len(jsonUnfit), len(symbols), termsafe.Line(strings.Join(jsonUnfit, ", ")))
 	}
 	return nil
+}
+
+// defEndsLine reports whether output written after `written` starts a line; an empty write leaves
+// `before` unchanged.
+func defEndsLine(written []byte, before bool) bool {
+	if len(written) == 0 {
+		return before
+	}
+	return written[len(written)-1] == '\n'
 }
 
 // defNameBudget is one name's share of the invocation's byte budget; 0 stays unbounded.
@@ -457,9 +484,9 @@ func encodeDefJSON(response defResponse) ([]byte, error) {
 }
 
 // fitDefJSON encodes the JSON answer within `budget` bytes (0 = unbounded). It clips signatures to
-// the card's width, shrinks the member and implementor lists, empties the warning, partial-failure and
-// completeness metadata, and only then drops trailing declarations, recording each omission in
-// budget_omitted. A document that still does not fit is an error,
+// the card's width, shrinks the member and implementor lists, empties the warning (all but run
+// warnings), partial-failure and completeness metadata, and only then drops trailing declarations,
+// recording each omission in budget_omitted. A document that still does not fit is an error,
 // never a cut: a byte-truncated JSON document is not a smaller answer, it is an unparseable one.
 func fitDefJSON(response defResponse, budget, flagBudget int) ([]byte, error) {
 	encoded, err := encodeDefJSON(response)
@@ -502,8 +529,10 @@ func fitDefJSON(response defResponse, budget, flagBudget int) ([]byte, error) {
 	}
 	// Snapshot metadata goes before any declaration does: it is context for the answer, not the answer.
 	// On a polyglot repository the per-language completeness table alone can outgrow a per-name share.
-	omission.Warnings, omission.PartialFailures = len(fitted.Warnings), len(fitted.PartialFailures)
-	fitted.Warnings, fitted.PartialFailures = []sem.ProviderWarning{}, []sem.PartialFailure{}
+	// A run warning stays: it reports a failure of this run, and a budget must not drop it silently.
+	kept := explainWarnings(fitted.Warnings)
+	omission.Warnings, omission.PartialFailures = len(fitted.Warnings)-len(kept), len(fitted.PartialFailures)
+	fitted.Warnings, fitted.PartialFailures = append([]sem.ProviderWarning{}, kept...), []sem.PartialFailure{}
 	if out, ok, err := attempt(); err != nil || ok {
 		return out, err
 	}
@@ -845,15 +874,7 @@ func defExternalTypeName(id string) string {
 // symbol name or its qualified name — never a substring — so a query can only
 // ever return the thing it named.
 func (index *defIndex) resolve(flags defFlags) []sem.SymbolRecord {
-	forms := defQualifiedNameForms(flags.Symbol)
-	var matches []sem.SymbolRecord
-	for _, form := range forms {
-		ref := parseSymbolRef(form, flags.File, flags.Line, flags.Kind, index.repoRoot, index.filePaths)
-		matches = resolveFocusSymbols(index.symbols, ref)
-		if len(matches) > 0 {
-			break
-		}
-	}
+	matches := index.resolveExact(flags)
 	// FIX B: every spelling of the name missed, so degrade to the fuzzy ladder rather than answering
 	// "(no symbol named X)". The ref is rebuilt from the caller's ORIGINAL spelling: the qualified-name
 	// forms above are exact-match aids and would only narrow the fuzzy search.
@@ -885,6 +906,18 @@ func (index *defIndex) resolve(flags defFlags) []sem.SymbolRecord {
 		return defKindRank(matches[left].Kind) < defKindRank(matches[right].Kind)
 	})
 	return matches
+}
+
+// resolveExact is resolve's exact half: the matches of the first spelling of
+// the name that has any, unsorted, or none.
+func (index *defIndex) resolveExact(flags defFlags) []sem.SymbolRecord {
+	for _, form := range defQualifiedNameForms(flags.Symbol) {
+		ref := parseSymbolRef(form, flags.File, flags.Line, flags.Kind, index.repoRoot, index.filePaths)
+		if matches := resolveFocusSymbols(index.symbols, ref); len(matches) > 0 {
+			return matches
+		}
+	}
+	return nil
 }
 
 func defKindRank(kind string) int {
