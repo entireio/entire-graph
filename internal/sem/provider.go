@@ -14197,11 +14197,21 @@ func refuseWorktreeMountReads(opened openedSource, mounts []string) openedSource
 	if len(mounts) == 0 {
 		return opened
 	}
+	opened = guardSourceReads(opened, skippedMountMatcher(mounts))
+	opened.worktreeMounts = append([]string(nil), mounts...)
+	return opened
+}
+
+// skippedMountMatcher reports whether a repo-relative path is, or is beneath,
+// one of mounts. Matching folds case and Unicode normalization like the mount
+// guard's rejections, so an alias a folding filesystem would resolve into a
+// mount matches too. It does no I/O.
+func skippedMountMatcher(mounts []string) func(string) bool {
 	keys := make([]string, 0, len(mounts))
 	for _, mount := range mounts {
 		keys = append(keys, mountPathKey(filepath.FromSlash(mount)))
 	}
-	refused := func(rel string) bool {
+	return func(rel string) bool {
 		key := mountPathKey(filepath.FromSlash(rel))
 		for _, mount := range keys {
 			if mountPathContainsExact(mount, key) {
@@ -14210,9 +14220,6 @@ func refuseWorktreeMountReads(opened openedSource, mounts []string) openedSource
 		}
 		return false
 	}
-	opened = guardSourceReads(opened, refused)
-	opened.worktreeMounts = append([]string(nil), mounts...)
-	return opened
 }
 
 // guardSourceReads makes both of opened's readers answer "unreadable" for every
@@ -15244,6 +15251,9 @@ type gitDirExcluder struct {
 	// pointer sweep over a pruned tree observes each child directory before it
 	// opens it, so it checks this set first rather than read a `.git` inside one.
 	skippedMounts map[string]struct{}
+	// inSkippedMount is skippedMountMatcher over the same mount points, for the
+	// probes that name a path rather than list one; nil when none was skipped.
+	inSkippedMount func(string) bool
 	// sweepUnreadableDirs samples the repo-relative directories descendObserving
 	// could not ReadDir (permission denied, etc.), capped at
 	// maxUnreadableWalkDirSample like unreadableWalkDirs. hiddenEvidence already
@@ -16030,6 +16040,14 @@ func (g *gitDirExcluder) isGitSharedIndexEntry(name string) bool {
 func (g *gitDirExcluder) recordGitDirRootEntries() {
 	g.gitDirRoot = true
 	for _, name := range gitDirRootEntryNames {
+		// A mount point the preflight skipped is never looked up: an Lstat of
+		// one can activate an NFS, FUSE or autofs filesystem (see
+		// errPathCrossesKnownMount). The walk prunes it unread anyway; its name
+		// is still excluded, so the verdict does not rest on that.
+		if g.inSkippedMount != nil && g.inSkippedMount(name) {
+			g.targets[name] = struct{}{}
+			continue
+		}
 		entry := filepath.Join(g.repo, name)
 		info, err := os.Lstat(entry)
 		if err != nil {
@@ -20646,6 +20664,9 @@ func visitWalkWorktreeFilesWithRawLimit(
 	}
 	stack.skippedMounts = skippedMounts
 	gitDirs.skippedMounts = skippedMounts
+	if len(mounts) > 0 {
+		gitDirs.inSkippedMount = skippedMountMatcher(mounts)
+	}
 	var paths []string
 	frames := []worktreeWalkFrame{{rel: ""}}
 	var walkErr error

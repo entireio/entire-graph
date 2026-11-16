@@ -22,6 +22,10 @@ type sweepDirectoryRoot struct {
 	mountOnce   sync.Once
 	mountPoints map[string]struct{}
 	mountErr    error
+	// mountKeys folds mountPoints with mountPathKey, once, for OpenFile's
+	// rejections.
+	mountKeysOnce sync.Once
+	mountKeys     map[string]struct{}
 	// readMountTable reads the mount table; nil reads /proc/self/mountinfo.
 	// Tests replace it to control what a fresh read sees.
 	readMountTable func() (map[string]struct{}, error)
@@ -164,6 +168,23 @@ func (r *sweepDirectoryRoot) loadMountPoints() (map[string]struct{}, error) {
 // and a walk could cross that mount. Every failure here is fail-closed.
 func (r *sweepDirectoryRoot) heldRootMountPoints() (map[string]struct{}, error) {
 	return r.heldRootMountPointsFrom(r.loadMountPoints)
+}
+
+// heldRootMountKeys is heldRootMountPoints folded by mountPathKey, for
+// rejection only: a filesystem that folds case or Unicode normalization
+// resolves an alias spelling into the mount point the table spells its own way.
+func (r *sweepDirectoryRoot) heldRootMountKeys() (map[string]struct{}, error) {
+	mountPoints, err := r.heldRootMountPoints()
+	if err != nil {
+		return nil, err
+	}
+	r.mountKeysOnce.Do(func() {
+		r.mountKeys = make(map[string]struct{}, len(mountPoints))
+		for mount := range mountPoints {
+			r.mountKeys[mountPathKey(mount)] = struct{}{}
+		}
+	})
+	return r.mountKeys, nil
 }
 
 func (r *sweepDirectoryRoot) heldRootMountPointsFrom(load func() (map[string]struct{}, error)) (map[string]struct{}, error) {
@@ -392,26 +413,30 @@ func (r *sweepDirectoryRoot) OpenFile(anchor pathTraversalAnchor, path string) (
 	return r.openFileWithoutOpenat2(anchor, components)
 }
 
-// openFileWithoutOpenat2 is OpenFile where openat2 is unavailable. The
-// directories are opened as Open opens them without openat2, one component at
-// a time against the mount table, then the file itself is checked against the
-// table and opened without following a link. The opened file has to be on the
-// root's device as well.
+// openFileWithoutOpenat2 is OpenFile where openat2 is unavailable. Every
+// component, the file included, is first checked against the mount table with
+// case and Unicode normalization folded, so a folding filesystem cannot
+// resolve an alias spelling into a mount point. The directories are then
+// opened as Open opens them without openat2, and the file is opened without
+// following a link. The opened file has to be on the root's device as well.
 func (r *sweepDirectoryRoot) openFileWithoutOpenat2(anchor pathTraversalAnchor, components []string) (*os.File, error) {
+	mountKeys, err := r.heldRootMountKeys()
+	if err != nil {
+		return nil, err
+	}
+	candidate := filepath.Clean(r.file.Name())
+	for _, component := range components {
+		candidate = filepath.Join(candidate, component)
+		if _, mounted := mountKeys[mountPathKey(candidate)]; mounted {
+			return nil, errSymlinkChainOffVolume
+		}
+	}
 	last := len(components) - 1
 	parent, err := r.openWithoutOpenat2(anchor, components[:last], func() bool { return true })
 	if err != nil {
 		return nil, err
 	}
 	defer parent.Close()
-	mountPoints, err := r.heldRootMountPoints()
-	if err != nil {
-		return nil, err
-	}
-	candidate := filepath.Join(append([]string{filepath.Clean(r.file.Name())}, components...)...)
-	if _, mounted := mountPoints[candidate]; mounted {
-		return nil, errSymlinkChainOffVolume
-	}
 	fd, err := syscall.Openat(int(parent.Fd()), components[last], linuxSweepFileFlags, 0)
 	if err != nil {
 		return nil, err

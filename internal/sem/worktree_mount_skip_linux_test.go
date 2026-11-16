@@ -459,11 +459,10 @@ func TestMountRefusingReadersDigestOversizedFilesThroughTheSameOpen(t *testing.T
 
 // Without openat2 the same refusals come from opening one component at a time
 // against the mount table, the file itself included.
-func TestMountRefusingOpenWithoutOpenat2(t *testing.T) {
-	t.Parallel()
-	repo := symlinkFixture(t)
-	root, anchor := syntheticMountRoot(t, repo, "mnt", "src/util.ts")
-	open := func(rel string) (string, bool) {
+// openWithoutOpenat2Reader reports whether openFileWithoutOpenat2 opens a
+// regular file at each path below root.
+func openWithoutOpenat2Reader(root *sweepDirectoryRoot, anchor pathTraversalAnchor) func(string) (string, bool) {
+	return func(rel string) (string, bool) {
 		_, components, err := sweepRelativeComponents(rel)
 		if err != nil {
 			return "", false
@@ -476,10 +475,32 @@ func TestMountRefusingOpenWithoutOpenat2(t *testing.T) {
 		info, err := file.Stat()
 		return "", err == nil && info.Mode().IsRegular()
 	}
+}
+
+func TestMountRefusingOpenWithoutOpenat2(t *testing.T) {
+	t.Parallel()
+	repo := symlinkFixture(t)
+	root, anchor := syntheticMountRoot(t, repo, "mnt", "src/util.ts")
+	open := openWithoutOpenat2Reader(root, anchor)
 	requireReads(t, open, false, "mnt/file.ts", "src/util.ts", "alias/secret.ts", "src/up/secret.ts", "link.ts", "pipe.ts")
 	requireReads(t, open, true, "keep.go", "dir/file.ts")
 	swapForLink(t, repo, "dir", "mnt")
 	requireReads(t, open, false, "dir/file.ts")
+}
+
+// The mount table spells a mount point its own way, and a filesystem that
+// folds case or Unicode normalization resolves another spelling into it. The
+// open without openat2 refuses every spelling that folds to a mount point, the
+// file itself or a directory on the way, the way the mount guard's rejections
+// do. This filesystem does not fold, so a folded match here is a conservative
+// refusal of a distinct file; that is the direction the rule errs in.
+func TestMountRefusingOpenWithoutOpenat2FoldsMountSpellings(t *testing.T) {
+	t.Parallel()
+	repo := symlinkFixture(t)
+	root, anchor := syntheticMountRoot(t, repo, "KEEP.go", "DIR")
+	open := openWithoutOpenat2Reader(root, anchor)
+	requireReads(t, open, false, "keep.go", "dir/file.ts")
+	requireReads(t, open, true, "src/util.ts")
 }
 
 // With a real mount the whole worktree source refuses a listed path whose

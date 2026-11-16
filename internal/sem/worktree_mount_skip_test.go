@@ -169,3 +169,27 @@ func TestPrunedTreePointerSweepDoesNotObserveSkippedMountPoints(t *testing.T) {
 			gitDirs.hiddenEvidence, gitDirs.skippedMountDirs)
 	}
 }
+
+// When the root turns out to be the git directory, its git-owned entries are
+// excluded by name after one lookup each, except a skipped mount point, which
+// is never looked up: an Lstat of one can activate an NFS, FUSE or autofs
+// filesystem. Its name is excluded without that lookup, case-folded like every
+// mount rejection. Nothing is on disk at `hooks` here, so only the name match
+// can exclude it; a lookup would have found nothing and left it out.
+func TestGitDirRootEntriesAreNotLookedUpAtSkippedMountPoints(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "config", "[core]\n")
+	gitDirs := newGitDirExcluder(t.Context(), repo)
+	gitDirs.inSkippedMount = skippedMountMatcher([]string{"HOOKS"})
+	gitDirs.addTarget(gitDirRootTarget)
+	if !gitDirs.excluded("hooks/pre-commit") {
+		t.Fatal("hooks/pre-commit is indexable: a skipped mount point at a git-owned root name was not excluded by name")
+	}
+	if !gitDirs.excluded("config") {
+		t.Fatal("config is indexable: an existing git-owned root entry was not excluded")
+	}
+	if gitDirs.excluded("logs/HEAD") || gitDirs.excluded("src/app.go") {
+		t.Fatal("an absent git-owned name or ordinary source was excluded")
+	}
+}
