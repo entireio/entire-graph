@@ -19691,16 +19691,7 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				return nil, fmt.Errorf("%w: %w: traversal cancelled: %w", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, ctx.Err())
 			}
 			if dir != "" && errors.Is(err, errWorktreeMountPoint) {
-				// The mount table names this directory itself and nothing between
-				// it and the held root, and Open looked up nothing inside it. Git
-				// would walk straight into it, so Git enumeration is declined, but
-				// the mount is a boundary the fallback can prune unread rather than
-				// a reason to refuse the whole worktree. Every other off-volume
-				// refusal below still fails closed.
-				mounts = append(mounts, filepath.ToSlash(dir))
-				if fallbackReason == nil {
-					fallbackReason = fmt.Errorf("%w: mount point at %q", errGitWorktreePreflight, filepath.ToSlash(dir))
-				}
+				mounts, fallbackReason = skipWorktreeMountPoint(mounts, fallbackReason, dir)
 				continue
 			}
 			if errors.Is(err, errSymlinkChainOffVolume) ||
@@ -19838,6 +19829,20 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 	}
 	sort.Strings(mounts)
 	return mounts, fallbackReason
+}
+
+// skipWorktreeMountPoint records dir, which the mount table names itself and
+// nothing between it and the held root, and which Open looked up nothing
+// inside. Git would walk straight into it, so Git enumeration is declined, but
+// the mount is a boundary the fallback can prune unread rather than a reason
+// to refuse the whole worktree. Every other off-volume refusal still fails
+// closed.
+func skipWorktreeMountPoint(mounts []string, fallbackReason error, dir string) ([]string, error) {
+	rel := filepath.ToSlash(dir)
+	if fallbackReason == nil {
+		fallbackReason = fmt.Errorf("%w: mount point at %q", errGitWorktreePreflight, rel)
+	}
+	return append(mounts, rel), fallbackReason
 }
 
 func worktreeGitFallbackWarning(cause error) ProviderWarning {

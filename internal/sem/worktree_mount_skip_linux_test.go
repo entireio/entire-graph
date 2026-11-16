@@ -33,7 +33,6 @@ func syntheticMountRoot(t *testing.T, repo string, mounts ...string) (*sweepDire
 }
 
 func TestLinuxSweepClassifiesOnlyTheFinalComponentAsAMountPoint(t *testing.T) {
-	admit := func() bool { return true }
 	for _, testCase := range []struct {
 		name       string
 		mounts     []string
@@ -51,42 +50,42 @@ func TestLinuxSweepClassifiesOnlyTheFinalComponentAsAMountPoint(t *testing.T) {
 				t.Fatal(err)
 			}
 			root, anchor := syntheticMountRoot(t, repo, testCase.mounts...)
+			admit := func() bool { return true }
 
 			// openat2 reports a mount crossing as EXDEV without saying where.
 			opened, err := root.openAfterOpenat2Failure(anchor, testCase.components, admit, syscall.EXDEV)
-			if opened != nil {
-				_ = opened.Close()
-				t.Fatal("EXDEV classification returned a directory")
-			}
-			if !errors.Is(err, errSymlinkChainOffVolume) {
-				t.Fatalf("EXDEV error = %v, want %v", err, errSymlinkChainOffVolume)
-			}
-			if got := errors.Is(err, errWorktreeMountPoint); got != testCase.wantMount {
-				t.Fatalf("EXDEV error = %v, mount point = %v, want %v", err, got, testCase.wantMount)
-			}
+			requireMountRefusal(t, "EXDEV classification", opened, err, testCase.wantMount)
 
 			// The mountinfo fallback walks component by component. Without a
 			// table entry it opens the ordinary directory, as it did before.
 			opened, err = root.openWithoutOpenat2(anchor, testCase.components, admit)
-			if opened != nil {
-				_ = opened.Close()
-			}
 			if len(testCase.mounts) == 0 {
+				if opened != nil {
+					_ = opened.Close()
+				}
 				if err != nil {
 					t.Fatalf("mountinfo fallback error without a mount = %v", err)
 				}
 				return
 			}
-			if opened != nil {
-				t.Fatal("mountinfo fallback opened a directory at or below a mount point")
-			}
-			if !errors.Is(err, errSymlinkChainOffVolume) {
-				t.Fatalf("mountinfo fallback error = %v, want %v", err, errSymlinkChainOffVolume)
-			}
-			if got := errors.Is(err, errWorktreeMountPoint); got != testCase.wantMount {
-				t.Fatalf("mountinfo fallback error = %v, mount point = %v, want %v", err, got, testCase.wantMount)
-			}
+			requireMountRefusal(t, "mountinfo fallback", opened, err, testCase.wantMount)
 		})
+	}
+}
+
+// requireMountRefusal checks that an open refused with errSymlinkChainOffVolume
+// and that it classified a mount point exactly when wantMount says so.
+func requireMountRefusal(t *testing.T, route string, opened *os.File, err error, wantMount bool) {
+	t.Helper()
+	if opened != nil {
+		_ = opened.Close()
+		t.Fatalf("%s opened a directory at or below a mount point", route)
+	}
+	if !errors.Is(err, errSymlinkChainOffVolume) {
+		t.Fatalf("%s error = %v, want %v", route, err, errSymlinkChainOffVolume)
+	}
+	if got := errors.Is(err, errWorktreeMountPoint); got != wantMount {
+		t.Fatalf("%s error = %v, mount point = %v, want %v", route, err, got, wantMount)
 	}
 }
 
