@@ -72,8 +72,17 @@ other is installation.
   directory. Unreadable local subtrees retain the fallback's warned omission,
   while the preflight continues across every other reachable directory. A
   traversable redirect, mount boundary, cancellation, or traversal ceiling
-  fails closed. Every earlier Git failure also passes through this safety gate
-  before the filesystem fallback begins. Under Go's legacy Windows reparse-mode
+  fails closed, with one exception on Linux: a directory that is itself a mount
+  point, such as a sandbox's read-only bind mount inside the checkout, is never
+  opened. The preflight then declines Git enumeration, the bounded filesystem
+  fallback prunes that directory unread and discloses it as
+  `W_WALK_MOUNT_SKIPPED`, reads of any path at or below it are refused,
+  working-tree `git grep` is not used for that run, and Git-structured
+  directories elsewhere in the tree are excluded as if a `.git` pointer inside
+  the mount had named them. A mount met below a directory already admitted, an
+  unreadable mount table, a renamed repository root, and mount boundaries on
+  other platforms still fail closed. Every earlier Git failure also passes
+  through this safety gate before the filesystem fallback begins. Under Go's legacy Windows reparse-mode
   compatibility, mount points surface as symlinks instead; both filesystem
   fallbacks apply their no-follow rule before considering a directory entry.
   This prevents an untracked gitfile from making Git resolve a UNC or off-volume

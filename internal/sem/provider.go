@@ -1080,6 +1080,9 @@ type sourceContext struct {
 	// repoIgnored reports what the REPOSITORY's own ignore files removed from the
 	// listing Git produced, or nil when they removed nothing.
 	repoIgnored *RepoIgnoreReport
+	// worktreeMounts are the mount points a working-tree listing skipped; see
+	// openedSource.worktreeMounts.
+	worktreeMounts []string
 }
 
 // oversizeAt reports the oversize record for path when the source has one.
@@ -2125,6 +2128,9 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		close:       opened.close,
 		warnings:    warnings,
 		repoIgnored: opened.repoIgnored,
+		// The readers above already refuse these paths; search needs them
+		// too, to keep its working-tree Git grep out of them.
+		worktreeMounts: opened.worktreeMounts,
 	}, nil
 }
 
@@ -13775,6 +13781,9 @@ type openedSource struct {
 	// repoIgnored reports what the REPOSITORY's own ignore files removed from the
 	// listing Git produced, or nil when they removed nothing. See RepoIgnoreReport.
 	repoIgnored *RepoIgnoreReport
+	// worktreeMounts are the mount points a working-tree listing skipped. The
+	// readers above already refuse them; see refuseWorktreeMountReads.
+	worktreeMounts []string
 }
 
 // openSource lists the repository's files and returns a per-file content reader
@@ -13941,7 +13950,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	if options.trackRepoIgnored {
 		worktreeLedger = &repoIgnoreLedger{listingLimit: resolveMaxSourceFiles(options.maxFiles)}
 	}
-	paths, sweepWarnings, err := worktreeSourceFiles(ctx, repo, ignores, len(options.includeFiles) > 0, worktreeLedger)
+	paths, sweepWarnings, mounts, err := worktreeSourceListing(ctx, repo, ignores, len(options.includeFiles) > 0, worktreeLedger)
 	if err != nil {
 		return openedSource{}, err
 	}
@@ -14000,7 +14009,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		// report exists to close.
 		confined := openManuallyConfinedWorktreeSource(repo, paths, ignores, warnings, maxReadBytes)
 		confined.repoIgnored = worktreeLedger.report()
-		return confined, nil
+		return refuseWorktreeMountReads(confined, mounts), nil
 	}
 	// Taken once, from the descriptor os.OpenRoot just pinned, and consulted by
 	// every fallback read below. See pinnedRootIdentity.
@@ -14063,7 +14072,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		}
 		return string(buf[:n]), true
 	}
-	return openedSource{
+	return refuseWorktreeMountReads(openedSource{
 		paths:      paths,
 		read:       read,
 		readPrefix: readPrefix,
@@ -14075,7 +14084,52 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		close:       root.Close,
 		warnings:    warnings,
 		repoIgnored: worktreeLedger.report(),
-	}, nil
+	}, mounts), nil
+}
+
+// refuseWorktreeMountReads keeps a worktree source's readers out of the mount
+// points its listing skipped. No listed path is at or below one, but readers
+// are also asked for paths by name: an import specifier can name one, and a
+// whole-tree Git grep can return one. Matching folds case and Unicode
+// normalization like the mount guard's rejections, so an alias a folding
+// filesystem would resolve into the mount is refused too. The mount points
+// are kept on the source so search can keep Git's working-tree grep, which
+// reads tracked paths wherever they are mounted, out of them as well.
+func refuseWorktreeMountReads(opened openedSource, mounts []string) openedSource {
+	if len(mounts) == 0 {
+		return opened
+	}
+	keys := make([]string, 0, len(mounts))
+	for _, mount := range mounts {
+		keys = append(keys, mountPathKey(filepath.FromSlash(mount)))
+	}
+	belowMount := func(rel string) bool {
+		key := mountPathKey(filepath.FromSlash(rel))
+		for _, mount := range keys {
+			if mountPathContainsExact(mount, key) {
+				return true
+			}
+		}
+		return false
+	}
+	if read := opened.read; read != nil {
+		opened.read = func(rel string) (string, bool) {
+			if belowMount(rel) {
+				return "", false
+			}
+			return read(rel)
+		}
+	}
+	if readPrefix := opened.readPrefix; readPrefix != nil {
+		opened.readPrefix = func(rel string, limit int) (string, bool) {
+			if belowMount(rel) {
+				return "", false
+			}
+			return readPrefix(rel, limit)
+		}
+	}
+	opened.worktreeMounts = append([]string(nil), mounts...)
+	return opened
 }
 
 // The fallback directory translation resolves the DIRECTORY portion of
@@ -15064,6 +15118,11 @@ type gitDirExcluder struct {
 	// unreadableWalkWarning tell a caller WHICH paths were skipped instead of
 	// only that some directory, somewhere, was.
 	unreadableWalkDirs []string
+	// skippedMountDirs samples the mount points walkWorktreeFiles pruned unread,
+	// capped at maxUnreadableWalkDirSample like unreadableWalkDirs.
+	// hiddenEvidence counts every one of them too, for the same reason: a mount
+	// point the walk did not read may hold a `.git` pointer.
+	skippedMountDirs []string
 	// sweepUnreadableDirs samples the repo-relative directories descendObserving
 	// could not ReadDir (permission denied, etc.), capped at
 	// maxUnreadableWalkDirSample like unreadableWalkDirs. hiddenEvidence already
@@ -15107,6 +15166,30 @@ var errGitDirSweepHalted = errors.New("git directory sweep halted")
 // to say so itself.
 func (g *gitDirExcluder) noteUnreadableWalkDir(rel string) {
 	retainSmallestPathSample(&g.unreadableWalkDirs, rel)
+}
+
+// noteSkippedMountDir records one mount point the filesystem fallback pruned
+// unread because the worktree preflight found it in the mount table, for
+// skippedMountWarning.
+func (g *gitDirExcluder) noteSkippedMountDir(rel string) {
+	retainSmallestPathSample(&g.skippedMountDirs, rel)
+}
+
+// skippedMountWarning discloses the mount points the walk did not enter. The
+// rest of the worktree is listed; refusing the whole listing, which is what
+// this replaced, made every working-tree query fail in any checkout with a
+// mount inside it, such as a sandbox's read-only bind mount.
+func (g *gitDirExcluder) skippedMountWarning() []ProviderWarning {
+	if len(g.skippedMountDirs) == 0 {
+		return nil
+	}
+	return []ProviderWarning{{
+		Code:     "W_WALK_MOUNT_SKIPPED",
+		Severity: "warning",
+		EffectOnCompleteness: "one or more directories in the working tree are mount points, which the " +
+			"provider does not traverse, so any source under them is absent from this listing",
+		Detail: fmt.Sprintf("mount points skipped: %s", termsafe.Line(strings.Join(g.skippedMountDirs, ", "))),
+	}}
 }
 
 // noteUnreadableIgnorePolicyDir records one readable directory whose own
@@ -16117,6 +16200,14 @@ var errPathRedirectUnreadable = errors.New("path redirect could not be inspected
 // first: asking Lstat about an NFS/SMB/autofs mount point can activate that
 // filesystem before its different device identity is available to reject.
 var errPathCrossesKnownMount = fmt.Errorf("%w: path crosses a known mount point", errSymlinkChainOffVolume)
+
+// errWorktreeMountPoint narrows errPathCrossesKnownMount to the one shape the
+// worktree preflight may skip instead of failing closed: the directory being
+// opened is itself a mount-table entry, and no directory on the way to it from
+// the held root is. Nothing at or below that mount point has been looked up.
+// It still matches errSymlinkChainOffVolume and errPathCrossesKnownMount, so
+// every other sweep keeps treating it exactly as it did before.
+var errWorktreeMountPoint = fmt.Errorf("%w: directory is itself a mount point", errPathCrossesKnownMount)
 
 // base is the volume every hop must match; a hop landing on a different
 // volume aborts immediately, with no further Stat or Readlink issued on it or
@@ -19527,39 +19618,47 @@ func (b *gitWorktreePreflightBudget) admitTraversalStep(ctx context.Context) boo
 // case spelling at a nested location declines Git enumeration. Symlinks are not
 // followed. Windows reparses are declined because Git for Windows can traverse
 // directory junctions even though the Go lstat view reports them as redirects.
-func gitWorktreeSafeBeforeListing(ctx context.Context, repo string) error {
+//
+// A directory that is itself a mount point is never opened. It is returned in
+// mounts, repo-relative with forward slashes, and declines Git enumeration the
+// way a nested marker does: Git's recursive walk would cross into it, and this
+// traversal cannot vouch for what it would find there. The filesystem fallback
+// may still run, but only by pruning every returned mount point unread.
+func gitWorktreeSafeBeforeListing(ctx context.Context, repo string) ([]string, error) {
 	repoAbs, err := filepath.Abs(repo)
 	if err != nil {
-		return fmt.Errorf("%w: %w: resolve selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
+		return nil, fmt.Errorf("%w: %w: resolve selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
 	}
 	anchor, resolvedRepo, err := newPathTraversalAnchor(repoAbs, repoAbs)
 	if err != nil {
-		return fmt.Errorf("%w: %w: anchor selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
+		return nil, fmt.Errorf("%w: %w: anchor selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
 	}
 	root, err := newSweepDirectoryRoot(resolvedRepo)
 	if err != nil {
-		return fmt.Errorf("%w: %w: hold selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
+		return nil, fmt.Errorf("%w: %w: hold selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
 	}
 	defer root.Close()
 
 	var budget gitWorktreePreflightBudget
 	if !budget.admitDirectory("") {
-		return fmt.Errorf("%w: %w: selected root exceeds the directory ceiling", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe)
+		return nil, fmt.Errorf("%w: %w: selected root exceeds the directory ceiling", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe)
 	}
 	return gitWorktreeSafeBeforeListingFromDirectories(ctx, root, anchor, &budget, []string{""})
 }
 
 // EnsureWorktreeSafeForFilesystemTraversal verifies that a subsequent bounded,
-// no-follow filesystem walk cannot enter a known mount or traversable redirect.
-// Nested .git markers and unreadable local subtrees are safe for such a walk:
-// the preflight checks every other reachable directory first, and the caller's
-// walker must preserve its ordinary skip behavior for those local paths.
-func EnsureWorktreeSafeForFilesystemTraversal(ctx context.Context, repo string) error {
-	err := gitWorktreeSafeBeforeListing(ctx, repo)
+// no-follow filesystem walk cannot enter a known mount or traversable redirect,
+// provided that walk prunes every returned mount point before it reads
+// anything at or below it. Nested .git markers and unreadable local subtrees
+// are safe for such a walk: the preflight checks every other reachable
+// directory first, and the caller's walker must preserve its ordinary skip
+// behavior for those local paths.
+func EnsureWorktreeSafeForFilesystemTraversal(ctx context.Context, repo string) ([]string, error) {
+	mounts, err := gitWorktreeSafeBeforeListing(ctx, repo)
 	if errors.Is(err, errGitWorktreeFallbackUnsafe) {
-		return err
+		return nil, err
 	}
-	return nil
+	return mounts, nil
 }
 
 func worktreePreflightCanSkipLocalFailure(err error) bool {
@@ -19576,11 +19675,12 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 	anchor pathTraversalAnchor,
 	budget *gitWorktreePreflightBudget,
 	queue []string,
-) error {
+) ([]string, error) {
+	var mounts []string
 	var fallbackReason error
 	for cursor := 0; cursor < len(queue); cursor++ {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("%w: %w: traversal cancelled: %w", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
+			return nil, fmt.Errorf("%w: %w: traversal cancelled: %w", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
 		}
 		dir := queue[cursor]
 		opened, err := root.Open(anchor, dir, func() bool {
@@ -19588,12 +19688,25 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 		})
 		if err != nil {
 			if errors.Is(err, errGitDirSweepHalted) && ctx.Err() != nil {
-				return fmt.Errorf("%w: %w: traversal cancelled: %w", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, ctx.Err())
+				return nil, fmt.Errorf("%w: %w: traversal cancelled: %w", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, ctx.Err())
+			}
+			if dir != "" && errors.Is(err, errWorktreeMountPoint) {
+				// The mount table names this directory itself and nothing between
+				// it and the held root, and Open looked up nothing inside it. Git
+				// would walk straight into it, so Git enumeration is declined, but
+				// the mount is a boundary the fallback can prune unread rather than
+				// a reason to refuse the whole worktree. Every other off-volume
+				// refusal below still fails closed.
+				mounts = append(mounts, filepath.ToSlash(dir))
+				if fallbackReason == nil {
+					fallbackReason = fmt.Errorf("%w: mount point at %q", errGitWorktreePreflight, filepath.ToSlash(dir))
+				}
+				continue
 			}
 			if errors.Is(err, errSymlinkChainOffVolume) ||
 				errors.Is(err, errGitDirSweepHalted) ||
 				!worktreePreflightCanSkipLocalFailure(err) {
-				return fmt.Errorf("%w: %w: open directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), err)
+				return nil, fmt.Errorf("%w: %w: open directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), err)
 			}
 			if fallbackReason == nil {
 				fallbackReason = fmt.Errorf("%w: open directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), err)
@@ -19613,7 +19726,7 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				}
 				if !budget.admitRawEntry(child) {
 					_ = opened.Close()
-					return fmt.Errorf(
+					return nil, fmt.Errorf(
 						"%w: %w: more than %d entries or %d aggregate path bytes",
 						errGitWorktreePreflight, errGitWorktreeFallbackUnsafe,
 						maxWorktreeWalkRawEntries,
@@ -19650,12 +19763,12 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				}
 				if runtime.GOOS == "windows" && entryType&fs.ModeIrregular != 0 {
 					_ = opened.Close()
-					return fmt.Errorf("%w: %w: reparse point at %q", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child)
+					return nil, fmt.Errorf("%w: %w: reparse point at %q", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child)
 				}
 				if entryType.IsDir() {
 					if !budget.admitDirectory(child) {
 						_ = opened.Close()
-						return fmt.Errorf(
+						return nil, fmt.Errorf(
 							"%w: %w: more than %d directories or %d aggregate directory-path bytes",
 							errGitWorktreePreflight, errGitWorktreeFallbackUnsafe,
 							maxWorktreeWalkDirectories,
@@ -19677,7 +19790,7 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				if infoErr != nil {
 					if !worktreePreflightCanSkipLocalFailure(infoErr) {
 						_ = opened.Close()
-						return fmt.Errorf("%w: %w: inspect ambiguous directory entry %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child, infoErr)
+						return nil, fmt.Errorf("%w: %w: inspect ambiguous directory entry %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child, infoErr)
 					}
 					if fallbackReason == nil {
 						fallbackReason = fmt.Errorf("%w: inspect ambiguous directory entry %q: %v", errGitWorktreePreflight, child, infoErr)
@@ -19687,7 +19800,7 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				if pathMayRedirect(info) {
 					if runtime.GOOS == "windows" {
 						_ = opened.Close()
-						return fmt.Errorf("%w: %w: reparse point at %q", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child)
+						return nil, fmt.Errorf("%w: %w: reparse point at %q", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child)
 					}
 					continue
 				}
@@ -19696,7 +19809,7 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				}
 				if !budget.admitDirectory(child) {
 					_ = opened.Close()
-					return fmt.Errorf(
+					return nil, fmt.Errorf(
 						"%w: %w: more than %d directories or %d aggregate directory-path bytes",
 						errGitWorktreePreflight, errGitWorktreeFallbackUnsafe,
 						maxWorktreeWalkDirectories,
@@ -19711,7 +19824,7 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 			if !errors.Is(readErr, io.EOF) {
 				if !worktreePreflightCanSkipLocalFailure(readErr) {
 					_ = opened.Close()
-					return fmt.Errorf("%w: %w: read directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), readErr)
+					return nil, fmt.Errorf("%w: %w: read directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), readErr)
 				}
 				if fallbackReason == nil {
 					fallbackReason = fmt.Errorf("%w: read directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), readErr)
@@ -19720,10 +19833,11 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 			break
 		}
 		if err := opened.Close(); err != nil {
-			return fmt.Errorf("%w: %w: close directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), err)
+			return nil, fmt.Errorf("%w: %w: close directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), err)
 		}
 	}
-	return fallbackReason
+	sort.Strings(mounts)
+	return mounts, fallbackReason
 }
 
 func worktreeGitFallbackWarning(cause error) ProviderWarning {
@@ -19748,13 +19862,13 @@ func walkWorktreeFilesAfterGitFailure(
 	ledger *repoIgnoreLedger,
 	hasGitIndex bool,
 	cause error,
-) ([]string, []ProviderWarning, error) {
-	paths, warnings, err := walkWorktreeFilesWithGitScope(ctx, repo, ignores, dirTracked, ledger, hasGitIndex)
+) ([]string, []ProviderWarning, []string, error) {
+	paths, warnings, mounts, err := walkWorktreeFilesWithGitScope(ctx, repo, ignores, dirTracked, ledger, hasGitIndex)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	warnings = append(warnings, worktreeGitFallbackWarning(cause))
-	return paths, warnings, nil
+	return paths, warnings, mounts, nil
 }
 
 func isVendoredScanFile(rel, name string) bool {
@@ -19843,7 +19957,16 @@ func repositoryHasGitMetadata(repo string) bool {
 type worktreeFilesLister func(context.Context, string) ([]string, error)
 
 func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool, ledger *repoIgnoreLedger) ([]string, []ProviderWarning, error) {
-	return worktreeSourceFilesWithLister(ctx, repo, ignores, hasIncludeFiles, ledger, gitutil.ListWorktreeFiles)
+	paths, warnings, _, err := worktreeSourceListing(ctx, repo, ignores, hasIncludeFiles, ledger)
+	return paths, warnings, err
+}
+
+// worktreeSourceListing is worktreeSourceFiles plus the mount points the listing
+// skipped, repo-relative with forward slashes. A source that reads the working
+// tree must refuse every path at or below one of them, because the listing's
+// guarantee that nothing beneath a mount point is read depends on it.
+func worktreeSourceListing(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool, ledger *repoIgnoreLedger) (paths []string, warnings []ProviderWarning, mounts []string, err error) {
+	return worktreeSourceListingWithLister(ctx, repo, ignores, hasIncludeFiles, ledger, gitutil.ListWorktreeFiles)
 }
 
 func worktreeSourceFilesWithLister(
@@ -19854,6 +19977,18 @@ func worktreeSourceFilesWithLister(
 	ledger *repoIgnoreLedger,
 	listWorktreeFiles worktreeFilesLister,
 ) ([]string, []ProviderWarning, error) {
+	paths, warnings, _, err := worktreeSourceListingWithLister(ctx, repo, ignores, hasIncludeFiles, ledger, listWorktreeFiles)
+	return paths, warnings, err
+}
+
+func worktreeSourceListingWithLister(
+	ctx context.Context,
+	repo string,
+	ignores ignoreMatcher,
+	hasIncludeFiles bool,
+	ledger *repoIgnoreLedger,
+	listWorktreeFiles worktreeFilesLister,
+) ([]string, []ProviderWarning, []string, error) {
 	if !gitMetadataSafeForSubprocessContext(ctx, repo) {
 		err := gitMetadataRefusalError(repo)
 		// No Git process is started. The fallback treats every ambiguous vendored
@@ -19865,22 +20000,25 @@ func worktreeSourceFilesWithLister(
 	trackedDirs, trackedErr := trackedDirSet(ctx, repo)
 	if trackedErr != nil {
 		if errors.Is(trackedErr, gitutil.ErrWorktreeListingTruncated) || errors.Is(trackedErr, errTrackedDirectoryBound) {
-			return nil, nil, fmt.Errorf("list Git index paths: %w", trackedErr)
+			return nil, nil, nil, fmt.Errorf("list Git index paths: %w", trackedErr)
 		}
 		if repositoryHasGitMetadata(repo) {
 			dirTracked := func(string) bool { return true }
 			return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, ledger, false, trackedErr)
 		}
 		dirTracked := func(string) bool { return false }
-		return walkWorktreeFiles(ctx, repo, ignores, dirTracked, ledger)
+		return walkWorktreeFilesWithGitScope(ctx, repo, ignores, dirTracked, ledger, false)
 	}
 	dirTracked := func(rel string) bool {
 		_, ok := trackedDirs[rel]
 		return ok
 	}
-	if err := gitWorktreeSafeBeforeListing(ctx, repo); err != nil {
+	// A mount point inside the worktree is always reported with a non-nil
+	// decline, so Git never enumerates a tree that contains one; the fallback
+	// below repeats the preflight and prunes the mount points it finds.
+	if _, err := gitWorktreeSafeBeforeListing(ctx, repo); err != nil {
 		if errors.Is(err, errGitWorktreeFallbackUnsafe) {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, ledger, true, err)
 	}
@@ -19891,12 +20029,12 @@ func worktreeSourceFilesWithLister(
 		// path would leave the identical blind spot behind wherever Git cannot
 		// enumerate the tree.
 		if errors.Is(err, gitutil.ErrWorktreeListingTruncated) {
-			return nil, nil, fmt.Errorf("list Git worktree paths: %w", err)
+			return nil, nil, nil, fmt.Errorf("list Git worktree paths: %w", err)
 		}
 		if repositoryHasGitMetadata(repo) {
 			return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, ledger, true, err)
 		}
-		return walkWorktreeFiles(ctx, repo, ignores, dirTracked, ledger)
+		return walkWorktreeFilesWithGitScope(ctx, repo, ignores, dirTracked, ledger, false)
 	}
 	// Git listed the tree, so it has already applied the checkout's own
 	// .git/info/exclude to the only content that list governs — untracked files.
@@ -19920,7 +20058,7 @@ func worktreeSourceFilesWithLister(
 		// when such a file was supplied.
 		ignored, ignoredErr := gitutil.ListIgnoredWorktreeFiles(ctx, repo)
 		if ignoredErr != nil {
-			return nil, nil, fmt.Errorf("list ignored Git worktree paths for explicit includes: %w", ignoredErr)
+			return nil, nil, nil, fmt.Errorf("list ignored Git worktree paths for explicit includes: %w", ignoredErr)
 		}
 		for _, rel := range ignored {
 			if finalIgnores.Reincluded(filepath.ToSlash(rel), false) {
@@ -19950,11 +20088,11 @@ func worktreeSourceFilesWithLister(
 		ctx, repo, maxNestedIgnoreFiles, includeEveryNestedIgnore,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("list worktree nested ignore files: %w", err)
+		return nil, nil, nil, fmt.Errorf("list worktree nested ignore files: %w", err)
 	}
 	vendorRules, err := worktreeVendorIgnoreRules(repo, ignores, nestedIgnores)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	// Every `gitdir:` pointer this listing can reach is resolved before any
 	// verdict is asked, so the answer cannot depend on listing order.
@@ -19970,7 +20108,7 @@ func worktreeSourceFilesWithLister(
 	// failures must be reported rather than silently admitting index symlinks.
 	indexNonRegular, indexErr := gitutil.IndexNonRegularPaths(ctx, repo)
 	if indexErr != nil {
-		return nil, nil, fmt.Errorf("list Git index modes: %w", indexErr)
+		return nil, nil, nil, fmt.Errorf("list Git index modes: %w", indexErr)
 	}
 	// The index alone cannot tell a materialized symlink from a replaced one.
 	// Both leave mode 120000 in the index with an ordinary file on disk: the
@@ -19982,7 +20120,7 @@ func worktreeSourceFilesWithLister(
 	// thing a worktree listing promises not to do.
 	indexReplaced, err := gitutil.IndexReplacedNonRegularPaths(ctx, repo, indexNonRegular)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	kinds := make([]listedPathKind, len(listed))
 	var listedDirs []string
@@ -20014,7 +20152,7 @@ func worktreeSourceFilesWithLister(
 	gitDirs.unlistedRoots, gitDirs.gitAnsweredRoots = gitSweepRootsFromGit(ctx, repo, gitDirs)
 	gitDirs.observeListedPaths(listed, listedDirs)
 	if err := gitDirs.listedObservationError(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
@@ -20063,11 +20201,11 @@ func worktreeSourceFilesWithLister(
 		paths = append(paths, rel)
 	}
 	if err := gitDirs.listedObservationError(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	sort.Strings(paths)
 	warnings := append(gitDirs.sweepWarnings(), gitDirs.sweepUnreadableDirWarning()...)
-	return paths, warnings, nil
+	return paths, warnings, nil, nil
 }
 
 func includeEveryNestedIgnore(string) bool { return true }
@@ -20239,26 +20377,33 @@ func listingOrderKey(entry fs.DirEntry) string {
 // narrower test, and not every ignored path, is what this mode can disclose
 // honestly.
 func walkWorktreeFiles(ctx context.Context, repo string, ignores ignoreMatcher, dirTracked func(string) bool, ledger *repoIgnoreLedger) ([]string, []ProviderWarning, error) {
-	return walkWorktreeFilesWithGitScope(ctx, repo, ignores, dirTracked, ledger, false)
+	paths, warnings, _, err := walkWorktreeFilesWithGitScope(ctx, repo, ignores, dirTracked, ledger, false)
+	return paths, warnings, err
 }
 
 // hasGitIndex licenses preserving the outer Git repository's nested boundaries.
 // A non-Git workspace may intentionally contain multiple independent projects;
 // its dirTracked=false also drives vendor policy, not proof of outer ownership.
-func walkWorktreeFilesWithGitScope(ctx context.Context, repo string, ignores ignoreMatcher, dirTracked func(string) bool, ledger *repoIgnoreLedger, hasGitIndex bool) ([]string, []ProviderWarning, error) {
+//
+// It also returns the mount points the walk pruned, for the source reader that
+// must refuse them too.
+func walkWorktreeFilesWithGitScope(ctx context.Context, repo string, ignores ignoreMatcher, dirTracked func(string) bool, ledger *repoIgnoreLedger, hasGitIndex bool) ([]string, []ProviderWarning, []string, error) {
 	// Every filesystem fallback enters through here, including paths selected
 	// before Git's index listing succeeds. Require the same complete held-root
 	// safety proof so an earlier Git failure cannot bypass mount detection.
-	if err := EnsureWorktreeSafeForFilesystemTraversal(ctx, repo); err != nil {
-		return nil, nil, err
+	// The mount points that proof skipped are handed to the walk, which prunes
+	// them unread; the walk itself does not detect mounts.
+	mounts, err := EnsureWorktreeSafeForFilesystemTraversal(ctx, repo)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	var paths []string
-	warnings, err := visitWalkWorktreeFiles(ctx, repo, ignores, dirTracked, ledger, hasGitIndex, func(rel string) bool {
+	warnings, err := visitWalkWorktreeFiles(ctx, repo, ignores, dirTracked, ledger, hasGitIndex, mounts, func(rel string) bool {
 		paths = append(paths, rel)
 		return true
 	})
 	sort.Strings(paths)
-	return paths, warnings, err
+	return paths, warnings, mounts, err
 }
 
 // visitWalkWorktreeFiles is the non-Git provider walk with a streaming sink.
@@ -20271,9 +20416,10 @@ func visitWalkWorktreeFiles(
 	dirTracked func(string) bool,
 	ledger *repoIgnoreLedger,
 	hasGitIndex bool,
+	mounts []string,
 	visit func(string) bool,
 ) ([]ProviderWarning, error) {
-	return visitWalkWorktreeFilesWithRawLimit(ctx, repo, ignores, dirTracked, ledger, hasGitIndex, 0, visit)
+	return visitWalkWorktreeFilesWithRawLimit(ctx, repo, ignores, dirTracked, ledger, hasGitIndex, mounts, 0, visit)
 }
 
 var errWorktreeRawPathLimit = errors.New("filesystem worktree raw path limit exceeded")
@@ -20344,6 +20490,7 @@ func visitWalkWorktreeFilesWithRawLimit(
 	dirTracked func(string) bool,
 	ledger *repoIgnoreLedger,
 	hasGitIndex bool,
+	mounts []string,
 	rawPathLimit int,
 	visit func(string) bool,
 ) ([]ProviderWarning, error) {
@@ -20359,6 +20506,10 @@ func visitWalkWorktreeFilesWithRawLimit(
 	if !budget.admitDirectory("") {
 		return nil, errWorktreeWalkDirectoryBound
 	}
+	skippedMounts := make(map[string]struct{}, len(mounts))
+	for _, mount := range mounts {
+		skippedMounts[mount] = struct{}{}
+	}
 	var paths []string
 	frames := []worktreeWalkFrame{{rel: ""}}
 	var walkErr error
@@ -20371,6 +20522,18 @@ func visitWalkWorktreeFilesWithRawLimit(
 		if !frame.ready {
 			rel := frame.rel
 			name := path.Base(rel)
+			// A mount point the preflight skipped is pruned before anything at or
+			// below it is read: not its `.git` pointer, not its .gitignore, not
+			// its entries. Like an unreadable directory, it may hide a `gitdir:`
+			// pointer naming a directory elsewhere in the tree, so it counts as
+			// hidden evidence for promoteUnverifiedGitDirs' fail-closed exclusion,
+			// and the omission is disclosed.
+			if _, mounted := skippedMounts[rel]; mounted && rel != "" {
+				gitDirs.hiddenEvidence++
+				gitDirs.noteSkippedMountDir(rel)
+				frames = frames[:len(frames)-1]
+				continue
+			}
 			// A directory's own `.git` pointer is read on the way in, before any
 			// of its children are visited, so a `--separate-git-dir` target
 			// beside it is already known when the walk reaches it.
@@ -20604,6 +20767,7 @@ func visitWalkWorktreeFilesWithRawLimit(
 	}
 	sort.Strings(paths)
 	warnings := append(gitDirs.sweepWarnings(), gitDirs.unreadableWalkWarning()...)
+	warnings = append(warnings, gitDirs.skippedMountWarning()...)
 	warnings = append(warnings, gitDirs.unreadableIgnorePolicyWarning()...)
 	warnings = append(warnings, gitDirs.sweepUnreadableDirWarning()...)
 	for _, rel := range paths {

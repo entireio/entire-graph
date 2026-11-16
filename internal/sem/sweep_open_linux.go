@@ -136,6 +136,59 @@ func (r *sweepDirectoryRoot) loadMountPoints() (map[string]struct{}, error) {
 	return r.mountPoints, r.mountErr
 }
 
+// heldRootMountPoints returns the mount inventory only while r.file's name still
+// identifies the directory it holds. mountinfo identifies mount points by their
+// current absolute paths, while the callers below reason about components
+// relative to the held repository descriptor. If that repository was renamed
+// after it was opened, its stale name could no longer match a mount-table entry
+// and a walk could cross that mount. Every failure here is fail-closed.
+func (r *sweepDirectoryRoot) heldRootMountPoints() (map[string]struct{}, error) {
+	mountPoints, err := r.loadMountPoints()
+	if err != nil {
+		return nil, errors.Join(errSymlinkChainOffVolume, err)
+	}
+	heldInfo, err := r.file.Stat()
+	if err != nil {
+		return nil, errors.Join(errSymlinkChainOffVolume, err)
+	}
+	namedInfo, err := os.Lstat(r.file.Name())
+	if err != nil {
+		return nil, errors.Join(errSymlinkChainOffVolume, err)
+	}
+	if !os.SameFile(heldInfo, namedInfo) {
+		return nil, errSymlinkChainOffVolume
+	}
+	return mountPoints, nil
+}
+
+// classifyMountCrossing explains an openat2 RESOLVE_NO_XDEV refusal. The kernel
+// says only that resolution would have crossed a mount somewhere on the path.
+// Report errWorktreeMountPoint when the mount table names the final component
+// and none of the components before it; anything else (an ancestor that became
+// a mount after it was listed, a mount the table does not name, an unreadable
+// table, a renamed held root) stays errSymlinkChainOffVolume.
+func (r *sweepDirectoryRoot) classifyMountCrossing(components []string) error {
+	if len(components) == 0 {
+		return errSymlinkChainOffVolume
+	}
+	mountPoints, err := r.heldRootMountPoints()
+	if err != nil {
+		return err
+	}
+	candidate := filepath.Clean(r.file.Name())
+	for index, component := range components {
+		candidate = filepath.Join(candidate, component)
+		if _, mounted := mountPoints[candidate]; !mounted {
+			continue
+		}
+		if index == len(components)-1 {
+			return errWorktreeMountPoint
+		}
+		return errSymlinkChainOffVolume
+	}
+	return errSymlinkChainOffVolume
+}
+
 func (r *sweepDirectoryRoot) openWithoutOpenat2(
 	anchor pathTraversalAnchor,
 	components []string,
@@ -162,28 +215,11 @@ func (r *sweepDirectoryRoot) openWithoutOpenat2(
 		}
 		return opened, nil
 	}
-	mountPoints, err := r.loadMountPoints()
+	mountPoints, err := r.heldRootMountPoints()
 	if err != nil {
-		return nil, errors.Join(errSymlinkChainOffVolume, err)
+		return nil, err
 	}
-	// mountinfo identifies mount points by their current absolute paths, while
-	// the fallback below opens components relative to the held repository
-	// descriptor. If that repository was renamed after it was opened, its stale
-	// name could no longer match a mount-table entry and the fallback could walk
-	// across that mount. Fail closed unless the name still identifies the exact
-	// directory held by r.file.
-	heldInfo, err := r.file.Stat()
-	if err != nil {
-		return nil, errors.Join(errSymlinkChainOffVolume, err)
-	}
-	namedInfo, err := os.Lstat(r.file.Name())
-	if err != nil {
-		return nil, errors.Join(errSymlinkChainOffVolume, err)
-	}
-	if !os.SameFile(heldInfo, namedInfo) {
-		return nil, errSymlinkChainOffVolume
-	}
-	for _, component := range components {
+	for index, component := range components {
 		if !admitStep() {
 			closeOwned()
 			return nil, errGitDirSweepHalted
@@ -191,6 +227,12 @@ func (r *sweepDirectoryRoot) openWithoutOpenat2(
 		candidate := filepath.Join(currentPath, component)
 		if _, mounted := mountPoints[candidate]; mounted {
 			closeOwned()
+			// Every earlier component was checked against the same table on
+			// the way here, so a match on the last one is that directory being
+			// a mount point itself, which a caller may skip without opening.
+			if index == len(components)-1 {
+				return nil, errWorktreeMountPoint
+			}
 			return nil, errSymlinkChainOffVolume
 		}
 		fd, err := syscall.Openat(
@@ -240,7 +282,10 @@ func (r *sweepDirectoryRoot) openAfterOpenat2Failure(
 	admitStep func() bool,
 	openat2Err error,
 ) (*os.File, error) {
-	if errors.Is(openat2Err, syscall.EXDEV) || errors.Is(openat2Err, syscall.ELOOP) || errors.Is(openat2Err, syscall.EAGAIN) {
+	if errors.Is(openat2Err, syscall.EXDEV) {
+		return nil, r.classifyMountCrossing(components)
+	}
+	if errors.Is(openat2Err, syscall.ELOOP) || errors.Is(openat2Err, syscall.EAGAIN) {
 		return nil, errSymlinkChainOffVolume
 	}
 	if !linuxOpenat2NeedsGuardedFallback(openat2Err) {

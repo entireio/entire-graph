@@ -65,6 +65,7 @@ var snapshotScopedDiagnosticCodes = map[string]bool{
 	"W_NEWER_SCHEMA_MINOR":                true,
 	repoIgnoreDisclosureCode:              true,
 	"W_VALUE_REFERENCES_UNMODELLED":       true,
+	"W_WALK_MOUNT_SKIPPED":                true,
 	"W_WALK_UNREADABLE_DIRECTORY":         true,
 	"W_WALK_UNREADABLE_IGNORE_POLICY":     true,
 	"W_WORKTREE_SNAPSHOT":                 true,

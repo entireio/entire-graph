@@ -1,0 +1,109 @@
+package sem
+
+import (
+	"strings"
+	"testing"
+)
+
+// The filesystem fallback cannot see mounts itself: it prunes exactly the mount
+// points the preflight handed it, before reading anything inside them. A
+// `.git` pointer inside a pruned mount point is never read, so the git
+// directory it names elsewhere in the tree must still be excluded through the
+// same fail-closed promotion an unreadable directory triggers.
+func TestWalkWorktreeFilesPrunesSkippedMountPointsUnread(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "keep.go", "package keep\nfunc Kept() {}\n")
+	writeFile(t, repo, "mnt/inside.go", "package mnt\nfunc BehindTheMount() {}\n")
+	writeFile(t, repo, "mnt/.git", "gitdir: ../.dep-git\n")
+	// A HEAD-less git directory: only the pointer, or the promotion that
+	// stands in for an unread pointer, identifies it.
+	writeFile(t, repo, ".dep-git/config", "[remote \"origin\"]\n\turl = https://token@example.invalid/repo\n")
+	writeFile(t, repo, ".dep-git/objects/.keep", "")
+	writeFile(t, repo, ".dep-git/refs/.keep", "")
+
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	warnings, err := visitWalkWorktreeFiles(t.Context(), repo, ignores, nil, nil, false, []string{"mnt"}, func(rel string) bool {
+		paths = append(paths, rel)
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsWorktreePath(paths, "keep.go") {
+		t.Fatalf("paths = %q, want keep.go beside the skipped mount point", paths)
+	}
+	for _, rel := range paths {
+		if rel == "mnt" || strings.HasPrefix(rel, "mnt/") {
+			t.Fatalf("paths = %q: the walk entered the skipped mount point", paths)
+		}
+		if strings.HasPrefix(rel, ".dep-git/") {
+			t.Fatalf("paths = %q: a git directory a skipped mount point could name was indexed", paths)
+		}
+	}
+	if !hasProviderWarningDetail(warnings, "W_WALK_MOUNT_SKIPPED", "mnt") {
+		t.Fatalf("warnings = %+v, want W_WALK_MOUNT_SKIPPED naming mnt", warnings)
+	}
+}
+
+func hasProviderWarningDetail(warnings []ProviderWarning, code, detail string) bool {
+	for _, warning := range warnings {
+		if warning.Code == code && strings.Contains(warning.Detail, detail) {
+			return true
+		}
+	}
+	return false
+}
+
+// Readers are asked for paths by name as well as for listed ones (import
+// resolution, a whole-tree Git grep), so the source refuses every path at or
+// below a skipped mount point, including aliases a folding filesystem would
+// resolve into it.
+func TestWorktreeSourceRefusesReadsBelowSkippedMountPoints(t *testing.T) {
+	t.Parallel()
+	var asked []string
+	opened := refuseWorktreeMountReads(openedSource{
+		read: func(rel string) (string, bool) {
+			asked = append(asked, rel)
+			return "content", true
+		},
+		readPrefix: func(rel string, _ int) (string, bool) {
+			asked = append(asked, rel)
+			return "content", true
+		},
+	}, []string{".claude/.cc-writes", "mnt"})
+	for _, rel := range []string{
+		"mnt", "mnt/inside.go", "MNT/inside.go", "a/../mnt/inside.go", "./mnt/inside.go",
+		".claude/.cc-writes/x.go", ".Claude/.CC-writes/x.go",
+	} {
+		if _, ok := opened.read(rel); ok {
+			t.Errorf("read(%q) succeeded below a skipped mount point", rel)
+		}
+		if _, ok := opened.readPrefix(rel, 16); ok {
+			t.Errorf("readPrefix(%q) succeeded below a skipped mount point", rel)
+		}
+	}
+	if len(asked) != 0 {
+		t.Fatalf("underlying reader was asked for %q", asked)
+	}
+	for _, rel := range []string{"keep.go", "mnt2/x.go", "mntx", ".claude/settings.json", "a/mnt/x.go"} {
+		if _, ok := opened.read(rel); !ok {
+			t.Errorf("read(%q) refused outside every skipped mount point", rel)
+		}
+		if _, ok := opened.readPrefix(rel, 16); !ok {
+			t.Errorf("readPrefix(%q) refused outside every skipped mount point", rel)
+		}
+	}
+	if len(opened.worktreeMounts) != 2 {
+		t.Fatalf("worktreeMounts = %q, want both skipped mount points kept for search", opened.worktreeMounts)
+	}
+
+	unchanged := refuseWorktreeMountReads(openedSource{}, nil)
+	if unchanged.read != nil || unchanged.readPrefix != nil || unchanged.worktreeMounts != nil {
+		t.Fatal("a source with no skipped mount points was changed")
+	}
+}

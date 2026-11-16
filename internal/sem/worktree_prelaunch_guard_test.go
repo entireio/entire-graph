@@ -211,7 +211,7 @@ func TestGitWorktreePreflightDeclinesEveryNestedGitMarkerKind(t *testing.T) {
 				t.Fatal(err)
 			}
 			testCase.create(t, filepath.Join(repo, "nested", ".gIt"))
-			if err := gitWorktreeSafeBeforeListing(t.Context(), repo); err == nil {
+			if _, err := gitWorktreeSafeBeforeListing(t.Context(), repo); err == nil {
 				t.Fatal("nested .git marker passed the worktree preflight")
 			} else if errors.Is(err, errGitWorktreeFallbackUnsafe) {
 				t.Fatalf("local nested .git marker incorrectly disabled the safe filesystem fallback: %v", err)
@@ -236,7 +236,7 @@ func TestGitWorktreePreflightTraversalCeilingIsFallbackUnsafe(t *testing.T) {
 	if !budget.admitDirectory("") {
 		t.Fatal("failed to admit the selected root")
 	}
-	err = gitWorktreeSafeBeforeListingFromDirectories(
+	_, err = gitWorktreeSafeBeforeListingFromDirectories(
 		t.Context(), root, anchor, &budget, []string{""},
 	)
 	if !errors.Is(err, errGitWorktreeFallbackUnsafe) {
@@ -248,7 +248,7 @@ func TestGitWorktreePreflightPreservesCancellationIdentity(t *testing.T) {
 	repo := t.TempDir()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	err := EnsureWorktreeSafeForFilesystemTraversal(ctx, repo)
+	_, err := EnsureWorktreeSafeForFilesystemTraversal(ctx, repo)
 	if !errors.Is(err, errGitWorktreeFallbackUnsafe) {
 		t.Fatalf("cancelled preflight error = %v, want %v", err, errGitWorktreeFallbackUnsafe)
 	}
