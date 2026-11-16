@@ -28,7 +28,7 @@ func syntheticMountRoot(t *testing.T, repo string, mounts ...string) (*sweepDire
 	for _, mount := range mounts {
 		table[filepath.Join(resolvedRepo, mount)] = struct{}{}
 	}
-	root.mountOnce.Do(func() { root.mountPoints = table })
+	root.readMountTable = func() (map[string]struct{}, error) { return table, nil }
 	return root, anchor
 }
 
@@ -103,7 +103,7 @@ func TestLinuxSweepMountPointClassificationFailsClosed(t *testing.T) {
 		}
 		defer root.Close()
 		inventoryErr := errors.New("synthetic mount inventory failure")
-		root.mountOnce.Do(func() { root.mountErr = inventoryErr })
+		root.readMountTable = func() (map[string]struct{}, error) { return nil, inventoryErr }
 
 		_, err = root.openAfterOpenat2Failure(anchor, []string{"mnt"}, admit, syscall.EXDEV)
 		if !errors.Is(err, errSymlinkChainOffVolume) || !errors.Is(err, inventoryErr) {
@@ -111,6 +111,35 @@ func TestLinuxSweepMountPointClassificationFailsClosed(t *testing.T) {
 		}
 		if errors.Is(err, errWorktreeMountPoint) {
 			t.Fatalf("EXDEV error = %v: an unreadable mount table must not classify a mount point", err)
+		}
+	})
+	t.Run("ancestor mounted after the inventory was cached", func(t *testing.T) {
+		repo := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(repo, "a", "b"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		root, anchor := syntheticMountRoot(t, repo, "a", "a/b")
+		resolvedB := filepath.Join(filepath.Clean(root.file.Name()), "a", "b")
+		// The walk cached a table that knew only a/b; a is mounted since.
+		root.mountOnce.Do(func() { root.mountPoints = map[string]struct{}{resolvedB: {}} })
+		for _, route := range []struct {
+			name string
+			open func() (*os.File, error)
+		}{
+			{"EXDEV", func() (*os.File, error) {
+				return root.openAfterOpenat2Failure(anchor, []string{"a", "b"}, admit, syscall.EXDEV)
+			}},
+			{"mountinfo fallback", func() (*os.File, error) {
+				return root.openWithoutOpenat2(anchor, []string{"a", "b"}, admit)
+			}},
+		} {
+			opened, err := route.open()
+			if opened != nil {
+				_ = opened.Close()
+			}
+			if !errors.Is(err, errSymlinkChainOffVolume) || errors.Is(err, errWorktreeMountPoint) {
+				t.Fatalf("%s error = %v: a mounted ancestor must fail closed, not skip a/b", route.name, err)
+			}
 		}
 	})
 	t.Run("renamed held root", func(t *testing.T) {

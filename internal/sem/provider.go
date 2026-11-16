@@ -14009,7 +14009,9 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		// report exists to close.
 		confined := openManuallyConfinedWorktreeSource(repo, paths, ignores, warnings, maxReadBytes)
 		confined.repoIgnored = worktreeLedger.report()
-		return refuseWorktreeMountReads(confined, mounts), nil
+		return refuseWorktreeMountReads(confined, mounts, func(name string) (fs.FileInfo, error) {
+			return os.Lstat(filepath.Join(repo, name))
+		}), nil
 	}
 	// Taken once, from the descriptor os.OpenRoot just pinned, and consulted by
 	// every fallback read below. See pinnedRootIdentity.
@@ -14084,7 +14086,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		close:       root.Close,
 		warnings:    warnings,
 		repoIgnored: worktreeLedger.report(),
-	}, mounts), nil
+	}, mounts, root.Lstat), nil
 }
 
 // refuseWorktreeMountReads keeps a worktree source's readers out of the mount
@@ -14092,10 +14094,19 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 // are also asked for paths by name: an import specifier can name one, and a
 // whole-tree Git grep can return one. Matching folds case and Unicode
 // normalization like the mount guard's rejections, so an alias a folding
-// filesystem would resolve into the mount is refused too. The mount points
-// are kept on the source so search can keep Git's working-tree grep, which
-// reads tracked paths wherever they are mounted, out of them as well.
-func refuseWorktreeMountReads(opened openedSource, mounts []string) openedSource {
+// filesystem would resolve into the mount is refused too.
+//
+// A spelling outside every mount point can still resolve into one through a
+// symlinked directory (`alias -> mnt`, read as `alias/x.ts`), or through `..`
+// after one. The listing never follows a symlink, so a listed path passes
+// through none; any OTHER path is read only when it has no `..` component and
+// lstat finds no symlink among its directories. lstat resolves a
+// repository-relative native path without following its final component.
+//
+// The mount points are kept on the source so search can keep Git's
+// working-tree grep, which reads tracked paths wherever they are mounted, out of
+// them as well.
+func refuseWorktreeMountReads(opened openedSource, mounts []string, lstat func(string) (fs.FileInfo, error)) openedSource {
 	if len(mounts) == 0 {
 		return opened
 	}
@@ -14103,18 +14114,25 @@ func refuseWorktreeMountReads(opened openedSource, mounts []string) openedSource
 	for _, mount := range mounts {
 		keys = append(keys, mountPathKey(filepath.FromSlash(mount)))
 	}
-	belowMount := func(rel string) bool {
+	listed := make(map[string]struct{}, len(opened.paths))
+	for _, rel := range opened.paths {
+		listed[rel] = struct{}{}
+	}
+	refused := func(rel string) bool {
 		key := mountPathKey(filepath.FromSlash(rel))
 		for _, mount := range keys {
 			if mountPathContainsExact(mount, key) {
 				return true
 			}
 		}
-		return false
+		if _, ok := listed[rel]; ok {
+			return false
+		}
+		return pathMayResolveThroughLink(rel, lstat)
 	}
 	if read := opened.read; read != nil {
 		opened.read = func(rel string) (string, bool) {
-			if belowMount(rel) {
+			if refused(rel) {
 				return "", false
 			}
 			return read(rel)
@@ -14122,7 +14140,7 @@ func refuseWorktreeMountReads(opened openedSource, mounts []string) openedSource
 	}
 	if readPrefix := opened.readPrefix; readPrefix != nil {
 		opened.readPrefix = func(rel string, limit int) (string, bool) {
-			if belowMount(rel) {
+			if refused(rel) {
 				return "", false
 			}
 			return readPrefix(rel, limit)
@@ -14130,6 +14148,33 @@ func refuseWorktreeMountReads(opened openedSource, mounts []string) openedSource
 	}
 	opened.worktreeMounts = append([]string(nil), mounts...)
 	return opened
+}
+
+// pathMayResolveThroughLink reports whether opening rel could follow a symlink
+// before its final component, or step back out of one with `..`. Anything lstat
+// cannot answer counts as yes, and so does a nil lstat.
+func pathMayResolveThroughLink(rel string, lstat func(string) (fs.FileInfo, error)) bool {
+	if lstat == nil {
+		return true
+	}
+	components := splitNativePathComponents(filepath.FromSlash(rel))
+	for _, component := range components {
+		if component == ".." {
+			return true
+		}
+	}
+	prefix := ""
+	for _, component := range components[:max(len(components)-1, 0)] {
+		if component == "." || component == "" {
+			continue
+		}
+		prefix = filepath.Join(prefix, component)
+		info, err := lstat(prefix)
+		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // The fallback directory translation resolves the DIRECTORY portion of
@@ -20515,6 +20560,7 @@ func visitWalkWorktreeFilesWithRawLimit(
 	for _, mount := range mounts {
 		skippedMounts[mount] = struct{}{}
 	}
+	stack.skippedMounts = skippedMounts
 	var paths []string
 	frames := []worktreeWalkFrame{{rel: ""}}
 	var walkErr error

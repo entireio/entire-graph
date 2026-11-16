@@ -1832,6 +1832,10 @@ type nestedIgnoreStack struct {
 	// would have listed, so nothing suppressed here can be a tracked source)
 	// from "tracked files exist and this mode cannot see which".
 	gitCheckout bool
+	// skippedMounts are the mount points the worktree preflight skipped,
+	// repo-relative with forward slashes. Prune accounting must not enter one any
+	// more than the walk does: it runs over trees the walk itself never visits.
+	skippedMounts map[string]struct{}
 }
 
 type nestedIgnoreLevel struct {
@@ -2272,6 +2276,14 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		}
 		childRel := cleanIgnorePath(filepath.ToSlash(child))
 		if entry.IsDir() {
+			// A mount point the preflight skipped is never entered, here as in
+			// the outer walk, so nothing below it can be counted: the count is a
+			// lower bound and the mount point is named as unreadable.
+			if _, mounted := s.skippedMounts[childRel]; mounted {
+				s.noteUnreadablePath(ledger, current, dir)
+				ledger.noteCountIncomplete()
+				return filepath.SkipDir
+			}
 			// Same discipline as the outer walk: enter before judging anything
 			// inside, so the deepest .gitignore with an opinion is on the stack —
 			// charged, because reading it is work the prune had already saved and

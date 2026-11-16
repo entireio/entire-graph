@@ -22,6 +22,9 @@ type sweepDirectoryRoot struct {
 	mountOnce   sync.Once
 	mountPoints map[string]struct{}
 	mountErr    error
+	// readMountTable reads the mount table; nil reads /proc/self/mountinfo.
+	// Tests replace it to control what a fresh read sees.
+	readMountTable func() (map[string]struct{}, error)
 }
 
 func newSweepDirectoryRoot(repo string) (*sweepDirectoryRoot, error) {
@@ -129,9 +132,16 @@ func readLinuxMountPoints() (map[string]struct{}, error) {
 	return mounts, nil
 }
 
+func (r *sweepDirectoryRoot) readMountPoints() (map[string]struct{}, error) {
+	if r.readMountTable != nil {
+		return r.readMountTable()
+	}
+	return readLinuxMountPoints()
+}
+
 func (r *sweepDirectoryRoot) loadMountPoints() (map[string]struct{}, error) {
 	r.mountOnce.Do(func() {
-		r.mountPoints, r.mountErr = readLinuxMountPoints()
+		r.mountPoints, r.mountErr = r.readMountPoints()
 	})
 	return r.mountPoints, r.mountErr
 }
@@ -143,7 +153,11 @@ func (r *sweepDirectoryRoot) loadMountPoints() (map[string]struct{}, error) {
 // after it was opened, its stale name could no longer match a mount-table entry
 // and a walk could cross that mount. Every failure here is fail-closed.
 func (r *sweepDirectoryRoot) heldRootMountPoints() (map[string]struct{}, error) {
-	mountPoints, err := r.loadMountPoints()
+	return r.heldRootMountPointsFrom(r.loadMountPoints)
+}
+
+func (r *sweepDirectoryRoot) heldRootMountPointsFrom(load func() (map[string]struct{}, error)) (map[string]struct{}, error) {
+	mountPoints, err := load()
 	if err != nil {
 		return nil, errors.Join(errSymlinkChainOffVolume, err)
 	}
@@ -161,17 +175,20 @@ func (r *sweepDirectoryRoot) heldRootMountPoints() (map[string]struct{}, error) 
 	return mountPoints, nil
 }
 
-// classifyMountCrossing explains an openat2 RESOLVE_NO_XDEV refusal. The kernel
-// says only that resolution would have crossed a mount somewhere on the path.
-// Report errWorktreeMountPoint when the mount table names the final component
-// and none of the components before it; anything else (an ancestor that became
-// a mount after it was listed, a mount the table does not name, an unreadable
-// table, a renamed held root) stays errSymlinkChainOffVolume.
+// classifyMountCrossing explains a refusal to cross a mount: an openat2
+// RESOLVE_NO_XDEV refusal, where the kernel says only that resolution would
+// have crossed a mount somewhere on the path, or the cached table naming the
+// final component. Report errWorktreeMountPoint only when a FRESH read of the
+// mount table names the final component and none of the components before it.
+// The cached inventory is not enough to grant a skip: it may predate a mount
+// placed on an ancestor since, which is exactly what a refusal here can be.
+// Anything else (an ancestor mount, a mount the table does not name, an
+// unreadable table, a renamed held root) stays errSymlinkChainOffVolume.
 func (r *sweepDirectoryRoot) classifyMountCrossing(components []string) error {
 	if len(components) == 0 {
 		return errSymlinkChainOffVolume
 	}
-	mountPoints, err := r.heldRootMountPoints()
+	mountPoints, err := r.heldRootMountPointsFrom(r.readMountPoints)
 	if err != nil {
 		return err
 	}
@@ -227,11 +244,11 @@ func (r *sweepDirectoryRoot) openWithoutOpenat2(
 		candidate := filepath.Join(currentPath, component)
 		if _, mounted := mountPoints[candidate]; mounted {
 			closeOwned()
-			// Every earlier component was checked against the same table on
-			// the way here, so a match on the last one is that directory being
-			// a mount point itself, which a caller may skip without opening.
+			// A match on the last component may be that directory being a mount
+			// point itself, which a caller may skip without opening; a fresh
+			// read of the table decides, as it does for an openat2 refusal.
 			if index == len(components)-1 {
-				return nil, errWorktreeMountPoint
+				return nil, r.classifyMountCrossing(components)
 			}
 			return nil, errSymlinkChainOffVolume
 		}

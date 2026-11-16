@@ -487,11 +487,14 @@ Redirects, mount boundaries, cancellation, and traversal ceilings fail closed,
 except that on Linux a directory that is itself a mount point is skipped without
 being opened: Git enumeration is declined, the filesystem fallback prunes the
 directory unread and reports `W_WALK_MOUNT_SKIPPED` (snapshot-scoped), source
-reads at or below it are refused, working-tree `git grep` is not used, and
+reads at or below it are refused (and so are by-name reads that pass through a
+symlinked directory or `..`), repository-ignore accounting does not enter it,
+working-tree `git grep` is not used, and
 Git-structured directories are excluded fail-closed because a `.git` pointer
-inside the mount cannot be read. Only a mount the kernel's mount table names at
-the final component of a directory being opened qualifies; anything else that
-crosses a mount still fails closed.
+inside the mount cannot be read. Only a mount that a fresh read of the kernel's
+mount table names at the final component of a directory being opened, and at
+no component before it, qualifies; anything else that crosses a mount still
+fails closed.
 Fallbacks selected by earlier Git failures pass through the same safety gate.
 The provider exposes this filesystem-traversal gate to local consumers such as
 `stats`, so a non-provider fallback cannot silently reintroduce mount traversal.

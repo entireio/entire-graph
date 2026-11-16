@@ -76,12 +76,15 @@ other is installation.
   point, such as a sandbox's read-only bind mount inside the checkout, is never
   opened. The preflight then declines Git enumeration, the bounded filesystem
   fallback prunes that directory unread and discloses it as
-  `W_WALK_MOUNT_SKIPPED`, reads of any path at or below it are refused,
+  `W_WALK_MOUNT_SKIPPED`, reads of any path at or below it are refused (as
+  are by-name reads through a symlinked directory or `..`, which could resolve
+  into it), the repository-ignore accounting walk does not enter it either,
   working-tree `git grep` is not used for that run, and Git-structured
   directories elsewhere in the tree are excluded as if a `.git` pointer inside
-  the mount had named them. A mount met below a directory already admitted, an
-  unreadable mount table, a renamed repository root, and mount boundaries on
-  other platforms still fail closed. Every earlier Git failure also passes
+  the mount had named them. The skip is granted only on a fresh read of the
+  mount table. A mount met below a directory already admitted, an unreadable
+  mount table, a renamed repository root, and mount boundaries on other
+  platforms still fail closed. Every earlier Git failure also passes
   through this safety gate before the filesystem fallback begins. Under Go's legacy Windows reparse-mode
   compatibility, mount points surface as symlinks instead; both filesystem
   fallbacks apply their no-follow rule before considering a directory entry.
