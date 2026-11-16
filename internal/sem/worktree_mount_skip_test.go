@@ -1,13 +1,9 @@
 package sem
 
 import (
-	"io/fs"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 // The filesystem fallback cannot see mounts itself: it prunes exactly the mount
@@ -80,7 +76,7 @@ func TestWorktreeSourceRefusesReadsBelowSkippedMountPoints(t *testing.T) {
 			asked = append(asked, rel)
 			return "content", true
 		},
-	}, []string{".claude/.cc-writes", "mnt"}, func(string) (fs.FileInfo, error) { return fakeDirInfo{}, nil })
+	}, []string{".claude/.cc-writes", "mnt"})
 	for _, rel := range []string{
 		"mnt", "mnt/inside.go", "MNT/inside.go", "a/../mnt/inside.go", "./mnt/inside.go",
 		".claude/.cc-writes/x.go", ".Claude/.CC-writes/x.go",
@@ -107,7 +103,7 @@ func TestWorktreeSourceRefusesReadsBelowSkippedMountPoints(t *testing.T) {
 		t.Fatalf("worktreeMounts = %q, want both skipped mount points kept for search", opened.worktreeMounts)
 	}
 
-	unchanged := refuseWorktreeMountReads(openedSource{}, nil, nil)
+	unchanged := refuseWorktreeMountReads(openedSource{}, nil)
 	if unchanged.read != nil || unchanged.readPrefix != nil || unchanged.worktreeMounts != nil {
 		t.Fatal("a source with no skipped mount points was changed")
 	}
@@ -148,66 +144,6 @@ func TestPrunedExclusionAccountingStopsAtSkippedMountPoints(t *testing.T) {
 	}
 	if !slices.Contains(report.Unreadable, "hidden/mnt") {
 		t.Fatalf("unreadable = %q, want the skipped mount point named", report.Unreadable)
-	}
-}
-
-type fakeDirInfo struct{}
-
-func (fakeDirInfo) Name() string       { return "dir" }
-func (fakeDirInfo) Size() int64        { return 0 }
-func (fakeDirInfo) Mode() fs.FileMode  { return fs.ModeDir | 0o755 }
-func (fakeDirInfo) ModTime() time.Time { return time.Time{} }
-func (fakeDirInfo) IsDir() bool        { return true }
-func (fakeDirInfo) Sys() any           { return nil }
-
-// A symlinked directory outside every mount point can still lead into one, so
-// a by-name read through a symlink, or back out of one with `..`, is refused
-// once any mount point was skipped. Listed paths never pass through a symlink
-// and are read as before.
-func TestWorktreeSourceRefusesReadsThroughSymlinksIntoSkippedMountPoints(t *testing.T) {
-	t.Parallel()
-	repo := t.TempDir()
-	writeFile(t, repo, "keep.go", "package keep\n")
-	writeFile(t, repo, "src/util.ts", "export const util = 1\n")
-	writeFile(t, repo, "mnt/secret.ts", "export const secret = 1\n")
-	if err := os.Symlink("mnt", filepath.Join(repo, "alias")); err != nil {
-		t.Skipf("create a directory symlink: %v", err)
-	}
-	if err := os.Symlink("../mnt", filepath.Join(repo, "src", "up")); err != nil {
-		t.Fatal(err)
-	}
-	root, err := os.OpenRoot(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = root.Close() })
-	read := func(rel string) (string, bool) {
-		content, err := root.ReadFile(filepath.FromSlash(rel))
-		return string(content), err == nil
-	}
-	opened := refuseWorktreeMountReads(openedSource{
-		paths: []string{"keep.go", "src/util.ts"},
-		read:  read,
-		readPrefix: func(rel string, _ int) (string, bool) {
-			return read(rel)
-		},
-	}, []string{"mnt"}, root.Lstat)
-
-	for _, rel := range []string{"alias/secret.ts", "src/up/secret.ts", "src/up/../mnt/secret.ts", "src/../alias/secret.ts"} {
-		if _, err := root.ReadFile(filepath.FromSlash(rel)); err != nil {
-			t.Fatalf("fixture is wrong: %s does not resolve into mnt: %v", rel, err)
-		}
-		if _, ok := opened.read(rel); ok {
-			t.Errorf("read(%q) followed a symlink into a skipped mount point", rel)
-		}
-		if _, ok := opened.readPrefix(rel, 16); ok {
-			t.Errorf("readPrefix(%q) followed a symlink into a skipped mount point", rel)
-		}
-	}
-	for _, rel := range []string{"keep.go", "src/util.ts"} {
-		if _, ok := opened.read(rel); !ok {
-			t.Errorf("read(%q) refused a path with no symlink and no mount point", rel)
-		}
 	}
 }
 

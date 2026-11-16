@@ -14009,9 +14009,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		// report exists to close.
 		confined := openManuallyConfinedWorktreeSource(repo, paths, ignores, warnings, maxReadBytes)
 		confined.repoIgnored = worktreeLedger.report()
-		return refuseWorktreeMountReads(confined, mounts, func(name string) (fs.FileInfo, error) {
-			return os.Lstat(filepath.Join(repo, name))
-		}), nil
+		return refuseWorktreeMountReads(confined, mounts), nil
 	}
 	// Taken once, from the descriptor os.OpenRoot just pinned, and consulted by
 	// every fallback read below. See pinnedRootIdentity.
@@ -14067,12 +14065,17 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			return readPrefixFallback(pinned, repo, path, limit)
 		}
 		defer file.Close()
-		buf := make([]byte, limit)
-		n, err := io.ReadFull(file, buf)
-		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			return "", false
+		return readFilePrefix(file, limit)
+	}
+	closeSource := root.Close
+	if len(mounts) > 0 {
+		var closeFiles func() error
+		read, readPrefix, closeFiles, err = mountRefusingWorktreeReaders(repo, maxReadBytes, registry)
+		if err != nil {
+			_ = root.Close()
+			return openedSource{}, err
 		}
-		return string(buf[:n]), true
+		closeSource = func() error { return errors.Join(closeFiles(), root.Close()) }
 	}
 	return refuseWorktreeMountReads(openedSource{
 		paths:      paths,
@@ -14083,10 +14086,87 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		// This field was nil while the working-tree reader held no handle. The root
 		// outlives every closure above, so the caller that closes the source is what
 		// releases it; every consumer already guards for a nil closer.
-		close:       root.Close,
+		close:       closeSource,
 		warnings:    warnings,
 		repoIgnored: worktreeLedger.report(),
-	}, mounts, root.Lstat), nil
+	}, mounts), nil
+}
+
+func readFilePrefix(file *os.File, limit int) (string, bool) {
+	buf := make([]byte, limit)
+	n, err := io.ReadFull(file, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return "", false
+	}
+	return string(buf[:n]), true
+}
+
+// mountRefusingWorktreeReaders replaces a worktree source's readers once its
+// listing skipped a mount point. Every read opens its file through
+// sweepDirectoryRoot.OpenFile, which refuses `..`, every symlink and every
+// mount crossing as part of the open itself. A check made before the open would
+// not be enough: a listed directory replaced by a link into a skipped mount
+// point after the listing would pass it, and even a Root.Lstat of the path
+// would look the file up through that link. Nothing falls back to a reader that
+// follows links, and the size cap and regular-file check run on the opened
+// descriptor. The oversize digest opens the same way.
+//
+// So while a mount point is skipped, a path that reaches its file through a
+// symlinked directory is unreadable. The listing never follows one, so only
+// by-name reads (an import specifier) can name such a path.
+func mountRefusingWorktreeReaders(repo string, maxReadBytes int64, registry *oversizeRegistry) (
+	read func(string) (string, bool), readPrefix func(string, int) (string, bool), closeFiles func() error, err error,
+) {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	anchor, resolvedRepo, err := newPathTraversalAnchor(repoAbs, repoAbs)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	root, err := newSweepDirectoryRoot(resolvedRepo)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	open := func(path string) (*os.File, fs.FileInfo, error) {
+		file, err := root.OpenFile(anchor, path)
+		if err != nil {
+			return nil, nil, err
+		}
+		info, err := file.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			_ = file.Close()
+			return nil, nil, errors.Join(fs.ErrInvalid, err)
+		}
+		return file, info, nil
+	}
+	registry.open = open
+	read = func(path string) (string, bool) {
+		file, info, err := open(path)
+		if err != nil {
+			return "", false
+		}
+		defer file.Close()
+		if maxReadBytes > 0 && info.Size() > maxReadBytes {
+			registry.note(path, info.Size())
+			return "", false
+		}
+		content, err := io.ReadAll(file)
+		if err != nil {
+			return "", false
+		}
+		return string(content), true
+	}
+	readPrefix = func(path string, limit int) (string, bool) {
+		file, _, err := open(path)
+		if err != nil {
+			return "", false
+		}
+		defer file.Close()
+		return readFilePrefix(file, limit)
+	}
+	return read, readPrefix, root.Close, nil
 }
 
 // refuseWorktreeMountReads keeps a worktree source's readers out of the mount
@@ -14094,29 +14174,21 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 // are also asked for paths by name: an import specifier can name one, and a
 // whole-tree Git grep can return one. Matching folds case and Unicode
 // normalization like the mount guard's rejections, so an alias a folding
-// filesystem would resolve into the mount is refused too.
-//
-// A spelling outside every mount point can still resolve into one through a
-// symlinked directory (`alias -> mnt`, read as `alias/x.ts`), or through `..`
-// after one. The listing never follows a symlink, so a listed path passes
-// through none; any OTHER path is read only when it has no `..` component and
-// lstat finds no symlink among its directories. lstat resolves a
-// repository-relative native path without following its final component.
+// filesystem would resolve into the mount is refused too. This check is by
+// name only and does no I/O; a spelling that reaches a mount point through a
+// symlinked directory is refused by the readers' own open (see
+// mountRefusingWorktreeReaders).
 //
 // The mount points are kept on the source so search can keep Git's
 // working-tree grep, which reads tracked paths wherever they are mounted, out of
 // them as well.
-func refuseWorktreeMountReads(opened openedSource, mounts []string, lstat func(string) (fs.FileInfo, error)) openedSource {
+func refuseWorktreeMountReads(opened openedSource, mounts []string) openedSource {
 	if len(mounts) == 0 {
 		return opened
 	}
 	keys := make([]string, 0, len(mounts))
 	for _, mount := range mounts {
 		keys = append(keys, mountPathKey(filepath.FromSlash(mount)))
-	}
-	listed := make(map[string]struct{}, len(opened.paths))
-	for _, rel := range opened.paths {
-		listed[rel] = struct{}{}
 	}
 	refused := func(rel string) bool {
 		key := mountPathKey(filepath.FromSlash(rel))
@@ -14125,10 +14197,7 @@ func refuseWorktreeMountReads(opened openedSource, mounts []string, lstat func(s
 				return true
 			}
 		}
-		if _, ok := listed[rel]; ok {
-			return false
-		}
-		return pathMayResolveThroughLink(rel, lstat)
+		return false
 	}
 	opened = guardSourceReads(opened, refused)
 	opened.worktreeMounts = append([]string(nil), mounts...)
@@ -14155,33 +14224,6 @@ func guardSourceReads(opened openedSource, refused func(string) bool) openedSour
 		}
 	}
 	return opened
-}
-
-// pathMayResolveThroughLink reports whether opening rel could follow a symlink
-// before its final component, or step back out of one with `..`. Anything lstat
-// cannot answer counts as yes, and so does a nil lstat.
-func pathMayResolveThroughLink(rel string, lstat func(string) (fs.FileInfo, error)) bool {
-	if lstat == nil {
-		return true
-	}
-	components := splitNativePathComponents(filepath.FromSlash(rel))
-	for _, component := range components {
-		if component == ".." {
-			return true
-		}
-	}
-	prefix := ""
-	for _, component := range components[:max(len(components)-1, 0)] {
-		if component == "." || component == "" {
-			continue
-		}
-		prefix = filepath.Join(prefix, component)
-		info, err := lstat(prefix)
-		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
-			return true
-		}
-	}
-	return false
 }
 
 // The fallback directory translation resolves the DIRECTORY portion of
@@ -14503,7 +14545,11 @@ type oversizeRegistry struct {
 	// pinned is the identity of the directory this registry's source selected.
 	// digestFallback re-resolves repo by name exactly as readFallback does, so it
 	// needs the same guard against that name being repointed mid-scan.
-	pinned  fs.FileInfo
+	pinned fs.FileInfo
+	// open, when set, is the only way the digest reaches a file: the source's
+	// listing skipped a mount point, and its readers open through it too. See
+	// mountRefusingWorktreeReaders.
+	open    func(string) (*os.File, fs.FileInfo, error)
 	mu      sync.Mutex
 	pending map[string]oversizePending
 	digests map[string]oversizeFile
@@ -14542,6 +14588,14 @@ func (r *oversizeRegistry) note(path string, size int64) {
 // through readFallback/readPrefixFallback: the destination is re-verified as
 // still inside the repository before the digest reads it.
 func (r *oversizeRegistry) digestContained(path string) (filedigest.Digest, error) {
+	if r.open != nil {
+		file, _, err := r.open(path)
+		if err != nil {
+			return filedigest.Digest{}, err
+		}
+		defer file.Close()
+		return filedigest.Stream(file)
+	}
 	if r.root == nil {
 		return r.digestFallback(path)
 	}

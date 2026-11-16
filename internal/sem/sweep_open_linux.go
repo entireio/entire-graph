@@ -61,13 +61,20 @@ func linuxOpenat2Number() uintptr {
 	}
 }
 
-func (r *sweepDirectoryRoot) openat2(rel string) (*os.File, error) {
+const (
+	linuxSweepDirectoryFlags = syscall.O_RDONLY | syscall.O_CLOEXEC | syscall.O_DIRECTORY
+	// A file read opens nonblocking so a FIFO put in a listed file's place cannot
+	// stall the reader; callers check that the opened file is regular.
+	linuxSweepFileFlags = syscall.O_RDONLY | syscall.O_CLOEXEC | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
+)
+
+func (r *sweepDirectoryRoot) openat2(rel string, flags int) (*os.File, error) {
 	name, err := syscall.BytePtrFromString(rel)
 	if err != nil {
 		return nil, err
 	}
 	how := linuxOpenHow{
-		flags: uint64(syscall.O_RDONLY | syscall.O_CLOEXEC | syscall.O_DIRECTORY),
+		flags: uint64(flags),
 		resolve: linuxResolveNoXDev | linuxResolveNoMagicLink |
 			linuxResolveNoSymlink | linuxResolveBeneath,
 	}
@@ -323,13 +330,15 @@ func (r *sweepDirectoryRoot) openAfterOpenat2Failure(
 	return nil, errors.Join(errSymlinkChainOffVolume, err)
 }
 
-func (r *sweepDirectoryRoot) Open(anchor pathTraversalAnchor, dir string, admitStep func() bool) (*os.File, error) {
-	rel := filepath.FromSlash(dir)
+// sweepRelativeComponents splits a path below the held root into its
+// components, dropping `.` and refusing `..` and absolute paths.
+func sweepRelativeComponents(path string) (string, []string, error) {
+	rel := filepath.FromSlash(path)
 	if rel == "" {
 		rel = "."
 	}
 	if filepath.IsAbs(rel) || filepath.VolumeName(rel) != "" {
-		return nil, errSymlinkChainOffVolume
+		return "", nil, errSymlinkChainOffVolume
 	}
 	rawComponents := splitNativePathComponents(rel)
 	components := make([]string, 0, len(rawComponents))
@@ -338,16 +347,81 @@ func (r *sweepDirectoryRoot) Open(anchor pathTraversalAnchor, dir string, admitS
 			continue
 		}
 		if component == ".." {
-			return nil, errSymlinkChainOffVolume
+			return "", nil, errSymlinkChainOffVolume
 		}
 		components = append(components, component)
+	}
+	return rel, components, nil
+}
+
+func (r *sweepDirectoryRoot) Open(anchor pathTraversalAnchor, dir string, admitStep func() bool) (*os.File, error) {
+	rel, components, err := sweepRelativeComponents(dir)
+	if err != nil {
+		return nil, err
 	}
 	if !admitStep() {
 		return nil, errGitDirSweepHalted
 	}
-	opened, err := r.openat2(rel)
+	opened, err := r.openat2(rel, linuxSweepDirectoryFlags)
 	if err == nil {
 		return opened, nil
 	}
 	return r.openAfterOpenat2Failure(anchor, components, admitStep, err)
+}
+
+// OpenFile opens a file below the held root for reading, refusing what Open
+// refuses on the way to it: `..`, every symlink and every mount crossing. That
+// includes the file itself, which a bind mount can cover. The refusal is part
+// of the open, so a directory swapped for a link after the caller last looked
+// cannot steer it anywhere. Callers check that the result is a regular file.
+func (r *sweepDirectoryRoot) OpenFile(anchor pathTraversalAnchor, path string) (*os.File, error) {
+	rel, components, err := sweepRelativeComponents(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(components) == 0 {
+		return nil, fs.ErrInvalid
+	}
+	opened, err := r.openat2(rel, linuxSweepFileFlags)
+	if err == nil || !linuxOpenat2NeedsGuardedFallback(err) {
+		return opened, err
+	}
+	return r.openFileWithoutOpenat2(anchor, components)
+}
+
+// openFileWithoutOpenat2 is OpenFile where openat2 is unavailable. The
+// directories are opened as Open opens them without openat2, one component at
+// a time against the mount table, then the file itself is checked against the
+// table and opened without following a link. The opened file has to be on the
+// root's device as well.
+func (r *sweepDirectoryRoot) openFileWithoutOpenat2(anchor pathTraversalAnchor, components []string) (*os.File, error) {
+	last := len(components) - 1
+	parent, err := r.openWithoutOpenat2(anchor, components[:last], func() bool { return true })
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	mountPoints, err := r.heldRootMountPoints()
+	if err != nil {
+		return nil, err
+	}
+	candidate := filepath.Join(append([]string{filepath.Clean(r.file.Name())}, components...)...)
+	if _, mounted := mountPoints[candidate]; mounted {
+		return nil, errSymlinkChainOffVolume
+	}
+	fd, err := syscall.Openat(int(parent.Fd()), components[last], linuxSweepFileFlags, 0)
+	if err != nil {
+		return nil, err
+	}
+	opened := os.NewFile(uintptr(fd), candidate)
+	if opened == nil {
+		_ = syscall.Close(fd)
+		return nil, fs.ErrInvalid
+	}
+	info, err := opened.Stat()
+	if err != nil || !anchor.allows(info) {
+		_ = opened.Close()
+		return nil, errors.Join(errSymlinkChainOffVolume, err)
+	}
+	return opened, nil
 }

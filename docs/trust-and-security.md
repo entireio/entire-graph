@@ -76,8 +76,9 @@ other is installation.
   such as a sandbox's read-only bind mount inside the checkout, is never opened.
   The preflight then declines Git enumeration, the bounded filesystem fallback
   prunes that directory unread and discloses it as `W_WALK_MOUNT_SKIPPED`, reads
-  of any path at or below it are refused (as are by-name reads through a
-  symlinked directory or `..`, which could resolve into it), neither the
+  of any path at or below it are refused, every read opens its file refusing
+  any symlink or mount crossing on the way (so a directory replaced by a link
+  after the listing cannot lead into the mount), neither the
   repository-ignore accounting walk nor the `.git` pointer sweep over pruned
   trees enters it, working-tree `git grep` is not used for that run, and
   Git-structured directories elsewhere in the tree are excluded as if a `.git`

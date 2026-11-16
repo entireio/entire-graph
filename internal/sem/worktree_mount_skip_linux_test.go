@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -315,4 +316,192 @@ func TestWorktreeSearchKeepsGitGrepOutOfASkippedMount(t *testing.T) {
 		t.Fatalf("without the mount: git grep usable = %v, backend = %q, want the Git index preselection",
 			plain.gitGrepUsable, plain.preselectionBackend)
 	}
+}
+
+// symlinkFixture is a worktree whose links all lead into mnt, the directory the
+// tests below treat as a skipped mount point.
+func symlinkFixture(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, repo, "keep.go", "package keep\n")
+	writeFile(t, repo, "src/util.ts", "export const util = 1\n")
+	writeFile(t, repo, "dir/file.ts", "export const listed = 1\n")
+	writeFile(t, repo, "mnt/file.ts", "export const mounted = 1\n")
+	writeFile(t, repo, "mnt/secret.ts", "export const secret = 1\n")
+	for link, target := range map[string]string{"alias": "mnt", "src/up": "../mnt", "link.ts": "mnt/secret.ts"} {
+		if err := os.Symlink(target, filepath.Join(repo, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := syscall.Mkfifo(filepath.Join(repo, "pipe.ts"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
+
+// swapForLink replaces the directory rel with a symlink to target, the way a
+// concurrent writer could after the listing.
+func swapForLink(t *testing.T, repo, rel, target string) {
+	t.Helper()
+	path := filepath.Join(repo, rel)
+	if err := os.Rename(path, path+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireReads(t *testing.T, read func(string) (string, bool), want bool, paths ...string) {
+	t.Helper()
+	for _, rel := range paths {
+		if _, ok := read(rel); ok != want {
+			t.Errorf("read(%q) ok = %v, want %v", rel, ok, want)
+		}
+	}
+}
+
+// Once a mount point was skipped, every read opens its file in one step that
+// refuses links, so no spelling reaches mnt through one: not a by-name path
+// through a symlinked directory, and not a LISTED path whose directory was
+// replaced by a link after the listing. A FIFO in a file's place is refused
+// without blocking the reader.
+func TestMountRefusingReadersFollowNoLink(t *testing.T) {
+	t.Parallel()
+	repo := symlinkFixture(t)
+	read, readPrefix, closeFiles, err := mountRefusingWorktreeReaders(repo, 0, newOversizeRegistry(nil, repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeFiles() })
+	prefix := func(rel string) (string, bool) { return readPrefix(rel, 16) }
+
+	linked := []string{"alias/secret.ts", "src/up/secret.ts", "src/up/../mnt/secret.ts", "src/../alias/secret.ts", "link.ts"}
+	plain, err := os.OpenRoot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = plain.Close() })
+	for _, rel := range linked {
+		if content, err := plain.ReadFile(rel); err != nil || !strings.Contains(string(content), "secret") {
+			t.Fatalf("fixture is wrong: %s does not resolve into mnt: %q, %v", rel, content, err)
+		}
+	}
+	requireReads(t, read, false, append(linked, "pipe.ts")...)
+	requireReads(t, prefix, false, append(linked, "pipe.ts")...)
+	requireReads(t, read, true, "keep.go", "src/util.ts", "dir/file.ts")
+	requireReads(t, prefix, true, "keep.go", "src/util.ts", "dir/file.ts")
+
+	swapForLink(t, repo, "dir", "mnt")
+	if content, err := os.ReadFile(filepath.Join(repo, "dir", "file.ts")); err != nil || !strings.Contains(string(content), "mounted") {
+		t.Fatalf("fixture is wrong: dir/file.ts does not resolve into mnt: %q, %v", content, err)
+	}
+	requireReads(t, read, false, "dir/file.ts")
+	requireReads(t, prefix, false, "dir/file.ts")
+}
+
+// The oversize digest opens through the same refusing open as the readers.
+func TestMountRefusingReadersDigestOversizedFilesThroughTheSameOpen(t *testing.T) {
+	t.Parallel()
+	repo := symlinkFixture(t)
+	writeFile(t, repo, "dir/big.ts", strings.Repeat("x", 64)+"\n")
+	registry := newOversizeRegistry(nil, repo)
+	read, _, closeFiles, err := mountRefusingWorktreeReaders(repo, 16, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeFiles() })
+	if _, ok := read("dir/big.ts"); ok {
+		t.Fatal("read an oversized file")
+	}
+	if record, ok := registry.lookup("dir/big.ts"); !ok || record.Hash == "" || record.Bytes != 65 {
+		t.Fatalf("oversize record = %+v, %v, want a digest of the oversized file", record, ok)
+	}
+
+	swapForLink(t, repo, "dir", "mnt")
+	registry.note("dir/secret.ts", 64)
+	if record, ok := registry.lookup("dir/secret.ts"); !ok || record.Hash != "" {
+		t.Fatalf("oversize record = %+v, %v, want no digest through the swapped link", record, ok)
+	}
+}
+
+// Without openat2 the same refusals come from opening one component at a time
+// against the mount table, the file itself included.
+func TestMountRefusingOpenWithoutOpenat2(t *testing.T) {
+	t.Parallel()
+	repo := symlinkFixture(t)
+	root, anchor := syntheticMountRoot(t, repo, "mnt", "src/util.ts")
+	open := func(rel string) (string, bool) {
+		_, components, err := sweepRelativeComponents(rel)
+		if err != nil {
+			return "", false
+		}
+		file, err := root.openFileWithoutOpenat2(anchor, components)
+		if err != nil {
+			return "", false
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		return "", err == nil && info.Mode().IsRegular()
+	}
+	requireReads(t, open, false, "mnt/file.ts", "src/util.ts", "alias/secret.ts", "src/up/secret.ts", "link.ts", "pipe.ts")
+	requireReads(t, open, true, "keep.go", "dir/file.ts")
+	swapForLink(t, repo, "dir", "mnt")
+	requireReads(t, open, false, "dir/file.ts")
+}
+
+// With a real mount the whole worktree source refuses a listed path whose
+// directory became a link into the skipped mount point after the listing, and
+// the refusing open turns away the mount point and a single-file bind mount
+// even when the by-name guard is bypassed.
+func TestWorktreeSourceRefusesAListedPathSwappedIntoASkippedMount(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "keep.go", "package keep\n")
+	writeFile(t, repo, "bound.go", "package keep\n")
+	writeFile(t, repo, "dir/file.ts", "export const listed = 1\n")
+	if err := os.MkdirAll(filepath.Join(repo, "mnt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	writeFile(t, outside, "file.ts", "export const mountedFromOutside = 1\n")
+	mount := func(source, target string) {
+		t.Helper()
+		if err := syscall.Mount(source, target, "", syscall.MS_BIND, ""); err != nil {
+			t.Skipf("bind-mount %s: %v", target, err)
+		}
+		t.Cleanup(func() {
+			if err := syscall.Unmount(target, 0); err != nil {
+				t.Errorf("unmount %s: %v", target, err)
+			}
+		})
+	}
+	mount(outside, filepath.Join(repo, "mnt"))
+
+	opened, err := openSource(t.Context(), repo, "", sourceOptions{})
+	if err != nil {
+		t.Fatalf("open the worktree beside a bind mount: %v", err)
+	}
+	if opened.close != nil {
+		t.Cleanup(func() { _ = opened.close() })
+	}
+	if !slices.Equal(opened.worktreeMounts, []string{"mnt"}) || !slices.Contains(opened.paths, "dir/file.ts") {
+		t.Fatalf("mounts = %q, paths = %q, want mnt skipped and dir/file.ts listed", opened.worktreeMounts, opened.paths)
+	}
+	requireReads(t, opened.read, true, "dir/file.ts")
+	swapForLink(t, repo, "dir", "mnt")
+	if content, _ := os.ReadFile(filepath.Join(repo, "dir", "file.ts")); !strings.Contains(string(content), "mountedFromOutside") {
+		t.Fatalf("fixture is wrong: dir/file.ts reads %q, not the mounted file", content)
+	}
+	requireReads(t, opened.read, false, "dir/file.ts")
+	requireReads(t, func(rel string) (string, bool) { return opened.readPrefix(rel, 16) }, false, "dir/file.ts")
+
+	mount(filepath.Join(outside, "file.ts"), filepath.Join(repo, "bound.go"))
+	read, _, closeFiles, err := mountRefusingWorktreeReaders(repo, 0, newOversizeRegistry(nil, repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeFiles() })
+	requireReads(t, read, false, "mnt/file.ts", "bound.go")
+	requireReads(t, read, true, "keep.go")
 }

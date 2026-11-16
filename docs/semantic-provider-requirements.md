@@ -487,8 +487,8 @@ Redirects, mount boundaries, cancellation, and traversal ceilings fail closed,
 except that on Linux a directory that is itself a mount point is skipped without
 being opened: Git enumeration is declined, the filesystem fallback prunes the
 directory unread and reports `W_WALK_MOUNT_SKIPPED` (snapshot-scoped), source
-reads at or below it are refused (and so are by-name reads that pass through a
-symlinked directory or `..`), neither repository-ignore accounting nor the
+reads at or below it are refused and every read opens its file refusing any
+symlink or mount crossing on the way, neither repository-ignore accounting nor the
 `.git` pointer sweep over pruned trees enters it, working-tree `git grep` is not
 used, and Git-structured directories are excluded fail-closed because a `.git`
 pointer inside the mount cannot be read. Only a mount that a fresh read of the
