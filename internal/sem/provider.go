@@ -15519,6 +15519,14 @@ func resolveSweepDirectoryBudget() int {
 // observed the repository root — the `--separate-git-dir` case that needs no
 // listing to find.
 func newGitDirExcluder(ctx context.Context, repo string) *gitDirExcluder {
+	return newGitDirExcluderSkippingMounts(ctx, repo, nil)
+}
+
+// newGitDirExcluderSkippingMounts is newGitDirExcluder for a walk that prunes
+// mounts, the mount points the worktree preflight skipped. They are in place
+// before the root is observed, because that first observation can already take
+// the root for a git directory and probe its git-owned names.
+func newGitDirExcluderSkippingMounts(ctx context.Context, repo string, mounts []string) *gitDirExcluder {
 	excluder := &gitDirExcluder{
 		repo:                    repo,
 		targets:                 map[string]struct{}{},
@@ -15530,6 +15538,13 @@ func newGitDirExcluder(ctx context.Context, repo string) *gitDirExcluder {
 		rootEntryMatchCache:     map[string]bool{},
 		sweepCtx:                ctx,
 		sweepBudget:             resolveSweepDirectoryBudget(),
+		skippedMounts:           make(map[string]struct{}, len(mounts)),
+	}
+	for _, mount := range mounts {
+		excluder.skippedMounts[mount] = struct{}{}
+	}
+	if len(mounts) > 0 {
+		excluder.inSkippedMount = skippedMountMatcher(mounts)
 	}
 	excluder.observe("")
 	return excluder
@@ -20648,7 +20663,7 @@ func visitWalkWorktreeFilesWithRawLimit(
 ) ([]ProviderWarning, error) {
 	stack := newNestedIgnoreStack(repo, ignores)
 	defer stack.close()
-	gitDirs := newGitDirExcluder(ctx, repo)
+	gitDirs := newGitDirExcluderSkippingMounts(ctx, repo, mounts)
 	root, err := os.OpenRoot(repo)
 	if err != nil {
 		return nil, err
@@ -20658,15 +20673,8 @@ func visitWalkWorktreeFilesWithRawLimit(
 	if !budget.admitDirectory("") {
 		return nil, errWorktreeWalkDirectoryBound
 	}
-	skippedMounts := make(map[string]struct{}, len(mounts))
-	for _, mount := range mounts {
-		skippedMounts[mount] = struct{}{}
-	}
+	skippedMounts := gitDirs.skippedMounts
 	stack.skippedMounts = skippedMounts
-	gitDirs.skippedMounts = skippedMounts
-	if len(mounts) > 0 {
-		gitDirs.inSkippedMount = skippedMountMatcher(mounts)
-	}
 	var paths []string
 	frames := []worktreeWalkFrame{{rel: ""}}
 	var walkErr error

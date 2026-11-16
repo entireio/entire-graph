@@ -193,3 +193,25 @@ func TestGitDirRootEntriesAreNotLookedUpAtSkippedMountPoints(t *testing.T) {
 		t.Fatal("an absent git-owned name or ordinary source was excluded")
 	}
 }
+
+// The excluder observes the root as it is built, and a root `.git` pointer
+// naming the root itself takes the root for a git directory right there. The
+// skipped mount points are in place before that first observation, so its
+// probes of git-owned names skip them as well.
+func TestGitDirRootObservationSkipsMountPointsFromTheStart(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, ".git", "gitdir: .\n")
+	writeFile(t, repo, "objects/.keep", "")
+	writeFile(t, repo, "refs/.keep", "")
+	gitDirs := newGitDirExcluderSkippingMounts(t.Context(), repo, []string{"hooks"})
+	if !gitDirs.gitDirRoot {
+		t.Fatal("the root pointer did not take the root for a git directory")
+	}
+	if !gitDirs.excluded("hooks/pre-commit") {
+		t.Fatal("hooks/pre-commit is indexable: the root observation ran before the skipped mount points were installed")
+	}
+	if _, skipped := gitDirs.skippedMounts["hooks"]; !skipped {
+		t.Fatal("the walk's pruning set is missing the skipped mount point")
+	}
+}
