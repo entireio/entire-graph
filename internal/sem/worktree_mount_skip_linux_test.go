@@ -318,6 +318,46 @@ func TestWorktreeSearchKeepsGitGrepOutOfASkippedMount(t *testing.T) {
 	}
 }
 
+// mountRefusingReadersFor opens repo the way openSource does once a mount point
+// was skipped, and hands back the registry its readers note oversized files in.
+func mountRefusingReadersFor(t *testing.T, repo string, maxReadBytes int64, registry **oversizeRegistry) (
+	func(string) (string, bool), func(string, int) (string, bool),
+) {
+	t.Helper()
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	noted := newOversizeRegistry(root, repo)
+	read, readPrefix, closeFiles, err := mountRefusingWorktreeReaders(repo, pinnedRootIdentity(root), maxReadBytes, noted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeFiles() })
+	if registry != nil {
+		*registry = noted
+	}
+	return read, readPrefix
+}
+
+// The readers reopen the repository by name, so they refuse to start on a
+// directory other than the one the source pinned.
+func TestMountRefusingReadersRefuseARepointedRepository(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "keep.go", "package keep\n")
+	other, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, pinned := range map[string]os.FileInfo{"another directory": other, "no identity": nil} {
+		if _, _, _, err := mountRefusingWorktreeReaders(repo, pinned, 0, newOversizeRegistry(nil, repo)); !errors.Is(err, errSymlinkChainOffVolume) {
+			t.Errorf("%s: err = %v, want the readers refused", name, err)
+		}
+	}
+}
+
 // symlinkFixture is a worktree whose links all lead into mnt, the directory the
 // tests below treat as a skipped mount point.
 func symlinkFixture(t *testing.T) string {
@@ -369,11 +409,7 @@ func requireReads(t *testing.T, read func(string) (string, bool), want bool, pat
 func TestMountRefusingReadersFollowNoLink(t *testing.T) {
 	t.Parallel()
 	repo := symlinkFixture(t)
-	read, readPrefix, closeFiles, err := mountRefusingWorktreeReaders(repo, 0, newOversizeRegistry(nil, repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = closeFiles() })
+	read, readPrefix := mountRefusingReadersFor(t, repo, 0, nil)
 	prefix := func(rel string) (string, bool) { return readPrefix(rel, 16) }
 
 	linked := []string{"alias/secret.ts", "src/up/secret.ts", "src/up/../mnt/secret.ts", "src/../alias/secret.ts", "link.ts"}
@@ -405,12 +441,8 @@ func TestMountRefusingReadersDigestOversizedFilesThroughTheSameOpen(t *testing.T
 	t.Parallel()
 	repo := symlinkFixture(t)
 	writeFile(t, repo, "dir/big.ts", strings.Repeat("x", 64)+"\n")
-	registry := newOversizeRegistry(nil, repo)
-	read, _, closeFiles, err := mountRefusingWorktreeReaders(repo, 16, registry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = closeFiles() })
+	var registry *oversizeRegistry
+	read, _ := mountRefusingReadersFor(t, repo, 16, &registry)
 	if _, ok := read("dir/big.ts"); ok {
 		t.Fatal("read an oversized file")
 	}
@@ -497,11 +529,7 @@ func TestWorktreeSourceRefusesAListedPathSwappedIntoASkippedMount(t *testing.T) 
 	requireReads(t, func(rel string) (string, bool) { return opened.readPrefix(rel, 16) }, false, "dir/file.ts")
 
 	mount(filepath.Join(outside, "file.ts"), filepath.Join(repo, "bound.go"))
-	read, _, closeFiles, err := mountRefusingWorktreeReaders(repo, 0, newOversizeRegistry(nil, repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = closeFiles() })
+	read, _ := mountRefusingReadersFor(t, repo, 0, nil)
 	requireReads(t, read, false, "mnt/file.ts", "bound.go")
 	requireReads(t, read, true, "keep.go")
 }

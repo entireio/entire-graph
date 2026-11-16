@@ -37,6 +37,9 @@ func newSweepDirectoryRoot(repo string) (*sweepDirectoryRoot, error) {
 
 func (r *sweepDirectoryRoot) Close() error { return r.file.Close() }
 
+// Stat describes the held root directory itself.
+func (r *sweepDirectoryRoot) Stat() (fs.FileInfo, error) { return r.file.Stat() }
+
 type linuxOpenHow struct {
 	flags   uint64
 	mode    uint64

@@ -14070,7 +14070,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	closeSource := root.Close
 	if len(mounts) > 0 {
 		var closeFiles func() error
-		read, readPrefix, closeFiles, err = mountRefusingWorktreeReaders(repo, maxReadBytes, registry)
+		read, readPrefix, closeFiles, err = mountRefusingWorktreeReaders(repo, pinned, maxReadBytes, registry)
 		if err != nil {
 			_ = root.Close()
 			return openedSource{}, err
@@ -14114,7 +14114,12 @@ func readFilePrefix(file *os.File, limit int) (string, bool) {
 // So while a mount point is skipped, a path that reaches its file through a
 // symlinked directory is unreadable. The listing never follows one, so only
 // by-name reads (an import specifier) can name such a path.
-func mountRefusingWorktreeReaders(repo string, maxReadBytes int64, registry *oversizeRegistry) (
+//
+// The repository is reopened by its resolved absolute name, which the mount
+// table check needs, so the reopened root must be the directory pinned (the
+// one the source's os.Root holds) and on the anchor's device. A repository
+// path repointed in between fails the source instead of reading elsewhere.
+func mountRefusingWorktreeReaders(repo string, pinned fs.FileInfo, maxReadBytes int64, registry *oversizeRegistry) (
 	read func(string) (string, bool), readPrefix func(string, int) (string, bool), closeFiles func() error, err error,
 ) {
 	repoAbs, err := filepath.Abs(repo)
@@ -14128,6 +14133,12 @@ func mountRefusingWorktreeReaders(repo string, maxReadBytes int64, registry *ove
 	root, err := newSweepDirectoryRoot(resolvedRepo)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	held, err := root.Stat()
+	if err != nil || pinned == nil || !os.SameFile(held, pinned) || !anchor.allows(held) {
+		_ = root.Close()
+		return nil, nil, nil, errors.Join(
+			fmt.Errorf("%w: the worktree root changed while it was being opened", errSymlinkChainOffVolume), err)
 	}
 	open := func(path string) (*os.File, fs.FileInfo, error) {
 		file, err := root.OpenFile(anchor, path)
