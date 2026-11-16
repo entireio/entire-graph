@@ -210,3 +210,26 @@ func TestWorktreeSourceRefusesReadsThroughSymlinksIntoSkippedMountPoints(t *test
 		}
 	}
 }
+
+// The pointer sweep over a pruned tree reads each child directory's `.git`
+// before it opens the child, so a skipped mount point inside an ignored
+// directory has to be dropped there, not left to the guarded open.
+func TestPrunedTreePointerSweepDoesNotObserveSkippedMountPoints(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "hidden/plain/keep.txt", "")
+	writeFile(t, repo, "hidden/mnt/.git", "gitdir: ../../.dep-git\n")
+	gitDirs := newGitDirExcluder(t.Context(), repo)
+	gitDirs.skippedMounts = map[string]struct{}{"hidden/mnt": {}}
+	gitDirs.observePrunedSubtree("hidden")
+	if slices.Contains(gitDirs.observedDirs, "hidden/mnt") {
+		t.Fatalf("observed = %q: the sweep read inside a skipped mount point", gitDirs.observedDirs)
+	}
+	if !slices.Contains(gitDirs.observedDirs, "hidden/plain") {
+		t.Fatalf("observed = %q, want the ordinary sibling observed", gitDirs.observedDirs)
+	}
+	if gitDirs.hiddenEvidence == 0 || !slices.Contains(gitDirs.skippedMountDirs, "hidden/mnt") {
+		t.Fatalf("hidden evidence = %d, skipped = %q: the unread mount point must count and be disclosed",
+			gitDirs.hiddenEvidence, gitDirs.skippedMountDirs)
+	}
+}

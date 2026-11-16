@@ -14130,6 +14130,14 @@ func refuseWorktreeMountReads(opened openedSource, mounts []string, lstat func(s
 		}
 		return pathMayResolveThroughLink(rel, lstat)
 	}
+	opened = guardSourceReads(opened, refused)
+	opened.worktreeMounts = append([]string(nil), mounts...)
+	return opened
+}
+
+// guardSourceReads makes both of opened's readers answer "unreadable" for every
+// path refused names, without consulting the reader underneath.
+func guardSourceReads(opened openedSource, refused func(string) bool) openedSource {
 	if read := opened.read; read != nil {
 		opened.read = func(rel string) (string, bool) {
 			if refused(rel) {
@@ -14146,7 +14154,6 @@ func refuseWorktreeMountReads(opened openedSource, mounts []string, lstat func(s
 			return readPrefix(rel, limit)
 		}
 	}
-	opened.worktreeMounts = append([]string(nil), mounts...)
 	return opened
 }
 
@@ -15168,6 +15175,10 @@ type gitDirExcluder struct {
 	// hiddenEvidence counts every one of them too, for the same reason: a mount
 	// point the walk did not read may hold a `.git` pointer.
 	skippedMountDirs []string
+	// skippedMounts are the mount points the worktree preflight skipped. The
+	// pointer sweep over a pruned tree observes each child directory before it
+	// opens it, so it checks this set first rather than read a `.git` inside one.
+	skippedMounts map[string]struct{}
 	// sweepUnreadableDirs samples the repo-relative directories descendObserving
 	// could not ReadDir (permission denied, etc.), capped at
 	// maxUnreadableWalkDirSample like unreadableWalkDirs. hiddenEvidence already
@@ -17380,6 +17391,14 @@ func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]stru
 				child := entry.Name()
 				if dir != "" {
 					child = dir + "/" + entry.Name()
+				}
+				// observeOnce reads a child's `.git` before the child is opened, so
+				// a skipped mount point is dropped here, unread, with the same
+				// fail-closed evidence and disclosure the outer walk gives it.
+				if _, mounted := g.skippedMounts[child]; mounted {
+					g.hiddenEvidence++
+					g.noteSkippedMountDir(child)
+					continue
 				}
 				// Deduplicated before it is charged: a directory already queued has
 				// already been observed by this sweep, so re-observing it is a
@@ -20561,6 +20580,7 @@ func visitWalkWorktreeFilesWithRawLimit(
 		skippedMounts[mount] = struct{}{}
 	}
 	stack.skippedMounts = skippedMounts
+	gitDirs.skippedMounts = skippedMounts
 	var paths []string
 	frames := []worktreeWalkFrame{{rel: ""}}
 	var walkErr error

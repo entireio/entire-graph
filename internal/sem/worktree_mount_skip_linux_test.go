@@ -4,6 +4,7 @@ package sem
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,5 +249,70 @@ func TestWorktreeSnapshotAndSearchSkipAMountOverTrackedFiles(t *testing.T) {
 		if path == "tracked" || strings.HasPrefix(path, "tracked/") {
 			t.Fatalf("search returned %q from below the skipped mount point", path)
 		}
+	}
+}
+
+// Git's working-tree grep reads tracked paths wherever they are mounted, so
+// neither grep route may run for a search whose listing skipped a mount point:
+// not the needle grep, and not the index preselection a 10,000-file worktree
+// takes. The same repository with the mount gone takes both again, which shows
+// the fixture really reaches the large-repository branch.
+func TestWorktreeSearchKeepsGitGrepOutOfASkippedMount(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "keep.go", "package keep\n// sentinel alphaone\nfunc KeptBesideTheMount() {}\n")
+	writeFile(t, repo, "tracked/t.go", "package tracked\nfunc CommittedUnderTheMount() {}\n")
+	fillerDir := filepath.Join(repo, "filler")
+	if err := os.MkdirAll(fillerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < minGitGrepPreselectionFiles; index++ {
+		path := filepath.Join(fillerDir, fmt.Sprintf("file_%05d.go", index))
+		if err := os.WriteFile(path, []byte("package filler\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "large tracked worktree")
+	mountPoint := filepath.Join(repo, "tracked")
+	if err := syscall.Mount(t.TempDir(), mountPoint, "", syscall.MS_BIND, ""); err != nil {
+		t.Skipf("bind-mount a directory over a tracked one: %v", err)
+	}
+	mounted := true
+	unmount := func() {
+		if mounted {
+			mounted = false
+			if err := syscall.Unmount(mountPoint, 0); err != nil {
+				t.Errorf("unmount %s: %v", mountPoint, err)
+			}
+		}
+	}
+	t.Cleanup(unmount)
+
+	preselect := func() searchFileSelection {
+		t.Helper()
+		selection, err := preselectSearchFiles(
+			t.Context(), repo, buildSearchQuery("sentinel alphaone"), searchQuery{},
+			SearchOptions{Worktree: true, Profile: ProfileSyntaxOnly, TopK: 5, DisableCache: true},
+			ProviderSnapshotOptions{Worktree: true, NoNetwork: true, Profile: ProfileSyntaxOnly},
+			ProviderSnapshot{}, false,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return selection
+	}
+
+	skipped := preselect()
+	if skipped.gitGrepUsable || strings.Contains(skipped.preselectionBackend, "git") {
+		t.Fatalf("with a skipped mount point: git grep usable = %v, backend = %q, want neither Git route",
+			skipped.gitGrepUsable, skipped.preselectionBackend)
+	}
+
+	unmount()
+	plain := preselect()
+	if !plain.gitGrepUsable || plain.preselectionBackend != "git-index-grep+go-content" {
+		t.Fatalf("without the mount: git grep usable = %v, backend = %q, want the Git index preselection",
+			plain.gitGrepUsable, plain.preselectionBackend)
 	}
 }
