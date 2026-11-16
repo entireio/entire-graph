@@ -2604,7 +2604,9 @@ func preselectSearchFiles(
 		// A resolved commit is what says "this is a Git repository", so a needle the posting lists
 		// cannot price can be answered exactly by one `git grep`. An empty treeish means the working
 		// tree, which is what a worktree search indexes; a HEAD search must grep the commit itself.
-		gitGrepUsable: source.commit != "",
+		// A working-tree grep reads every tracked path, including any under a mount point the
+		// listing skipped, so it is not used when the listing skipped one.
+		gitGrepUsable: source.commit != "" && len(source.worktreeMounts) == 0,
 	}
 	if !options.Worktree {
 		selection.gitGrepTreeish = source.commit
@@ -2742,7 +2744,9 @@ func preselectSearchFiles(
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
 	gitIndexPasses := 1
-	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
+	// Same reason as gitGrepUsable above: Git's working-tree grep would read tracked paths
+	// under a mount point the listing skipped.
+	if len(source.worktreeMounts) == 0 && shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
 		allowed := make(map[string]bool, len(source.paths))
 		for _, filePath := range source.paths {
 			allowed[filePath] = true
