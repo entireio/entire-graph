@@ -112,6 +112,9 @@ type jsxAmpersandScan struct {
 	offsets []int
 	visited int
 	stopped bool
+	// scanned marks the bytes a text-run scan has already examined, so each
+	// is examined once per walk; see appendTextRun. Allocated on first use.
+	scanned []bool
 }
 
 // walk visits node's children and descends into those that contain an error.
@@ -151,7 +154,7 @@ func (s *jsxAmpersandScan) cancelled(ctx context.Context) bool {
 // text run after it, or the bytes of the attribute string it is.
 func (s *jsxAmpersandScan) visit(child, parent *sitter.Node) {
 	if jsxChildrenFollow(child, parent) {
-		s.offsets = appendJSXTextRunAmpersands(s.offsets, s.src, int(child.EndByte()))
+		s.appendTextRun(int(child.EndByte()))
 	}
 	if child.Type() == "string" && parent.Type() == "jsx_attribute" && child.HasError() {
 		s.offsets = appendJSXAttributeStringAmpersands(s.offsets, s.src, int(child.StartByte()), int(child.EndByte()))
@@ -173,34 +176,56 @@ func jsxChildrenFollow(node, parent *sitter.Node) bool {
 	return false
 }
 
-// appendJSXTextRunAmpersands appends the offsets of the bare `&` in the JSX
-// text run that starts at the first non-space byte at or after start, provided
-// that byte is itself a bare `&`. The run ends at the first `<` or `{`, where a
-// child element or expression starts, or at a `>` or `}`, which JSX text may
-// not contain. Character references such as `&amp;` in the run are kept.
-func appendJSXTextRunAmpersands(offsets []int, src []byte, start int) []int {
-	pos := start
-	for pos < len(src) {
-		r, size := utf8.DecodeRune(src[pos:])
-		if !unicode.IsSpace(r) {
-			break
-		}
-		pos += size
+// appendTextRun appends the offsets of the bare `&` in the JSX text run that
+// starts at the first non-space byte at or after start, provided that byte is
+// itself a bare `&`. The run ends at the first `<` or `{`, where a child
+// element or expression starts, or at a `>` or `}`, which JSX text may not
+// contain. Character references such as `&amp;` in the run are kept.
+//
+// One run can hold several anchors, because error recovery may split it into
+// fragments that each end before a bare `&`. Scanning the rest of the run from
+// each of them would collect the same offsets again and again, quadratic in the
+// run's length. So each byte is examined once per walk: a scan stops at the
+// first byte an earlier scan examined. That loses nothing. An earlier scan that
+// reached a byte went on to the end of its run, and a scan that only skipped
+// whitespace stopped at the same first non-space byte this one would reach.
+func (s *jsxAmpersandScan) appendTextRun(start int) {
+	src := s.src
+	if s.scanned == nil {
+		s.scanned = make([]bool, len(src))
 	}
-	if pos >= len(src) || src[pos] != '&' || jsxCharacterReferenceAt(src, pos) {
-		return offsets
+	pos := s.skipRunSpace(start)
+	if pos >= len(src) || s.scanned[pos] || src[pos] != '&' || jsxCharacterReferenceAt(src, pos) {
+		return
 	}
-	for ; pos < len(src); pos++ {
+	for ; pos < len(src) && !s.scanned[pos]; pos++ {
+		s.scanned[pos] = true
 		switch src[pos] {
 		case '<', '{', '>', '}':
-			return offsets
+			return
 		case '&':
 			if !jsxCharacterReferenceAt(src, pos) {
-				offsets = append(offsets, pos)
+				s.offsets = append(s.offsets, pos)
 			}
 		}
 	}
-	return offsets
+}
+
+// skipRunSpace returns the offset of the first non-space byte at or after
+// start, marking the whitespace it passes as examined. It stops early at a
+// byte already examined, and the caller then stops too.
+func (s *jsxAmpersandScan) skipRunSpace(start int) int {
+	pos := start
+	for pos < len(s.src) && !s.scanned[pos] {
+		r, size := utf8.DecodeRune(s.src[pos:])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		for end := pos + size; pos < end; pos++ {
+			s.scanned[pos] = true
+		}
+	}
+	return pos
 }
 
 // appendJSXAttributeStringAmpersands appends the offsets of the bare `&` in the

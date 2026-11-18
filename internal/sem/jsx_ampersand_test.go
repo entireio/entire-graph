@@ -174,6 +174,39 @@ func TestJSXBareAmpersandOffsetsSkipCode(t *testing.T) {
 	}
 }
 
+// Error recovery can leave several anchors in one text run, each ending right
+// before a bare `&`. A scan from each must not cover the rest of the run again:
+// 4,000 anchors in a 12 KB run used to collect 8,002,000 offsets. Every bare
+// `&` must be collected exactly once, whichever order the anchors come in, and
+// a character reference in the run must still be kept.
+func TestJSXTextRunScansEachByteOnce(t *testing.T) {
+	t.Parallel()
+	src := []byte(strings.Repeat("&; ", 4000) + "&amp; <")
+	var anchors, want []int
+	for pos := range src {
+		if src[pos] == '&' && !jsxCharacterReferenceAt(src, pos) {
+			anchors = append(anchors, pos)
+			want = append(want, pos)
+		}
+	}
+	// A whitespace anchor too: its scan skips to the next `&`.
+	anchors = append(anchors, 2)
+	forward := slices.Clone(anchors)
+	reverse := slices.Clone(anchors)
+	slices.Reverse(reverse)
+	for name, order := range map[string][]int{"forward": forward, "reverse": reverse} {
+		scan := jsxAmpersandScan{src: src}
+		for _, start := range order {
+			scan.appendTextRun(start)
+		}
+		got := slices.Clone(scan.offsets)
+		sort.Ints(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: %d offsets, want each of the %d bare ampersands once", name, len(got), len(want))
+		}
+	}
+}
+
 // A real syntax error elsewhere in the file still fails the parse, and its
 // detail names that error rather than the masked ampersand.
 func TestJSXBareAmpersandKeepsRealParseErrors(t *testing.T) {
