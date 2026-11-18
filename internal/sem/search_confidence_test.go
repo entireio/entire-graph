@@ -426,6 +426,10 @@ func requirePreselectionNotice(t *testing.T, query string, response SearchRespon
 func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 	t.Parallel()
 	repo := writeGitShortlistFixture(t)
+	includeFile := filepath.Join(t.TempDir(), "graphinclude")
+	if err := os.WriteFile(includeFile, []byte("large/zz_reincluded.md\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []gitShortlistCase{
 		{query: "needle", gitPasses: 1},
 		{query: "needle quillwort", low: true, gitPasses: 1},
@@ -441,6 +445,11 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		// godwit is only in an untracked file too large to read, which Git's listing of
 		// tracked files never reaches.
 		{query: "heron godwit", maxParseBytes: 64, low: true, gitPasses: 2},
+		// An include file re-includes an ignored untracked file, which then counts like any
+		// other: siskin is only in it, too large to read. linnet is only in an ignored file
+		// the include file leaves out, so outside the corpus and never searched.
+		{query: "heron siskin", maxParseBytes: 64, reinclude: true, low: true, gitPasses: 2},
+		{query: "heron linnet", maxParseBytes: 64, reinclude: true, gitPasses: 2},
 		{query: "needle sandpiper", low: true, gitPasses: 2},
 		// Git's sample matched redwing in a dropped file whose NUL byte comes after the 8,000
 		// bytes Git sniffs, so the content pass would never index it, even with every file.
@@ -448,11 +457,16 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		// café has no Git pattern, and sandpiper is still searched for.
 		{query: `needle sandpiper "café"`, low: true, gitPasses: 2},
 	} {
+		var includeFiles []string
+		if tc.reinclude {
+			includeFiles = []string{includeFile}
+		}
 		response, err := SearchRepository(t.Context(), repo, "test", tc.query, SearchOptions{
 			Worktree:      true,
 			Profile:       ProfileSyntaxOnly,
 			MaxParseBytes: tc.maxParseBytes,
 			TopK:          tc.topK,
+			IncludeFiles:  includeFiles,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -465,6 +479,7 @@ type gitShortlistCase struct {
 	query         string
 	maxParseBytes int
 	topK          int
+	reinclude     bool
 	low           bool
 	// gitPasses counts Git's passes over the corpus: the sample, plus the pass for terms the
 	// sample missed when there are any.
@@ -493,7 +508,7 @@ func (tc gitShortlistCase) check(t *testing.T, response SearchResponse) {
 }
 
 // writeGitShortlistFixture commits an 11,508-file worktree, past minGitGrepPreselectionFiles,
-// and leaves one more file untracked, holding each way
+// and leaves three more files untracked, two of them ignored, holding each way
 // TestSearchRepositoryCountsTermsTheGitShortlistDropped hides a term.
 func writeGitShortlistFixture(t *testing.T) string {
 	t.Helper()
@@ -539,6 +554,11 @@ func writeGitShortlistFixture(t *testing.T) string {
 	// Never added, so only the worktree listing has it; the content pass reads it unless a
 	// read cap leaves it out.
 	write(t, repo, "large/zz_untracked.md", "godwit\n"+strings.Repeat("// padding\n", 40))
+	// A local exclude rule ignores these two, so they are outside the corpus unless an
+	// include file re-includes one.
+	write(t, repo, ".git/info/exclude", "large/zz_reincluded.md\nlarge/zz_ignored.md\n")
+	write(t, repo, "large/zz_reincluded.md", "siskin\n"+strings.Repeat("// padding\n", 40))
+	write(t, repo, "large/zz_ignored.md", "linnet\n"+strings.Repeat("// padding\n", 40))
 	return repo
 }
 
