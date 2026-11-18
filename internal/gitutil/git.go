@@ -673,9 +673,11 @@ func GrepIndexPatternSample(ctx context.Context, repo string, patterns []string,
 
 // GrepIndexPatternFiles visits each tracked worktree file that has a line matching one of
 // the caller-built POSIX expressions (`git grep -l`). Git stops reading a file at its first
-// match, so a file full of matches costs no more than one with a single match.
+// match, so a file full of matches costs no more than one with a single match. Every file is
+// searched as text (`--text`), whatever Git's binary detection or .gitattributes say, so a
+// text file marked `binary` or `-diff` is listed too: the caller decides which files are text.
 func GrepIndexPatternFiles(ctx context.Context, repo string, patterns []string, visit func(path string) error) error {
-	return runGrepPatterns(ctx, repo, "", patterns, []string{"-l"}, nil, func(reader *bufio.Reader) error {
+	return runGrepPatterns(ctx, repo, "", patterns, []string{"--text", "-l"}, nil, func(reader *bufio.Reader) error {
 		for {
 			path, err := reader.ReadString(0)
 			if err == io.EOF && path == "" {
@@ -695,7 +697,9 @@ func GrepIndexPatternFiles(ctx context.Context, repo string, patterns []string, 
 // named tracked worktree files, with no per-file limit, for a caller that confirms each line
 // itself and must not let lines it rejects hide a later one. Only the named files are
 // searched: they become literal pathspecs, in batches that fit the command line, so pick
-// them first (GrepIndexPatternFiles) and keep the list short. A visit error stops the scan.
+// them first (GrepIndexPatternFiles) and keep the list short. They are searched as text, as
+// GrepIndexPatternFiles lists them, so the caller has already decided they are text. A visit
+// error stops the scan.
 func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, files []string, visit func(GrepMatch) error) error {
 	batchBytes := grepPathBatchBytes()
 	for start := 0; start < len(files); {
@@ -713,7 +717,7 @@ func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, fi
 			pathspecs = append(pathspecs, pathspec)
 			end++
 		}
-		if err := runGrepPatterns(ctx, repo, "", patterns, nil, pathspecs, func(reader *bufio.Reader) error {
+		if err := runGrepPatterns(ctx, repo, "", patterns, []string{"--text"}, pathspecs, func(reader *bufio.Reader) error {
 			return readGrepPatternLines(reader, visit)
 		}); err != nil {
 			return err
@@ -724,7 +728,7 @@ func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, fi
 }
 
 func grepPatternLines(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, visit func(GrepMatch) error) error {
-	return runGrepPatterns(ctx, repo, treeish, patterns, []string{"-m", strconv.Itoa(maxPerFile)}, nil, func(reader *bufio.Reader) error {
+	return runGrepPatterns(ctx, repo, treeish, patterns, []string{"-I", "-m", strconv.Itoa(maxPerFile)}, nil, func(reader *bufio.Reader) error {
 		return readGrepPatternLines(reader, func(match GrepMatch) error {
 			if treeish != "" {
 				prefix := treeish + ":"
@@ -740,13 +744,15 @@ func grepPatternLines(ctx context.Context, repo, treeish string, patterns []stri
 
 // runGrepPatterns runs one `git grep -E` for caller-built POSIX expressions,
 // sent on stdin as grepPatternLinesInput renders them, and hands Git's stdout to
-// read. modeArgs pick the output shape (`-m N` or `-l`); pathspecs follow `--`.
+// read. modeArgs pick the binary handling (`-I` skips the files Git counts as binary,
+// .gitattributes included; `--text` searches every file) and the output shape (`-m N` or
+// `-l`); pathspecs follow `--`.
 // A read error kills Git; exit status 1 with no stderr is "no match".
 func runGrepPatterns(ctx context.Context, repo, treeish string, patterns, modeArgs, pathspecs []string, read func(*bufio.Reader) error) error {
 	if len(patterns) == 0 {
 		return nil
 	}
-	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E"}
+	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-E"}
 	args = append(args, modeArgs...)
 	args = append(args, "-f", "-")
 	if treeish != "" {

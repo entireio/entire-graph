@@ -78,7 +78,7 @@ func GrepTreePatternFiles(ctx context.Context, repo, treeish string, patterns, e
 		return fmt.Errorf("invalid git grep treeish %q", treeish)
 	}
 	prefix := treeish + ":"
-	return runGrepPatterns(ctx, repo, treeish, patterns, []string{"-l"}, grepExcludePathspecs(exclude), func(reader *bufio.Reader) error {
+	return runGrepPatterns(ctx, repo, treeish, patterns, []string{"-I", "-l"}, grepExcludePathspecs(exclude), func(reader *bufio.Reader) error {
 		for {
 			displayed, err := reader.ReadString(0)
 			if err == io.EOF && displayed == "" {

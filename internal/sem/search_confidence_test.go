@@ -3,6 +3,8 @@ package sem
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -416,9 +418,10 @@ func requirePreselectionNotice(t *testing.T, query string, response SearchRespon
 // every file ranks below that shortlist. The confidence must still count it, or the query
 // reports 1 and the notice stays silent. Each corpus below hides its second term a different
 // way: in a shortlisted-out file, past the 32 lines Git samples from such a file, behind a
-// shortlist whose files are too large to read, which leaves too few for the capped cut, and
-// in a shortlisted file too large to read. A handler file the registration bridge adds back
-// is indexed, so the term it holds is not missing.
+// shortlist whose files are too large to read, which leaves too few for the capped cut, in a
+// shortlisted file too large to read, and in a text file .gitattributes marks `-diff`, which
+// Git's sample skips as binary. A handler file the registration bridge adds back is indexed,
+// so the term it holds is not missing.
 func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 	t.Parallel()
 	repo := writeGitShortlistFixture(t)
@@ -434,6 +437,7 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		{query: "heron egret", maxParseBytes: 64, low: true, gitPasses: 1},
 		{query: "heron plover", maxParseBytes: 64, low: true, gitPasses: 2},
 		{query: "heron curlew", maxParseBytes: 64, gitPasses: 1},
+		{query: "needle sandpiper", low: true, gitPasses: 2},
 	} {
 		response, err := SearchRepository(t.Context(), repo, "test", tc.query, SearchOptions{
 			Worktree:      true,
@@ -478,7 +482,7 @@ func (tc gitShortlistCase) check(t *testing.T, response SearchResponse) {
 	}
 }
 
-// writeGitShortlistFixture commits an 11,505-file worktree, past minGitGrepPreselectionFiles,
+// writeGitShortlistFixture commits an 11,507-file worktree, past minGitGrepPreselectionFiles,
 // holding each way TestSearchRepositoryCountsTermsTheGitShortlistDropped hides a term.
 func writeGitShortlistFixture(t *testing.T) string {
 	t.Helper()
@@ -505,6 +509,9 @@ func writeGitShortlistFixture(t *testing.T) string {
 		write(t, repo, fmt.Sprintf("large/heron_%03d.md", index), content)
 	}
 	write(t, repo, "docs/zz_other.md", "quillwort\n")
+	// The content pass reads this file as text; Git's sample counts it as binary.
+	write(t, repo, ".gitattributes", "docs/zz_marked.txt -diff\n")
+	write(t, repo, "docs/zz_marked.txt", "sandpiper\n")
 	// Git samples 32 matching lines a file, so this one's sample holds only thistle.
 	write(t, repo, "sample/zz_mixed.md", strings.Repeat("thistle\n", 40)+"bramble\n")
 	write(t, repo, "large/zz_egret.md", "egret\n")
@@ -564,51 +571,83 @@ func requireGitShortlistPath(t *testing.T, query string, stats SearchStats, capp
 	}
 }
 
-// Git keeps every matching line in the recovery pass, not 32 a file, so a missing term cannot
-// hide another, and neither can lines Git matches but the query's matcher rejects: in the C
-// locale "éint" matches the int alias's ASCII boundary, and the matcher refuses it.
+// The recovery pass judges each unread file as the content pass would. Git keeps every
+// matching line of a file too large to read, not 32 a file, so a missing term cannot hide
+// another, and neither can lines Git matches but the query's matcher rejects: in the C locale
+// "éint" matches the int alias's ASCII boundary, and the matcher refuses it. A text file that
+// .gitattributes marks `-diff` or `binary` still counts, whole or streamed, as the content
+// pass reads it; a file holding a NUL byte does not, as the content pass skips it.
 func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
+	// Files over 200 bytes stand for files too large for the content pass to read.
 	write(t, repo, "a.md", strings.Repeat("wren\n", 40)+"lark\n")
 	write(t, repo, "b.go", strings.Repeat("éint x\n", 40)+"func readInt() {}\n")
 	write(t, repo, "read.md", "osprey\n")
 	write(t, repo, "vendor/off.md", strings.Repeat("kestrel\n", 2000))
+	write(t, repo, ".gitattributes", "marked.txt -diff\nbig-marked.log binary\n")
+	write(t, repo, "marked.txt", "sandpiper\n")
+	write(t, repo, "big-marked.log", "dunlin\n"+strings.Repeat("x\n", 200))
+	write(t, repo, "bin.dat", "godwit\n\x00\n")
+	write(t, repo, "bigbin.dat", "\x00\nwhimbrel\n"+strings.Repeat("x\n", 200))
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "fixture")
-	allowed := map[string]bool{"a.md": true, "b.go": true, "read.md": true}
-	read := map[string]bool{"read.md": true}
+	allowed := map[string]bool{"a.md": true, "b.go": true, "read.md": true, "marked.txt": true, "big-marked.log": true, "bin.dat": true, "bigbin.dat": true}
+	files := searchTestUnreadFiles(repo, allowed, map[string]bool{"read.md": true}, 200)
 
 	for _, tc := range []struct {
-		query string
-		known []string
-		want  map[string]bool
+		query    string
+		known    []string
+		want     map[string]bool
+		examined int
 	}{
 		// osprey is only in a file the content pass read, so it stays unmarked.
-		{query: "wren lark osprey", want: map[string]bool{"wren": true, "lark": true, "osprey": false}},
+		{query: "wren lark osprey", want: map[string]bool{"wren": true, "lark": true, "osprey": false}, examined: 1},
 		// kestrel is only in a file outside the corpus, which Git lists but never streams.
-		{query: "wren kestrel", want: map[string]bool{"wren": true, "kestrel": false}},
-		{query: "integer value", known: []string{"integer", "value"}, want: map[string]bool{"int": true}},
+		{query: "wren kestrel", want: map[string]bool{"wren": true, "kestrel": false}, examined: 1},
+		{query: "integer value", known: []string{"integer", "value"}, want: map[string]bool{"int": true}, examined: 1},
+		{
+			query:    "sandpiper dunlin godwit whimbrel",
+			want:     map[string]bool{"sandpiper": true, "dunlin": true, "godwit": false, "whimbrel": false},
+			examined: 4,
+		},
 	} {
 		q := buildSearchQuery(tc.query)
 		known := make([]bool, len(q.terms))
 		for index, term := range q.terms {
 			known[index] = slices.Contains(tc.known, term)
 		}
-		marked, passes, reread := searchGitUnreadTerms(t.Context(), repo, q, newSearchQueryTermMatcher(q), allowed, read, known)
+		marked, passes, examined := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), known)
 		for term, want := range tc.want {
-			index := slices.Index(q.terms, term)
-			if index < 0 || marked[index] != want {
+			if index := slices.Index(q.terms, term); index < 0 || marked[index] != want {
 				t.Fatalf("%q: term %q marked %v, want %v (terms %v, marked %v)", tc.query, term, index >= 0 && marked[index], want, q.terms, marked)
 			}
 		}
-		// One listing pass, then every line of the one unread file that matched.
-		if passes != 1 || reread != 1 {
-			t.Fatalf("%q: passes = %d, files read again = %d, want 1 and 1", tc.query, passes, reread)
+		// One listing pass, then each unread corpus file it listed.
+		if passes != 1 || examined != tc.examined {
+			t.Fatalf("%q: passes = %d, files examined again = %d, want 1 and %d", tc.query, passes, examined, tc.examined)
 		}
+	}
+}
+
+// searchTestUnreadFiles reads the fixture as the worktree source does, refusing whole reads
+// of files over maxBytes as the content pass's read cap would.
+func searchTestUnreadFiles(repo string, allowed, read map[string]bool, maxBytes int) searchUnreadFiles {
+	return searchUnreadFiles{
+		absRepo: repo,
+		allowed: allowed,
+		read:    read,
+		readFile: func(filePath string) (string, bool) {
+			content, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(filePath)))
+			return string(content), err == nil && len(content) <= maxBytes
+		},
+		readPrefix: func(filePath string, limit int) (string, bool) {
+			content, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(filePath)))
+			return string(content[:min(limit, len(content))]), err == nil
+		},
 	}
 }
 

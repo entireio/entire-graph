@@ -3114,7 +3114,8 @@ func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
 }
 
 // GrepIndexPatternFiles lists each matching file once; GrepIndexPatternEveryInFiles keeps
-// every matching line, but only in the files it is given, across pathspec batches.
+// every matching line, but only in the files it is given, across pathspec batches. Both
+// search a text file .gitattributes marks `-diff` as text, where the sample skips it.
 func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -3124,8 +3125,18 @@ func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T)
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("a?b.go -diff\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	git(t, repo, "add", ".")
 	patterns := []string{"[[:lower:]]Int[^[:alnum:]]"}
+	sampled := map[string]bool{}
+	if err := GrepIndexPatternSample(t.Context(), repo, patterns, func(match GrepMatch) error { sampled[match.Path] = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if sampled["a b.go"] || !sampled["source.go"] {
+		t.Fatalf("sampled files = %v, want the -diff file skipped as binary", sampled)
+	}
 	var files []string
 	if err := GrepIndexPatternFiles(t.Context(), repo, patterns, func(path string) error { files = append(files, path); return nil }); err != nil {
 		t.Fatal(err)
