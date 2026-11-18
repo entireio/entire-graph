@@ -640,16 +640,8 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 		},
 	} {
 		q := buildSearchQuery(tc.query)
-		known := make([]bool, len(q.terms))
-		for index, term := range q.terms {
-			known[index] = slices.Contains(tc.known, term)
-		}
-		marked, passes, examined := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), known)
-		for term, want := range tc.want {
-			if index := slices.Index(q.terms, term); index < 0 || marked[index] != want {
-				t.Fatalf("%q: term %q marked %v, want %v (terms %v, marked %v)", tc.query, term, index >= 0 && marked[index], want, q.terms, marked)
-			}
-		}
+		marked, passes, examined := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, tc.known))
+		requireSearchTermsMarked(t, tc.query, q, marked, tc.want)
 		// One listing pass, then each unread corpus file it listed.
 		if passes != 1 || examined != tc.examined {
 			t.Fatalf("%q: passes = %d, files examined again = %d, want 1 and %d", tc.query, passes, examined, tc.examined)
@@ -701,26 +693,33 @@ func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 		{query: `sandpiper "café"`, want: map[string]bool{"sandpiper": true, "café": false}, passes: 1, examined: 1},
 	} {
 		q := buildSearchQuery(tc.query)
-		known := make([]bool, len(q.terms))
-		for index, term := range q.terms {
-			known[index] = slices.Contains(tc.known, term)
-		}
 		files.sampled = nil
 		for _, path := range slices.Sorted(maps.Keys(tc.sampled)) {
-			matched := make([]bool, len(q.terms))
-			for index, term := range q.terms {
-				matched[index] = slices.Contains(tc.sampled[path], term)
-			}
-			files.sampled = append(files.sampled, searchFileCandidate{path: path, matchedTerms: matched})
+			files.sampled = append(files.sampled, searchFileCandidate{path: path, matchedTerms: searchTestTermMarks(q, tc.sampled[path])})
 		}
-		marked, passes, examined := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), known)
-		for term, want := range tc.want {
-			if index := slices.Index(q.terms, term); index < 0 || marked[index] != want {
-				t.Fatalf("%q: term %q marked %v, want %v (terms %v, marked %v)", tc.query, term, index >= 0 && marked[index], want, q.terms, marked)
-			}
-		}
+		marked, passes, examined := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, tc.known))
+		requireSearchTermsMarked(t, tc.query, q, marked, tc.want)
 		if passes != tc.passes || examined != tc.examined {
 			t.Fatalf("%q: passes = %d, files examined again = %d, want %d and %d", tc.query, passes, examined, tc.passes, tc.examined)
+		}
+	}
+}
+
+// searchTestTermMarks marks each of q's terms that terms lists.
+func searchTestTermMarks(q searchQuery, terms []string) []bool {
+	marks := make([]bool, len(q.terms))
+	for index, term := range q.terms {
+		marks[index] = slices.Contains(terms, term)
+	}
+	return marks
+}
+
+// requireSearchTermsMarked fails unless marked marks each term in want exactly when want says.
+func requireSearchTermsMarked(t *testing.T, query string, q searchQuery, marked []bool, want map[string]bool) {
+	t.Helper()
+	for term, wanted := range want {
+		if index := slices.Index(q.terms, term); index < 0 || marked[index] != wanted {
+			t.Fatalf("%q: term %q marked %v, want %v (terms %v, marked %v)", query, term, index >= 0 && marked[index], wanted, q.terms, marked)
 		}
 	}
 }
