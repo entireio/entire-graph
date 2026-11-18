@@ -271,7 +271,7 @@ func TestSearchLowConfidenceNoticeAdvisesWideningWhenTheColdIndexDroppedATerm(t 
 	t.Parallel()
 	response := confidenceSearchResponse([]float64{35.3, 33.3, 33.1},
 		[]string{"src/a.go", "src/b.go", "src/c.go"}, "")
-	response.Stats = sem.SearchStats{PreselectionBounded: true, PreselectionConfidence: 0.5}
+	response.Stats = sem.SearchStats{PreselectionBounded: true, PreselectionDiversity: 1, PreselectionConfidence: 0.5}
 	full, compact := searchLowConfidenceNotices(response)
 	want := "LOW CONFIDENCE: top score 35.3 and the cold index left out every file matching part of the query " +
 		"(preselection confidence 0.50). Re-query with the identifier's exact spelling, or pass --index-all-files, " +

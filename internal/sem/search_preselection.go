@@ -47,7 +47,9 @@ type searchPreselectionAssessment struct {
 	// so it is near zero at almost every cut. Confidence, which the stats report as
 	// preselection_confidence, is Coverage instead: below 1, a query term that
 	// matches files in the repository matches none of the files kept, so the
-	// ranking cannot see an answer that lives in the files left out.
+	// ranking cannot see an answer that lives in the files left out. A caller whose
+	// candidates were already narrowed recomputes it over every matched term (see
+	// searchPreselectionKeptCoverage).
 	BoundaryGap float64
 }
 
@@ -174,6 +176,35 @@ func searchPreselectionBoundaryGap(evidence []searchPreselectionEvidence, limit 
 		return 0
 	}
 	return math.Max(0, 1-next/current)
+}
+
+// searchPreselectionKeptCoverage is the coverage of the kept files against every term
+// matched in the repository: matchedAnywhere from the files the content pass scored, plus
+// unscanned, the terms Git matched only in files that pass never read. With no unscanned
+// terms it equals the selection's own Coverage.
+func searchPreselectionKeptCoverage(
+	evidence []searchPreselectionEvidence,
+	kept []string,
+	matchedAnywhere, unscanned []bool,
+	q searchQuery,
+) float64 {
+	matched := append([]bool(nil), matchedAnywhere...)
+	for index, hit := range unscanned {
+		if hit && index < len(matched) {
+			matched[index] = true
+		}
+	}
+	keptPaths := make(map[string]bool, len(kept))
+	for _, path := range kept {
+		keptPaths[path] = true
+	}
+	selected := make([]searchPreselectionEvidence, 0, len(kept))
+	for _, item := range evidence {
+		if keptPaths[item.Path] {
+			selected = append(selected, item)
+		}
+	}
+	return searchPreselectionCoverage(selected, matched, q)
 }
 
 func searchPreselectionCoverage(selected []searchPreselectionEvidence, matchedAnywhere []bool, q searchQuery) float64 {

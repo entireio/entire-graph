@@ -263,7 +263,7 @@ func TestAssessSearchConfidenceMarksAColdIndexThatDroppedPartOfTheQuery(t *testi
 	}{
 		{
 			name:     "a complete capped selection is not marked",
-			response: withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: 1}),
+			response: withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionDiversity: 1, PreselectionConfidence: 1}),
 		},
 		{
 			// Every path without a capped cold selection: the committed-tree grep, an
@@ -273,25 +273,38 @@ func TestAssessSearchConfidenceMarksAColdIndexThatDroppedPartOfTheQuery(t *testi
 		},
 		{
 			name:       "a strong ranking over a selection that dropped a term is marked",
-			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: 0.5}),
+			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionDiversity: 1, PreselectionConfidence: 0.5}),
 			wantLow:    true,
 			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.50)",
 		},
 		{
+			// The Git shortlist of a large worktree can drop a term before the cap is reached.
+			name:       "a selection that dropped a term before its cap is marked",
+			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionDiversity: 1, PreselectionConfidence: 0.5}),
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.50)",
+		},
+		{
+			name:       "a selection whose files hold no matched term is marked",
+			response:   withStats([]float64{4.1, 3.0, 2.0}, SearchStats{PreselectionDiversity: 1, PreselectionConfidence: 0}),
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.00)",
+		},
+		{
 			name:       "the dropped term outranks a weak score",
-			response:   withStats([]float64{4.1, 3.0, 2.0}, SearchStats{PreselectionBounded: true, PreselectionConfidence: 0.75}),
+			response:   withStats([]float64{4.1, 3.0, 2.0}, SearchStats{PreselectionBounded: true, PreselectionDiversity: 1, PreselectionConfidence: 0.75}),
 			wantLow:    true,
 			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.75)",
 		},
 		{
 			name:       "the printed confidence never rounds up to 1",
-			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: 0.996}),
+			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionDiversity: 1, PreselectionConfidence: 0.996}),
 			wantLow:    true,
 			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.99)",
 		},
 		{
 			name:     "an empty payload is still not marked",
-			response: SearchResponse{Stats: SearchStats{PreselectionBounded: true, PreselectionConfidence: 0.5}},
+			response: SearchResponse{Stats: SearchStats{PreselectionBounded: true, PreselectionDiversity: 1, PreselectionConfidence: 0.5}},
 		},
 	}
 	for _, testCase := range cases {
@@ -303,7 +316,7 @@ func TestAssessSearchConfidenceMarksAColdIndexThatDroppedPartOfTheQuery(t *testi
 				t.Fatalf("assessment = Low %v reason %q, want Low %v reason %q",
 					got.Low, got.Reason, testCase.wantLow, testCase.wantReason)
 			}
-			if wantAdvice := testCase.wantReason != ""; (got.Advice != "") != wantAdvice {
+			if (got.Advice != "") != (testCase.wantReason != "") {
 				t.Fatalf("advice = %q, want advice only with the preselection reason", got.Advice)
 			}
 		})
@@ -358,5 +371,62 @@ func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testin
 	if assessment := AssessSearchConfidence(dropped); !assessment.Low ||
 		!strings.HasPrefix(assessment.Reason, "the cold index left out every file matching part of the query") {
 		t.Fatalf("assessment = %#v, want the preselection notice", assessment)
+	}
+}
+
+// A worktree of at least minGitGrepPreselectionFiles files shortlists Git's matches to
+// 4*MaxIndexedFiles before the content pass. The only file holding quillwort ranks below
+// that shortlist, so the content pass never sees the term; the confidence must still
+// count it, or the query reports 1 and the notice stays silent.
+func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	const needles = 500
+	for index := 0; index < minGitGrepPreselectionFiles-needles; index++ {
+		write(t, repo, fmt.Sprintf("fill/f_%05d.md", index), "filler\n")
+	}
+	for index := 0; index < needles; index++ {
+		write(t, repo, fmt.Sprintf("docs/needle_%03d.md", index), "needle\n")
+	}
+	write(t, repo, "docs/zz_other.md", "quillwort\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "large corpus")
+
+	for _, tc := range []struct {
+		query string
+		low   bool
+	}{
+		{query: "needle"},
+		{query: "needle quillwort", low: true},
+	} {
+		response, err := SearchRepository(t.Context(), repo, "test", tc.query, SearchOptions{
+			Worktree: true,
+			Profile:  ProfileSyntaxOnly,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stats := response.Stats
+		if stats.PreselectionBackend != "git-index-grep+go-content" || stats.FilesIndexed > 384 {
+			t.Fatalf("%q: stats = %#v, want the Git shortlist path", tc.query, stats)
+		}
+		assessment := AssessSearchConfidence(response)
+		if !tc.low {
+			if stats.PreselectionConfidence != 1 {
+				t.Fatalf("%q: preselection confidence = %v, want 1", tc.query, stats.PreselectionConfidence)
+			}
+			continue
+		}
+		if stats.PreselectionConfidence <= 0 || stats.PreselectionConfidence >= 1 {
+			t.Fatalf("%q: preselection confidence = %v, want below 1: the shortlist dropped the only quillwort file",
+				tc.query, stats.PreselectionConfidence)
+		}
+		if !assessment.Low ||
+			!strings.HasPrefix(assessment.Reason, "the cold index left out every file matching part of the query") {
+			t.Fatalf("%q: assessment = %#v, want the preselection notice", tc.query, assessment)
+		}
 	}
 }

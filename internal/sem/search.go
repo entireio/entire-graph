@@ -2745,6 +2745,9 @@ func preselectSearchFiles(
 	matcher := newSearchQueryTermMatcher(q)
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
+	// shortlistDroppedTerms marks the query terms Git matched in files the shortlist below
+	// left out of the content pass, which matchedAnywhere never sees.
+	var shortlistDroppedTerms []bool
 	gitIndexPasses := 1
 	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
 		allowed := make(map[string]bool, len(source.paths))
@@ -2959,6 +2962,14 @@ func preselectSearchFiles(
 			for _, candidate := range provisional[:poolLimit] {
 				scanPaths = append(scanPaths, candidate.path)
 			}
+			shortlistDroppedTerms = make([]bool, len(q.terms))
+			for _, candidate := range provisional[poolLimit:] {
+				for index, matched := range candidate.matchedTerms {
+					if matched && index < len(shortlistDroppedTerms) {
+						shortlistDroppedTerms[index] = true
+					}
+				}
+			}
 			scanPaths = append(scanPaths, untracked...)
 			if len(scanPaths) == 0 && !coalescedAliases {
 				scanPaths = source.paths
@@ -3077,6 +3088,10 @@ func preselectSearchFiles(
 		assessment := selectProgressiveSearchFiles(
 			fuseSearchPreselectionEvidence(evidence), matchedAnywhere, q, options.MaxIndexedFiles,
 		)
+		// Widening reads matchedAnywhere alone, as ranking does. The reported confidence also
+		// counts the terms whose every file the Git shortlist dropped: those files were left
+		// out of the index as surely as the ones the cut dropped.
+		assessment.Confidence = searchPreselectionKeptCoverage(evidence, assessment.Files, matchedAnywhere, shortlistDroppedTerms, q)
 		selection.files = assessment.Files
 		selection.preselectionPasses = assessment.Passes
 		selection.preselectionConfidence = assessment.Confidence
