@@ -587,8 +587,9 @@ func requireGitShortlistPath(t *testing.T, query string, stats SearchStats, capp
 // "éint" matches the int alias's ASCII boundary, and the matcher refuses it. A text file that
 // .gitattributes marks `-diff` or `binary`, or gives a diff driver configured binary, still
 // counts, whole or streamed, as the content pass reads it; a file holding a NUL byte does not,
-// as the content pass skips it. Git's own listing skips an unmarked binary, and a marked file
-// outside the corpus is never searched.
+// as the content pass skips it, and a marked one whose first 8,000 bytes hold a NUL is not even
+// grepped. Git's own listing skips an unmarked binary, and a marked file outside the corpus is
+// never searched.
 func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -628,15 +629,16 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 		// kestrel is only in a file outside the corpus, which Git lists but never streams.
 		{query: "wren kestrel", want: map[string]bool{"wren": true, "kestrel": false}, examined: 1},
 		{query: "integer value", known: []string{"integer", "value"}, want: map[string]bool{"int": true}, examined: 1},
-		// The five marked corpus files are examined, out.gen through its binary diff driver;
-		// raw.bin and vendor/asset.dat never are.
+		// The three marked text files are examined, out.gen through its binary diff driver.
+		// bin.dat and bigbin.dat hold a NUL byte in their first 8,000 bytes, so they are
+		// never grepped as text, and raw.bin and vendor/asset.dat are never searched.
 		{
 			query: "sandpiper dunlin godwit whimbrel plover curlew redshank",
 			want: map[string]bool{
 				"sandpiper": true, "dunlin": true, "godwit": false, "whimbrel": false, "plover": false, "curlew": false,
 				"redshank": true,
 			},
-			examined: 5,
+			examined: 3,
 		},
 	} {
 		q := buildSearchQuery(tc.query)
@@ -667,6 +669,10 @@ func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 	write(t, repo, "big.md", "linnet\n"+strings.Repeat("x\n", 10000))
 	write(t, repo, ".gitattributes", "marked.txt -diff\n")
 	write(t, repo, "marked.txt", "sandpiper\n")
+	// The default driver makes every file here binary to Git's -I, and a driver set to auto
+	// is one `git config --bool` refuses; the listing still finds late-nul.md.
+	git(t, repo, "config", "diff.default.binary", "true")
+	git(t, repo, "config", "diff.autod.binary", "auto")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "fixture")
 	allowed := map[string]bool{"late-nul.md": true, "clean.md": true, "big.md": true, "marked.txt": true}

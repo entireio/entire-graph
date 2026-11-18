@@ -3196,6 +3196,38 @@ func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T)
 	}
 }
 
+// Git's grep gives a file the default diff driver when its diff attribute names no driver
+// with a binary setting, a file with no diff attribute included, so diff.default.binary =
+// true makes -I skip it. A driver set to auto leaves its files to Git's content test, and
+// `git config --bool` refuses that value. FilesMarkedBinary counts every file -I skips. It
+// counts a file behind a built-in driver such as python too, which Git still tests by
+// content: searching a text file as text costs only the grep.
+func TestFilesMarkedBinaryFollowsGitsDefaultDriver(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	names := []string{"auto.au", "named.unk", "plain.txt", "py.py", "text.tx"}
+	for _, name := range names {
+		write(t, repo, name, "plover\n")
+	}
+	write(t, repo, ".gitattributes", "*.au diff=autod\n*.unk diff=nosuch\n*.py diff=python\n*.tx diff=texty\n")
+	git(t, repo, "config", "diff.autod.binary", "auto")
+	git(t, repo, "config", "diff.texty.binary", "false")
+	git(t, repo, "config", "diff.default.binary", "true")
+	git(t, repo, "add", ".")
+	var listed []string
+	if err := GrepIndexPatternFiles(t.Context(), repo, []string{"plover"}, func(path string) error { listed = append(listed, path); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(listed)
+	if !reflect.DeepEqual(listed, []string{"auto.au", "py.py", "text.tx"}) {
+		t.Fatalf("listed files = %q, want the default driver's files skipped", listed)
+	}
+	marked, err := FilesMarkedBinary(t.Context(), repo, names)
+	if err != nil || !reflect.DeepEqual(marked, []string{"named.unk", "plain.txt", "py.py"}) {
+		t.Fatalf("marked files = %q, %v, want the default driver's files and the built-in one's", marked, err)
+	}
+}
+
 func TestGrepTreePatternFilesPinsCommittedContent(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -3223,6 +3255,25 @@ func TestGrepTreePatternFilesRejectsInvalidTreeish(t *testing.T) {
 	for _, treeish := range []string{"", "--help", "HEAD\x00other"} {
 		if err := GrepTreePatternFiles(t.Context(), t.TempDir(), treeish, []string{"needle"}, nil, func(string) error { return nil }); err == nil {
 			t.Errorf("accepted invalid treeish %q", treeish)
+		}
+	}
+}
+
+// diffDriverBinary reads a driver's binary setting as Git's userdiff does: auto and the false
+// spellings leave its files to the content test, and a key with no value is true.
+func TestDiffDriverBinaryReadsGitsValues(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		value    string
+		hasValue bool
+		want     bool
+	}{
+		{value: "auto", hasValue: true}, {value: "AUTO", hasValue: true}, {value: "off", hasValue: true},
+		{value: "0", hasValue: true}, {value: "", hasValue: true},
+		{value: "yes", hasValue: true, want: true}, {value: "2k", hasValue: true, want: true}, {want: true},
+	} {
+		if got := diffDriverBinary(tc.value, tc.hasValue); got != tc.want {
+			t.Fatalf("diffDriverBinary(%q, %v) = %v, want %v", tc.value, tc.hasValue, got, tc.want)
 		}
 	}
 }

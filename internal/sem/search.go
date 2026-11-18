@@ -3336,8 +3336,10 @@ func (files searchUnreadFiles) confirmSampled(ctx context.Context, matcher searc
 // list returns the corpus files the content pass did not read that have a line matching one
 // of patterns. One Git pass over the worktree lists the text files. That pass skips the files
 // Git's attributes make binary without reading them, so of the unread corpus files, those are
-// found by attribute (gitutil.FilesMarkedBinary) and searched as text. No excluded asset or
-// binary outside them is read in full.
+// found by attribute (gitutil.FilesMarkedBinary) and searched as text, except the ones whose
+// first searchBinarySniffBytes hold a NUL byte: text skips those however they are read, and
+// Git would load each whole to grep it as text. No excluded asset or binary outside them is
+// read in full.
 func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]string, error) {
 	var unread []string
 	keep := func(filePath string) error {
@@ -3360,11 +3362,22 @@ func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]s
 	if err != nil {
 		return nil, err
 	}
+	marked = slices.DeleteFunc(marked, files.sniffsBinary)
 	if err := gitutil.GrepIndexPatternFilesIn(ctx, files.absRepo, patterns, marked, keep); err != nil {
 		return nil, err
 	}
 	sort.Strings(unread)
 	return slices.Compact(unread), nil
+}
+
+// sniffsBinary reports whether filePath's first searchBinarySniffBytes hold a NUL byte, or
+// cannot be read, so that text would skip it.
+func (files searchUnreadFiles) sniffsBinary(filePath string) bool {
+	if files.readPrefix == nil {
+		return false
+	}
+	prefix, ok := files.readPrefix(filePath, searchBinarySniffBytes)
+	return !ok || strings.IndexByte(prefix, 0) >= 0
 }
 
 // eligible reports whether filePath is a corpus file the content pass did not read.

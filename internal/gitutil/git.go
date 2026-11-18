@@ -478,13 +478,17 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 	return listBoundedWorktreePaths(newCmd(ctx, repo, "git", "ls-files", "-z"))
 }
 
-// FilesMarkedBinary returns the files among paths that Git's attributes make binary, sorted.
-// These are the files a `git grep -I` skips without reading them: a `diff` attribute that is
-// unset (`-diff`, the `binary` macro included), or one naming a diff driver whose
-// configuration says `binary = true`. It asks `git config` and `git check-attr`, so it reads
-// attributes and configuration but never file content. check-attr prints `set` and
-// `unspecified` both for those states and for drivers of those names, so a driver so named
-// that is configured binary counts every such file: better to search a file than to miss one.
+// FilesMarkedBinary returns the files among paths that Git's attributes and diff drivers make
+// binary, sorted. These are the files a `git grep -I` skips without reading them: a `diff`
+// attribute that is unset (`-diff`, the `binary` macro included), or a diff driver whose
+// `binary` setting is true. A file whose attribute names no driver with a `binary` setting,
+// one with no `diff` attribute included, gets the `default` driver's, as Git's grep falls
+// back to it (grep.c, grep_source_load_driver). It asks `git config` and `git check-attr`,
+// so it reads attributes and configuration but never file content. It can count more files
+// than Git skips, never fewer: check-attr prints `set` and `unspecified` both for those
+// states and for drivers of those names, and a built-in driver such as `python` keeps Git's
+// content test though it has no `binary` setting here. Better to search a file than to miss
+// one.
 func FilesMarkedBinary(ctx context.Context, repo string, paths []string) ([]string, error) {
 	if len(paths) == 0 {
 		return nil, nil
@@ -495,7 +499,11 @@ func FilesMarkedBinary(ctx context.Context, repo string, paths []string) ([]stri
 	}
 	var marked []string
 	err = checkDiffAttributes(ctx, repo, paths, func(path, value string) {
-		if value == "unset" || binary[value] {
+		isBinary, configured := binary[value]
+		if !configured {
+			isBinary = binary["default"]
+		}
+		if value == "unset" || isBinary {
 			marked = append(marked, path)
 		}
 	})
@@ -560,9 +568,10 @@ func readCheckAttrRecords(reader *bufio.Reader, visit func(path, value string)) 
 const gitConfigGetRegexp = "--get-regexp"
 
 // binaryDiffDrivers reports, for each diff driver Git's configuration sets
-// `diff.<driver>.binary` for, whether it is true. The last setting wins, as it does for Git.
+// `diff.<driver>.binary` for, whether that setting makes the driver's files binary
+// (diffDriverBinary). The last setting wins, as it does for Git.
 func binaryDiffDrivers(ctx context.Context, repo string) (map[string]bool, error) {
-	args := []string{"config", "-z", "--bool", gitConfigGetRegexp, `^diff\..*\.binary$`}
+	args := []string{"config", "-z", gitConfigGetRegexp, `^diff\..*\.binary$`}
 	stdout, stderr, err := runWithStderr(ctx, repo, "git", args...)
 	var exitError *exec.ExitError
 	if err != nil && ctx.Err() == nil && errors.As(err, &exitError) && exitError.ExitCode() == 1 && stdout == "" && stderr == "" {
@@ -573,13 +582,31 @@ func binaryDiffDrivers(ctx context.Context, repo string) (map[string]bool, error
 	}
 	drivers := map[string]bool{}
 	for _, record := range strings.Split(stdout, "\x00") {
-		key, value, ok := strings.Cut(record, "\n")
+		key, value, hasValue := strings.Cut(record, "\n")
 		driver, isDriver := strings.CutSuffix(strings.TrimPrefix(key, "diff."), ".binary")
-		if ok && isDriver && strings.HasPrefix(key, "diff.") {
-			drivers[driver] = value == "true"
+		if isDriver && strings.HasPrefix(key, "diff.") {
+			drivers[driver] = diffDriverBinary(value, hasValue)
 		}
 	}
 	return drivers, nil
+}
+
+// diffDriverBinary reads a `diff.<driver>.binary` value as Git does (userdiff.c,
+// parse_tristate): `auto` leaves the driver's files to Git's content test, and anything else
+// is a boolean, which `git config --bool` would refuse `auto` as. A key with no value is
+// true. Git refuses to grep at all under a value it cannot read as a boolean, so such a value
+// counts as binary here.
+func diffDriverBinary(value string, hasValue bool) bool {
+	if !hasValue {
+		return true
+	}
+	lower := strings.ToLower(value)
+	switch lower {
+	case "auto", "false", "no", "off", "":
+		return false
+	}
+	number, err := strconv.ParseInt(strings.TrimRight(lower, "kmg"), 0, 64)
+	return err != nil || number != 0
 }
 
 // ListWorktreeFiles lists the working tree the way Git itself sees it: tracked
