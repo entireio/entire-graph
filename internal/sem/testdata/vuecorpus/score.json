@@ -1,6 +1,6 @@
 {
   "helpdesk": {
-    "found": 173,
+    "found": 181,
     "total": 316,
     "tags": {
       "baseline": {
@@ -52,7 +52,7 @@
         "total": 9
       },
       "script-imports": {
-        "found": 0,
+        "found": 8,
         "total": 8
       },
       "script-src": {
@@ -107,9 +107,17 @@
       "relation CONTAINS src/views/Login.vue#Login:component -\u003e src/views/Login.vue#signIn",
       "relation CONTAINS src/views/Reports.vue#Reports:component -\u003e src/views/Reports.vue#mounted",
       "relation CONTAINS src/views/TicketDetail.vue#TicketDetail:component -\u003e src/views/TicketDetail.vue#loadTicket",
+      "relation IMPORTS src/App.vue -\u003e src/components/layout/AppHeader.vue",
+      "relation IMPORTS src/App.vue -\u003e src/components/notifications/NotificationTray.vue",
+      "relation IMPORTS src/components/notifications/NotificationTray.vue -\u003e src/eventBus.js",
+      "relation IMPORTS src/components/tickets/TicketFilters.vue -\u003e src/utils/priority.js",
+      "relation IMPORTS src/components/tickets/TicketList.vue -\u003e src/components/tickets/TicketRow.vue",
+      "relation IMPORTS src/components/tickets/TicketReplyForm.vue -\u003e src/components/tickets/CannedResponsePicker.vue",
+      "relation IMPORTS src/components/tickets/TicketRow.vue -\u003e src/mixins/slaTimerMixin.js",
       "relation IMPORTS src/components/tickets/TicketTimer.js -\u003e src/mixins/slaTimerMixin.js",
       "relation IMPORTS src/main.js -\u003e src/components/base/BaseButton.vue",
       "relation IMPORTS src/main.js -\u003e src/router/index.js",
+      "relation IMPORTS src/views/Login.vue -\u003e src/mixins/formValidationMixin.js",
       "symbol src/App.vue#App:component",
       "symbol src/App.vue#helpdesk-app:element",
       "symbol src/App.vue#main-content:element",
@@ -249,7 +257,7 @@
     ]
   },
   "taskboard": {
-    "found": 172,
+    "found": 204,
     "total": 306,
     "tags": {
       "baseline": {
@@ -277,11 +285,11 @@
         "total": 4
       },
       "lazy-imports": {
-        "found": 1,
+        "found": 6,
         "total": 7
       },
       "path-alias": {
-        "found": 0,
+        "found": 17,
         "total": 17
       },
       "script-calls": {
@@ -289,7 +297,7 @@
         "total": 10
       },
       "script-imports": {
-        "found": 0,
+        "found": 10,
         "total": 10
       },
       "script-symbols": {
@@ -344,9 +352,41 @@
       "relation CONTAINS src/components/base/BaseButton.vue#BaseButton:component -\u003e src/components/base/BaseButton.vue#handleClick",
       "relation CONTAINS src/stores/tasks.ts#useTaskStore -\u003e src/stores/tasks.ts#addTask",
       "relation EMITS src/stores/tasks.ts#addTask -\u003e ext:task:created",
+      "relation IMPORTS src/App.vue -\u003e src/components/AppHeader.vue",
+      "relation IMPORTS src/App.vue -\u003e src/components/NotificationStack.vue",
+      "relation IMPORTS src/components/AppHeader.vue -\u003e src/components/ProjectSwitcher.vue",
+      "relation IMPORTS src/components/AppHeader.vue -\u003e src/stores/auth.ts",
+      "relation IMPORTS src/components/BoardColumn.vue -\u003e src/components/TaskCard.vue",
+      "relation IMPORTS src/components/BoardColumn.vue -\u003e src/composables/useDragDrop.ts",
+      "relation IMPORTS src/components/CommentItem.vue -\u003e src/types/task.ts",
+      "relation IMPORTS src/components/CommentList.vue -\u003e src/api/comments.ts",
+      "relation IMPORTS src/components/CommentList.vue -\u003e src/components/CommentItem.vue",
+      "relation IMPORTS src/components/LabelBadge.vue -\u003e src/types/task.ts",
+      "relation IMPORTS src/components/ProjectSwitcher.vue -\u003e src/stores/projects.ts",
+      "relation IMPORTS src/components/ProjectSwitcher.vue -\u003e src/types/project.ts",
+      "relation IMPORTS src/components/TaskCard.vue -\u003e src/components/LabelBadge.vue",
+      "relation IMPORTS src/components/TaskCard.vue -\u003e src/types/task.ts",
+      "relation IMPORTS src/components/TaskCard.vue -\u003e src/utils/format.ts",
+      "relation IMPORTS src/components/TaskDetailPanel.vue -\u003e src/components/CommentList.vue",
+      "relation IMPORTS src/components/TaskDetailPanel.vue -\u003e src/keys.ts",
+      "relation IMPORTS src/components/TaskFilters.vue -\u003e src/composables/useFilters.ts",
+      "relation IMPORTS src/components/TaskForm.vue -\u003e src/components/AssigneePicker.vue",
       "relation IMPORTS src/main.ts -\u003e src/App.vue",
+      "relation IMPORTS src/main.ts -\u003e src/components/base/BaseButton.vue",
+      "relation IMPORTS src/router/index.ts -\u003e src/views/BoardView.vue",
+      "relation IMPORTS src/router/index.ts -\u003e src/views/LoginView.vue",
+      "relation IMPORTS src/router/index.ts -\u003e src/views/NotFoundView.vue",
+      "relation IMPORTS src/router/index.ts -\u003e src/views/ProjectsView.vue",
       "relation IMPORTS src/router/index.ts -\u003e src/views/SettingsView.vue",
+      "relation IMPORTS src/router/index.ts -\u003e src/views/TaskView.vue",
       "relation IMPORTS src/stores/tasks.ts -\u003e src/api/tasks.ts",
+      "relation IMPORTS src/views/BoardView.vue -\u003e src/components/BoardColumn.vue",
+      "relation IMPORTS src/views/BoardView.vue -\u003e src/composables/useFilters.ts",
+      "relation IMPORTS src/views/LoginView.vue -\u003e src/types/user.ts",
+      "relation IMPORTS src/views/ProjectsView.vue -\u003e src/components/PaginationBar.vue",
+      "relation IMPORTS src/views/SettingsView.vue -\u003e src/stores/settings.ts",
+      "relation IMPORTS src/views/TaskView.vue -\u003e src/components/TaskDetailPanel.vue",
+      "relation IMPORTS tests/components/TaskCard.spec.ts -\u003e src/components/TaskCard.vue",
       "relation LISTENS_ON src/composables/useNotifications.ts#useNotifications -\u003e ext:task:created",
       "relation USES_TYPE|PARAM_TYPE src/components/AssigneePicker.vue#choose -\u003e src/types/user.ts#User",
       "relation USES_TYPE|PARAM_TYPE src/components/LabelBadge.vue#badgeStyle -\u003e src/types/task.ts#Label",

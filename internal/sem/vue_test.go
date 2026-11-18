@@ -175,6 +175,15 @@ func TestVueScriptParseErrorUsesFileLines(t *testing.T) {
 	}
 }
 
+// Fast-profile snapshots precompute imports from RAW content for languages
+// whose per-symbol pass they skip. A component must never be one: its raw
+// content holds template markup the import scanner would read.
+func TestVueImportsNeverComeFromRawContent(t *testing.T) {
+	if skipFastProfilePerSymbolScan(resolveProfile(ProfileFast), "Vue") {
+		t.Fatal("the fast profile skips Vue's per-symbol pass, so its imports would be scanned from raw template content")
+	}
+}
+
 // Characters whose lowercase form has a different byte length must not move
 // script boundaries: the block scan indexes a lowercase copy with offsets into
 // the source.
@@ -198,5 +207,21 @@ func TestVueScriptViewWithLengthChangingCharacters(t *testing.T) {
 	}
 	if IdentityRevision == "8" {
 		t.Fatal("the byte-length correction changes parser output and must invalidate revision 8")
+	}
+}
+
+func TestJSLocalImportCandidatesReachExtensionlessComponents(t *testing.T) {
+	candidates := jsLocalImportCandidates("src/views/Customers.vue", "../components/BaseList")
+	found := false
+	for _, candidate := range candidates {
+		if candidate == "src/components/BaseList.vue" {
+			found = true
+		}
+		if candidate == "src/components/BaseList.ts" && found {
+			t.Fatal(".vue must be tried after the script extensions")
+		}
+	}
+	if !found {
+		t.Fatalf("candidates = %v", candidates)
 	}
 }

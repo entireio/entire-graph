@@ -20914,7 +20914,7 @@ func importCapableExtension(ext string) bool {
 // (rather than an external package) for the importing file's language.
 func isRelativeImportSpec(importingPath, spec string) bool {
 	switch strings.ToLower(filepath.Ext(importingPath)) {
-	case ".js", ".jsx", ".ts", ".tsx":
+	case ".js", ".jsx", ".ts", ".tsx", ".vue":
 		return strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../")
 	case ".py":
 		return strings.HasPrefix(spec, ".")
@@ -20932,7 +20932,7 @@ func resolveLocalImport(importingPath, spec string, knownFiles map[string]bool) 
 	switch strings.ToLower(filepath.Ext(importingPath)) {
 	case ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx":
 		return resolveCFamilyLocalInclude(importingPath, spec, knownFiles)
-	case ".js", ".jsx", ".ts", ".tsx":
+	case ".js", ".jsx", ".ts", ".tsx", ".vue":
 		for _, candidate := range jsLocalImportCandidates(importingPath, spec) {
 			if knownFiles[candidate] {
 				return candidate, true
@@ -20967,7 +20967,7 @@ func resolveLocalImport(importingPath, spec string, knownFiles map[string]bool) 
 
 func resolveReadableLocalImport(importingPath, spec string, readContent contentReader) (string, bool) {
 	switch strings.ToLower(filepath.Ext(importingPath)) {
-	case ".js", ".jsx", ".ts", ".tsx":
+	case ".js", ".jsx", ".ts", ".tsx", ".vue":
 		for _, candidate := range jsLocalImportCandidates(importingPath, spec) {
 			if _, ok := readContent(candidate); ok {
 				return candidate, true
@@ -20982,7 +20982,10 @@ func jsLocalImportCandidates(importingPath, spec string) []string {
 		return nil
 	}
 	base := filepath.ToSlash(filepath.Join(filepath.Dir(importingPath), spec))
-	exts := []string{".ts", ".tsx", ".js", ".jsx"}
+	// .vue comes last: Vue CLI and webpack projects list it in
+	// resolve.extensions, so `import Base from './Base'` names Base.vue when no
+	// script file of that name exists.
+	exts := []string{".ts", ".tsx", ".js", ".jsx", ".vue"}
 	var candidates []string
 	if ext := strings.ToLower(filepath.Ext(base)); ext != "" {
 		candidates = append(candidates, base)
@@ -21365,7 +21368,7 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader, 
 		if strings.EqualFold(filepath.Ext(file.Path), ".go") {
 			goPaths = append(goPaths, filepath.ToSlash(file.Path))
 		}
-		if jsLikeExtension(filepath.Ext(file.Path)) {
+		if jsImporterExtension(filepath.Ext(file.Path)) {
 			jsPaths = append(jsPaths, filepath.ToSlash(file.Path))
 		}
 		if strings.EqualFold(filepath.Ext(file.Path), ".py") {
@@ -21445,6 +21448,12 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader, 
 			return resolver
 		}
 		key := strings.TrimSuffix(path, filepath.Ext(path))
+		if isVuePath(path) {
+			// Components are imported with their extension (`@/views/X.vue`),
+			// so they keep it as their key: `X.vue` and a sibling `X.ts` must not
+			// compete for the extensionless `X`.
+			key = path
+		}
 		if _, exists := resolver.jsModuleFiles[key]; !exists {
 			resolver.jsModuleFiles[key] = path
 		}
@@ -22457,7 +22466,7 @@ func (resolver manifestImportResolver) resolve(importingPath, spec string) (mani
 	if ext == ".go" {
 		return resolver.resolveGoImport(importingPath, spec)
 	}
-	if jsLikeExtension(ext) {
+	if jsImporterExtension(ext) {
 		return resolver.resolveJSImport(importingPath, spec)
 	}
 	if ext == ".py" {
@@ -22732,6 +22741,13 @@ func (resolver manifestImportResolver) resolveJSModulePath(module string) (strin
 	}
 	if path, ok := resolver.jsModuleFiles[module]; ok {
 		return path, true
+	}
+	// Components are keyed with their extension; an extensionless alias
+	// (`@/components/Base`) reaches one as webpack's resolve.extensions does.
+	if filepath.Ext(module) == "" {
+		if path, ok := resolver.jsModuleFiles[module+".vue"]; ok {
+			return path, true
+		}
 	}
 	return "", false
 }
@@ -23757,6 +23773,7 @@ var importScanners = map[string]func(content string) []string{
 	".jsx":    jsImportFn,
 	".ts":     jsImportFn,
 	".tsx":    jsImportFn,
+	".vue":    jsImportFn,
 	".lua":    regexImportScan(luaRequireRe),
 	".ml":     regexImportScan(ocamlImportOpenRe),
 	".mli":    regexImportScan(ocamlImportOpenRe),
@@ -24017,7 +24034,7 @@ func importedNamesFor(path, content string) map[string][]string {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".go":
 		return importedGoNames(content)
-	case ".js", ".jsx", ".ts", ".tsx":
+	case ".js", ".jsx", ".ts", ".tsx", ".vue":
 		return importedJavaScriptNames(content)
 	case ".kt", ".kts":
 		return importedKotlinNames(content)

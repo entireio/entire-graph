@@ -371,3 +371,11 @@ func vueScriptSymbols(symbols []SymbolRecord) []SymbolRecord {
 	}
 	return out
 }
+
+// jsImporterExtension reports whether a file with this extension imports
+// JavaScript modules: JS/TS sources and Vue components, whose script view is
+// one. It is deliberately not jsLikeExtension, which also gates framework
+// passes (Express, NestJS) that components never take part in.
+func jsImporterExtension(ext string) bool {
+	return jsLikeExtension(ext) || strings.EqualFold(ext, ".vue")
+}
