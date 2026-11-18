@@ -61,6 +61,7 @@ var snapshotScopedDiagnosticCodes = map[string]bool{
 	"W_GITDIR_SWEEP_CANCELLED":            true,
 	"W_GITDIR_SWEEP_UNREADABLE_DIRECTORY": true,
 	"W_INDEX_POLICY_CHANGED":              true,
+	"W_INVENTORY_MENTIONS_UNMODELLED":     true,
 	"W_MOVE_AMBIGUOUS":                    true,
 	"W_NEWER_SCHEMA_MINOR":                true,
 	repoIgnoreDisclosureCode:              true,
