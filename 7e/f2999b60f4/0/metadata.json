@@ -1,0 +1,88 @@
+{
+  "cli_version": "0.13.4",
+  "checkpoint_id": "7ef2999b60f4",
+  "session_id": "be8c9437-53d5-4e9f-bb9b-0907a051322f",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-18T08:20:54.333921Z",
+  "branch": "vue-corpus",
+  "checkpoints_count": 8,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-5-5",
+  "turn_id": "6b42a8b33d4b",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 42,
+    "cache_creation_tokens": 37466,
+    "cache_read_tokens": 9699532,
+    "output_tokens": 28460,
+    "api_call_count": 21
+  },
+  "session_token_usage": {
+    "input_tokens": 354,
+    "cache_creation_tokens": 965915,
+    "cache_read_tokens": 44853109,
+    "output_tokens": 243552,
+    "api_call_count": 162,
+    "subagent_tokens": {
+      "input_tokens": 804,
+      "cache_creation_tokens": 1903150,
+      "cache_read_tokens": 65079796,
+      "output_tokens": 720973,
+      "api_call_count": 400
+    },
+    "subagent_tokens_complete": true
+  },
+  "redaction": {
+    "replacements": 0,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01DF7QNoDMCWbJ5dbqCa6eDK",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "entire-elements-of-style"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "6b42a8b33d4b",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 375,
+        "end": 376,
+        "entry_ids": [
+          "ca62d31a-4924-4d8b-919f-9effdc42472a"
+        ],
+        "tool_use_id": "toolu_01DF7QNoDMCWbJ5dbqCa6eDK"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01DF7QNoDMCWbJ5dbqCa6eDK"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: entire-elements-of-style",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 8
+  }
+}
