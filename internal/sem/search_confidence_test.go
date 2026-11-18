@@ -421,6 +421,67 @@ func requirePreselectionNotice(t *testing.T, query string, response SearchRespon
 // is indexed, so the term it holds is not missing.
 func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 	t.Parallel()
+	repo := writeGitShortlistFixture(t)
+	for _, tc := range []gitShortlistCase{
+		{query: "needle", gitPasses: 1},
+		{query: "needle quillwort", low: true, gitPasses: 1},
+		// --top-k 40 raises the limit to 120 without the caller setting one, so the cut is
+		// still assessed: 480 files shortlisted, then a fixed cut to 120.
+		{query: "needle quillwort", topK: 40, low: true, gitPasses: 1},
+		{query: "thistle bramble", low: true, gitPasses: 2},
+		// 450 of the 500 heron files exceed the read cap, so the content pass keeps at most
+		// 50 and the capped cut never runs; the Git shortlist alone dropped egret.
+		{query: "heron egret", maxParseBytes: 64, low: true, gitPasses: 1},
+		{query: "heron plover", maxParseBytes: 64, low: true, gitPasses: 2},
+		{query: "heron curlew", maxParseBytes: 64, gitPasses: 1},
+	} {
+		response, err := SearchRepository(t.Context(), repo, "test", tc.query, SearchOptions{
+			Worktree:      true,
+			Profile:       ProfileSyntaxOnly,
+			MaxParseBytes: tc.maxParseBytes,
+			TopK:          tc.topK,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tc.check(t, response)
+	}
+}
+
+type gitShortlistCase struct {
+	query         string
+	maxParseBytes int
+	topK          int
+	low           bool
+	// gitPasses counts Git's passes over the corpus: the sample, plus the pass for terms the
+	// sample missed when there are any.
+	gitPasses int
+}
+
+func (tc gitShortlistCase) check(t *testing.T, response SearchResponse) {
+	t.Helper()
+	requireGitShortlistPath(t, tc.query, response.Stats, tc.maxParseBytes == 0, tc.gitPasses)
+	// The 51 readable shortlisted files, plus the bridged handler read for its terms.
+	if tc.query == "heron curlew" && response.Stats.FilesContentRead != 52 {
+		t.Fatalf("%q: files content read = %d, want 52", tc.query, response.Stats.FilesContentRead)
+	}
+	if tc.topK > 0 && response.Stats.FilesIndexed != 120 {
+		t.Fatalf("%q at top-k %d: files indexed = %d, want the adaptive 120", tc.query, tc.topK, response.Stats.FilesIndexed)
+	}
+	if examined, corpus := response.Stats.PreselectionFilesExamined, response.Stats.FilesScanned; examined < tc.gitPasses*corpus || examined >= (tc.gitPasses+1)*corpus {
+		t.Fatalf("%q: files examined = %d over a %d-file corpus, want %d Git passes counted", tc.query, examined, corpus, tc.gitPasses)
+	}
+	if tc.low {
+		requirePreselectionNotice(t, tc.query, response)
+	} else if confidence := confidenceValue(response.Stats.PreselectionConfidence); confidence != 1 {
+		t.Fatalf("%q: preselection confidence = %v, want 1", tc.query, confidence)
+	}
+}
+
+// writeGitShortlistFixture commits an 11,505-file worktree, past minGitGrepPreselectionFiles,
+// holding each way TestSearchRepositoryCountsTermsTheGitShortlistDropped hides a term.
+func writeGitShortlistFixture(t *testing.T) string {
+	t.Helper()
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -454,56 +515,7 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 	write(t, repo, "large/zz_wade_test.go", "package p\n\n// curlew\nfunc wadeCommand() {}\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "large corpus")
-
-	for _, tc := range []struct {
-		query         string
-		maxParseBytes int
-		topK          int
-		low           bool
-		// gitPasses counts Git's passes over the corpus: the sample, plus the pass for
-		// terms the sample missed when there are any.
-		gitPasses int
-	}{
-		{query: "needle", gitPasses: 1},
-		{query: "needle quillwort", low: true, gitPasses: 1},
-		// --top-k 40 raises the limit to 120 without the caller setting one, so the cut is
-		// still assessed: 480 files shortlisted, then a fixed cut to 120.
-		{query: "needle quillwort", topK: 40, low: true, gitPasses: 1},
-		{query: "thistle bramble", low: true, gitPasses: 2},
-		// 450 of the 500 heron files exceed the read cap, so the content pass keeps at most
-		// 50 and the capped cut never runs; the Git shortlist alone dropped egret.
-		{query: "heron egret", maxParseBytes: 64, low: true, gitPasses: 1},
-		{query: "heron plover", maxParseBytes: 64, low: true, gitPasses: 2},
-		{query: "heron curlew", maxParseBytes: 64, gitPasses: 1},
-	} {
-		response, err := SearchRepository(t.Context(), repo, "test", tc.query, SearchOptions{
-			Worktree:      true,
-			Profile:       ProfileSyntaxOnly,
-			MaxParseBytes: tc.maxParseBytes,
-			TopK:          tc.topK,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		requireGitShortlistPath(t, tc.query, response.Stats, tc.maxParseBytes == 0, tc.gitPasses)
-		// The 51 readable shortlisted files, plus the bridged handler read for its terms.
-		if tc.query == "heron curlew" && response.Stats.FilesContentRead != 52 {
-			t.Fatalf("%q: files content read = %d, want 52", tc.query, response.Stats.FilesContentRead)
-		}
-		if tc.topK > 0 && response.Stats.FilesIndexed != 120 {
-			t.Fatalf("%q at top-k %d: files indexed = %d, want the adaptive 120", tc.query, tc.topK, response.Stats.FilesIndexed)
-		}
-		if examined, corpus := response.Stats.PreselectionFilesExamined, response.Stats.FilesScanned; examined < tc.gitPasses*corpus || examined >= (tc.gitPasses+1)*corpus {
-			t.Fatalf("%q: files examined = %d over a %d-file corpus, want %d Git passes counted", tc.query, examined, corpus, tc.gitPasses)
-		}
-		if !tc.low {
-			if confidence := confidenceValue(response.Stats.PreselectionConfidence); confidence != 1 {
-				t.Fatalf("%q: preselection confidence = %v, want 1", tc.query, confidence)
-			}
-			continue
-		}
-		requirePreselectionNotice(t, tc.query, response)
-	}
+	return repo
 }
 
 // A TopK-adaptive limit is not one the caller chose, so its fixed cut is assessed like the
