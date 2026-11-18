@@ -564,6 +564,7 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 	write(t, repo, "a.md", strings.Repeat("wren\n", 40)+"lark\n")
 	write(t, repo, "b.go", strings.Repeat("éint x\n", 40)+"func readInt() {}\n")
 	write(t, repo, "read.md", "osprey\n")
+	write(t, repo, "vendor/off.md", strings.Repeat("kestrel\n", 2000))
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "fixture")
 	allowed := map[string]bool{"a.md": true, "b.go": true, "read.md": true}
@@ -576,6 +577,8 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 	}{
 		// osprey is only in a file the content pass read, so it stays unmarked.
 		{query: "wren lark osprey", want: map[string]bool{"wren": true, "lark": true, "osprey": false}},
+		// kestrel is only in a file outside the corpus, which Git lists but never streams.
+		{query: "wren kestrel", want: map[string]bool{"wren": true, "kestrel": false}},
 		{query: "integer value", known: []string{"integer", "value"}, want: map[string]bool{"int": true}},
 	} {
 		q := buildSearchQuery(tc.query)
@@ -583,15 +586,16 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 		for index, term := range q.terms {
 			known[index] = slices.Contains(tc.known, term)
 		}
-		marked, passes := searchGitUnreadTerms(t.Context(), repo, q, newSearchQueryTermMatcher(q), allowed, read, known)
+		marked, passes, reread := searchGitUnreadTerms(t.Context(), repo, q, newSearchQueryTermMatcher(q), allowed, read, known)
 		for term, want := range tc.want {
 			index := slices.Index(q.terms, term)
 			if index < 0 || marked[index] != want {
 				t.Fatalf("%q: term %q marked %v, want %v (terms %v, marked %v)", tc.query, term, index >= 0 && marked[index], want, q.terms, marked)
 			}
 		}
-		if passes != 1 {
-			t.Fatalf("%q: passes = %d, want 1", tc.query, passes)
+		// One listing pass, then every line of the one unread file that matched.
+		if passes != 1 || reread != 1 {
+			t.Fatalf("%q: passes = %d, files read again = %d, want 1 and 1", tc.query, passes, reread)
 		}
 	}
 }

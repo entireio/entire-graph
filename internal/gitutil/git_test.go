@@ -3111,13 +3111,48 @@ func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
 	if len(matches) != 32 {
 		t.Fatalf("ordinary-term sample returned %d lines, want 32", len(matches))
 	}
-	matches = nil
-	err = GrepIndexPatternEvery(t.Context(), repo, patterns, func(match GrepMatch) error { matches = append(matches, match); return nil })
+}
+
+// GrepIndexPatternFiles lists each matching file once; GrepIndexPatternEveryInFiles keeps
+// every matching line, but only in the files it is given, across pathspec batches.
+func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	content := "func readInt() {}\n" + strings.Repeat("func otherInt() {}\n", 1000)
+	for _, name := range []string{"source.go", "skipped.go", "a b.go"} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	patterns := []string{"[[:lower:]]Int[^[:alnum:]]"}
+	var files []string
+	if err := GrepIndexPatternFiles(t.Context(), repo, patterns, func(path string) error { files = append(files, path); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(files)
+	if !reflect.DeepEqual(files, []string{"a b.go", "skipped.go", "source.go"}) {
+		t.Fatalf("matching files = %q", files)
+	}
+	counts := map[string]int{}
+	err := GrepIndexPatternEveryInFiles(t.Context(), repo, patterns, []string{"source.go", "a b.go"}, func(match GrepMatch) error {
+		counts[match.Path]++
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 1001 || matches[1000].Text != "func otherInt() {}" {
-		t.Fatalf("unbounded grep returned %d lines, want all 1001", len(matches))
+	if !reflect.DeepEqual(counts, map[string]int{"source.go": 1001, "a b.go": 1001}) {
+		t.Fatalf("lines per file = %v, want all 1001 of each named file and none of skipped.go", counts)
+	}
+	stop := errors.New("stop")
+	seen := 0
+	err = GrepIndexPatternEveryInFiles(t.Context(), repo, patterns, []string{"source.go"}, func(GrepMatch) error {
+		seen++
+		return stop
+	})
+	if !errors.Is(err, stop) || seen != 1 {
+		t.Fatalf("a visit error should stop the scan: err %v after %d lines", err, seen)
 	}
 }
 

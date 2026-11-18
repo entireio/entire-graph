@@ -671,11 +671,56 @@ func GrepIndexPatternSample(ctx context.Context, repo string, patterns []string,
 	return grepPatternLines(ctx, repo, "", patterns, 32, visit)
 }
 
-// GrepIndexPatternEvery streams every matching line, with no per-file limit, for a caller
-// that confirms each line itself and must not let lines it rejects hide a later one. Its
-// output is as large as the matches, so callers keep it to rare patterns and stop early.
-func GrepIndexPatternEvery(ctx context.Context, repo string, patterns []string, visit func(GrepMatch) error) error {
-	return grepPatternLines(ctx, repo, "", patterns, -1, visit)
+// GrepIndexPatternFiles visits each tracked worktree file that has a line matching one of
+// the caller-built POSIX expressions (`git grep -l`). Git stops reading a file at its first
+// match, so a file full of matches costs no more than one with a single match.
+func GrepIndexPatternFiles(ctx context.Context, repo string, patterns []string, visit func(path string) error) error {
+	return runGrepPatterns(ctx, repo, "", patterns, []string{"-l"}, nil, func(reader *bufio.Reader) error {
+		for {
+			path, err := reader.ReadString(0)
+			if err == io.EOF && path == "" {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("git grep returned a non-NUL-terminated path: %w", err)
+			}
+			if err := visit(strings.TrimSuffix(path, "\x00")); err != nil {
+				return err
+			}
+		}
+	})
+}
+
+// GrepIndexPatternEveryInFiles streams every line matching one of the expressions in the
+// named tracked worktree files, with no per-file limit, for a caller that confirms each line
+// itself and must not let lines it rejects hide a later one. Only the named files are
+// searched: they become literal pathspecs, in batches that fit the command line, so pick
+// them first (GrepIndexPatternFiles) and keep the list short. A visit error stops the scan.
+func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, files []string, visit func(GrepMatch) error) error {
+	batchBytes := grepPathBatchBytes()
+	for start := 0; start < len(files); {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		end, size := start, 0
+		pathspecs := make([]string, 0, min(len(files)-start, 64))
+		for end < len(files) {
+			pathspec := ":(literal)" + files[end]
+			if end > start && size+len(pathspec)+1 > batchBytes {
+				break
+			}
+			size += len(pathspec) + 1
+			pathspecs = append(pathspecs, pathspec)
+			end++
+		}
+		if err := runGrepPatterns(ctx, repo, "", patterns, nil, pathspecs, func(reader *bufio.Reader) error {
+			return readGrepPatternLines(reader, visit)
+		}); err != nil {
+			return err
+		}
+		start = end
+	}
+	return nil
 }
 
 func grepPatternLines(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, visit func(GrepMatch) error) error {
