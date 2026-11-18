@@ -3,6 +3,7 @@ package sem
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -438,6 +439,11 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		{query: "heron plover", maxParseBytes: 64, low: true, gitPasses: 2},
 		{query: "heron curlew", maxParseBytes: 64, gitPasses: 1},
 		{query: "needle sandpiper", low: true, gitPasses: 2},
+		// Git's sample matched redwing in a dropped file whose NUL byte comes after the 8,000
+		// bytes Git sniffs, so the content pass would never index it, even with every file.
+		{query: "needle redwing", gitPasses: 2},
+		// café has no Git pattern, and sandpiper is still searched for.
+		{query: `needle sandpiper "café"`, low: true, gitPasses: 2},
 	} {
 		response, err := SearchRepository(t.Context(), repo, "test", tc.query, SearchOptions{
 			Worktree:      true,
@@ -465,9 +471,10 @@ type gitShortlistCase struct {
 func (tc gitShortlistCase) check(t *testing.T, response SearchResponse) {
 	t.Helper()
 	requireGitShortlistPath(t, tc.query, response.Stats, tc.maxParseBytes == 0, tc.gitPasses)
-	// The 51 readable shortlisted files, plus the bridged handler read for its terms.
-	if tc.query == "heron curlew" && response.Stats.FilesContentRead != 52 {
-		t.Fatalf("%q: files content read = %d, want 52", tc.query, response.Stats.FilesContentRead)
+	// The 51 readable shortlisted files, the dropped handler read to confirm the curlew Git
+	// sampled in it, and the same handler read for its terms once the bridge adds it back.
+	if tc.query == "heron curlew" && response.Stats.FilesContentRead != 53 {
+		t.Fatalf("%q: files content read = %d, want 53", tc.query, response.Stats.FilesContentRead)
 	}
 	if tc.topK > 0 && response.Stats.FilesIndexed != 120 {
 		t.Fatalf("%q at top-k %d: files indexed = %d, want the adaptive 120", tc.query, tc.topK, response.Stats.FilesIndexed)
@@ -482,7 +489,7 @@ func (tc gitShortlistCase) check(t *testing.T, response SearchResponse) {
 	}
 }
 
-// writeGitShortlistFixture commits an 11,507-file worktree, past minGitGrepPreselectionFiles,
+// writeGitShortlistFixture commits an 11,508-file worktree, past minGitGrepPreselectionFiles,
 // holding each way TestSearchRepositoryCountsTermsTheGitShortlistDropped hides a term.
 func writeGitShortlistFixture(t *testing.T) string {
 	t.Helper()
@@ -512,6 +519,9 @@ func writeGitShortlistFixture(t *testing.T) string {
 	// The content pass reads this file as text; Git's sample counts it as binary.
 	write(t, repo, ".gitattributes", "docs/zz_marked.txt -diff\n")
 	write(t, repo, "docs/zz_marked.txt", "sandpiper\n")
+	// Git's -I looks for a NUL byte only in a file's first 8,000 bytes; the content pass
+	// skips a file holding one anywhere.
+	write(t, repo, "docs/zz_late_nul.md", "redwing\n"+strings.Repeat("x", searchBinarySniffBytes+100)+"\x00\n")
 	// Git samples 32 matching lines a file, so this one's sample holds only thistle.
 	write(t, repo, "sample/zz_mixed.md", strings.Repeat("thistle\n", 40)+"bramble\n")
 	write(t, repo, "large/zz_egret.md", "egret\n")
@@ -643,6 +653,74 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 		// One listing pass, then each unread corpus file it listed.
 		if passes != 1 || examined != tc.examined {
 			t.Fatalf("%q: passes = %d, files examined again = %d, want 1 and %d", tc.query, passes, examined, tc.examined)
+		}
+	}
+}
+
+// Git's sample can match a term in a file the shortlist dropped, and the term counts only once
+// that file passes the content pass's test: Git's -I looks for a NUL byte in a file's first
+// 8,000 bytes, and the content pass skips a file holding one anywhere. A file too large to
+// read keeps the sample's verdict, which is Git's own test, and a file whose sampled terms are
+// known already is not read. A missing term Git has no pattern for ("café") does not stop the
+// pass for the others.
+func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "late-nul.md", "redwing\n"+strings.Repeat("x", searchBinarySniffBytes+100)+"\x00\n")
+	write(t, repo, "clean.md", "siskin\n")
+	// Over the 16,000-byte read cap below, so too large for the content pass to read.
+	write(t, repo, "big.md", "linnet\n"+strings.Repeat("x\n", 10000))
+	write(t, repo, ".gitattributes", "marked.txt -diff\n")
+	write(t, repo, "marked.txt", "sandpiper\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "fixture")
+	allowed := map[string]bool{"late-nul.md": true, "clean.md": true, "big.md": true, "marked.txt": true}
+	files := searchTestUnreadFiles(repo, allowed, nil, 16000)
+
+	for _, tc := range []struct {
+		query    string
+		known    []string
+		sampled  map[string][]string
+		want     map[string]bool
+		passes   int
+		examined int
+	}{
+		// late-nul.md fails the content pass's test, so redwing is listed and examined again,
+		// and still not counted.
+		{query: "redwing", sampled: map[string][]string{"late-nul.md": {"redwing"}}, want: map[string]bool{"redwing": false}, passes: 1, examined: 2},
+		{
+			query:    "siskin linnet",
+			sampled:  map[string][]string{"clean.md": {"siskin"}, "big.md": {"linnet"}},
+			want:     map[string]bool{"siskin": true, "linnet": true},
+			examined: 2,
+		},
+		{query: "siskin", known: []string{"siskin"}, sampled: map[string][]string{"clean.md": {"siskin"}}, want: map[string]bool{"siskin": true}},
+		{query: `sandpiper "café"`, want: map[string]bool{"sandpiper": true, "café": false}, passes: 1, examined: 1},
+	} {
+		q := buildSearchQuery(tc.query)
+		known := make([]bool, len(q.terms))
+		for index, term := range q.terms {
+			known[index] = slices.Contains(tc.known, term)
+		}
+		files.sampled = nil
+		for _, path := range slices.Sorted(maps.Keys(tc.sampled)) {
+			matched := make([]bool, len(q.terms))
+			for index, term := range q.terms {
+				matched[index] = slices.Contains(tc.sampled[path], term)
+			}
+			files.sampled = append(files.sampled, searchFileCandidate{path: path, matchedTerms: matched})
+		}
+		marked, passes, examined := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), known)
+		for term, want := range tc.want {
+			if index := slices.Index(q.terms, term); index < 0 || marked[index] != want {
+				t.Fatalf("%q: term %q marked %v, want %v (terms %v, marked %v)", tc.query, term, index >= 0 && marked[index], want, q.terms, marked)
+			}
+		}
+		if passes != tc.passes || examined != tc.examined {
+			t.Fatalf("%q: passes = %d, files examined again = %d, want %d and %d", tc.query, passes, examined, tc.passes, tc.examined)
 		}
 	}
 }

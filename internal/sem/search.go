@@ -2751,10 +2751,10 @@ func preselectSearchFiles(
 	matcher := newSearchQueryTermMatcher(q)
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
-	// shortlistDroppedTerms marks the query terms Git matched in files the shortlist below
-	// left out of the content pass, which matchedAnywhere never sees. It is nil unless the
-	// shortlist dropped a candidate.
-	var shortlistDroppedTerms []bool
+	// shortlistDropped holds the candidates the shortlist below left out of the content pass,
+	// each with the query terms Git's sample matched in it, which matchedAnywhere never sees.
+	// It is empty unless the shortlist dropped a candidate.
+	var shortlistDropped []searchFileCandidate
 	var gitAllowed map[string]bool
 	gitIndexPasses := 1
 	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
@@ -2971,16 +2971,7 @@ func preselectSearchFiles(
 			for _, candidate := range provisional[:poolLimit] {
 				scanPaths = append(scanPaths, candidate.path)
 			}
-			if poolLimit < len(provisional) {
-				shortlistDroppedTerms = make([]bool, len(q.terms))
-				for _, candidate := range provisional[poolLimit:] {
-					for index, matched := range candidate.matchedTerms {
-						if matched && index < len(shortlistDroppedTerms) {
-							shortlistDroppedTerms[index] = true
-						}
-					}
-				}
-			}
+			shortlistDropped = provisional[poolLimit:]
 			scanPaths = append(scanPaths, untracked...)
 			if len(scanPaths) == 0 && !coalescedAliases {
 				scanPaths = source.paths
@@ -3140,18 +3131,18 @@ func preselectSearchFiles(
 	// matched only in files the content pass never read, which were left out of the index as
 	// surely as the ones the cut dropped. An explicit MaxIndexedFiles is an exact limit the
 	// caller chose, so it gets no confidence and no extra Git pass, as before.
-	assessConfidence := !options.explicitMaxIndexedFiles && (progressive || truncated || shortlistDroppedTerms != nil)
+	assessConfidence := !options.explicitMaxIndexedFiles && (progressive || truncated || len(shortlistDropped) > 0)
 	gitIndexReread := 0
 	// unread marks the terms matched in files the content pass never read. After the Git
 	// passes it also marks matchedAnywhere's terms, which the coverage below ORs in anyway.
 	var unread []bool
 	if assessConfidence {
-		unread = shortlistDroppedTerms
 		if usedGitIndexPreselection {
 			unreadFiles := searchUnreadFiles{
 				absRepo: source.absRepo,
 				allowed: gitAllowed,
 				read:    contentReadPaths,
+				sampled: shortlistDropped,
 				readFile: func(filePath string) (string, bool) {
 					content, ok := source.read(filePath)
 					if ok {
@@ -3163,7 +3154,7 @@ func preselectSearchFiles(
 				readPrefix: source.readPrefix,
 			}
 			var passes int
-			unread, passes, gitIndexReread = searchGitUnreadTerms(ctx, unreadFiles, q, matcher, searchTermsEither(matchedAnywhere, unread))
+			unread, passes, gitIndexReread = searchGitUnreadTerms(ctx, unreadFiles, q, matcher, matchedAnywhere)
 			gitIndexPasses += passes
 		}
 	}
@@ -3217,12 +3208,14 @@ var errSearchUnreadTermsFound = errors.New("every unread query term found")
 const searchBinarySniffBytes = 8000
 
 // searchUnreadFiles is how searchGitUnreadTerms reaches the files the content pass did not
-// read: allowed is the corpus, read the files that pass read, and readFile and readPrefix
+// read: allowed is the corpus, read the files that pass read, sampled the candidates the Git
+// shortlist dropped with the terms Git's sample matched in each, and readFile and readPrefix
 // read a file whole (under the same cap) or its first bytes.
 type searchUnreadFiles struct {
 	absRepo    string
 	allowed    map[string]bool
 	read       map[string]bool
+	sampled    []searchFileCandidate
 	readFile   func(path string) (string, bool)
 	readPrefix func(path string, limit int) (string, bool)
 }
@@ -3243,24 +3236,27 @@ func (files searchUnreadFiles) text(filePath string) (content string, readable, 
 	return "", false, ok && strings.IndexByte(prefix, 0) < 0
 }
 
-// searchGitUnreadTerms returns known, the query terms already matched (by the content pass,
-// or by Git's sample in files that pass never read), plus the terms neither saw but a corpus
-// file the pass never read holds: one outside read, including a shortlisted file too large to
-// read. The sample keeps at most 32 lines a file, searches at most six patterns and skips the
-// files Git counts as binary, a text file .gitattributes marks `binary` or `-diff` included,
-// so a term can be absent from it while a file the pass skipped holds it. One Git pass lists
-// the files with a line matching just the missing terms, which are rare by construction
-// (`git grep -l` stops reading a file at its first match, so files outside allowed or already
-// read cost little), and the corpus files Git's attributes make binary are searched apart, as
-// text (searchUnreadFiles.list). Each listed file is then judged as the content pass would
-// judge it (searchUnreadFiles.text): one it can read is matched whole with
-// the query's matcher, and Git streams every matching line of the text files too large to
-// read, confirming each with that matcher, so neither a missing term nor a line Git matches
-// but the matcher rejects can crowd out a later one. A file holding a NUL byte is skipped, as
-// the content pass skips it. The scan stops as soon as every missing term is found, and a
-// failed pass keeps what it confirmed, so the confidence can only read high, never low. The
-// ints count the full passes Git ran (0 or 1) and the listed files examined again, so the
-// caller counts them too; readFile counts its own reads.
+// searchGitUnreadTerms returns known, the query terms the content pass matched, plus the terms
+// a corpus file the pass never read holds: one outside read, including a shortlisted file too
+// large to read. It first takes the terms Git's sample matched in the files the shortlist
+// dropped, each once its file passes the content pass's test
+// (searchUnreadFiles.confirmSampled). The sample keeps at most 32 lines a file, searches at
+// most six patterns and skips the files Git counts as binary, a text file .gitattributes marks
+// `binary` or `-diff` included, so a term can be absent from it while a file the pass skipped
+// holds it. One Git pass lists the files with a line matching just the terms still missing,
+// which are rare by construction (`git grep -l` stops reading a file at its first match, so
+// files outside allowed or already read cost little), and the corpus files Git's attributes
+// make binary are searched apart, as text (searchUnreadFiles.list). Each listed file is then
+// judged as the content pass would judge it (searchUnreadFiles.text): one it can read is
+// matched whole with the query's matcher, and Git streams every matching line of the text
+// files too large to read, confirming each with that matcher, so neither a missing term nor a
+// line Git matches but the matcher rejects can crowd out a later one. A file holding a NUL
+// byte is skipped, as the content pass skips it. A missing term Git has no pattern for
+// (searchGitMissingTerms) counts only where a file read for another term holds it, so it never
+// costs the other terms their pass. The scan stops as soon as every term the pass greps for is
+// found, and a failed pass keeps what it confirmed, so the confidence can only read high,
+// never low. The ints count the full passes Git ran (0 or 1) and the files examined again,
+// sampled or listed, so the caller counts them too; readFile counts its own reads.
 func searchGitUnreadTerms(
 	ctx context.Context,
 	files searchUnreadFiles,
@@ -3270,43 +3266,71 @@ func searchGitUnreadTerms(
 ) ([]bool, int, int) {
 	result := make([]bool, len(q.terms))
 	copy(result, known)
-	missing := searchMissingQueryTerms(q, result)
+	examined := files.confirmSampled(ctx, matcher, result)
+	missing, pending := searchGitMissingTerms(q, result)
 	if len(missing) == 0 {
-		return result, 0, 0
+		return result, 0, examined
 	}
 	patterns := searchGitAliasPatternsForTerms(q, missing)
 	if patterns == nil {
-		return result, 0, 0
+		return result, 0, examined
 	}
 	unreadFiles, err := files.list(ctx, patterns)
 	if err != nil {
-		return result, 1, 0
+		return result, 1, examined
 	}
-	found, examined := 0, 0
 	var large []string
 	for _, filePath := range unreadFiles {
-		if found == len(missing) || ctx.Err() != nil {
+		if searchTermsAllMarked(result, pending) || ctx.Err() != nil {
 			break
 		}
 		examined++
 		content, readable, stream := files.text(filePath)
 		if readable {
-			found += markSearchUnseenTerms(result, matcher.match(content))
+			markSearchHits(result, matcher.match(content))
 		}
 		if stream {
 			large = append(large, filePath)
 		}
 	}
-	if found < len(missing) && len(large) > 0 {
+	if !searchTermsAllMarked(result, pending) && len(large) > 0 {
 		_ = gitutil.GrepIndexPatternEveryInFiles(ctx, files.absRepo, patterns, large, func(match gitutil.GrepMatch) error {
-			found += markSearchUnseenTerms(result, matcher.match(match.Text))
-			if found == len(missing) {
+			markSearchHits(result, matcher.match(match.Text))
+			if searchTermsAllMarked(result, pending) {
 				return errSearchUnreadTermsFound
 			}
 			return ctx.Err()
 		})
 	}
 	return result, 1, examined
+}
+
+// confirmSampled marks in result the terms Git's sample matched in the files the shortlist
+// dropped, once each file passes the content pass's test (searchUnreadFiles.text). Git's -I
+// looks for a NUL byte only in a file's first searchBinarySniffBytes, and the content pass
+// skips a file holding one anywhere, so the sample alone can count a file that pass would
+// never index. A readable file is matched whole; for one too large to read, the sample's own
+// lines stand, as the lines Git streams for searchGitUnreadTerms do. A file whose sampled
+// terms are all marked already is not read. It returns how many files it examined.
+func (files searchUnreadFiles) confirmSampled(ctx context.Context, matcher searchTermMatcher, result []bool) int {
+	examined := 0
+	for _, candidate := range files.sampled {
+		if ctx.Err() != nil {
+			break
+		}
+		if !searchHitsAddTerm(result, candidate.matchedTerms) {
+			continue
+		}
+		examined++
+		content, readable, stream := files.text(candidate.path)
+		switch {
+		case readable:
+			markSearchHits(result, matcher.match(content))
+		case stream:
+			markSearchHits(result, candidate.matchedTerms)
+		}
+	}
+	return examined
 }
 
 // list returns the corpus files the content pass did not read that have a line matching one
@@ -3348,37 +3372,48 @@ func (files searchUnreadFiles) eligible(filePath string) bool {
 	return files.allowed[filePath] && !files.read[filePath]
 }
 
-// searchTermsEither marks each term either slice marks.
-func searchTermsEither(left, right []bool) []bool {
-	either := make([]bool, maxInt(len(left), len(right)))
-	for index := range either {
-		either[index] = searchTermMarked(left, index) || searchTermMarked(right, index)
-	}
-	return either
-}
-
-// searchMissingQueryTerms lists the query terms marked does not mark.
-func searchMissingQueryTerms(q searchQuery, marked []bool) []string {
-	missing := make([]string, 0, len(q.terms))
+// searchGitMissingTerms lists the query terms marked does not mark that Git can search for,
+// with their indexes. A term holding a byte outside printable ASCII has no Git pattern
+// (searchTermsSafeForGitGrep), so it is left out rather than leave every term unsearched.
+func searchGitMissingTerms(q searchQuery, marked []bool) ([]string, []int) {
+	var missing []string
+	var indexes []int
 	for index, term := range q.terms {
-		if !searchTermMarked(marked, index) {
+		if !searchTermMarked(marked, index) && searchTermsSafeForGitGrep([]string{term}) {
 			missing = append(missing, term)
+			indexes = append(indexes, index)
 		}
 	}
-	return missing
+	return missing, indexes
 }
 
-// markSearchUnseenTerms marks in result each hit it does not mark yet, and returns how many
-// it marked.
-func markSearchUnseenTerms(result, hits []bool) int {
-	marked := 0
+// markSearchHits marks in result each term hits marks.
+func markSearchHits(result, hits []bool) {
+	for index, hit := range hits {
+		if hit && index < len(result) {
+			result[index] = true
+		}
+	}
+}
+
+// searchTermsAllMarked reports whether result marks every term at indexes.
+func searchTermsAllMarked(result []bool, indexes []int) bool {
+	for _, index := range indexes {
+		if !searchTermMarked(result, index) {
+			return false
+		}
+	}
+	return true
+}
+
+// searchHitsAddTerm reports whether hits marks a term result does not mark yet.
+func searchHitsAddTerm(result, hits []bool) bool {
 	for index, hit := range hits {
 		if hit && index < len(result) && !result[index] {
-			result[index] = true
-			marked++
+			return true
 		}
 	}
-	return marked
+	return false
 }
 
 func searchTermMarked(terms []bool, index int) bool {
