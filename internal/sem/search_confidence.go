@@ -150,6 +150,9 @@ type SearchConfidence struct {
 	TopFiles int
 	// Reason names why the payload was marked, empty when Low is false.
 	Reason string
+	// Advice says what to do about Reason. Empty means the default: the repository
+	// may not contain the answer, so verify before editing.
+	Advice string
 }
 
 // AssessSearchConfidence evaluates a payload against the low-confidence rule.
@@ -170,6 +173,16 @@ func AssessSearchConfidence(response SearchResponse) SearchConfidence {
 		files[result.FilePath] = true
 	}
 	assessment := SearchConfidence{TopScore: results[0].Score, TopFiles: len(files)}
+	// Every test below judges the ranking. This one judges what the ranking was given, so
+	// it goes first: when a capped cold selection left out every file matching part of the
+	// query, an answer in those files was never ranked, and the default advice that the
+	// repository may not contain it would be wrong.
+	if reason := searchPreselectionLowReason(response.Stats); reason != "" {
+		assessment.Low = true
+		assessment.Reason = reason
+		assessment.Advice = searchPreselectionLowAdvice
+		return assessment
+	}
 	switch {
 	case assessment.TopScore < lowConfidenceFloorScore:
 		assessment.Low = true
@@ -207,6 +220,22 @@ func AssessSearchConfidence(response SearchResponse) SearchConfidence {
 		}
 	}
 	return assessment
+}
+
+// searchPreselectionLowAdvice replaces the default advice for searchPreselectionLowReason.
+const searchPreselectionLowAdvice = "Re-query with the identifier's exact spelling, or pass --index-all-files, before concluding it is absent."
+
+// searchPreselectionLowReason names a capped cold selection that left out every file
+// matching part of the query (preselection_confidence below 1). It is empty when no such
+// selection ran, which is every committed-tree query answered from a complete index.
+func searchPreselectionLowReason(stats SearchStats) string {
+	if stats.PreselectionConfidence == nil || *stats.PreselectionConfidence >= 1 {
+		return ""
+	}
+	// Floor, not round: 0.996 must not print as 1.00 in a notice that says it is below 1.
+	shown := math.Floor(*stats.PreselectionConfidence*100) / 100
+	return fmt.Sprintf(
+		"the cold index left out every file matching part of the query (preselection confidence %.2f)", shown)
 }
 
 // LowConfidenceScoreCeiling exposes the calibrated ceiling for renderers and tests.

@@ -263,3 +263,35 @@ func TestSearchDeepFlagParsing(t *testing.T) {
 		t.Fatal("--deep was not parsed")
 	}
 }
+
+// TestSearchLowConfidenceNoticeAdvisesWideningWhenTheColdIndexDroppedATerm: when the reason
+// is a capped cold selection that left out part of the query, the answer may be in a file
+// the search never ranked, so the notice must not say the repo may lack it.
+func TestSearchLowConfidenceNoticeAdvisesWideningWhenTheColdIndexDroppedATerm(t *testing.T) {
+	t.Parallel()
+	response := confidenceSearchResponse([]float64{35.3, 33.3, 33.1},
+		[]string{"src/a.go", "src/b.go", "src/c.go"}, "")
+	response.Stats = sem.SearchStats{PreselectionBounded: true, PreselectionConfidence: func() *float64 { confidence := 0.5; return &confidence }()}
+	full, compact := searchLowConfidenceNotices(response)
+	want := "LOW CONFIDENCE: top score 35.3 and the cold index left out every file matching part of the query " +
+		"(preselection confidence 0.50). Re-query with the identifier's exact spelling, or pass --index-all-files, " +
+		"before concluding it is absent.\n"
+	if string(full) != want {
+		t.Fatalf("notice = %q, want %q", full, want)
+	}
+	if string(compact) != "!LOW s=35.3\n" {
+		t.Fatalf("compact notice = %q", compact)
+	}
+	for _, write := range []func(*bytes.Buffer) error{
+		func(out *bytes.Buffer) error { return writeAgentSearch(out, response, 0) },
+		func(out *bytes.Buffer) error { return writeTextSearch(out, response) },
+	} {
+		var out bytes.Buffer
+		if err := write(&out); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("rendered search is missing the notice:\n%s", out.String())
+		}
+	}
+}

@@ -124,6 +124,19 @@ auto-generated notes on
 
 ### Fixed
 
+- `query --format json`'s `preselection_confidence` now reports how much of the
+  query's matched-term weight the files a capped cold working-tree selection
+  kept, 1 when they hold every query term found in the repository (in a worktree
+  of 10,000 files or more, also the terms held only by files the content pass
+  left unread, text files that `.gitattributes` marks binary included). It used
+  to report the relative fused-score drop at the cut, which reciprocal-rank
+  fusion keeps near 1/(61+rank) at almost every cut (about 0.0022 at the
+  384-file cap), so it read as near-zero confidence on every query. That drop
+  still decides widening, so which files are indexed is unchanged; it is now
+  reported as `preselection_boundary_gap`. When a capped selection left out
+  every file matching part of the query, the `LOW CONFIDENCE:` notice in agent
+  and text output now says so and advises re-querying with the identifier's
+  exact spelling or `--index-all-files`.
 - `query`'s `VERIFY:` block no longer names an ancestor Gradle build for a file in
   a Gradle project directory that build does not own. With `include ':app'` in the
   root settings script and an undeclared `lib/build.gradle`, an edit in `lib/` used

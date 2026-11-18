@@ -478,6 +478,139 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 	return listBoundedWorktreePaths(newCmd(ctx, repo, "git", "ls-files", "-z"))
 }
 
+// FilesMarkedBinary returns the files among paths that Git's attributes and diff drivers make
+// binary, sorted. These are the files a `git grep -I` skips without reading them: a `diff`
+// attribute that is unset (`-diff`, the `binary` macro included), or a diff driver whose
+// `binary` setting is true. A file whose attribute names no driver with a `binary` setting,
+// one with no `diff` attribute included, gets the `default` driver's, as Git's grep falls
+// back to it (grep.c, grep_source_load_driver). It asks `git config` and `git check-attr`,
+// so it reads attributes and configuration but never file content. It can count more files
+// than Git skips, never fewer: check-attr prints `set` and `unspecified` both for those
+// states and for drivers of those names, so an `unspecified` file counts when either the
+// driver so named or the default is binary, and a built-in driver such as `python` keeps
+// Git's content test though it has no `binary` setting here. (A `set` attribute makes Git
+// treat a file as text, so only the driver reading can skip it.) Better to search a file
+// than to miss one.
+func FilesMarkedBinary(ctx context.Context, repo string, paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	binary, err := binaryDiffDrivers(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	var marked []string
+	err = checkDiffAttributes(ctx, repo, paths, func(path, value string) {
+		isBinary, configured := binary[value]
+		if !configured || value == "unspecified" {
+			isBinary = isBinary || binary["default"]
+		}
+		if value == "unset" || isBinary {
+			marked = append(marked, path)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(marked)
+	return marked, nil
+}
+
+// checkDiffAttributes visits each path's `diff` attribute value, because that attribute is what
+// makes `git grep -I` skip a file unread. The paths go to `git check-attr -z --stdin` on stdin
+// so that no command line has to hold a whole corpus of them.
+func checkDiffAttributes(ctx context.Context, repo string, paths []string, visit func(path, value string)) error {
+	cmd := newCmd(ctx, repo, "git", "check-attr", "-z", "--stdin", "diff")
+	cmd.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	readErr := readCheckAttrRecords(bufio.NewReader(stdout), visit)
+	if readErr != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return fmt.Errorf("git check-attr diff: %w", readErr)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("git check-attr diff: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// readCheckAttrRecords reads `git check-attr -z` output, one path, attribute and value per
+// record, each NUL-terminated, so that a path holding a newline or a quote arrives unchanged.
+func readCheckAttrRecords(reader *bufio.Reader, visit func(path, value string)) error {
+	for {
+		path, err := reader.ReadString(0)
+		if err == io.EOF && path == "" {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("truncated record: %w", err)
+		}
+		if _, err := reader.ReadString(0); err != nil {
+			return fmt.Errorf("truncated record: %w", err)
+		}
+		value, err := reader.ReadString(0)
+		if err != nil {
+			return fmt.Errorf("truncated record: %w", err)
+		}
+		visit(strings.TrimSuffix(path, "\x00"), strings.TrimSuffix(value, "\x00"))
+	}
+}
+
+const gitConfigGetRegexp = "--get-regexp"
+
+// binaryDiffDrivers reports, for each diff driver Git's configuration sets
+// `diff.<driver>.binary` for, whether that setting makes the driver's files binary
+// (diffDriverBinary). The last setting wins, as it does for Git.
+func binaryDiffDrivers(ctx context.Context, repo string) (map[string]bool, error) {
+	args := []string{"config", "-z", gitConfigGetRegexp, `^diff\..*\.binary$`}
+	stdout, stderr, err := runWithStderr(ctx, repo, "git", args...)
+	var exitError *exec.ExitError
+	if err != nil && ctx.Err() == nil && errors.As(err, &exitError) && exitError.ExitCode() == 1 && stdout == "" && stderr == "" {
+		return nil, nil // no driver sets it
+	}
+	if err != nil {
+		return nil, fmt.Errorf("git config diff drivers: %w: %s", err, stderr)
+	}
+	drivers := map[string]bool{}
+	for _, record := range strings.Split(stdout, "\x00") {
+		key, value, hasValue := strings.Cut(record, "\n")
+		driver, isDriver := strings.CutSuffix(strings.TrimPrefix(key, "diff."), ".binary")
+		if isDriver && strings.HasPrefix(key, "diff.") {
+			drivers[driver] = diffDriverBinary(value, hasValue)
+		}
+	}
+	return drivers, nil
+}
+
+// diffDriverBinary reads a `diff.<driver>.binary` value as Git does (userdiff.c,
+// parse_tristate): `auto` leaves the driver's files to Git's content test, and anything else
+// is a boolean, which `git config --bool` would refuse `auto` as. A key with no value is
+// true. Git refuses to grep at all under a value it cannot read as a boolean, so such a value
+// counts as binary here.
+func diffDriverBinary(value string, hasValue bool) bool {
+	if !hasValue {
+		return true
+	}
+	lower := strings.ToLower(value)
+	switch lower {
+	case "auto", "false", "no", "off", "":
+		return false
+	}
+	number, err := strconv.ParseInt(strings.TrimRight(lower, "kmg"), 0, 64)
+	return err != nil || number != 0
+}
+
 // ListWorktreeFiles lists the working tree the way Git itself sees it: tracked
 // files plus untracked files that no exclude rule covers
 // (`git ls-files --cached --others --exclude-standard`). Delegating the exclude
@@ -671,6 +804,93 @@ func GrepIndexPatternSample(ctx context.Context, repo string, patterns []string,
 	return grepPatternLines(ctx, repo, "", patterns, 32, visit)
 }
 
+// GrepIndexPatternFiles visits each tracked worktree file that has a line matching one of
+// the caller-built POSIX expressions (`git grep -l`). Git stops reading a file at its first
+// match, so a file full of matches costs no more than one with a single match. Like every
+// runGrepPatterns search it skips the files Git counts as binary. Git does not even read a
+// file .gitattributes marks binary; FilesMarkedBinary finds those.
+func GrepIndexPatternFiles(ctx context.Context, repo string, patterns []string, visit func(path string) error) error {
+	read := func(reader *bufio.Reader) error {
+		return readGrepPaths(reader, visit)
+	}
+	return runGrepPatterns(ctx, repo, "", patterns, []string{"-l"}, nil, read)
+}
+
+// GrepIndexPatternFilesIn is GrepIndexPatternFiles over only the named worktree files,
+// tracked or not and whatever exclude rules say (`--untracked --no-exclude-standard`: with
+// `--untracked` alone Git applies them to tracked files too), each searched as text
+// (`--text`) whatever Git's binary detection or .gitattributes say, so the caller decides
+// which of them are text. Only the named files are read: name the few a caller needs, such
+// as the files .gitattributes marks binary that it must check.
+func GrepIndexPatternFilesIn(ctx context.Context, repo string, patterns, files []string, visit func(path string) error) error {
+	read := func(reader *bufio.Reader) error {
+		return readGrepPaths(reader, visit)
+	}
+	return grepPatternsInFiles(ctx, repo, patterns, []string{gitGrepNamedFiles, gitGrepNoExcludes, "--text", "-l"}, files, read)
+}
+
+// GrepIndexPatternEveryInFiles streams every line matching one of the expressions in the
+// named worktree files, with no per-file limit, for a caller that confirms each line itself
+// and must not let lines it rejects hide a later one. Only the named files are searched,
+// tracked or not, whatever exclude rules say and as text, like GrepIndexPatternFilesIn, so
+// pick them first and keep the list short. A visit error stops the scan.
+func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, files []string, visit func(GrepMatch) error) error {
+	read := func(reader *bufio.Reader) error {
+		return readGrepPatternLines(reader, visit)
+	}
+	return grepPatternsInFiles(ctx, repo, patterns, []string{gitGrepNamedFiles, gitGrepNoExcludes, "--text"}, files, read)
+}
+
+// gitGrepNamedFiles and gitGrepNoExcludes make a named-file search reach every file it names.
+const (
+	gitGrepNamedFiles = "--untracked"
+	gitGrepNoExcludes = "--no-exclude-standard"
+)
+
+// grepPatternsInFiles runs runGrepPatterns over the named files only: they become literal
+// pathspecs, in batches that fit the command line.
+func grepPatternsInFiles(ctx context.Context, repo string, patterns, modeArgs, files []string, read func(*bufio.Reader) error) error {
+	batchBytes := grepPathBatchBytes()
+	for start := 0; start < len(files); {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		end, size := start, 0
+		pathspecs := make([]string, 0, min(len(files)-start, 64))
+		for end < len(files) {
+			pathspec := ":(literal)" + files[end]
+			if end > start && size+len(pathspec)+1 > batchBytes {
+				break
+			}
+			size += len(pathspec) + 1
+			pathspecs = append(pathspecs, pathspec)
+			end++
+		}
+		if err := runGrepPatterns(ctx, repo, "", patterns, modeArgs, pathspecs, read); err != nil {
+			return err
+		}
+		start = end
+	}
+	return nil
+}
+
+// readGrepPaths reads `git grep -l -z` output for both listings, so that a path holding a
+// newline or a quote reaches visit unchanged and a truncated record fails the listing.
+func readGrepPaths(reader *bufio.Reader, visit func(path string) error) error {
+	for {
+		path, err := reader.ReadString(0)
+		if err == io.EOF && path == "" {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("git grep returned a non-NUL-terminated path: %w", err)
+		}
+		if err := visit(strings.TrimSuffix(path, "\x00")); err != nil {
+			return err
+		}
+	}
+}
+
 func grepPatternLines(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, visit func(GrepMatch) error) error {
 	return runGrepPatterns(ctx, repo, treeish, patterns, []string{"-m", strconv.Itoa(maxPerFile)}, nil, func(reader *bufio.Reader) error {
 		return readGrepPatternLines(reader, func(match GrepMatch) error {
@@ -688,7 +908,9 @@ func grepPatternLines(ctx context.Context, repo, treeish string, patterns []stri
 
 // runGrepPatterns runs one `git grep -E` for caller-built POSIX expressions,
 // sent on stdin as grepPatternLinesInput renders them, and hands Git's stdout to
-// read. modeArgs pick the output shape (`-m N` or `-l`); pathspecs follow `--`.
+// read. modeArgs pick the output shape (`-m N` or `-l`); pathspecs follow `--`. Git skips
+// the files it counts as binary (`-I`), .gitattributes included, unless modeArgs pass
+// `--text`: the two set one option, and Git keeps the later.
 // A read error kills Git; exit status 1 with no stderr is "no match".
 func runGrepPatterns(ctx context.Context, repo, treeish string, patterns, modeArgs, pathspecs []string, read func(*bufio.Reader) error) error {
 	if len(patterns) == 0 {
@@ -2678,7 +2900,7 @@ func (r *LimitedFileReader) Close() error {
 }
 
 func RemoteURLs(ctx context.Context, repo string) ([]string, error) {
-	out, err := run(ctx, repo, "git", "config", "--get-regexp", `^remote\..*\.url$`)
+	out, err := run(ctx, repo, "git", "config", gitConfigGetRegexp, `^remote\..*\.url$`)
 	if err != nil {
 		return nil, err
 	}
@@ -2689,7 +2911,7 @@ func RemoteURLs(ctx context.Context, repo string) ([]string, error) {
 // config exits 1 with no output when nothing matches, and that is (nil, nil). Every other failure,
 // including a cancelled ctx, is an error. RemoteURLs reports both as an error.
 func RemoteURLsStrict(ctx context.Context, repo string) ([]string, error) {
-	args := []string{"config", "--get-regexp", `^remote\..*\.url$`}
+	args := []string{"config", gitConfigGetRegexp, `^remote\..*\.url$`}
 	stdout, stderr, err := runWithStderr(ctx, repo, "git", args...)
 	if err != nil {
 		var exitError *exec.ExitError
