@@ -127,8 +127,8 @@ auto-generated notes on
 - `query --format json`'s `preselection_confidence` now reports how much of the
   query's matched-term weight the files a capped cold working-tree selection
   kept, 1 when they hold every query term found in the repository (in a worktree
-  of 10,000 files or more, also the terms Git matched only in files its shortlist
-  left unread). It used to report the relative fused-score drop at the cut,
+  of 10,000 files or more, also the terms Git matched only in files the content
+  pass left unread). It used to report the relative fused-score drop at the cut,
   which reciprocal-rank fusion keeps near 1/(61+rank) at almost every cut (about
   0.0022 at the 384-file cap), so it read as near-zero confidence on every
   query. That drop still decides widening, so which files are indexed is
