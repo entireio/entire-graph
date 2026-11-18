@@ -7,3 +7,8 @@
 # symbols. Skipping them makes `entire graph index` report a clean, honest graph.
 parser.c
 scanner.c
+
+# The Vue corpus is fixture apps (Vue, TypeScript, and JavaScript) that
+# vue_corpus_test.go scores in its own temporary repos. It is test data, not
+# this project's source, and would otherwise surface in searches of this repo.
+internal/sem/testdata/vuecorpus/
