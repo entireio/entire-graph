@@ -597,8 +597,10 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 	}
 	if err == nil && validNode(root) && root.HasError() && (spec.language == "JavaScript" || spec.language == "TypeScript") {
 		// The reparse shares parseCtx, so the 5s cap bounds the file's parses
-		// together, not each one.
-		tree, _ = reparseJSXBareAmpersands(parseCtx, parser, tree, parseSrc)
+		// together, not each one. Its error is parseCtx's, so a deadline that
+		// ends the reparse reports E_PARSE_TIMEOUT below, as one that ends the
+		// first parse does.
+		tree, _, err = reparseJSXBareAmpersands(parseCtx, parser, tree, parseSrc)
 		root = tree.RootNode()
 	}
 	if err != nil || root == nil || root.IsNull() {

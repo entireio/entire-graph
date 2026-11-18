@@ -49,21 +49,23 @@ const jsxBareAmpersandPollStride = 512
 // itself is never written, because callers keep it as the entity source.
 //
 // ctx bounds the reparses. If one fails or is cancelled, the last complete
-// parse is returned with the source it was parsed from.
-func reparseJSXBareAmpersands(ctx context.Context, parser *sitter.Parser, tree *sitter.Tree, src []byte) (*sitter.Tree, []byte) {
+// parse is returned with the source it was parsed from. The error is ctx's when
+// ctx ended the passes while that parse still has errors, so the caller reports
+// a timeout instead of blaming source that a finished reparse might have
+// accepted. It is nil otherwise, including when a pass fails for another
+// reason: the last complete parse then stands, errors and all.
+func reparseJSXBareAmpersands(ctx context.Context, parser *sitter.Parser, tree *sitter.Tree, src []byte) (*sitter.Tree, []byte, error) {
+	current, currentSrc := tree, src
 	for pass := 0; pass < jsxBareAmpersandMaxPasses; pass++ {
-		root := tree.RootNode()
+		root := current.RootNode()
 		if !validNode(root) || !root.HasError() || ctx.Err() != nil {
 			break
 		}
-		offsets := jsxBareAmpersandOffsets(ctx, root, src)
+		offsets := jsxBareAmpersandOffsets(ctx, root, currentSrc)
 		if len(offsets) == 0 {
 			break
 		}
-		masked := append([]byte(nil), src...)
-		for _, offset := range offsets {
-			masked[offset] = ' '
-		}
+		masked := blankedCopy(currentSrc, offsets)
 		next, err := parser.ParseCtx(ctx, nil, masked)
 		if err != nil || next == nil || !validNode(next.RootNode()) {
 			if next != nil {
@@ -71,10 +73,23 @@ func reparseJSXBareAmpersands(ctx context.Context, parser *sitter.Parser, tree *
 			}
 			break
 		}
-		tree.Close()
-		tree, src = next, masked
+		current.Close()
+		current, currentSrc = next, masked
 	}
-	return tree, src
+	if root := current.RootNode(); validNode(root) && !root.HasError() {
+		return current, currentSrc, nil
+	}
+	return current, currentSrc, ctx.Err()
+}
+
+// blankedCopy returns a copy of src with a space at each offset. src itself is
+// not written.
+func blankedCopy(src []byte, offsets []int) []byte {
+	masked := append([]byte(nil), src...)
+	for _, offset := range offsets {
+		masked[offset] = ' '
+	}
+	return masked
 }
 
 // jsxBareAmpersandOffsets lists the byte offsets of bare `&` in JSX text that
@@ -83,45 +98,66 @@ func reparseJSXBareAmpersands(ctx context.Context, parser *sitter.Parser, tree *
 // grammar rejected sits inside or beside an ERROR node, so the node it follows,
 // or the string holding it, is a child of a node that has an error.
 func jsxBareAmpersandOffsets(ctx context.Context, root *sitter.Node, src []byte) []int {
-	var offsets []int
-	visited := 0
-	stopped := false
-	// Depth-bounded like every other walk over a tree that may be malformed;
-	// see maxParseWalkDepth. A bare `&` nested deeper than the limit is left in
-	// place and the file keeps its E_PARSE_ERROR.
-	var walk func(node *sitter.Node, depth int)
-	walk = func(node *sitter.Node, depth int) {
-		if depth >= maxParseWalkDepth {
-			return
-		}
-		for i := 0; i < int(node.ChildCount()); i++ {
-			visited++
-			if visited%jsxBareAmpersandPollStride == 0 && ctx.Err() != nil {
-				stopped = true
-			}
-			if stopped {
-				return
-			}
-			child := node.Child(i)
-			if !validNode(child) {
-				continue
-			}
-			if jsxChildrenFollow(child, node) {
-				offsets = appendJSXTextRunAmpersands(offsets, src, int(child.EndByte()))
-			}
-			if child.Type() == "string" && node.Type() == "jsx_attribute" && child.HasError() {
-				offsets = appendJSXAttributeStringAmpersands(offsets, src, int(child.StartByte()), int(child.EndByte()))
-			}
-			if child.HasError() {
-				walk(child, depth+1)
-			}
-		}
-	}
-	walk(root, 0)
-	if stopped {
+	scan := jsxAmpersandScan{ctx: ctx, src: src}
+	scan.walk(root, 0)
+	if scan.stopped {
 		return nil
 	}
-	return offsets
+	return scan.offsets
+}
+
+// jsxAmpersandScan is the state of one jsxBareAmpersandOffsets walk. It lives
+// only for that call, so holding the context is safe.
+type jsxAmpersandScan struct {
+	ctx     context.Context
+	src     []byte
+	offsets []int
+	visited int
+	stopped bool
+}
+
+// walk visits node's children and descends into those that contain an error.
+// It is depth-bounded like every other walk over a tree that may be malformed;
+// see maxParseWalkDepth. A bare `&` nested deeper than the limit is left in
+// place and the file keeps its E_PARSE_ERROR.
+func (s *jsxAmpersandScan) walk(node *sitter.Node, depth int) {
+	if depth >= maxParseWalkDepth {
+		return
+	}
+	for i := 0; i < int(node.ChildCount()); i++ {
+		if s.cancelled() {
+			return
+		}
+		child := node.Child(i)
+		if !validNode(child) {
+			continue
+		}
+		s.visit(child, node)
+		if child.HasError() {
+			s.walk(child, depth+1)
+		}
+	}
+}
+
+// cancelled counts one visited node and reports whether the walk must stop,
+// polling the context every jsxBareAmpersandPollStride nodes.
+func (s *jsxAmpersandScan) cancelled() bool {
+	s.visited++
+	if s.visited%jsxBareAmpersandPollStride == 0 && s.ctx.Err() != nil {
+		s.stopped = true
+	}
+	return s.stopped
+}
+
+// visit records the bare `&` that child, a child of parent, anchors: the JSX
+// text run after it, or the bytes of the attribute string it is.
+func (s *jsxAmpersandScan) visit(child, parent *sitter.Node) {
+	if jsxChildrenFollow(child, parent) {
+		s.offsets = appendJSXTextRunAmpersands(s.offsets, s.src, int(child.EndByte()))
+	}
+	if child.Type() == "string" && parent.Type() == "jsx_attribute" && child.HasError() {
+		s.offsets = appendJSXAttributeStringAmpersands(s.offsets, s.src, int(child.StartByte()), int(child.EndByte()))
+	}
 }
 
 // jsxChildrenFollow reports whether the source right after node is in JSX
@@ -178,7 +214,10 @@ func appendJSXTextRunAmpersands(offsets []int, src []byte, start int) []int {
 // end, so an unterminated string is never scanned past what the parser
 // assigned to it.
 func appendJSXAttributeStringAmpersands(offsets []int, src []byte, start, end int) []int {
-	if start >= end || end > len(src) || (src[start] != '"' && src[start] != '\'') {
+	if start >= end || end > len(src) {
+		return offsets
+	}
+	if src[start] != '"' && src[start] != '\'' {
 		return offsets
 	}
 	quote := src[start]
@@ -195,31 +234,37 @@ func appendJSXAttributeStringAmpersands(offsets []int, src []byte, start, end in
 // /&(#([xX][0-9a-fA-F]{1,6}|[0-9]{1,5})|[A-Za-z]{1,30});/.
 func jsxCharacterReferenceAt(src []byte, pos int) bool {
 	i := pos + 1
-	count := func(limit int, accept func(byte) bool) int {
-		n := 0
-		for n < limit && i < len(src) && accept(src[i]) {
-			i++
-			n++
-		}
-		return n
+	var end int
+	if i < len(src) && src[i] == '#' {
+		end = jsxNumericReferenceEnd(src, i+1)
+	} else {
+		end = byteRunEnd(src, i, 30, isASCIILetterByte)
 	}
-	switch {
-	case i < len(src) && src[i] == '#':
-		i++
-		if i < len(src) && (src[i] == 'x' || src[i] == 'X') {
-			i++
-			if count(6, isHexDigitByte) == 0 {
-				return false
-			}
-		} else if count(5, isDecimalDigitByte) == 0 {
-			return false
-		}
-	default:
-		if count(30, isASCIILetterByte) == 0 {
-			return false
-		}
+	return end >= 0 && end < len(src) && src[end] == ';'
+}
+
+// jsxNumericReferenceEnd returns the offset just past the digits of a numeric
+// character reference whose digits start at i, right after `&#`: up to six hex
+// digits after an `x` or `X`, otherwise up to five decimal digits. It returns
+// -1 when there are no digits.
+func jsxNumericReferenceEnd(src []byte, i int) int {
+	if i < len(src) && (src[i] == 'x' || src[i] == 'X') {
+		return byteRunEnd(src, i+1, 6, isHexDigitByte)
 	}
-	return i < len(src) && src[i] == ';'
+	return byteRunEnd(src, i, 5, isDecimalDigitByte)
+}
+
+// byteRunEnd returns the offset just past the run of at most limit bytes from
+// start that accept matches, or -1 when the run is empty.
+func byteRunEnd(src []byte, start, limit int, accept func(byte) bool) int {
+	end := start
+	for end < len(src) && end-start < limit && accept(src[end]) {
+		end++
+	}
+	if end == start {
+		return -1
+	}
+	return end
 }
 
 func isHexDigitByte(b byte) bool {

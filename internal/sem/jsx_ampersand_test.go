@@ -3,6 +3,7 @@ package sem
 import (
 	"bytes"
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"strings"
@@ -20,82 +21,49 @@ import (
 // grammar route and keep every declaration.
 func TestJSXBareAmpersandParses(t *testing.T) {
 	t.Parallel()
-	cases := map[string]struct {
+	// Each entry is what an exported function component named Component returns.
+	returns := []string{
+		"<p>Terms & Privacy</p>",
+		"(\n    <nav>\n      <a href=\"/terms\">Terms</a> & <a href=\"/privacy\">Privacy</a>\n    </nav>\n  )",
+		"<span>&</span>",
+		"<code>a && b</code>",
+		"<p>R&D {format(n)} more</p>",
+		"<p>x &amp; y & z &#38; w</p>",
+		"(\n    <p>\n      Line one &\n      line two\n    </p>\n  )",
+		// These two derail recovery: on the unmasked source the opening tag
+		// lands in an ERROR at program level, not under a jsx_element.
+		"<p>Tom & Jerry & Co</p>",
+		"<p>&nbsp and more</p>",
+		// The grammar caps a decimal reference at five digits, so an emoji
+		// written as one (&#128276; is a bell) fails like a bare `&`; React's
+		// fixtures/flight-ssr-bench components hit this.
+		"<span>&#128276;</span>",
+		// Attribute strings: a URL query string, several in one value, and an
+		// attribute beside JSX text.
+		"<link href=\"https://fonts.example/css?family=Inter&display=swap\" rel=\"stylesheet\" />",
+		"<a href='/s?q=1&page=2&sort=new'>next</a>",
+		"<a title=\"R&D\">Q & A</a>",
+	}
+	type fixture struct {
 		src   string
 		names []string
-	}{
-		"text": {
-			src:   "export function Footer() {\n  return <p>Terms & Privacy</p>\n}\n",
-			names: []string{"Footer"},
-		},
-		"between elements": {
-			src: "export function Links() {\n  return (\n    <nav>\n" +
-				"      <a href=\"/terms\">Terms</a> & <a href=\"/privacy\">Privacy</a>\n" +
-				"    </nav>\n  )\n}\n",
-			names: []string{"Links"},
-		},
-		"fragment": {
-			src:   "export const Faq = () => <>Q & A</>\n",
-			names: []string{"Faq"},
-		},
-		"only child": {
-			src:   "export function Amp() {\n  return <span>&</span>\n}\n",
-			names: []string{"Amp"},
-		},
-		"double ampersand": {
-			src:   "export function Logic() {\n  return <code>a && b</code>\n}\n",
-			names: []string{"Logic"},
-		},
-		"before an expression": {
-			src:   "export function Dept({ n }) {\n  return <p>R&D {format(n)} more</p>\n}\n",
-			names: []string{"Dept"},
-		},
-		"beside a character reference": {
-			src:   "export function Mixed() {\n  return <p>x &amp; y & z &#38; w</p>\n}\n",
-			names: []string{"Mixed"},
-		},
-		"across lines": {
-			src:   "export function Wrap() {\n  return (\n    <p>\n      Line one &\n      line two\n    </p>\n  )\n}\n",
-			names: []string{"Wrap"},
-		},
-		// These two derail recovery: on the unmasked source the opening tag lands
-		// in an ERROR at program level, not under a jsx_element.
-		"several in one run": {
-			src:   "export function Credits() {\n  return <p>Tom & Jerry & Co</p>\n}\n",
-			names: []string{"Credits"},
-		},
-		"reference without semicolon": {
-			src:   "export function Space() {\n  return <p>&nbsp and more</p>\n}\n",
-			names: []string{"Space"},
-		},
-		// Two derailing elements: the second is only recognised as JSX once the
-		// first is masked, so this needs more than one pass.
-		"separate elements": {
+	}
+	fixtures := []fixture{
+		{src: "export const Faq = () => <>Q & A</>\n", names: []string{"Faq"}},
+		// Two derailing elements: the second is only recognised as JSX once
+		// the first is masked, so this needs more than one pass.
+		{
 			src: "export function First() {\n  return <p>Tom & Jerry & Co</p>\n}\n" +
 				"export class Second {\n  render() {\n    return <i>Q & A & more</i>\n  }\n}\n" +
 				"export function Third() {\n  return <b>&nbsp and</b>\n}\n",
 			names: []string{"First", "Second", "Second.render", "Third"},
 		},
-		// The grammar caps a decimal reference at five digits, so an emoji
-		// written as one (&#128276; is a bell) fails like a bare `&`; React's
-		// fixtures/flight-ssr-bench components hit this.
-		"six-digit decimal reference": {
-			src:   "export function Bell() {\n  return <span>&#128276;</span>\n}\n",
-			names: []string{"Bell"},
-		},
-		"attribute query string": {
-			src: "export function Fonts() {\n" +
-				"  return <link href=\"https://fonts.example/css?family=Inter&display=swap\" rel=\"stylesheet\" />\n}\n",
-			names: []string{"Fonts"},
-		},
-		"attribute with several": {
-			src:   "export function Search() {\n  return <a href='/s?q=1&page=2&sort=new'>next</a>\n}\n",
-			names: []string{"Search"},
-		},
-		"attribute and text": {
-			src:   "export function Both() {\n  return <a title=\"R&D\">Q & A</a>\n}\n",
-			names: []string{"Both"},
-		},
+	}
+	for _, jsx := range returns {
+		fixtures = append(fixtures, fixture{
+			src:   "export function Component() {\n  return " + jsx + "\n}\n",
+			names: []string{"Component"},
+		})
 	}
 	// .tsx parses with the TSX grammar plus the TSX mask, .jsx with the TSX
 	// grammar, .js with tree-sitter-javascript, and Flow-typed .js with the TSX
@@ -109,27 +77,33 @@ func TestJSXBareAmpersandParses(t *testing.T) {
 		{"page.js", ""},
 		{"flow.js", "// @flow\n"},
 	}
-	for name, tc := range cases {
+	for _, tc := range fixtures {
 		for _, route := range routes {
-			src := route.prefix + tc.src
-			raw := parseErrorsWithGrammar(t, route.path, src)
-			if !raw {
-				t.Fatalf("%s %s: fixture parses without the reparse, so it pins nothing", name, route.path)
-			}
-			entities := requireNoTSParseError(t, route.path, src)
-			got := map[string]bool{}
-			for _, e := range entities {
-				got[e.Name] = true
-			}
-			for _, want := range tc.names {
-				if !got[want] {
-					t.Errorf("%s %s: %s missing from %+v", name, route.path, want, entities)
-				}
-			}
+			requireJSXAmpersandRouteParses(t, route.path, route.prefix+tc.src, tc.names)
 		}
 	}
 	if IdentityRevision == "8" {
 		t.Fatal("the bare-ampersand correction must invalidate revision-8 cached records")
+	}
+}
+
+// requireJSXAmpersandRouteParses checks one fixture on one route: the raw parse
+// has errors, so the fixture pins the reparse, and the full parse is clean and
+// keeps every name in names.
+func requireJSXAmpersandRouteParses(t *testing.T, path, src string, names []string) {
+	t.Helper()
+	if !parseErrorsWithGrammar(t, path, src) {
+		t.Fatalf("%s %q: fixture parses without the reparse, so it pins nothing", path, src)
+	}
+	entities := requireNoTSParseError(t, path, src)
+	got := map[string]bool{}
+	for _, e := range entities {
+		got[e.Name] = true
+	}
+	for _, want := range names {
+		if !got[want] {
+			t.Errorf("%s %q: %s missing from %+v", path, src, want, entities)
+		}
 	}
 }
 
@@ -153,6 +127,15 @@ func parseErrorsWithGrammar(t *testing.T, path, src string) bool {
 
 func parseTree(t *testing.T, grammar *sitter.Language, src []byte) *sitter.Tree {
 	t.Helper()
+	_, tree := newParse(t, grammar, src)
+	return tree
+}
+
+// newParse returns a parser for grammar and its parse of src. Both are closed at
+// cleanup; closing a tree twice is safe, so a test may also close the tree, or
+// hand it to code that does.
+func newParse(t *testing.T, grammar *sitter.Language, src []byte) (*sitter.Parser, *sitter.Tree) {
+	t.Helper()
 	parser := sitter.NewParser()
 	t.Cleanup(parser.Close)
 	parser.SetLanguage(grammar)
@@ -161,7 +144,7 @@ func parseTree(t *testing.T, grammar *sitter.Language, src []byte) *sitter.Tree 
 		t.Fatalf("parse failed: %v", err)
 	}
 	t.Cleanup(tree.Close)
-	return tree
+	return parser, tree
 }
 
 // Only `&` in JSX text and in an attribute string the grammar rejected is
@@ -212,15 +195,12 @@ func TestReparseJSXBareAmpersandsCopiesSource(t *testing.T) {
 	t.Parallel()
 	src := []byte("const a = <p>Tom & Jerry & Co</p>\n")
 	original := append([]byte(nil), src...)
-	parser := sitter.NewParser()
-	defer parser.Close()
-	parser.SetLanguage(treesittertsx.GetLanguage())
-	tree, err := parser.ParseCtx(context.Background(), nil, src)
+	parser, tree := newParse(t, treesittertsx.GetLanguage(), src)
+	tree, masked, err := reparseJSXBareAmpersands(context.Background(), parser, tree, src)
+	defer tree.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	tree, masked := reparseJSXBareAmpersands(context.Background(), parser, tree, src)
-	defer tree.Close()
 	if !bytes.Equal(src, original) {
 		t.Fatalf("source was written: %q", src)
 	}
@@ -232,23 +212,34 @@ func TestReparseJSXBareAmpersandsCopiesSource(t *testing.T) {
 	}
 }
 
-// A cancelled context stops the reparse and hands back the parse it was given.
+// A cancelled context stops the reparse, hands back the parse it was given, and
+// says it was cancelled, so ParseWithStatusCtx reports E_PARSE_TIMEOUT rather
+// than an E_PARSE_ERROR that blames the `&`.
 func TestReparseJSXBareAmpersandsStopsOnCancel(t *testing.T) {
 	t.Parallel()
 	src := []byte("const a = <p>Terms & Privacy</p>\n")
-	parser := sitter.NewParser()
-	defer parser.Close()
-	parser.SetLanguage(treesittertsx.GetLanguage())
-	tree, err := parser.ParseCtx(context.Background(), nil, src)
-	if err != nil {
-		t.Fatal(err)
-	}
+	parser, tree := newParse(t, treesittertsx.GetLanguage(), src)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	got, gotSrc := reparseJSXBareAmpersands(ctx, parser, tree, src)
-	defer got.Close()
+	got, gotSrc, err := reparseJSXBareAmpersands(ctx, parser, tree, src)
 	if got != tree || !bytes.Equal(gotSrc, src) {
 		t.Fatal("cancelled reparse replaced the tree")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+// A file whose only errors are a real syntax error has nothing to mask, so the
+// reparse returns the parse unchanged and no error: the caller then reports
+// E_PARSE_ERROR from it, as before.
+func TestReparseJSXBareAmpersandsLeavesRealErrors(t *testing.T) {
+	t.Parallel()
+	src := []byte("function broken( {\n")
+	parser, tree := newParse(t, treesittertsx.GetLanguage(), src)
+	got, gotSrc, err := reparseJSXBareAmpersands(context.Background(), parser, tree, src)
+	if got != tree || !bytes.Equal(gotSrc, src) || err != nil {
+		t.Fatalf("reparse changed a parse it had nothing to mask in: err = %v", err)
 	}
 }
 
