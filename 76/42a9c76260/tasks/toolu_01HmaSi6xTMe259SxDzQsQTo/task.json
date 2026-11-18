@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01HmaSi6xTMe259SxDzQsQTo",
+  "agent_id": "ae449a1049819d7a6",
+  "subagent_type": "Plan",
+  "task_description": "Design Vue support PR plan",
+  "token_usage": {
+    "input_tokens": 216,
+    "cache_creation_tokens": 244978,
+    "cache_read_tokens": 16664907,
+    "output_tokens": 70069,
+    "api_call_count": 108
+  },
+  "started_at": "2026-11-18T03:01:40.56656+07:00",
+  "completed_at": "2026-11-18T03:14:46.136799+07:00"
+}

@@ -1,0 +1,15 @@
+{
+  "tool_use_id": "toolu_01CxwYv1mghCwtsgmsgqih3g",
+  "agent_id": "a35fa187e3634c592",
+  "subagent_type": "Explore",
+  "task_description": "Map provider code for Vue improvements",
+  "token_usage": {
+    "input_tokens": 260,
+    "cache_creation_tokens": 237538,
+    "cache_read_tokens": 20199484,
+    "output_tokens": 58913,
+    "api_call_count": 130
+  },
+  "started_at": "2026-11-18T02:24:45.775125+07:00",
+  "completed_at": "2026-11-18T02:36:35.792146+07:00"
+}
