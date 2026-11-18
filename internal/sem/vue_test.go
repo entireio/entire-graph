@@ -256,6 +256,44 @@ submit('not-an-event')
 	}
 }
 
+func TestVuexStoreResolvesStoreStrings(t *testing.T) {
+	module := "const mutations = {\n  SET_ITEMS(state, items) {\n    state.items = items\n  }\n}\n\nexport default {\n  namespaced: true,\n  actions: {\n    async load({ commit }) {\n      commit('SET_ITEMS', [])\n    }\n  },\n  getters: {\n    count(state) {\n      return state.items.length\n    }\n  }\n}\n"
+	records := []SymbolRecord{
+		{ID: "m:SET_ITEMS", Name: "SET_ITEMS", Kind: "method", StartLine: 2},
+		{ID: "m:load", Name: "load", Kind: "method", StartLine: 10},
+		{ID: "m:count", Name: "count", Kind: "method", StartLine: 15},
+	}
+	store := &vuexStore{members: map[string]map[string]SymbolRecord{}, namespaceOf: map[string]string{"store/items.js": "items"}}
+	store.index("store/items.js", "items", module, records)
+
+	for _, testCase := range []struct {
+		kind, name, from, want string
+	}{
+		{"mutation", "SET_ITEMS", "store/items.js", "m:SET_ITEMS"}, // bare name inside its own namespaced module
+		{"mutation", "SET_ITEMS", "src/App.vue", ""},               // the same bare name elsewhere names a root member
+		{"action", "items/load", "src/App.vue", "m:load"},
+		{"getter", "items/count", "src/App.vue", "m:count"},
+		{"action", "items/count", "src/App.vue", ""}, // a getter is not an action
+	} {
+		member, ok := store.resolve(testCase.kind, testCase.name, testCase.from)
+		if got := map[bool]string{true: member.ID}[ok]; got != testCase.want {
+			t.Errorf("resolve(%s %s from %s) = %q, want %q", testCase.kind, testCase.name, testCase.from, got, testCase.want)
+		}
+	}
+
+	bindings := vuexMapBindings("...mapActions('items', ['load']),\n...mapGetters({ total: 'items/count' })")
+	if bindings["load"] != (vuexBinding{kind: "action", key: "items/load"}) || bindings["total"] != (vuexBinding{kind: "getter", key: "items/count"}) {
+		t.Fatalf("bindings = %+v", bindings)
+	}
+	got := map[string]bool{}
+	for _, call := range store.callsIn("src/App.vue", "this.load()\nreturn this.total + this.$store.getters['items/count']", bindings) {
+		got[call.target.ID] = true
+	}
+	if !got["m:load"] || !got["m:count"] || len(got) != 2 {
+		t.Fatalf("calls = %v", got)
+	}
+}
+
 // Characters whose lowercase form has a different byte length must not move
 // script boundaries: the block scan indexes a lowercase copy with offsets into
 // the source.
@@ -295,5 +333,47 @@ func TestJSLocalImportCandidatesReachExtensionlessComponents(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("candidates = %v", candidates)
+	}
+}
+
+// The Vuex index is built only for a repository with components and a Vuex
+// root: Redux's createStore must not switch the store scans on.
+func TestBuildVuexStoreNeedsComponentsAndAVuexRoot(t *testing.T) {
+	module := "const actions = {\n  load() {}\n}\n\nexport default { namespaced: true, actions }\n"
+	records := map[string][]SymbolRecord{"src/store/modules/items.js": {{ID: "m:load", Name: "load", Kind: "method", StartLine: 2}}}
+	known := map[string]bool{"src/store/modules/items.js": true, "src/store/index.js": true, "src/App.vue": true}
+	build := func(root string, files []FileRecord) *vuexStore {
+		contents := map[string]string{"src/store/index.js": root, "src/store/modules/items.js": module}
+		read := func(path string) (string, bool) {
+			content, ok := contents[path]
+			return content, ok
+		}
+		return buildVuexStore(files, records, read, known, manifestImportResolver{}, nil)
+	}
+	withComponent := []FileRecord{{Path: "src/App.vue", Language: "Vue"}, {Path: "src/store/index.js", Language: "JavaScript"}, {Path: "src/store/modules/items.js", Language: "JavaScript"}}
+	withoutComponent := withComponent[1:]
+	vuexCreate := "import { createStore } from 'vuex'\nimport items from './modules/items'\nexport default createStore({ modules: { items } })\n"
+	for _, testCase := range []struct {
+		name  string
+		root  string
+		files []FileRecord
+		want  bool
+	}{
+		{"vuex createStore", vuexCreate, withComponent, true},
+		{"Vuex.Store", "import Vuex from 'vuex'\nimport items from './modules/items'\nexport default new Vuex.Store({ modules: { items } })\n", withComponent, true},
+		{"redux createStore", "import { createStore } from 'redux'\nimport items from './modules/items'\nexport default createStore(reducer)\n", withComponent, false},
+		{"no components", vuexCreate, withoutComponent, false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := build(testCase.root, testCase.files)
+			if (store != nil) != testCase.want {
+				t.Fatalf("store built = %v, want %v", store != nil, testCase.want)
+			}
+			if store != nil {
+				if _, ok := store.resolve("action", "items/load", "src/App.vue"); !ok {
+					t.Fatal("items/load not indexed")
+				}
+			}
+		})
 	}
 }

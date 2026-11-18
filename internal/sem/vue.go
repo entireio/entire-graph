@@ -640,3 +640,264 @@ func vueChannelEvents(content string) []channelEvent {
 	}
 	return out
 }
+
+// Vuex addresses store members by string: `dispatch('tickets/fetchTickets')`,
+// `commit('SET_TICKETS')`, `getters['auth/isAuthenticated']`, and the
+// mapActions/mapMutations/mapGetters helpers that bind them to component
+// methods. vuexStore maps those strings to the action, mutation and getter
+// declarations of the store's modules.
+type vuexStore struct {
+	// members maps kind ("action", "mutation", "getter") to a store key
+	// ("tickets/fetchTickets" for a namespaced module, the bare name for the
+	// root or a non-namespaced module) to the declaring method.
+	members map[string]map[string]SymbolRecord
+	// namespaceOf is each namespaced module file's namespace.
+	namespaceOf map[string]string
+}
+
+var (
+	vuexStoreCtorRe     = regexp.MustCompile(`\bVuex\s*\.\s*Store\s*\(`)
+	vuexCreateStoreRe   = regexp.MustCompile(`\bcreateStore\s*\(`)
+	vuexImportRe        = regexp.MustCompile(`(?:\bfrom\s*|\brequire\s*\(\s*)['"]vuex['"]`)
+	vuexModulesRe       = regexp.MustCompile(`\bmodules\s*:\s*\{([^}]*)\}`)
+	vuexModuleEntryRe   = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*(?::\s*([A-Za-z_$][\w$]*))?`)
+	vuexNamespacedRe    = regexp.MustCompile(`\bnamespaced\s*:\s*true\b`)
+	vuexDispatchRe      = regexp.MustCompile(`\bdispatch\s*\(\s*['"]([^'"]+)['"]`)
+	vuexCommitRe        = regexp.MustCompile(`\bcommit\s*\(\s*['"]([^'"]+)['"]`)
+	vuexGetterIndexRe   = regexp.MustCompile(`\bgetters\s*\[\s*['"]([^'"]+)['"]\s*\]`)
+	vuexGetterMemberRe  = regexp.MustCompile(`\bgetters\s*\.\s*([A-Za-z_$][\w$]*)`)
+	vuexMapHelperRe     = regexp.MustCompile(`\bmap(Actions|Mutations|Getters)\s*\(\s*(?:['"]([^'"]+)['"]\s*,\s*)?(\[[^\]]*\]|\{[^}]*\})`)
+	vuexQuotedRe        = regexp.MustCompile(`['"]([^'"]+)['"]`)
+	vuexObjectEntryRe   = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*:\s*['"]([^'"]+)['"]`)
+	vuexThisMemberRe    = regexp.MustCompile(`\bthis\s*\.\s*([A-Za-z_$][\w$]*)`)
+	vuexMemberContainer = map[string]string{"actions": "action", "mutations": "mutation", "getters": "getter"}
+	vuexMemberObjectRe  = regexp.MustCompile(`(?:\b(?:const|let|var)\s+(actions|mutations|getters)\s*=\s*\{|(?:^|[\s,{])(actions|mutations|getters)\s*:\s*\{)`)
+)
+
+// buildVuexStore indexes the repository's Vuex store, or returns nil when there
+// is none. Only a repository with Vue components is searched, and a root must be
+// Vuex's own (`new Vuex.Store(`, or `createStore(` in a file importing vuex), so
+// repositories without Vuex, Redux ones included, pay nothing.
+func buildVuexStore(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool, manifestImports manifestImportResolver, stop func() bool) *vuexStore {
+	hasComponents := false
+	for _, file := range files {
+		if file.Language == "Vue" {
+			hasComponents = true
+			break
+		}
+	}
+	if !hasComponents {
+		return nil
+	}
+	store := &vuexStore{members: map[string]map[string]SymbolRecord{}, namespaceOf: map[string]string{}}
+	found := false
+	for _, file := range files {
+		if stop != nil && stop() {
+			return nil
+		}
+		if !jsLikeExtension(filepath.Ext(file.Path)) {
+			continue
+		}
+		content, ok := readContent(file.Path)
+		if !ok || !vuexStoreCtorRe.MatchString(content) && !(vuexCreateStoreRe.MatchString(content) && vuexImportRe.MatchString(content)) {
+			continue
+		}
+		found = true
+		store.index(file.Path, "", content, recordsByFile[file.Path])
+		match := vuexModulesRe.FindStringSubmatch(content)
+		if match == nil {
+			continue
+		}
+		imports := importedJavaScriptNames(content)
+		for _, entry := range vuexModuleEntryRe.FindAllStringSubmatch(match[1], -1) {
+			namespace, local := entry[1], entry[1]
+			if entry[2] != "" {
+				local = entry[2]
+			}
+			for _, spec := range imports[local] {
+				target, ok := resolveLocalImport(file.Path, spec, knownFiles)
+				if !ok {
+					resolved, manifestOK := manifestImports.resolve(file.Path, spec)
+					target, ok = resolved.Path, manifestOK
+				}
+				if !ok {
+					target, ok = vueAliasSuffixTarget(spec, knownFiles)
+				}
+				if !ok {
+					continue
+				}
+				moduleContent, readOK := readContent(target)
+				if !readOK {
+					continue
+				}
+				if vuexNamespacedRe.MatchString(moduleContent) {
+					store.namespaceOf[target] = namespace
+					store.index(target, namespace, moduleContent, recordsByFile[target])
+				} else {
+					store.index(target, "", moduleContent, recordsByFile[target])
+				}
+				break
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+	return store
+}
+
+// index records a module file's actions, mutations and getters: the methods
+// declared inside its `actions`, `mutations` and `getters` objects, whether
+// those are module constants (`const actions = { ... }`) or written inline in
+// the exported options. The objects themselves are usually unexported
+// constants with no symbol, so members are placed by the object's line range.
+func (store *vuexStore) index(path, namespace, content string, records []SymbolRecord) {
+	type span struct {
+		kind       string
+		start, end int
+	}
+	stripped := stripCodeLiteralsAndComments(content)
+	var spans []span
+	for _, match := range vuexMemberObjectRe.FindAllStringSubmatchIndex(stripped, -1) {
+		var name string
+		if match[2] >= 0 {
+			name = stripped[match[2]:match[3]]
+		} else {
+			name = stripped[match[4]:match[5]]
+		}
+		open := match[1] - 1
+		depth, closeAt := 0, -1
+		for i := open; i < len(stripped) && closeAt < 0; i++ {
+			switch stripped[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					closeAt = i
+				}
+			}
+		}
+		if closeAt < 0 {
+			continue
+		}
+		spans = append(spans, span{
+			kind:  vuexMemberContainer[name],
+			start: strings.Count(stripped[:open], "\n") + 1,
+			end:   strings.Count(stripped[:closeAt], "\n") + 1,
+		})
+	}
+	for _, record := range records {
+		if record.Kind != "method" && record.Kind != "function" {
+			continue
+		}
+		for _, object := range spans {
+			if record.StartLine <= object.start || record.StartLine > object.end {
+				continue
+			}
+			key := record.Name
+			if namespace != "" {
+				key = namespace + "/" + record.Name
+			}
+			if store.members[object.kind] == nil {
+				store.members[object.kind] = map[string]SymbolRecord{}
+			}
+			if _, exists := store.members[object.kind][key]; !exists {
+				store.members[object.kind][key] = record
+			}
+			break
+		}
+	}
+}
+
+// resolve finds the member a store string names from a file. A name without a
+// namespace, written inside a namespaced module, means that module's own
+// member, as Vuex resolves it; anywhere else it means a root or
+// non-namespaced member.
+func (store *vuexStore) resolve(kind, name, fromPath string) (SymbolRecord, bool) {
+	members := store.members[kind]
+	if !strings.Contains(name, "/") {
+		if namespace, ok := store.namespaceOf[fromPath]; ok {
+			if member, found := members[namespace+"/"+name]; found {
+				return member, true
+			}
+		}
+	}
+	member, ok := members[name]
+	return member, ok
+}
+
+// vuexBinding is a component method or computed property that a map helper
+// binds to a store member.
+type vuexBinding struct {
+	kind string
+	key  string
+}
+
+// vuexMapBindings reads a component's mapActions/mapMutations/mapGetters
+// helpers: the local name each binds to the store key it reaches.
+func vuexMapBindings(content string) map[string]vuexBinding {
+	bindings := map[string]vuexBinding{}
+	for _, match := range vuexMapHelperRe.FindAllStringSubmatch(content, -1) {
+		kind := map[string]string{"Actions": "action", "Mutations": "mutation", "Getters": "getter"}[match[1]]
+		namespace, list := match[2], match[3]
+		qualify := func(name string) string {
+			if namespace != "" {
+				return namespace + "/" + name
+			}
+			return name
+		}
+		if strings.HasPrefix(list, "{") {
+			for _, entry := range vuexObjectEntryRe.FindAllStringSubmatch(list, -1) {
+				bindings[entry[1]] = vuexBinding{kind: kind, key: qualify(entry[2])}
+			}
+			continue
+		}
+		for _, entry := range vuexQuotedRe.FindAllStringSubmatch(list, -1) {
+			key := qualify(entry[1])
+			local := key[strings.LastIndexByte(key, '/')+1:]
+			bindings[local] = vuexBinding{kind: kind, key: key}
+		}
+	}
+	return bindings
+}
+
+// vuexCall is one store member a code block reaches through a store string.
+type vuexCall struct {
+	target SymbolRecord
+	detail string
+}
+
+// callsIn returns the store members a code block reaches: by dispatch, commit
+// or getter string, or through a map-helper binding used as `this.name`.
+func (store *vuexStore) callsIn(fromPath, block string, bindings map[string]vuexBinding) []vuexCall {
+	var calls []vuexCall
+	seen := map[string]bool{}
+	add := func(kind, key string) {
+		member, ok := store.resolve(kind, key, fromPath)
+		if !ok || seen[member.ID] {
+			return
+		}
+		seen[member.ID] = true
+		calls = append(calls, vuexCall{target: member, detail: key})
+	}
+	for _, match := range vuexDispatchRe.FindAllStringSubmatch(block, -1) {
+		add("action", match[1])
+	}
+	for _, match := range vuexCommitRe.FindAllStringSubmatch(block, -1) {
+		add("mutation", match[1])
+	}
+	for _, re := range []*regexp.Regexp{vuexGetterIndexRe, vuexGetterMemberRe} {
+		for _, match := range re.FindAllStringSubmatch(block, -1) {
+			add("getter", match[1])
+		}
+	}
+	if len(bindings) > 0 {
+		for _, match := range vuexThisMemberRe.FindAllStringSubmatch(block, -1) {
+			if binding, ok := bindings[match[1]]; ok {
+				add(binding.kind, binding.key)
+			}
+		}
+	}
+	return calls
+}

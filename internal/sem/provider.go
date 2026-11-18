@@ -5448,6 +5448,12 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	if needsReceiverCalls || needsOverrides {
 		vueMergeParentMethods(vueParents, methodsByContainer)
 	}
+	// Vuex reaches store members by string (dispatch, commit, getters, map
+	// helpers); nil when the repository has no Vuex store.
+	var vuex *vuexStore
+	if needsCallScan {
+		vuex = buildVuexStore(files, recordsByFile, readContent, knownFiles, manifestImports, shouldStop)
+	}
 	// Import blocks of files OTHER than the one being scanned, which the Go
 	// interface-implementation hop needs to decide package qualifiers across the
 	// declaring files. Lazy and memoised: only files that actually reach a
@@ -5797,6 +5803,43 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			// and enum-case pattern bindings (`case .available(var buffer):`)
 			// can resolve.
 			swiftTypes = swiftFileTypeInfo(content)
+		}
+		vuexFile := vuex != nil && needsCallScan && jsImporterExtension(filepath.Ext(file.Path))
+		var vuexBindings map[string]vuexBinding
+		if vuexFile {
+			vuexBindings = vuexMapBindings(content)
+		}
+		// emitVuexCalls links the store members a block reaches by string, from a
+		// symbol's own block or, for the top-level pass, from the file or component.
+		emitVuexCalls := func(from SymbolRecord, block string) {
+			for _, call := range vuex.callsIn(file.Path, block, vuexBindings) {
+				if call.target.ID == from.ID {
+					continue
+				}
+				scope := "file"
+				if call.target.FilePath != file.Path {
+					scope = "module"
+				}
+				emit(RelationRecord{
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          call.target.ID,
+					Type:          "CALLS",
+					Confidence:    0.7,
+					Reason:        "Vuex dispatch, commit, getter or map-helper string names the store member",
+					RelationScope: scope,
+					Resolution:    "pattern",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "store_call_site",
+						FilePath:  file.Path,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    call.detail,
+					}},
+					WarningCodes: []string{},
+				})
+			}
 		}
 		for _, from := range currentFileSymbols {
 			if shouldStop() {
@@ -6459,6 +6502,11 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 					result.httpCalls = append(result.httpCalls, httpCallEntry{route: call.Path, relation: relation})
 				}
 			}
+			// A variable whose value is an object (a mixin, an options object)
+			// encloses the methods that make the calls; they are the callers.
+			if vuexFile && !typeLikeKind(from.Kind) && from.Kind != "variable" {
+				emitVuexCalls(from, block)
+			}
 			if fileNeedsChannelScan {
 				events := channelEvents(block)
 				if vueFile {
@@ -6586,6 +6634,11 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 						fileSource = component
 						fileSource.Language = file.Language
 					}
+				}
+				// Store strings outside any declaration: a <script setup> body's own
+				// `store.dispatch(...)` or a `computed(() => store.getters[...])`.
+				if vuexFile {
+					emitVuexCalls(fileSource, topLevel)
 				}
 				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}

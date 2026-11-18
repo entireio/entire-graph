@@ -1,6 +1,6 @@
 {
   "helpdesk": {
-    "found": 209,
+    "found": 228,
     "total": 316,
     "tags": {
       "baseline": {
@@ -60,7 +60,7 @@
         "total": 7
       },
       "store-members": {
-        "found": 0,
+        "found": 19,
         "total": 22
       },
       "template-edges": {
@@ -90,6 +90,7 @@
       "relation CALLS src/components/tickets/TicketFilters.vue#reset -\u003e src/components/tickets/TicketFilters.vue#apply",
       "relation CALLS src/components/tickets/TicketList.vue#handleKeydown -\u003e src/mixins/paginationMixin.js#nextPage",
       "relation CALLS src/components/tickets/TicketList.vue#handleKeydown -\u003e src/mixins/paginationMixin.js#prevPage",
+      "relation CALLS src/components/tickets/TicketList.vue#onFiltersChanged -\u003e src/store/modules/tickets.js#applyFilters",
       "relation CALLS src/components/tickets/TicketList.vue#refresh -\u003e src/components/tickets/TicketList.vue#fetchPage",
       "relation CALLS src/components/tickets/TicketReplyForm.vue#submitReply -\u003e src/components/tickets/TicketReplyForm.vue#validate",
       "relation CALLS src/components/tickets/TicketReplyForm.vue#validate -\u003e src/mixins/formValidationMixin.js#validateMaxLength",
@@ -97,15 +98,33 @@
       "relation CALLS src/mixins/paginationMixin.js#nextPage -\u003e src/mixins/paginationMixin.js#goToPage",
       "relation CALLS src/mixins/slaTimerMixin.js#tickSla -\u003e src/utils/sla.js#isBreached",
       "relation CALLS src/store/modules/tickets.js#fetchTickets -\u003e src/api/tickets.js#fetchTicketList",
+      "relation CALLS src/store/modules/tickets.js#fetchTickets -\u003e src/store/modules/tickets.js#SET_TICKETS",
+      "relation CALLS src/store/modules/tickets.js#postReply -\u003e src/store/modules/notifications.js#push",
+      "relation CALLS src/views/CustomerDetail.vue#save -\u003e src/store/modules/notifications.js#PUSH",
       "relation CALLS src/views/Customers.vue#created -\u003e src/utils/debounce.js#debounce",
       "relation CALLS src/views/Customers.vue#fetchPage -\u003e src/components/base/BaseListView.vue#load",
       "relation CALLS src/views/Dashboard.vue#atRiskCount -\u003e src/utils/sla.js#slaStatus",
       "relation CALLS src/views/Login.vue#signIn -\u003e src/views/Login.vue#validate",
       "relation CALLS src/views/Login.vue#validate -\u003e src/mixins/formValidationMixin.js#validateEmail",
       "relation CALLS src/views/Reports.vue#mounted -\u003e src/views/Reports.vue#loadReports",
+      "relation CALLS src/views/TicketDetail.vue#loadTicket -\u003e src/store/modules/tickets.js#fetchTicket",
+      "relation CALLS src/views/TicketDetail.vue#onReplySent -\u003e src/store/modules/tickets.js#UPDATE_TICKET",
       "relation CALLS src/views/TicketDetail.vue#onTicketUpdated -\u003e src/views/TicketDetail.vue#loadTicket",
       "relation CALLS src/views/TicketDetail.vue#ticket -\u003e src/utils/date.js#formatDate",
+      "relation CALLS src/views/Tickets.vue#syncQuery -\u003e src/store/modules/tickets.js#SET_FILTERS",
+      "relation CALLS|ACCESSES src/components/layout/AppSidebar.vue#visibleLinks -\u003e src/store/modules/auth.js#isSupervisor",
+      "relation CALLS|ACCESSES src/router/index.js#authGuard -\u003e src/store/modules/auth.js#isAuthenticated",
+      "relation CALLS|ACCESSES src/store/modules/tickets.js#sortedTickets -\u003e src/store/modules/tickets.js#openTickets",
+      "relation CALLS|ACCESSES src/views/Dashboard.vue#atRiskCount -\u003e src/store/modules/tickets.js#openTickets",
+      "relation CALLS|ASYNC_CALLS src/components/agents/AgentSelect.vue#assign -\u003e src/store/modules/tickets.js#assignTicket",
+      "relation CALLS|ASYNC_CALLS src/components/layout/AppHeader.vue#logout -\u003e src/store/modules/auth.js#logout",
       "relation CALLS|ASYNC_CALLS src/components/tickets/NewTicketForm.vue#submit -\u003e src/api/tickets.js#createTicket",
+      "relation CALLS|ASYNC_CALLS src/components/tickets/TicketList.vue#fetchPage -\u003e src/store/modules/tickets.js#fetchTickets",
+      "relation CALLS|ASYNC_CALLS src/components/tickets/TicketReplyForm.vue#submitReply -\u003e src/store/modules/tickets.js#postReply",
+      "relation CALLS|ASYNC_CALLS src/router/index.js#authGuard -\u003e src/store/modules/auth.js#restoreSession",
+      "relation CALLS|ASYNC_CALLS src/store/modules/tickets.js#fetchTicket -\u003e src/store/modules/tickets.js#fetchReplies",
+      "relation CALLS|ASYNC_CALLS src/views/Dashboard.vue#claimNext -\u003e src/store/modules/tickets.js#assignTicket",
+      "relation CALLS|ASYNC_CALLS src/views/Login.vue#signIn -\u003e src/store/modules/auth.js#signIn",
       "relation CALLS|ASYNC_CALLS src/views/Reports.vue#loadReports -\u003e src/api/reports.js#fetchSlaReport",
       "relation CALLS|ASYNC_CALLS src/views/Reports.vue#loadReports -\u003e src/api/reports.js#fetchVolumeReport",
       "relation CONTAINS src/components/tickets/TicketList.vue#TicketList:component -\u003e src/components/tickets/TicketList.vue#fetchPage",
