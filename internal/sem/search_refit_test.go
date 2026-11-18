@@ -209,6 +209,28 @@ func TestRefitSearchPayloadSparesACoveredRedundantFragment(t *testing.T) {
 	}
 }
 
+// A covered fragment still names its file: when the other fragment of that file sits above it,
+// that one is the redundant fragment to drop, not the type card or another file's only hit.
+func TestRefitSearchPayloadCountsACoveredFragmentAsAMention(t *testing.T) {
+	t.Parallel()
+	results := refitFixtureRanking()[:5]
+	results = append(results,
+		refitFixtureResult(6, "f.go", 400), refitFixtureResult(7, "f.go", 400), refitFixtureResult(8, "g.go", 400))
+	results[6].StartLine, results[6].EndLine = 20, 24
+	protected := map[searchRefitKey]bool{searchRefitKeyOf(results[6]): true}
+	card := []TypeCardEntry{{Name: "Ledger", Decl: "type Ledger struct{}"}}
+	full := refitSearchPayloadToBudget(results, card, nil, 0, searchEnclosureHeadRanks, protected).fundedBytes()
+
+	refit := refitSearchPayloadToBudget(results, card, nil, full-1, searchEnclosureHeadRanks, protected)
+	if got, want := refitPaths(refit.results), "a.go,b.go,c.go,d.go,e.go,f.go,g.go"; got != want {
+		t.Fatalf("first drop with the lower f.go fragment covered: %s, want %s", got, want)
+	}
+	if len(refit.typeCard) != 1 || !refit.protected[searchRefitKeyOf(refit.results[5])] {
+		t.Fatalf("card %+v, covered fragment kept %v", refit.typeCard, refit.protected[searchRefitKeyOf(refit.results[5])])
+	}
+	assertRefitRanks(t, refit.results)
+}
+
 // The anchor keys come from the contract anchor resolved the way the card resolved it, and only
 // while a covering test is there to be kept for.
 func TestSearchCoveredAnchorKeysNeedsTheCoveringTest(t *testing.T) {

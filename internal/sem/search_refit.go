@@ -184,12 +184,12 @@ func refitSearchPayloadToBudget(
 // remove.
 func (refit *searchBudgetRefit) shedOne(headRanks int) bool {
 	floor := minInt(len(refit.results), headRanks)
-	for _, index := range searchRelatedDisplacementOrder(refit.results, floor) {
-		// A redundant fragment can still be the hit the covering test was chosen for.
-		if !refit.protected[searchRefitKeyOf(refit.results[index])] {
-			refit.dropResult(index)
-			return true
-		}
+	// A redundant fragment can still be the hit the covering test was chosen for. It stays, and it
+	// still counts as a mention of its file, so another fragment of that file can go first.
+	covered := func(result SearchResult) bool { return refit.protected[searchRefitKeyOf(result)] }
+	if order := searchRelatedDisplacementOrderSparing(refit.results, floor, covered); len(order) > 0 {
+		refit.dropResult(order[0])
+		return true
 	}
 	if len(refit.typeCard) > 0 {
 		refit.typeCard = refit.typeCard[:len(refit.typeCard)-1]
