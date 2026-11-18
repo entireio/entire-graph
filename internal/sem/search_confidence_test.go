@@ -331,19 +331,9 @@ func TestAssessSearchConfidenceMarksAColdIndexThatDroppedPartOfTheQuery(t *testi
 // confidence now says a query term is missing from every indexed file, and the notice says so.
 func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testing.T) {
 	t.Parallel()
-	repo := t.TempDir()
-	for index := 0; index < 400; index++ {
-		write(t, repo, fmt.Sprintf("docs/needle_%03d.md", index), "needle\n")
-	}
-	write(t, repo, "docs/zz_other.md", "quillwort\n")
+	repo := writeNeedleQuillwortFixture(t)
 
-	complete, err := SearchRepository(t.Context(), repo, "test", "needle", SearchOptions{
-		Worktree: true,
-		Profile:  ProfileSyntaxOnly,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	complete := searchColdWorktree(t, repo, "needle", false)
 	stats := complete.Stats
 	if stats.FilesIndexed != 384 || !stats.PreselectionBounded || stats.PreselectionPasses != 3 {
 		t.Fatalf("stats = %#v, want the cold selection widened to its 384-file cap", stats)
@@ -355,38 +345,21 @@ func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testin
 		t.Fatalf("boundary gap = %v, want the small RRF step that keeps widening", stats.PreselectionBoundaryGap)
 	}
 
-	dropped, err := SearchRepository(t.Context(), repo, "test", "needle quillwort", SearchOptions{
-		Worktree: true,
-		Profile:  ProfileSyntaxOnly,
-	})
-	if err != nil {
-		t.Fatal(err)
+	dropped := searchColdWorktree(t, repo, "needle quillwort", false)
+	if dropped.Stats.FilesIndexed != 384 || !dropped.Stats.PreselectionBounded {
+		t.Fatalf("stats = %#v, want the 384-file cap", dropped.Stats)
 	}
-	stats = dropped.Stats
-	if stats.FilesIndexed != 384 || !stats.PreselectionBounded {
-		t.Fatalf("stats = %#v, want the 384-file cap", stats)
-	}
-	if confidenceValue(stats.PreselectionConfidence) <= 0 || confidenceValue(stats.PreselectionConfidence) >= 1 {
-		t.Fatalf("preselection confidence = %v, want below 1: no indexed file holds quillwort", confidenceValue(stats.PreselectionConfidence))
-	}
-	if assessment := AssessSearchConfidence(dropped); !assessment.Low ||
-		!strings.HasPrefix(assessment.Reason, "the cold index left out every file matching part of the query") {
-		t.Fatalf("assessment = %#v, want the preselection notice", assessment)
-	}
+	requirePreselectionNotice(t, "needle quillwort", dropped)
+}
 
-	// --deep's sparse pass reads every candidate, the file left out included, but its
-	// candidates still compete for the same few results with the indexed ones. Here the
-	// quillwort file first appears at rank 123 of --top-k 400, so the notice stays right.
-	deep, err := SearchRepository(t.Context(), repo, "test", "needle quillwort", SearchOptions{
-		Worktree: true,
-		Profile:  ProfileSyntaxOnly,
-		Deep:     true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if confidenceValue(deep.Stats.PreselectionConfidence) <= 0 || confidenceValue(deep.Stats.PreselectionConfidence) >= 1 || deep.Stats.SparseFilesRead == 0 {
-		t.Fatalf("stats = %#v, want the same capped selection plus a sparse pass", deep.Stats)
+// --deep's sparse pass reads every candidate, the file left out included, but its candidates
+// still compete for the same few results with the indexed ones. On this fixture the quillwort
+// file first appears at rank 123 of --top-k 400, so the notice stays right.
+func TestSearchRepositoryKeepsThePreselectionNoticeForDeepSearches(t *testing.T) {
+	t.Parallel()
+	deep := searchColdWorktree(t, writeNeedleQuillwortFixture(t), "needle quillwort", true)
+	if deep.Stats.SparseFilesRead == 0 {
+		t.Fatalf("stats = %#v, want a sparse pass", deep.Stats)
 	}
 	for _, result := range deep.Results {
 		if result.FilePath == "docs/zz_other.md" {
@@ -394,8 +367,46 @@ func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testin
 				"the preselection notice should account for the sparse pass")
 		}
 	}
-	if assessment := AssessSearchConfidence(deep); assessment.Advice != searchPreselectionLowAdvice {
-		t.Fatalf("assessment = %#v, want the preselection notice for a deep search too", assessment)
+	requirePreselectionNotice(t, "needle quillwort", deep)
+}
+
+// writeNeedleQuillwortFixture writes 400 files that name "needle" in their path and body and
+// one that holds "quillwort" and nothing else, so it ranks last and the 384-file cap leaves
+// it out.
+func writeNeedleQuillwortFixture(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for index := 0; index < 400; index++ {
+		write(t, repo, fmt.Sprintf("docs/needle_%03d.md", index), "needle\n")
+	}
+	write(t, repo, "docs/zz_other.md", "quillwort\n")
+	return repo
+}
+
+func searchColdWorktree(t *testing.T, repo, query string, deep bool) SearchResponse {
+	t.Helper()
+	response, err := SearchRepository(t.Context(), repo, "test", query, SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		Deep:     deep,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+// requirePreselectionNotice fails unless the response reports a confidence below 1 and the
+// assessment carries the preselection notice with its advice.
+func requirePreselectionNotice(t *testing.T, query string, response SearchResponse) {
+	t.Helper()
+	if confidence := confidenceValue(response.Stats.PreselectionConfidence); confidence < 0 || confidence >= 1 {
+		t.Fatalf("%q: preselection confidence = %v, want below 1: no indexed file holds the second term", query, confidence)
+	}
+	assessment := AssessSearchConfidence(response)
+	if !assessment.Low || assessment.Advice != searchPreselectionLowAdvice ||
+		!strings.HasPrefix(assessment.Reason, "the cold index left out every file matching part of the query") {
+		t.Fatalf("%q: assessment = %#v, want the preselection notice", query, assessment)
 	}
 }
 
@@ -436,13 +447,16 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		query         string
 		maxParseBytes int
 		low           bool
+		// gitPasses counts Git's passes over the corpus: the sample, plus the pass for
+		// terms the sample missed when there are any.
+		gitPasses int
 	}{
-		{query: "needle"},
-		{query: "needle quillwort", low: true},
-		{query: "thistle bramble", low: true},
+		{query: "needle", gitPasses: 1},
+		{query: "needle quillwort", low: true, gitPasses: 1},
+		{query: "thistle bramble", low: true, gitPasses: 2},
 		// 450 of the 500 heron files exceed the read cap, so the content pass keeps at most
 		// 50 and the capped cut never runs; the Git shortlist alone dropped egret.
-		{query: "heron egret", maxParseBytes: 64, low: true},
+		{query: "heron egret", maxParseBytes: 64, low: true, gitPasses: 1},
 	} {
 		response, err := SearchRepository(t.Context(), repo, "test", tc.query, SearchOptions{
 			Worktree:      true,
@@ -452,28 +466,29 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		stats := response.Stats
-		if stats.PreselectionBackend != "git-index-grep+go-content" || stats.FilesIndexed > 384 {
-			t.Fatalf("%q: stats = %#v, want the Git shortlist path", tc.query, stats)
+		requireGitShortlistPath(t, tc.query, response.Stats, tc.maxParseBytes == 0)
+		if examined, corpus := response.Stats.PreselectionFilesExamined, response.Stats.FilesScanned; examined < tc.gitPasses*corpus || examined >= (tc.gitPasses+1)*corpus {
+			t.Fatalf("%q: files examined = %d over a %d-file corpus, want %d Git passes counted", tc.query, examined, corpus, tc.gitPasses)
 		}
-		if tc.maxParseBytes != 0 && (stats.PreselectionPasses > 2 || stats.FilesIndexed > 96) {
-			t.Fatalf("%q: stats = %#v, want no capped selection", tc.query, stats)
-		}
-		assessment := AssessSearchConfidence(response)
 		if !tc.low {
-			if confidenceValue(stats.PreselectionConfidence) != 1 {
-				t.Fatalf("%q: preselection confidence = %v, want 1", tc.query, confidenceValue(stats.PreselectionConfidence))
+			if confidence := confidenceValue(response.Stats.PreselectionConfidence); confidence != 1 {
+				t.Fatalf("%q: preselection confidence = %v, want 1", tc.query, confidence)
 			}
 			continue
 		}
-		if confidence := confidenceValue(stats.PreselectionConfidence); confidence <= 0 || confidence >= 1 {
-			t.Fatalf("%q: preselection confidence = %v, want below 1: the shortlist dropped the only file holding the second term",
-				tc.query, confidence)
-		}
-		if !assessment.Low ||
-			!strings.HasPrefix(assessment.Reason, "the cold index left out every file matching part of the query") {
-			t.Fatalf("%q: assessment = %#v, want the preselection notice", tc.query, assessment)
-		}
+		requirePreselectionNotice(t, tc.query, response)
+	}
+}
+
+// requireGitShortlistPath fails unless the query took the large-worktree Git path, and, when
+// capped is false, unless it also skipped the capped selection.
+func requireGitShortlistPath(t *testing.T, query string, stats SearchStats, capped bool) {
+	t.Helper()
+	if stats.PreselectionBackend != "git-index-grep+go-content" || stats.FilesIndexed > 384 {
+		t.Fatalf("%q: stats = %#v, want the Git shortlist path", query, stats)
+	}
+	if !capped && (stats.PreselectionPasses > 2 || stats.FilesIndexed > 96) {
+		t.Fatalf("%q: stats = %#v, want no capped selection", query, stats)
 	}
 }
 

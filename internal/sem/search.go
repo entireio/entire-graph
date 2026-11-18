@@ -3119,11 +3119,17 @@ func preselectSearchFiles(
 	// Either cut (the capped selection or the Git shortlist before it) can leave out every
 	// file holding a query term. Widening reads matchedAnywhere alone, as ranking does; the
 	// reported confidence also counts the terms matched only in files the content pass never
-	// read, which were left out of the index as surely as the ones the cut dropped.
-	if progressive || shortlistDroppedTerms != nil {
+	// read, which were left out of the index as surely as the ones the cut dropped. An
+	// explicit MaxIndexedFiles is an exact limit the caller chose, so it gets no confidence
+	// and no extra Git pass, as before.
+	if progressive || (options.progressivePreselection && shortlistDroppedTerms != nil) {
 		unread := shortlistDroppedTerms
 		if usedGitIndexPreselection {
-			unread = searchGitUnreadTerms(ctx, source.absRepo, q, matcher, gitAllowed, scanPaths, matchedAnywhere, unread)
+			var scannedAgain bool
+			unread, scannedAgain = searchGitUnreadTerms(ctx, source.absRepo, q, matcher, gitAllowed, scanPaths, matchedAnywhere, unread)
+			if scannedAgain {
+				gitIndexPasses++
+			}
 		}
 		confidence := searchKeptTermCoverage(files, selection.files, matchedAnywhere, unread, q)
 		selection.preselectionConfidence = &confidence
@@ -3163,6 +3169,7 @@ var errSearchUnreadTermsFound = errors.New("every unread query term found")
 // can be absent from it while a file the pass skipped holds it. This pass greps for just those
 // terms, which are rare by construction, and confirms each line with the query's own matcher.
 // A failed pass keeps what it confirmed, so the confidence can only read high, never low.
+// The bool reports whether Git ran, so the caller counts the pass.
 func searchGitUnreadTerms(
 	ctx context.Context,
 	absRepo string,
@@ -3171,21 +3178,14 @@ func searchGitUnreadTerms(
 	allowed map[string]bool,
 	scanned []string,
 	matchedAnywhere, unread []bool,
-) []bool {
-	result := make([]bool, len(q.terms))
-	copy(result, unread)
-	missing := make([]string, 0, len(q.terms))
-	for index, term := range q.terms {
-		if !result[index] && (index >= len(matchedAnywhere) || !matchedAnywhere[index]) {
-			missing = append(missing, term)
-		}
-	}
+) ([]bool, bool) {
+	result, missing := searchUnseenQueryTerms(q, matchedAnywhere, unread)
 	if len(missing) == 0 {
-		return result
+		return result, false
 	}
 	patterns := searchGitAliasPatternsForTerms(q, missing)
 	if patterns == nil {
-		return result
+		return result, false
 	}
 	read := make(map[string]bool, len(scanned))
 	for _, filePath := range scanned {
@@ -3196,19 +3196,44 @@ func searchGitUnreadTerms(
 		if !allowed[match.Path] || read[match.Path] {
 			return ctx.Err()
 		}
-		for index, hit := range matcher.match(match.Text) {
-			matchedHere := index < len(matchedAnywhere) && matchedAnywhere[index]
-			if hit && index < len(result) && !result[index] && !matchedHere {
-				result[index] = true
-				remaining--
-			}
-		}
+		remaining -= markSearchUnseenTerms(result, matchedAnywhere, matcher.match(match.Text))
 		if remaining == 0 {
 			return errSearchUnreadTermsFound
 		}
 		return ctx.Err()
 	})
-	return result
+	return result, true
+}
+
+// searchUnseenQueryTerms copies unread and lists the query terms it and matchedAnywhere
+// both lack.
+func searchUnseenQueryTerms(q searchQuery, matchedAnywhere, unread []bool) ([]bool, []string) {
+	result := make([]bool, len(q.terms))
+	copy(result, unread)
+	missing := make([]string, 0, len(q.terms))
+	for index, term := range q.terms {
+		if !result[index] && !searchTermMarked(matchedAnywhere, index) {
+			missing = append(missing, term)
+		}
+	}
+	return result, missing
+}
+
+// markSearchUnseenTerms marks in result each hit neither result nor matchedAnywhere holds
+// yet, and returns how many it marked.
+func markSearchUnseenTerms(result, matchedAnywhere, hits []bool) int {
+	marked := 0
+	for index, hit := range hits {
+		if hit && index < len(result) && !result[index] && !searchTermMarked(matchedAnywhere, index) {
+			result[index] = true
+			marked++
+		}
+	}
+	return marked
+}
+
+func searchTermMarked(terms []bool, index int) bool {
+	return index < len(terms) && terms[index]
 }
 
 const (
