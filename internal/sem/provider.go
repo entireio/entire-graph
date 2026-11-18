@@ -54,6 +54,10 @@ const (
 	// Revision 9: HTML and Vue element symbols come only from a literal `id`
 	// attribute. `data-id=`, `:task-id=`, `:id=` and `v-bind:id=` no longer mint
 	// elements, so snapshots of unchanged trees must drop those phantom symbols.
+	// Vue single-file components also parse their <script> and <script setup>
+	// blocks, found on an ASCII-only lowercase copy that keeps byte offsets, so
+	// unchanged .vue trees gain function, class and method symbols nested under
+	// the component.
 	//
 	// Revision 8: recover PostgreSQL identity columns, named CHECK constraints,
 	// and DO blocks with LANGUAGE clauses while preserving static declarations.
@@ -891,8 +895,10 @@ func supportsSemanticExtraction(spec languageSpec) bool {
 		return true
 	}
 	// SQL and Groovy have no grammar in the extension table but are backed by
-	// dedicated parsers (pgsql grammar and the structural Groovy scanner).
-	return spec.language == "SQL" || spec.language == "Groovy"
+	// dedicated parsers (pgsql grammar and the structural Groovy scanner). Vue
+	// single-file components parse their script blocks under the script's own
+	// JavaScript or TypeScript grammar (vue.go).
+	return spec.language == "SQL" || spec.language == "Groovy" || spec.language == "Vue"
 }
 
 // languageTiers classifies the languages present in a snapshot as "semantic"
