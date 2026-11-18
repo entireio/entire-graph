@@ -98,18 +98,16 @@ func blankedCopy(src []byte, offsets []int) []byte {
 // grammar rejected sits inside or beside an ERROR node, so the node it follows,
 // or the string holding it, is a child of a node that has an error.
 func jsxBareAmpersandOffsets(ctx context.Context, root *sitter.Node, src []byte) []int {
-	scan := jsxAmpersandScan{ctx: ctx, src: src}
-	scan.walk(root, 0)
+	scan := jsxAmpersandScan{src: src}
+	scan.walk(ctx, root, 0)
 	if scan.stopped {
 		return nil
 	}
 	return scan.offsets
 }
 
-// jsxAmpersandScan is the state of one jsxBareAmpersandOffsets walk. It lives
-// only for that call, so holding the context is safe.
+// jsxAmpersandScan is the state of one jsxBareAmpersandOffsets walk.
 type jsxAmpersandScan struct {
-	ctx     context.Context
 	src     []byte
 	offsets []int
 	visited int
@@ -120,12 +118,12 @@ type jsxAmpersandScan struct {
 // It is depth-bounded like every other walk over a tree that may be malformed;
 // see maxParseWalkDepth. A bare `&` nested deeper than the limit is left in
 // place and the file keeps its E_PARSE_ERROR.
-func (s *jsxAmpersandScan) walk(node *sitter.Node, depth int) {
+func (s *jsxAmpersandScan) walk(ctx context.Context, node *sitter.Node, depth int) {
 	if depth >= maxParseWalkDepth {
 		return
 	}
 	for i := 0; i < int(node.ChildCount()); i++ {
-		if s.cancelled() {
+		if s.cancelled(ctx) {
 			return
 		}
 		child := node.Child(i)
@@ -134,16 +132,16 @@ func (s *jsxAmpersandScan) walk(node *sitter.Node, depth int) {
 		}
 		s.visit(child, node)
 		if child.HasError() {
-			s.walk(child, depth+1)
+			s.walk(ctx, child, depth+1)
 		}
 	}
 }
 
 // cancelled counts one visited node and reports whether the walk must stop,
 // polling the context every jsxBareAmpersandPollStride nodes.
-func (s *jsxAmpersandScan) cancelled() bool {
+func (s *jsxAmpersandScan) cancelled(ctx context.Context) bool {
 	s.visited++
-	if s.visited%jsxBareAmpersandPollStride == 0 && s.ctx.Err() != nil {
+	if s.visited%jsxBareAmpersandPollStride == 0 && ctx.Err() != nil {
 		s.stopped = true
 	}
 	return s.stopped
