@@ -124,6 +124,17 @@ auto-generated notes on
 
 ### Fixed
 
+- A bare `&` in JSX text (`<p>Terms & Privacy</p>`, or `&` between two
+  elements) or in a JSX attribute string (`href="/s?q=1&page=2"`) no longer
+  makes a valid `.tsx`, `.jsx` or `.js` file an `E_PARSE_ERROR` partial
+  failure. TypeScript and Babel read it as text, but the bundled grammars
+  accept only a character reference such as `&amp;` there, and only decimal
+  references of up to five digits, so `&#128276;` failed too. When a parse has
+  errors, each such `&` is replaced by a space at the same offset and the file
+  is parsed again; `&` in code (`a & b`, `A & B` types, `{a & b}` inside JSX)
+  is left alone, and a file that parses cleanly costs nothing extra. Parser
+  identity revision `9` keeps cached records from replaying the old failure.
+
 - `query`'s `VERIFY:` block no longer names an ancestor Gradle build for a file in
   a Gradle project directory that build does not own. With `include ':app'` in the
   root settings script and an undeclared `lib/build.gradle`, an edit in `lib/` used

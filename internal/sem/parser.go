@@ -584,11 +584,21 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 	defer parser.Close()
 	parser.SetLanguage(spec.grammar)
 	tree, err := parser.ParseCtx(parseCtx, nil, parseSrc)
-	if tree != nil {
-		defer tree.Close()
-	}
+	// A closure, not `defer tree.Close()`: the JSX reparse below can replace
+	// tree, and the one in use at return is the one to free.
+	defer func() {
+		if tree != nil {
+			tree.Close()
+		}
+	}()
 	var root *sitter.Node
 	if tree != nil {
+		root = tree.RootNode()
+	}
+	if err == nil && validNode(root) && root.HasError() && (spec.language == "JavaScript" || spec.language == "TypeScript") {
+		// The reparse shares parseCtx, so the 5s cap bounds the file's parses
+		// together, not each one.
+		tree, _ = reparseJSXBareAmpersands(parseCtx, parser, tree, parseSrc)
 		root = tree.RootNode()
 	}
 	if err != nil || root == nil || root.IsNull() {
