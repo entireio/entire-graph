@@ -968,7 +968,10 @@ func searchRelatedDisplacementOrderSparing(results []SearchResult, floor int, sp
 	}
 	order := make([]int, 0, len(results))
 	for index := len(results) - 1; index >= floor; index-- {
-		if results[index].Section == searchSectionCoveringTest || (spared != nil && spared(results[index])) {
+		if results[index].Section == searchSectionCoveringTest {
+			continue
+		}
+		if spared != nil && spared(results[index]) {
 			continue
 		}
 		// A result carrying SOURCE the reader will see is not a redundant locator, and this function
