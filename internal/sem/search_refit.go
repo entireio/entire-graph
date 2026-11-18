@@ -1,7 +1,7 @@
 package sem
 
-// The final re-fit
-// ================
+// The budget re-fit
+// =================
 //
 // Every pass after the byte fitter is responsible for its own share of the ceiling: the allocator,
 // the span merge, the callee hop, the related sites, the contract context, the prose promotion and
@@ -12,7 +12,9 @@ package sem
 // section label added after the allocator had spent the ceiling came back 6362 > 6000).
 //
 // refitSearchPayloadToBudget is the one place that holds the ceiling for all of them. It runs once,
-// after the last pass that can grow `results` and before the response is accounted, and on a
+// after the last pass that can grow `results` or the two reference blocks (the signature types),
+// and BEFORE the anchored blocks (closed set, literal cluster, file outline, VERIFY, container map)
+// pick the result they describe, so none of them can describe a result the re-fit removed. On a
 // payload that already fits it changes nothing: today every pass holds its own share, so the
 // default output is byte-identical. What it adds is the behaviour when a pass does not. The
 // response then degrades, in the yield order search_blocks.go states, rather than failing:
@@ -29,7 +31,14 @@ package sem
 // its complete-symbol or full-unit signal and claim a completeness it no longer has, which is the
 // false-positive class the fitter's own owner has documented (see
 // search_agent_marker_sweep_test.go). Every removal is reported (stats.results_dropped_by_budget and
-// the per-block counters), so a payload that came back smaller says so.
+// the per-block counters), so a payload that came back smaller says so, and the docs-and-fixtures
+// decision is taken again on what is left (settleSearchBudgetRefit).
+//
+// Two passes run after the anchored blocks by design: the prose promotion (a promoted passage must
+// never become an anchor) and the completeness certificate. Shedding in yield order after them could
+// remove a result a block describes, so their overshoot is handled differently: both only enrich a
+// ranking the re-fit has already fitted, and when they overshoot, the response falls back to that
+// ranking (searchPayloadOverBudget).
 //
 // It is a safety net, not a fitter of record. A pass that overshoots is still a bug in that pass, and
 // TestSearchRepositoryPostAllocatorPassesHoldTheCeiling fails on it, because a net that quietly
@@ -47,7 +56,7 @@ func searchFundedCeiling(budget int) int {
 	return maxInt(budget, searchEmptyRankingBytes)
 }
 
-// searchBudgetRefit is the payload after the final re-fit, and what the re-fit had to remove.
+// searchBudgetRefit is the payload after the budget re-fit, and what the re-fit had to remove.
 type searchBudgetRefit struct {
 	results        []SearchResult
 	typeCard       []TypeCardEntry
@@ -69,14 +78,32 @@ func (refit searchBudgetRefit) shed() int {
 // displacement-funded blocks outside it. An empty block costs nothing, matching how the response
 // reports it (its *Bytes counter stays 0 and the field is omitted).
 func (refit searchBudgetRefit) fundedBytes() int {
-	funded := serializedSearchResultBytes(refit.results)
-	if len(refit.typeCard) > 0 {
-		funded += serializedSearchResultBytes(refit.typeCard)
+	return searchFundedPayloadBytes(refit.results, refit.typeCard, refit.signatureTypes)
+}
+
+// searchFundedPayloadBytes is the funded payload's size: the ranking plus the type card and the
+// signature-type block, each counted only when it is not empty.
+func searchFundedPayloadBytes(
+	results []SearchResult, typeCard []TypeCardEntry, signatureTypes []SearchSignatureType,
+) int {
+	funded := serializedSearchResultBytes(results)
+	if len(typeCard) > 0 {
+		funded += serializedSearchResultBytes(typeCard)
 	}
-	if len(refit.signatureTypes) > 0 {
-		funded += serializedSearchResultBytes(refit.signatureTypes)
+	if len(signatureTypes) > 0 {
+		funded += serializedSearchResultBytes(signatureTypes)
 	}
 	return funded
+}
+
+// searchPayloadOverBudget reports whether the funded payload breaks the ceiling Validate holds it to.
+// It is the check behind the fallback for the passes that run after the anchored blocks. budget <= 0
+// means unbounded.
+func searchPayloadOverBudget(
+	results []SearchResult, typeCard []TypeCardEntry, signatureTypes []SearchSignatureType, budget int,
+) bool {
+	return budget > 0 &&
+		searchFundedPayloadBytes(results, typeCard, signatureTypes) > searchFundedCeiling(budget)
 }
 
 // refitSearchPayloadToBudget brings the funded payload back under budget by whole removals, in the
@@ -169,18 +196,33 @@ func shrinkSearchSignatureTypesOneStep(block []SearchSignatureType) []SearchSign
 	return block[:len(block)-1]
 }
 
+// settleSearchBudgetRefit adopts a re-fit that removed something: the counters are brought in line
+// with the payload that is going out, and the docs-and-fixtures decision is taken again, because
+// assignSearchSections keeps an all-docs payload primary and the re-fit may have removed the last
+// primary hit. That decision can only remove labels here, so it never grows the payload: every
+// primary result left was already present, and already labelled, when the section pass last ran.
+func settleSearchBudgetRefit(
+	refit searchBudgetRefit, stats *SearchStats, q searchQuery,
+) ([]SearchResult, []TypeCardEntry, []SearchSignatureType) {
+	applySearchBudgetRefitStats(stats, refit)
+	return assignSearchSections(refit.results, q), refit.typeCard, refit.signatureTypes
+}
+
 // applySearchBudgetRefitStats keeps the counters describing the payload that is going out. Only
 // counters a whole-result removal can falsify are touched: each dropped result is counted as
 // dropped by the budget, and stops counting as a complete body, a callee-hop site, a related site
 // or the covering test.
+//
+// stats.complete_symbol_snippets counts the bodies the allocator seated (less the ones the span
+// merge absorbed). A body the callee hop printed carries complete-symbol too but was never added to
+// it, so removing one must not subtract a body that is still there.
 func applySearchBudgetRefitStats(stats *SearchStats, refit searchBudgetRefit) {
 	for _, result := range refit.dropped {
 		stats.ResultsDropped++
-		if hasSearchSignal(result, searchCompleteSymbolSignal) {
-			stats.CompleteSymbols = maxInt(0, stats.CompleteSymbols-1)
-		}
 		if hasSearchSignal(result, searchCalleeHopSignal) {
 			stats.CalleeHopSites = maxInt(0, stats.CalleeHopSites-1)
+		} else if hasSearchSignal(result, searchCompleteSymbolSignal) {
+			stats.CompleteSymbols = maxInt(0, stats.CompleteSymbols-1)
 		}
 		switch result.Section {
 		case searchSectionRelated:

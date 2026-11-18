@@ -452,7 +452,7 @@ func TestSearchRepositorySectionLabelsFitTheByteBudget(t *testing.T) {
 		if err := response.Validate(); err != nil {
 			t.Fatalf("document-resolution=%v: %v", documentResolution, err)
 		}
-		// The final re-fit would hide a label that landed outside the budget, so ask whether it
+		// The budget re-fit would hide a label that landed outside the budget, so ask whether it
 		// had to act: the label must be priced by the fitter, not rescued after it.
 		assertSearchRefitIdle(t, fmt.Sprintf("document-resolution=%v", documentResolution), response)
 		if response.Stats.ResultBytes > ceiling {

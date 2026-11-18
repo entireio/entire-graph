@@ -597,9 +597,10 @@ type SearchResponse struct {
 	// and contents could influence preselection, scores, ordering, and rendered
 	// confidence. It stays out of schema 1.x and is used only by session replay.
 	replayProvenancePaths []string
-	// budgetRefitShed counts the removals the final re-fit had to make (search_refit.go). The
-	// payload reports them through its stats; this total exists so a test can tell a pass that held
-	// its own share of the ceiling from one the re-fit had to rescue. It stays out of schema 1.x.
+	// budgetRefitShed counts the removals the budget re-fit had to make, plus one when the passes
+	// after the anchored blocks had to fall back (search_refit.go). The payload reports removals
+	// through its stats; this total exists so a test can tell a pass that held its own share of the
+	// ceiling from one the re-fit had to rescue. It stays out of schema 1.x.
 	budgetRefitShed int
 }
 
@@ -1995,6 +1996,22 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if len(signatureTypes) > 0 {
 		stats.SignatureTypeBytes = serializedSearchResultBytes(signatureTypes)
 	}
+	// The ceiling is held ONCE more, after the last pass that grows the ranking or the reference
+	// blocks and BEFORE any block below picks its anchor, so a pass that overshot its own share
+	// degrades the response instead of making Validate reject it (issue 208), and every block below
+	// still describes results that go out. A payload that already fits is untouched. See
+	// search_refit.go for the removal order and why it never edits a snippet.
+	refit := refitSearchPayloadToBudget(
+		results, typeCard, signatureTypes, options.MaxContextBytes, searchEnclosureHeadRanks,
+	)
+	budgetRefitShed := refit.shed()
+	if budgetRefitShed > 0 {
+		results, typeCard, signatureTypes = settleSearchBudgetRefit(refit, &stats, q)
+		if stats.CoveringTests == 0 {
+			// The note describes the test it accompanies, so it cannot outlive it.
+			coverageNote = nil
+		}
+	}
 	// The three agent-asked blocks. Each one replaces a specific tool call an agent measurably
 	// makes anyway — a repo-wide grep, a fumbled test invocation, and the read that discovers a
 	// switch it forgot to extend — which is the property the reference blocks above lack. They are
@@ -2095,6 +2112,8 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// Containment is resolved before promotion, not after, so the slots a duplicate was occupying
 	// are handed back to the expansion and spent on regions the payload does not already show.
 	results = dropContainedProseResults(results)
+	// The ranking the blocks above were built from, kept so an overshoot below can fall back to it.
+	settled := append([]SearchResult(nil), results...)
 	reserved := stats.SignatureTypeBytes
 	if len(typeCard) > 0 {
 		reserved += serializedSearchResultBytes(typeCard)
@@ -2112,22 +2131,14 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		results, ranked[:minInt(bodyHeadRanks, len(ranked))], symbolsByID, read,
 		options.MaxContextBytes, reserved,
 	)
-	stats.CompleteSymbols += certified
-	// The ceiling is held ONCE more, after the last pass that can grow the payload and before
-	// anything below accounts it, so a pass that overshot its own share degrades the response
-	// instead of making Validate reject it (issue 208). A payload that already fits is untouched.
-	// See search_refit.go for the removal order and why it never edits a snippet.
-	refit := refitSearchPayloadToBudget(
-		results, typeCard, signatureTypes, options.MaxContextBytes, searchEnclosureHeadRanks,
-	)
-	if refit.shed() > 0 {
-		results, typeCard, signatureTypes = refit.results, refit.typeCard, refit.signatureTypes
-		applySearchBudgetRefitStats(&stats, refit)
-		if stats.CoveringTests == 0 {
-			// The note describes the test it accompanies, so it cannot outlive it.
-			coverageNote = nil
-		}
+	// Promotion and certification run after the blocks chose their anchors, so an overshoot here is
+	// not shed in yield order (that could remove a result a block describes). Both passes are
+	// enrichment of a ranking that already fits, so the payload falls back to that ranking instead.
+	if searchPayloadOverBudget(results, typeCard, signatureTypes, options.MaxContextBytes) {
+		results, certified = settled, 0
+		budgetRefitShed++
 	}
+	stats.CompleteSymbols += certified
 	stats.CandidatesSelected = len(results)
 	stats.ProsePassages, stats.ProsePassageBytes = searchPassageStats(results)
 	resultBytes = serializedSearchResultBytes(results)
@@ -2139,7 +2150,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// re-derived from three separate counters. See search_blocks.go.
 	stats.ContextBlockBytes = searchContextBlockBytes(stats)
 	stats.ContextBudgetBytes = callerContextBytes
-	// Added to, not assigned: the final re-fit above has already counted its own drops.
+	// Added to, not assigned: the budget re-fit above has already counted its own drops.
 	stats.ResultsDropped += dropped
 	stats.SnippetsTruncated = truncated
 	// Query and usage counters are disjoint physical reads. Identifier lookups
@@ -2181,7 +2192,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		PartialFailures:       withFailureEffectScopes(withRepoIgnorePartialFailures(partialFailures, selection.repoIgnored)),
 		Completeness:          diagnostics.Completeness,
 		replayProvenancePaths: replayProvenancePaths,
-		budgetRefitShed:       refit.shed(),
+		budgetRefitShed:       budgetRefitShed,
 	}, nil
 }
 

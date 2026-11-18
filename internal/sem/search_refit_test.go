@@ -179,8 +179,10 @@ func TestApplySearchBudgetRefitStatsCountsWhatWasRemoved(t *testing.T) {
 	t.Parallel()
 	complete := refitFixtureResult(1, "a.go", 10)
 	complete.Signals = []string{searchCompleteSymbolSignal}
+	// A body the callee hop printed carries complete-symbol, but the counter never included it, so
+	// dropping it must leave the allocator's count alone.
 	hop := refitFixtureResult(2, "b.go", 10)
-	hop.Signals = []string{searchCalleeHopSignal}
+	hop.Signals = []string{searchCalleeHopSignal, searchFullUnitSignal, searchCompleteSymbolSignal}
 	related := refitFixtureResult(3, "c.go", 10)
 	related.Section = searchSectionRelated
 	covering := refitFixtureResult(4, "c_test.go", 10)
@@ -202,6 +204,79 @@ func TestApplySearchBudgetRefitStatsCountsWhatWasRemoved(t *testing.T) {
 	}
 	if stats != want {
 		t.Fatalf("stats after the re-fit:\n got %+v\nwant %+v", stats, want)
+	}
+}
+
+// The section pass keeps an all-docs payload primary, because those hits are the only answer there
+// is. A re-fit that removed the last primary hit has to take that decision again, or the answer that
+// is left goes out relabelled as "not fix sites"; while a primary hit is left, the labels stand.
+func TestSettleSearchBudgetRefitRedecidesTheDocsSection(t *testing.T) {
+	t.Parallel()
+	docs := func(rank int, path string) SearchResult {
+		result := refitFixtureResult(rank, path, 10)
+		result.Section = searchSectionDocs
+		return result
+	}
+	for _, tc := range []struct {
+		name    string
+		results []SearchResult
+		want    []string
+	}{
+		{
+			name:    "only docs left",
+			results: []SearchResult{docs(1, "notes/a.md"), docs(2, "notes/b.md")},
+			want:    []string{searchSectionPrimary, searchSectionPrimary},
+		},
+		{
+			name:    "a primary hit left",
+			results: []SearchResult{refitFixtureResult(1, "pkg/a.go", 10), docs(2, "notes/b.md")},
+			want:    []string{searchSectionPrimary, searchSectionDocs},
+		},
+	} {
+		refit := searchBudgetRefit{
+			results: tc.results, dropped: []SearchResult{refitFixtureResult(3, "pkg/c.go", 10)},
+		}
+		var stats SearchStats
+		results, _, _ := settleSearchBudgetRefit(refit, &stats, searchQuery{})
+		for index, result := range results {
+			if result.Section != tc.want[index] {
+				t.Fatalf("%s: result %d is in section %q, want %q", tc.name, index, result.Section, tc.want[index])
+			}
+		}
+		if stats.ResultsDropped != 1 {
+			t.Fatalf("%s: results_dropped_by_budget = %d, want 1", tc.name, stats.ResultsDropped)
+		}
+	}
+}
+
+// The fallback for the passes after the anchored blocks fires on the funded payload, at the same
+// ceiling Validate holds, and never on an unbounded search or on the empty ranking's two bytes.
+func TestSearchPayloadOverBudgetHoldsTheFundedCeiling(t *testing.T) {
+	t.Parallel()
+	results := refitFixtureRanking()
+	card := []TypeCardEntry{{Name: "Ledger", Decl: "type Ledger struct{}"}}
+	funded := searchFundedPayloadBytes(results, card, nil)
+	if funded != serializedSearchResultBytes(results)+serializedSearchResultBytes(card) {
+		t.Fatalf("funded bytes %d do not count the ranking and the card", funded)
+	}
+	for _, tc := range []struct {
+		name    string
+		results []SearchResult
+		budget  int
+		want    bool
+	}{
+		{name: "fits exactly", results: results, budget: funded, want: false},
+		{name: "one byte over", results: results, budget: funded - 1, want: true},
+		{name: "unbounded", results: results, budget: 0, want: false},
+		{name: "empty ranking under a one-byte budget", results: []SearchResult{}, budget: 1, want: false},
+	} {
+		typeCard := card
+		if len(tc.results) == 0 {
+			typeCard = nil
+		}
+		if got := searchPayloadOverBudget(tc.results, typeCard, nil, tc.budget); got != tc.want {
+			t.Fatalf("%s: over budget = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -319,13 +394,13 @@ func sweepRefitCorpus(t *testing.T, corpus refitSweepCorpus, levers map[string]S
 	}
 }
 
-// assertSearchRefitIdle fails when the final re-fit had to remove anything. The re-fit keeps a
+// assertSearchRefitIdle fails when the budget re-fit had to remove anything. The re-fit keeps a
 // caller from seeing an overshoot, so a response it rescued would otherwise pass every budget check
 // while some post-allocator pass still spends bytes it was never given.
 func assertSearchRefitIdle(t *testing.T, label string, response SearchResponse) {
 	t.Helper()
 	if response.budgetRefitShed != 0 {
-		t.Fatalf("%s: a post-allocator pass overshot its share of the ceiling and the final re-fit had "+
+		t.Fatalf("%s: a post-allocator pass overshot its share of the ceiling and the budget re-fit had "+
 			"to remove %d item(s); fix that pass, the re-fit only keeps callers from seeing the failure",
 			label, response.budgetRefitShed)
 	}
