@@ -195,6 +195,20 @@ func TestRefitSearchPayloadKeepsTheCoveredAnchorUntilItsTest(t *testing.T) {
 	}
 }
 
+// The redundant-fragment stage spares the covered anchor too: a sourceless second mention of a file
+// can still be the hit the covering test was chosen for.
+func TestRefitSearchPayloadSparesACoveredRedundantFragment(t *testing.T) {
+	t.Parallel()
+	results := refitFixtureRanking()
+	protected := map[searchRefitKey]bool{searchRefitKeyOf(results[5]): true}
+	refit := refitSearchPayloadToBudget(
+		results, nil, nil, serializedSearchResultBytes(results)-1, searchEnclosureHeadRanks, protected,
+	)
+	if got, want := refitPaths(refit.results), "a.go,b.go,c.go,d.go,e.go,a.go,f.go"; got != want {
+		t.Fatalf("first drop with the fragment covered: %s, want %s", got, want)
+	}
+}
+
 // The anchor keys come from the contract anchor resolved the way the card resolved it, and only
 // while a covering test is there to be kept for.
 func TestSearchCoveredAnchorKeysNeedsTheCoveringTest(t *testing.T) {
