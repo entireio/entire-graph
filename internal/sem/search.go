@@ -3276,13 +3276,8 @@ func searchGitUnreadTerms(
 	if patterns == nil {
 		return result, 0, 0
 	}
-	var unreadFiles []string
-	if err := gitutil.GrepIndexPatternFiles(ctx, files.absRepo, patterns, func(filePath string) error {
-		if files.allowed[filePath] && !files.read[filePath] {
-			unreadFiles = append(unreadFiles, filePath)
-		}
-		return ctx.Err()
-	}); err != nil {
+	unreadFiles, err := files.list(ctx, patterns)
+	if err != nil {
 		return result, 1, 0
 	}
 	found, examined := 0, 0
@@ -3310,6 +3305,19 @@ func searchGitUnreadTerms(
 		})
 	}
 	return result, 1, examined
+}
+
+// list returns the corpus files the content pass did not read that have a line matching one
+// of patterns, searched as text.
+func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]string, error) {
+	var unread []string
+	err := gitutil.GrepIndexPatternFiles(ctx, files.absRepo, patterns, func(filePath string) error {
+		if files.allowed[filePath] && !files.read[filePath] {
+			unread = append(unread, filePath)
+		}
+		return ctx.Err()
+	})
+	return unread, err
 }
 
 // searchTermsEither marks each term either slice marks.

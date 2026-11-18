@@ -702,6 +702,9 @@ func GrepIndexPatternFiles(ctx context.Context, repo string, patterns []string, 
 // error stops the scan.
 func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, files []string, visit func(GrepMatch) error) error {
 	batchBytes := grepPathBatchBytes()
+	read := func(reader *bufio.Reader) error {
+		return readGrepPatternLines(reader, visit)
+	}
 	for start := 0; start < len(files); {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -717,9 +720,7 @@ func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, fi
 			pathspecs = append(pathspecs, pathspec)
 			end++
 		}
-		if err := runGrepPatterns(ctx, repo, "", patterns, []string{"--text"}, pathspecs, func(reader *bufio.Reader) error {
-			return readGrepPatternLines(reader, visit)
-		}); err != nil {
+		if err := runGrepPatterns(ctx, repo, "", patterns, []string{"--text"}, pathspecs, read); err != nil {
 			return err
 		}
 		start = end
@@ -728,7 +729,7 @@ func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, fi
 }
 
 func grepPatternLines(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, visit func(GrepMatch) error) error {
-	return runGrepPatterns(ctx, repo, treeish, patterns, []string{"-I", "-m", strconv.Itoa(maxPerFile)}, nil, func(reader *bufio.Reader) error {
+	return runGrepPatterns(ctx, repo, treeish, patterns, []string{"-m", strconv.Itoa(maxPerFile)}, nil, func(reader *bufio.Reader) error {
 		return readGrepPatternLines(reader, func(match GrepMatch) error {
 			if treeish != "" {
 				prefix := treeish + ":"
@@ -744,15 +745,15 @@ func grepPatternLines(ctx context.Context, repo, treeish string, patterns []stri
 
 // runGrepPatterns runs one `git grep -E` for caller-built POSIX expressions,
 // sent on stdin as grepPatternLinesInput renders them, and hands Git's stdout to
-// read. modeArgs pick the binary handling (`-I` skips the files Git counts as binary,
-// .gitattributes included; `--text` searches every file) and the output shape (`-m N` or
-// `-l`); pathspecs follow `--`.
+// read. modeArgs pick the output shape (`-m N` or `-l`); pathspecs follow `--`. Git skips
+// the files it counts as binary (`-I`), .gitattributes included, unless modeArgs pass
+// `--text`: the two set one option, and Git keeps the later.
 // A read error kills Git; exit status 1 with no stderr is "no match".
 func runGrepPatterns(ctx context.Context, repo, treeish string, patterns, modeArgs, pathspecs []string, read func(*bufio.Reader) error) error {
 	if len(patterns) == 0 {
 		return nil
 	}
-	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-E"}
+	args := []string{"grep", "--no-recurse-submodules", "--no-line-number", "--no-column", "--no-color", "--no-full-name", "-z", "-I", "-E"}
 	args = append(args, modeArgs...)
 	args = append(args, "-f", "-")
 	if treeish != "" {
