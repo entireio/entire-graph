@@ -372,6 +372,30 @@ func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testin
 		!strings.HasPrefix(assessment.Reason, "the cold index left out every file matching part of the query") {
 		t.Fatalf("assessment = %#v, want the preselection notice", assessment)
 	}
+
+	// --deep's sparse pass reads every candidate, the file left out included, but its
+	// candidates still compete for the same few results with the indexed ones. Here the
+	// quillwort file first appears at rank 123 of --top-k 400, so the notice stays right.
+	deep, err := SearchRepository(t.Context(), repo, "test", "needle quillwort", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		Deep:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deep.Stats.PreselectionConfidence <= 0 || deep.Stats.PreselectionConfidence >= 1 || deep.Stats.SparseFilesRead == 0 {
+		t.Fatalf("stats = %#v, want the same capped selection plus a sparse pass", deep.Stats)
+	}
+	for _, result := range deep.Results {
+		if result.FilePath == "docs/zz_other.md" {
+			t.Fatalf("the deep ranking now reaches the file the cold index left out; " +
+				"the preselection notice should account for the sparse pass")
+		}
+	}
+	if assessment := AssessSearchConfidence(deep); assessment.Advice != searchPreselectionLowAdvice {
+		t.Fatalf("assessment = %#v, want the preselection notice for a deep search too", assessment)
+	}
 }
 
 // A worktree of at least minGitGrepPreselectionFiles files shortlists Git's matches to
