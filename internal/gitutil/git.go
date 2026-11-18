@@ -481,43 +481,34 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 // FilesMarkedBinary returns the files among paths that Git's attributes make binary, sorted.
 // These are the files a `git grep -I` skips without reading them: a `diff` attribute that is
 // unset (`-diff`, the `binary` macro included), or one naming a diff driver whose
-// configuration says `binary = true`. It asks `git check-attr` and, when some path names a
-// driver, `git config`, so it reads attributes and configuration but never file content.
+// configuration says `binary = true`. It asks `git config` and `git check-attr`, so it reads
+// attributes and configuration but never file content. check-attr prints `set` and
+// `unspecified` both for those states and for drivers of those names, so a driver so named
+// that is configured binary counts every such file: better to search a file than to miss one.
 func FilesMarkedBinary(ctx context.Context, repo string, paths []string) ([]string, error) {
 	if len(paths) == 0 {
 		return nil, nil
 	}
+	binary, err := binaryDiffDrivers(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
 	var marked []string
-	byDriver := map[string][]string{}
-	err := checkDiffAttributes(ctx, repo, paths, func(path, value string) {
-		switch value {
-		case "unset":
+	err = checkDiffAttributes(ctx, repo, paths, func(path, value string) {
+		if value == "unset" || binary[value] {
 			marked = append(marked, path)
-		case "set", "unspecified":
-		default:
-			byDriver[value] = append(byDriver[value], path)
 		}
 	})
 	if err != nil {
 		return nil, err
 	}
-	if len(byDriver) > 0 {
-		binary, err := binaryDiffDrivers(ctx, repo)
-		if err != nil {
-			return nil, err
-		}
-		for driver, driverPaths := range byDriver {
-			if binary[driver] {
-				marked = append(marked, driverPaths...)
-			}
-		}
-	}
 	sort.Strings(marked)
 	return marked, nil
 }
 
-// checkDiffAttributes visits each path's `diff` attribute value as `git check-attr -z --stdin`
-// reports it, with the paths sent on stdin so no command line has to hold them.
+// checkDiffAttributes visits each path's `diff` attribute value, because that attribute is what
+// makes `git grep -I` skip a file unread. The paths go to `git check-attr -z --stdin` on stdin
+// so that no command line has to hold a whole corpus of them.
 func checkDiffAttributes(ctx context.Context, repo string, paths []string, visit func(path, value string)) error {
 	cmd := newCmd(ctx, repo, "git", "check-attr", "-z", "--stdin", "diff")
 	cmd.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")

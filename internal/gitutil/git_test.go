@@ -3122,13 +3122,13 @@ func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T)
 	repo := t.TempDir()
 	git(t, repo, "init")
 	content := "func readInt() {}\n" + strings.Repeat("func otherInt() {}\n", 1000)
-	names := []string{"source.go", "skipped.go", "a b.go", "c.bin", "d.min", "e.txt", "f.dot"}
+	names := []string{"source.go", "skipped.go", "a b.go", "c.bin", "d.min", "e.txt", "f.dot", "g.st"}
 	for _, name := range names {
 		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	attributes := "a?b.go -diff\n*.bin binary\n*.min diff=minified\n*.txt diff=plain\n*.dot diff=my.drv\n"
+	attributes := "a?b.go -diff\n*.bin binary\n*.min diff=minified\n*.txt diff=plain\n*.dot diff=my.drv\n*.st diff=set\n"
 	if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte(attributes), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -3138,13 +3138,14 @@ func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T)
 	git(t, repo, "config", "diff.minified.binary", "true")
 	git(t, repo, "config", "diff.plain.binary", "false")
 	git(t, repo, "config", "diff.my.drv.binary", "yes")
+	git(t, repo, "config", "diff.set.binary", "true") // check-attr prints this driver's name as "set"
 	git(t, repo, "add", ".")
 	patterns := []string{"[[:lower:]]Int[^[:alnum:]]"}
 	sampled := map[string]bool{}
 	if err := GrepIndexPatternSample(t.Context(), repo, patterns, func(match GrepMatch) error { sampled[match.Path] = true; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if sampled["a b.go"] || sampled["c.bin"] || sampled["d.min"] || sampled["f.dot"] || !sampled["source.go"] {
+	if sampled["a b.go"] || sampled["c.bin"] || sampled["d.min"] || sampled["f.dot"] || sampled["g.st"] || !sampled["source.go"] {
 		t.Fatalf("sampled files = %v, want the marked files skipped as binary", sampled)
 	}
 	var files []string
@@ -3159,7 +3160,7 @@ func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(marked, []string{"a b.go", "c.bin", "d.min", "f.dot"}) {
+	if !reflect.DeepEqual(marked, []string{"a b.go", "c.bin", "d.min", "f.dot", "g.st"}) {
 		t.Fatalf("marked files = %q, want the -diff, binary and binary-driver files", marked)
 	}
 	if marked, err := FilesMarkedBinary(t.Context(), repo, []string{"source.go", "a b.go"}); err != nil || !reflect.DeepEqual(marked, []string{"a b.go"}) {
