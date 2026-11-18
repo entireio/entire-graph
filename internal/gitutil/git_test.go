@@ -3114,28 +3114,37 @@ func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
 }
 
 // GrepIndexPatternFiles lists each matching file once and, like the sample, skips the files
-// .gitattributes marks binary, which ListIndexFilesMarkedBinary lists. GrepIndexPatternFilesIn
-// and GrepIndexPatternEveryInFiles search only the files they are given, as text, and the
-// latter keeps every matching line across pathspec batches.
+// Git's attributes make binary, which FilesMarkedBinary finds: `-diff`, `binary`, and a diff
+// driver configured binary, even one whose name holds a dot. GrepIndexPatternFilesIn and
+// GrepIndexPatternEveryInFiles search only the files they are given, as text, and the latter
+// keeps every matching line across pathspec batches.
 func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	content := "func readInt() {}\n" + strings.Repeat("func otherInt() {}\n", 1000)
-	for _, name := range []string{"source.go", "skipped.go", "a b.go", "c.bin"} {
+	names := []string{"source.go", "skipped.go", "a b.go", "c.bin", "d.min", "e.txt", "f.dot"}
+	for _, name := range names {
 		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("a?b.go -diff\n*.bin binary\n"), 0o644); err != nil {
+	attributes := "a?b.go -diff\n*.bin binary\n*.min diff=minified\n*.txt diff=plain\n*.dot diff=my.drv\n"
+	if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte(attributes), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if marked, err := FilesMarkedBinary(t.Context(), repo, names); err != nil || !reflect.DeepEqual(marked, []string{"a b.go", "c.bin"}) {
+		t.Fatalf("marked files before any driver is configured = %q, %v", marked, err)
+	}
+	git(t, repo, "config", "diff.minified.binary", "true")
+	git(t, repo, "config", "diff.plain.binary", "false")
+	git(t, repo, "config", "diff.my.drv.binary", "yes")
 	git(t, repo, "add", ".")
 	patterns := []string{"[[:lower:]]Int[^[:alnum:]]"}
 	sampled := map[string]bool{}
 	if err := GrepIndexPatternSample(t.Context(), repo, patterns, func(match GrepMatch) error { sampled[match.Path] = true; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if sampled["a b.go"] || sampled["c.bin"] || !sampled["source.go"] {
+	if sampled["a b.go"] || sampled["c.bin"] || sampled["d.min"] || sampled["f.dot"] || !sampled["source.go"] {
 		t.Fatalf("sampled files = %v, want the marked files skipped as binary", sampled)
 	}
 	var files []string
@@ -3143,16 +3152,18 @@ func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T)
 		t.Fatal(err)
 	}
 	sort.Strings(files)
-	if !reflect.DeepEqual(files, []string{"skipped.go", "source.go"}) {
+	if !reflect.DeepEqual(files, []string{"e.txt", "skipped.go", "source.go"}) {
 		t.Fatalf("matching files = %q, want the marked files skipped", files)
 	}
-	marked, err := ListIndexFilesMarkedBinary(t.Context(), repo)
+	marked, err := FilesMarkedBinary(t.Context(), repo, names)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sort.Strings(marked)
-	if !reflect.DeepEqual(marked, []string{"a b.go", "c.bin"}) {
-		t.Fatalf("marked files = %q, want the -diff and binary files", marked)
+	if !reflect.DeepEqual(marked, []string{"a b.go", "c.bin", "d.min", "f.dot"}) {
+		t.Fatalf("marked files = %q, want the -diff, binary and binary-driver files", marked)
+	}
+	if marked, err := FilesMarkedBinary(t.Context(), repo, []string{"source.go", "a b.go"}); err != nil || !reflect.DeepEqual(marked, []string{"a b.go"}) {
+		t.Fatalf("marked files among two = %q, %v; want only the -diff one", marked, err)
 	}
 	var named []string
 	if err := GrepIndexPatternFilesIn(t.Context(), repo, patterns, []string{"a b.go", "skipped.go"}, func(path string) error { named = append(named, path); return nil }); err != nil {

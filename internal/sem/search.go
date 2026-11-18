@@ -3251,7 +3251,7 @@ func (files searchUnreadFiles) text(filePath string) (content string, readable, 
 // so a term can be absent from it while a file the pass skipped holds it. One Git pass lists
 // the files with a line matching just the missing terms, which are rare by construction
 // (`git grep -l` stops reading a file at its first match, so files outside allowed or already
-// read cost little), and the corpus files .gitattributes marks binary are searched apart, as
+// read cost little), and the corpus files Git's attributes make binary are searched apart, as
 // text (searchUnreadFiles.list). Each listed file is then judged as the content pass would
 // judge it (searchUnreadFiles.text): one it can read is matched whole with
 // the query's matcher, and Git streams every matching line of the text files too large to
@@ -3311,9 +3311,9 @@ func searchGitUnreadTerms(
 
 // list returns the corpus files the content pass did not read that have a line matching one
 // of patterns. One Git pass over the worktree lists the text files. That pass skips the files
-// .gitattributes marks binary without reading them, so those are listed by attribute, and
-// only the ones in the corpus and unread are searched, as text. No excluded asset or binary
-// outside them is read in full.
+// Git's attributes make binary without reading them, so of the unread corpus files, those are
+// found by attribute (gitutil.FilesMarkedBinary) and searched as text. No excluded asset or
+// binary outside them is read in full.
 func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]string, error) {
 	var unread []string
 	keep := func(filePath string) error {
@@ -3325,17 +3325,18 @@ func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]s
 	if err := gitutil.GrepIndexPatternFiles(ctx, files.absRepo, patterns, keep); err != nil {
 		return nil, err
 	}
-	marked, err := gitutil.ListIndexFilesMarkedBinary(ctx, files.absRepo)
+	candidates := make([]string, 0, len(files.allowed))
+	for filePath := range files.allowed {
+		if files.eligible(filePath) {
+			candidates = append(candidates, filePath)
+		}
+	}
+	sort.Strings(candidates)
+	marked, err := gitutil.FilesMarkedBinary(ctx, files.absRepo, candidates)
 	if err != nil {
 		return nil, err
 	}
-	eligible := make([]string, 0, len(marked))
-	for _, filePath := range marked {
-		if files.eligible(filePath) {
-			eligible = append(eligible, filePath)
-		}
-	}
-	if err := gitutil.GrepIndexPatternFilesIn(ctx, files.absRepo, patterns, eligible, keep); err != nil {
+	if err := gitutil.GrepIndexPatternFilesIn(ctx, files.absRepo, patterns, marked, keep); err != nil {
 		return nil, err
 	}
 	sort.Strings(unread)
