@@ -124,6 +124,21 @@ auto-generated notes on
 
 ### Fixed
 
+- `query --format json`, `ndjson` and `text` no longer fail with
+  `search result context exceeds byte budget` when a step that runs after the
+  byte fitter adds bytes the ceiling no longer has room for. The payload is
+  held to `--max-context-bytes` once more before the blocks that describe its
+  hits (VERIFY, the container map, outlines) are built, and a payload over it
+  gets smaller instead: redundant tail fragments go first, then the type
+  card, then the signature-type block, then ranked hits from the bottom, with
+  the covering test after the other hits and the head last. Whole hits are
+  removed, never clipped, and `results_dropped_by_budget` counts them. Prose
+  passages promoted, or bodies marked complete, after that point are left out
+  if they would overshoot. A payload that already fits is unchanged. A budget
+  below two bytes no longer fails with `2 > 1`: the empty ranking `[]` is the
+  smallest answer there is, and it is what every budget that fits no hit
+  returns.
+
 - `query`'s `VERIFY:` block no longer names an ancestor Gradle build for a file in
   a Gradle project directory that build does not own. With `include ':app'` in the
   root settings script and an undeclared `lib/build.gradle`, an edit in `lib/` used

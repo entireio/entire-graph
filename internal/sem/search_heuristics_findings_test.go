@@ -452,6 +452,9 @@ func TestSearchRepositorySectionLabelsFitTheByteBudget(t *testing.T) {
 		if err := response.Validate(); err != nil {
 			t.Fatalf("document-resolution=%v: %v", documentResolution, err)
 		}
+		// The budget re-fit would hide a label that landed outside the budget, so ask whether it
+		// had to act: the label must be priced by the fitter, not rescued after it.
+		assertSearchRefitIdle(t, fmt.Sprintf("document-resolution=%v", documentResolution), response)
 		if response.Stats.ResultBytes > ceiling {
 			t.Fatalf("document-resolution=%v: result_bytes %d over the %d ceiling",
 				documentResolution, response.Stats.ResultBytes, ceiling)
@@ -616,6 +619,7 @@ func TestSearchRepositoryFitsTheBudgetOnTheWidenedIntents(t *testing.T) {
 		if err := response.Validate(); err != nil {
 			t.Fatalf("%q: the widened intent overshot its own validator: %v", query, err)
 		}
+		assertSearchRefitIdle(t, fmt.Sprintf("%q", query), response)
 		if response.Stats.ResultBytes > ceiling {
 			t.Fatalf("%q: result_bytes %d over the %d ceiling",
 				query, response.Stats.ResultBytes, ceiling)
