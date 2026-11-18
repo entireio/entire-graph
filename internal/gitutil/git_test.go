@@ -3111,6 +3111,14 @@ func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
 	if len(matches) != 32 {
 		t.Fatalf("ordinary-term sample returned %d lines, want 32", len(matches))
 	}
+	matches = nil
+	err = GrepIndexPatternEvery(t.Context(), repo, patterns, func(match GrepMatch) error { matches = append(matches, match); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1001 || matches[1000].Text != "func otherInt() {}" {
+		t.Fatalf("unbounded grep returned %d lines, want all 1001", len(matches))
+	}
 }
 
 func TestGrepTreePatternFilesPinsCommittedContent(t *testing.T) {

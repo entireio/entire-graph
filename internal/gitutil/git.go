@@ -671,6 +671,13 @@ func GrepIndexPatternSample(ctx context.Context, repo string, patterns []string,
 	return grepPatternLines(ctx, repo, "", patterns, 32, visit)
 }
 
+// GrepIndexPatternEvery streams every matching line, with no per-file limit, for a caller
+// that confirms each line itself and must not let lines it rejects hide a later one. Its
+// output is as large as the matches, so callers keep it to rare patterns and stop early.
+func GrepIndexPatternEvery(ctx context.Context, repo string, patterns []string, visit func(GrepMatch) error) error {
+	return grepPatternLines(ctx, repo, "", patterns, -1, visit)
+}
+
 func grepPatternLines(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, visit func(GrepMatch) error) error {
 	return runGrepPatterns(ctx, repo, treeish, patterns, []string{"-m", strconv.Itoa(maxPerFile)}, nil, func(reader *bufio.Reader) error {
 		return readGrepPatternLines(reader, func(match GrepMatch) error {

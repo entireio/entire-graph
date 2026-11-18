@@ -3,6 +3,7 @@ package sem
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -485,6 +486,10 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 			t.Fatal(err)
 		}
 		requireGitShortlistPath(t, tc.query, response.Stats, tc.maxParseBytes == 0, tc.gitPasses)
+		// The 51 readable shortlisted files, plus the bridged handler read for its terms.
+		if tc.query == "heron curlew" && response.Stats.FilesContentRead != 52 {
+			t.Fatalf("%q: files content read = %d, want 52", tc.query, response.Stats.FilesContentRead)
+		}
 		if tc.topK > 0 && response.Stats.FilesIndexed != 120 {
 			t.Fatalf("%q at top-k %d: files indexed = %d, want the adaptive 120", tc.query, tc.topK, response.Stats.FilesIndexed)
 		}
@@ -547,35 +552,47 @@ func requireGitShortlistPath(t *testing.T, query string, stats SearchStats, capp
 	}
 }
 
-// Each recovery pass keeps 32 matching lines a file, so a missing term can hide another in the
-// same file. The next pass greps without the term found and reaches it, and a pass that finds
-// nothing ends them.
-func TestSearchGitUnreadTermsReachesATermAnotherMissingTermHid(t *testing.T) {
+// Git keeps every matching line in the recovery pass, not 32 a file, so a missing term cannot
+// hide another, and neither can lines Git matches but the query's matcher rejects: in the C
+// locale "éint" matches the int alias's ASCII boundary, and the matcher refuses it.
+func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, "a.md", strings.Repeat("wren\n", 40)+"lark\n")
+	write(t, repo, "b.go", strings.Repeat("éint x\n", 40)+"func readInt() {}\n")
 	write(t, repo, "read.md", "osprey\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "fixture")
+	allowed := map[string]bool{"a.md": true, "b.go": true, "read.md": true}
+	read := map[string]bool{"read.md": true}
 
-	q := buildSearchQuery("wren lark osprey")
-	unread, passes := searchGitUnreadTerms(
-		t.Context(), repo, q, newSearchQueryTermMatcher(q),
-		map[string]bool{"a.md": true, "read.md": true}, map[string]bool{"read.md": true},
-		make([]bool, len(q.terms)),
-	)
-	want := map[string]bool{"wren": true, "lark": true, "osprey": false}
-	for index, term := range q.terms {
-		if expected, ok := want[term]; ok && unread[index] != expected {
-			t.Fatalf("term %q marked %v, want %v (terms %v, marked %v)", term, unread[index], expected, q.terms, unread)
+	for _, tc := range []struct {
+		query string
+		known []string
+		want  map[string]bool
+	}{
+		// osprey is only in a file the content pass read, so it stays unmarked.
+		{query: "wren lark osprey", want: map[string]bool{"wren": true, "lark": true, "osprey": false}},
+		{query: "integer value", known: []string{"integer", "value"}, want: map[string]bool{"int": true}},
+	} {
+		q := buildSearchQuery(tc.query)
+		known := make([]bool, len(q.terms))
+		for index, term := range q.terms {
+			known[index] = slices.Contains(tc.known, term)
 		}
-	}
-	// wren, then lark, then a pass that finds osprey only in the file already read.
-	if passes != 3 {
-		t.Fatalf("passes = %d, want 3", passes)
+		marked, passes := searchGitUnreadTerms(t.Context(), repo, q, newSearchQueryTermMatcher(q), allowed, read, known)
+		for term, want := range tc.want {
+			index := slices.Index(q.terms, term)
+			if index < 0 || marked[index] != want {
+				t.Fatalf("%q: term %q marked %v, want %v (terms %v, marked %v)", tc.query, term, index >= 0 && marked[index], want, q.terms, marked)
+			}
+		}
+		if passes != 1 {
+			t.Fatalf("%q: passes = %d, want 1", tc.query, passes)
+		}
 	}
 }
 

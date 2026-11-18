@@ -3159,7 +3159,12 @@ func preselectSearchFiles(
 		// handler file it adds can hold a term every file the cut kept lacks.
 		confidence := searchKeptTermCoverage(files, selection.files, matchedAnywhere, unread, q, func(filePath string) []bool {
 			content, ok := source.read(filePath)
-			if !ok || strings.IndexByte(content, 0) >= 0 {
+			if !ok {
+				return nil
+			}
+			// The content pass is over, so this read is counted without its lock.
+			contentReads++
+			if strings.IndexByte(content, 0) >= 0 {
 				return nil
 			}
 			return matcher.match(content)
@@ -3189,20 +3194,20 @@ func preselectSearchFiles(
 	return selection, nil
 }
 
-// errSearchUnreadTermsFound stops a searchGitUnreadTerms pass once every term it greps for is found.
+// errSearchUnreadTermsFound stops searchGitUnreadTerms' Git pass once every term it greps for is found.
 var errSearchUnreadTermsFound = errors.New("every unread query term found")
 
 // searchGitUnreadTerms returns known, the query terms already matched (by the content pass,
 // or by Git's sample in files that pass never read), plus the terms neither saw but Git finds
 // in a file the pass never read: one outside read, including a shortlisted file too large to
 // read. The sample keeps at most 32 lines a file and searches at most six patterns, so a term
-// can be absent from it while a file the pass skipped holds it. Each pass greps for just the
-// terms still missing, which are rare by construction, and confirms each line with the query's
-// own matcher. A pass keeps 32 lines a file too, so one missing term can hide another in the
-// same file; the next pass greps without the terms already found and so reaches it. The passes
-// stop when one finds nothing new, which means no such file holds a remaining term. A failed
-// pass keeps what it confirmed, so the confidence can only read high, never low. The int
-// counts the passes Git ran, so the caller counts them too.
+// can be absent from it while a file the pass skipped holds it. One Git pass greps for just
+// the missing terms, which are rare by construction, and confirms each line with the query's
+// own matcher. It keeps every matching line rather than 32 a file, so neither a missing term
+// nor a line Git matches but the matcher rejects can crowd out a later line, and it stops as
+// soon as every missing term is found. A failed pass keeps what it confirmed, so the
+// confidence can only read high, never low. The int counts the passes Git ran (0 or 1), so
+// the caller counts them too.
 func searchGitUnreadTerms(
 	ctx context.Context,
 	absRepo string,
@@ -3213,29 +3218,26 @@ func searchGitUnreadTerms(
 ) ([]bool, int) {
 	result := make([]bool, len(q.terms))
 	copy(result, known)
-	passes := 0
-	for missing := searchMissingQueryTerms(q, result); len(missing) > 0 && ctx.Err() == nil; missing = searchMissingQueryTerms(q, result) {
-		patterns := searchGitAliasPatternsForTerms(q, missing)
-		if patterns == nil {
-			break
-		}
-		passes++
-		found := 0
-		err := gitutil.GrepIndexPatternSample(ctx, absRepo, patterns, func(match gitutil.GrepMatch) error {
-			if !allowed[match.Path] || read[match.Path] {
-				return ctx.Err()
-			}
-			found += markSearchUnseenTerms(result, matcher.match(match.Text))
-			if found == len(missing) {
-				return errSearchUnreadTermsFound
-			}
-			return ctx.Err()
-		})
-		if found == 0 || (err != nil && found < len(missing)) {
-			break
-		}
+	missing := searchMissingQueryTerms(q, result)
+	if len(missing) == 0 {
+		return result, 0
 	}
-	return result, passes
+	patterns := searchGitAliasPatternsForTerms(q, missing)
+	if patterns == nil {
+		return result, 0
+	}
+	found := 0
+	_ = gitutil.GrepIndexPatternEvery(ctx, absRepo, patterns, func(match gitutil.GrepMatch) error {
+		if !allowed[match.Path] || read[match.Path] {
+			return ctx.Err()
+		}
+		found += markSearchUnseenTerms(result, matcher.match(match.Text))
+		if found == len(missing) {
+			return errSearchUnreadTermsFound
+		}
+		return ctx.Err()
+	})
+	return result, 1
 }
 
 // searchTermsEither marks each term either slice marks.
