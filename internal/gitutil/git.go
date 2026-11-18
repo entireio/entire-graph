@@ -486,9 +486,11 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 // back to it (grep.c, grep_source_load_driver). It asks `git config` and `git check-attr`,
 // so it reads attributes and configuration but never file content. It can count more files
 // than Git skips, never fewer: check-attr prints `set` and `unspecified` both for those
-// states and for drivers of those names, and a built-in driver such as `python` keeps Git's
-// content test though it has no `binary` setting here. Better to search a file than to miss
-// one.
+// states and for drivers of those names, so an `unspecified` file counts when either the
+// driver so named or the default is binary, and a built-in driver such as `python` keeps
+// Git's content test though it has no `binary` setting here. (A `set` attribute makes Git
+// treat a file as text, so only the driver reading can skip it.) Better to search a file
+// than to miss one.
 func FilesMarkedBinary(ctx context.Context, repo string, paths []string) ([]string, error) {
 	if len(paths) == 0 {
 		return nil, nil
@@ -500,8 +502,8 @@ func FilesMarkedBinary(ctx context.Context, repo string, paths []string) ([]stri
 	var marked []string
 	err = checkDiffAttributes(ctx, repo, paths, func(path, value string) {
 		isBinary, configured := binary[value]
-		if !configured {
-			isBinary = binary["default"]
+		if !configured || value == "unspecified" {
+			isBinary = isBinary || binary["default"]
 		}
 		if value == "unset" || isBinary {
 			marked = append(marked, path)

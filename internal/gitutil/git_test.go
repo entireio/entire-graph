@@ -3199,7 +3199,9 @@ func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T)
 // Git's grep gives a file the default diff driver when its diff attribute names no driver
 // with a binary setting, a file with no diff attribute included, so diff.default.binary =
 // true makes -I skip it. A driver set to auto leaves its files to Git's content test, and
-// `git config --bool` refuses that value. FilesMarkedBinary counts every file -I skips. It
+// `git config --bool` refuses that value. check-attr prints `unspecified` for a file with no
+// diff attribute and for one naming a driver of that name, so a text-configured driver so
+// named must not hide the default's setting. FilesMarkedBinary counts every file -I skips. It
 // counts a file behind a built-in driver such as python too, which Git still tests by
 // content: searching a text file as text costs only the grep.
 func TestFilesMarkedBinaryFollowsGitsDefaultDriver(t *testing.T) {
@@ -3213,6 +3215,7 @@ func TestFilesMarkedBinaryFollowsGitsDefaultDriver(t *testing.T) {
 	git(t, repo, "config", "diff.autod.binary", "auto")
 	git(t, repo, "config", "diff.texty.binary", "false")
 	git(t, repo, "config", "diff.default.binary", "true")
+	git(t, repo, "config", "diff.unspecified.binary", "false")
 	git(t, repo, "add", ".")
 	var listed []string
 	if err := GrepIndexPatternFiles(t.Context(), repo, []string{"plover"}, func(path string) error { listed = append(listed, path); return nil }); err != nil {
