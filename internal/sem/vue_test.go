@@ -184,6 +184,23 @@ func TestVueImportsNeverComeFromRawContent(t *testing.T) {
 	}
 }
 
+func TestVueMacroTypeText(t *testing.T) {
+	for _, testCase := range []struct{ name, script, want string }{
+		{"props interface", "const props = defineProps<Props>()", "Props"},
+		{"with defaults and nested generics", "withDefaults(defineProps<{ task: Task; tags?: Array<Label> }>(), { tags: () => [] })", "{ task: Task; tags?: Array<Label> }"},
+		{"emits with function types", "const emit = defineEmits<{ (e: 'move', payload: MovePayload): void; (e: 'run', fn: () => void): void }>()", "{ (e: 'move', payload: MovePayload): void; (e: 'run', fn: () => void): void }"},
+		{"several macros", "defineProps<Props>()\nconst model = defineModel<Filter>()", "Props, Filter"},
+		{"no macros", "const count = ref<number>(0)", ""},
+		{"runtime props declare no types", "defineProps(['task'])", ""},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := vueMacroTypeText(testCase.script); got != testCase.want {
+				t.Fatalf("got %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
 // Characters whose lowercase form has a different byte length must not move
 // script boundaries: the block scan indexes a lowercase copy with offsets into
 // the source.

@@ -257,7 +257,7 @@
     ]
   },
   "taskboard": {
-    "found": 204,
+    "found": 217,
     "total": 306,
     "tags": {
       "baseline": {
@@ -265,7 +265,7 @@
         "total": 103
       },
       "component-owner": {
-        "found": 5,
+        "found": 12,
         "total": 16
       },
       "event-bus": {
@@ -317,7 +317,7 @@
         "total": 8
       },
       "ts-types": {
-        "found": 7,
+        "found": 13,
         "total": 14
       }
     },
@@ -332,17 +332,24 @@
       "absent src/views/BoardView.vue#selectedTaskId",
       "absent src/views/ProjectsView.vue#id",
       "absent src/views/TaskView.vue#taskId",
+      "relation CALLS src/components/BoardColumn.vue#BoardColumn:component -\u003e src/composables/useDragDrop.ts#useDragDrop",
       "relation CALLS src/components/BoardColumn.vue#countLabel -\u003e src/utils/format.ts#pluralize",
       "relation CALLS src/components/CommentItem.vue#postedAt -\u003e src/utils/format.ts#formatDate",
+      "relation CALLS src/components/CommentList.vue#CommentList:component -\u003e src/components/CommentList.vue#load",
       "relation CALLS src/components/LabelBadge.vue#badgeStyle -\u003e src/components/LabelBadge.vue#contrastColor",
+      "relation CALLS src/components/NotificationStack.vue#NotificationStack:component -\u003e src/composables/useNotifications.ts#useNotifications",
       "relation CALLS src/components/TaskCard.vue#dueLabel -\u003e src/utils/format.ts#formatDate",
       "relation CALLS src/components/TaskCard.vue#overdue -\u003e src/types/task.ts#isOverdue",
       "relation CALLS src/components/TaskDetailPanel.vue#dueText -\u003e src/utils/format.ts#relativeDueLabel",
+      "relation CALLS src/components/TaskForm.vue#TaskForm:component -\u003e src/components/TaskForm.vue#emptyDraft",
       "relation CALLS src/components/TaskForm.vue#reset -\u003e src/components/TaskForm.vue#emptyDraft",
       "relation CALLS src/composables/useFilters.ts#useFilters -\u003e src/composables/useFilters.ts#matchesFilters",
       "relation CALLS src/router/index.ts -\u003e src/router/index.ts#authGuard",
       "relation CALLS src/stores/auth.ts#login -\u003e src/stores/auth.ts#applySession",
+      "relation CALLS src/views/BoardView.vue#BoardView:component -\u003e src/composables/useFilters.ts#useFilters",
       "relation CALLS src/views/LoginView.vue#handleLogin -\u003e src/views/LoginView.vue#redirectTarget",
+      "relation CALLS src/views/ProjectsView.vue#ProjectsView:component -\u003e src/composables/usePagination.ts#usePagination",
+      "relation CALLS src/views/TaskView.vue#TaskView:component -\u003e src/views/TaskView.vue#ensureLoaded",
       "relation CALLS|ASYNC_CALLS src/components/CommentList.vue#load -\u003e src/api/comments.ts#fetchComments",
       "relation CALLS|ASYNC_CALLS src/stores/tasks.ts#addTask -\u003e src/api/tasks.ts#createTask",
       "relation CONTAINS src/components/LabelBadge.vue#LabelBadge:component -\u003e src/components/LabelBadge.vue#contrastColor",
@@ -388,9 +395,15 @@
       "relation IMPORTS src/views/TaskView.vue -\u003e src/components/TaskDetailPanel.vue",
       "relation IMPORTS tests/components/TaskCard.spec.ts -\u003e src/components/TaskCard.vue",
       "relation LISTENS_ON src/composables/useNotifications.ts#useNotifications -\u003e ext:task:created",
+      "relation USES_TYPE|PARAM_TYPE src/components/AssigneeAvatar.vue#AssigneeAvatar:component -\u003e src/types/user.ts#User",
       "relation USES_TYPE|PARAM_TYPE src/components/AssigneePicker.vue#choose -\u003e src/types/user.ts#User",
+      "relation USES_TYPE|PARAM_TYPE src/components/BoardColumn.vue#BoardColumn:component -\u003e src/types/project.ts#Column",
+      "relation USES_TYPE|PARAM_TYPE src/components/CommentItem.vue#CommentItem:component -\u003e src/types/task.ts#Comment",
       "relation USES_TYPE|PARAM_TYPE src/components/LabelBadge.vue#badgeStyle -\u003e src/types/task.ts#Label",
       "relation USES_TYPE|PARAM_TYPE src/components/ProjectSwitcher.vue#toOption -\u003e src/types/project.ts#Project",
+      "relation USES_TYPE|PARAM_TYPE src/components/TaskCard.vue#TaskCard:component -\u003e src/components/TaskCard.vue#Props",
+      "relation USES_TYPE|PARAM_TYPE src/components/TaskCard.vue#TaskCard:component -\u003e src/types/task.ts#Task",
+      "relation USES_TYPE|PARAM_TYPE src/components/TaskFilters.vue#TaskFilters:component -\u003e src/composables/useFilters.ts#TaskFilterState",
       "relation USES_TYPE|PARAM_TYPE src/views/BoardView.vue#onTaskMoved -\u003e src/types/task.ts#TaskMovedPayload",
       "relation USES_TYPE|PARAM_TYPE src/views/SettingsView.vue#onDensityChange -\u003e src/stores/settings.ts#Density",
       "relation USES_TYPE|RETURNS_TYPE src/components/ProjectSwitcher.vue#toOption -\u003e src/components/ProjectSwitcher.vue#SwitcherOption",

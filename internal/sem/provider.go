@@ -6567,6 +6567,15 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 					FilePath: file.Path,
 					Language: file.Language,
 				}
+				if vueFile {
+					// A component's top-level script runs as the component's own
+					// setup, so its calls belong to the component, as a function
+					// component's calls belong to that function.
+					if component, ok := vueComponentRecord(recordsByFile[file.Path]); ok {
+						fileSource = component
+						fileSource.Language = file.Language
+					}
+				}
 				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
 				jsNamespaceCalls := map[string]struct{}{}
@@ -12998,7 +13007,11 @@ func signatureTypeRelations(stop func() bool, recordsByFile map[string][]SymbolR
 			if stop != nil && stop() {
 				return relations
 			}
-			if symbol.Kind != "function" && symbol.Kind != "method" || symbol.Signature == "" {
+			// A component takes part only when the parser recorded its declared
+			// types (Vue's defineProps<T>() and friends); its signature alone
+			// names no types.
+			componentTypes := symbol.Kind == "component" && symbol.signatureTypesKnown
+			if symbol.Kind != "function" && symbol.Kind != "method" && !componentTypes || symbol.Signature == "" {
 				continue
 			}
 			importsByName := resolvedImportsByFile[path]

@@ -277,6 +277,16 @@ func parseVueComponent(ctx context.Context, path, content string, view vueScript
 		return nil, "Vue", status
 	}
 	fileEntities := componentEntities(path, content, "Vue", ctxStop(ctx))
+	if len(fileEntities) > 0 {
+		// The component's compile-time macros declare what it takes: props,
+		// emits, v-model and slots. Recording their type arguments as the
+		// component's parameter types lets the signature-type pass resolve them
+		// like the props parameter of a function component.
+		if types := vueMacroTypeText(view.content); types != "" {
+			fileEntities[0].paramTypeText = types
+			fileEntities[0].signatureTypesKnown = true
+		}
+	}
 	entities := make([]Entity, 0, len(fileEntities)+len(scripts))
 	if len(fileEntities) > 1 {
 		entities = append(entities, fileEntities[1:]...)
@@ -378,4 +388,44 @@ func vueScriptSymbols(symbols []SymbolRecord) []SymbolRecord {
 // passes (Express, NestJS) that components never take part in.
 func jsImporterExtension(ext string) bool {
 	return jsLikeExtension(ext) || strings.EqualFold(ext, ".vue")
+}
+
+// vueMacroTypeText returns the type arguments of a component's
+// defineProps/defineEmits/defineModel/defineSlots macros, joined, or "" when it
+// declares none. withDefaults(defineProps<T>(), ...) is covered by its inner
+// defineProps.
+func vueMacroTypeText(script string) string {
+	var parts []string
+	for _, match := range vueMacroRe.FindAllStringIndex(script, -1) {
+		open := match[1] - 1 // the '<'
+		depth := 0
+		for i := open; i < len(script); i++ {
+			switch script[i] {
+			case '<':
+				depth++
+			case '>':
+				if i > 0 && script[i-1] == '=' {
+					continue // an arrow (=>) inside a function type
+				}
+				depth--
+				if depth == 0 {
+					parts = append(parts, script[open+1:i])
+					i = len(script)
+				}
+			}
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+var vueMacroRe = regexp.MustCompile(`\bdefine(?:Props|Emits|Model|Slots)\s*<`)
+
+// vueComponentRecord returns a component's own symbol from its file's records.
+func vueComponentRecord(records []SymbolRecord) (SymbolRecord, bool) {
+	for _, record := range records {
+		if record.Kind == "component" {
+			return record, true
+		}
+	}
+	return SymbolRecord{}, false
 }

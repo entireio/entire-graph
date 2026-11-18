@@ -64,7 +64,7 @@
     "INHERITS": 9,
     "LISTENS_ON": 1,
     "OVERRIDES": 10,
-    "PARAM_TYPE": 18,
+    "PARAM_TYPE": 19,
     "READS_FIELD": 12,
     "RESOURCE_DEPENDS_ON": 4,
     "RETURNS_TYPE": 19,

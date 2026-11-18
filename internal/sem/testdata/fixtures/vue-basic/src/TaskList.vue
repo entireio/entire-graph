@@ -9,7 +9,8 @@
 import { ref } from 'vue'
 import { fetchTasks, type Task } from './api'
 
-const tasks = ref<Task[]>([])
+const props = defineProps<{ heading: string; initial?: Task[] }>()
+const tasks = ref<Task[]>(props.initial ?? [])
 
 function reload(): void {
   tasks.value = fetchTasks()
