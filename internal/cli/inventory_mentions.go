@@ -58,54 +58,81 @@ func inventoryMentionDisclosure(snapshot sem.ProviderSnapshot, focus neighborEnd
 	if read == nil || focus.External || !inventoryMentionFocusLanguages[focus.Language] || !jsIdentifierPattern.MatchString(focus.Name) {
 		return sem.ProviderWarning{}, false
 	}
-	labelOf := map[string]string{}
-	var paths []string
+	var files []sem.FileRecord
 	for _, file := range snapshot.Files {
-		switch {
-		case file.Language == "Vue":
-			labelOf[file.Path] = "Vue template"
-		case inventoryMentionLanguages[file.Language] && snapshot.Header.LanguageTiers[file.Language] == "inventory-only":
-			labelOf[file.Path] = file.Language
-		default:
-			continue
+		if file.Language == "Vue" || inventoryMentionLanguages[file.Language] && snapshot.Header.LanguageTiers[file.Language] == "inventory-only" {
+			files = append(files, file)
 		}
-		paths = append(paths, file.Path)
 	}
-	if len(paths) == 0 {
+	if len(files) == 0 {
 		return sem.ProviderWarning{}, false
 	}
-	sort.Strings(paths)
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	mention := regexp.MustCompile(`(^|[^A-Za-z0-9_$])` + regexp.QuoteMeta(focus.Name) + `([^A-Za-z0-9_$]|$)`)
+	// A worktree file may grow between indexing and reading. Leave room
+	// for the reader's per-file ceiling before starting a mutable read.
+	mutable := snapshot.Header.Commit == ""
+	for _, warning := range snapshot.Header.Warnings {
+		if warning.Code == "W_WORKTREE_SNAPSHOT" {
+			mutable = true
+		}
+	}
 	var hits []string
 	labels := map[string]bool{}
 	scannedFiles, scannedLines, scannedBytes, truncated := 0, 0, 0, false
-	for _, path := range paths {
-		if scannedFiles >= inventoryMentionMaxFiles || scannedLines >= inventoryMentionMaxLines || scannedBytes >= inventoryMentionMaxBytes {
+	for _, file := range files {
+		// The committed source reader always refuses oversized blobs.
+		if !mutable && file.Bytes > callSiteMaxFileBytes {
+			continue
+		}
+		remainingBytes := inventoryMentionMaxBytes - scannedBytes
+		remainingLines := inventoryMentionMaxLines - scannedLines
+		readBound := file.Bytes
+		if mutable {
+			readBound = max(readBound, callSiteMaxFileBytes)
+		}
+		if scannedFiles >= inventoryMentionMaxFiles || remainingBytes <= 0 || remainingLines <= 0 ||
+			readBound > remainingBytes || file.Lines > remainingLines {
 			truncated = true
 			break
 		}
-		lines, ok := read(path)
+		scannedFiles++
+		lines, ok := read(file.Path)
 		if !ok {
 			continue
 		}
-		scannedFiles++
-		from, to := 0, len(lines)
-		if labelOf[path] == "Vue template" {
-			if from, to, ok = vueTemplateLineRange(lines); !ok {
-				continue
+		// Charge the whole read, including scripts, styles and files with no
+		// template. The worktree may have changed since the snapshot was built.
+		if len(lines) > remainingLines {
+			truncated = true
+			break
+		}
+		size := max(0, len(lines)-1)
+		for _, line := range lines {
+			size += len(line)
+		}
+		scannedBytes += max(size, file.Bytes)
+		scannedLines += len(lines)
+		if scannedBytes > inventoryMentionMaxBytes {
+			truncated = true
+			break
+		}
+		label := file.Language
+		found := false
+		if file.Language == "Vue" {
+			label = "Vue template"
+			found = mention.MatchString(sem.VueTemplateBody(strings.Join(lines, "\n")))
+		} else {
+			for _, line := range lines {
+				if mention.MatchString(line) {
+					found = true
+					break
+				}
 			}
 		}
-		for _, line := range lines[from:to] {
-			scannedLines++
-			scannedBytes += len(line) + 1
-			if mention.MatchString(line) {
-				hits = append(hits, path)
-				labels[labelOf[path]] = true
-				break
-			}
-			if scannedBytes >= inventoryMentionMaxBytes {
-				break
-			}
+		if found {
+			hits = append(hits, file.Path)
+			labels[label] = true
 		}
 	}
 	if len(hits) == 0 {
@@ -125,7 +152,7 @@ func inventoryMentionDisclosure(snapshot sem.ProviderSnapshot, focus neighborEnd
 		detail += fmt.Sprintf(" (+%d more)", more)
 	}
 	if truncated {
-		detail += fmt.Sprintf("; scan stopped after %d files, so more may exist", scannedFiles)
+		detail += fmt.Sprintf("; scan stopped after %d file%s, so more may exist", scannedFiles, pluralSuffix(scannedFiles))
 	}
 	verb := "mention"
 	if len(hits) == 1 {
@@ -139,23 +166,6 @@ func inventoryMentionDisclosure(snapshot sem.ProviderSnapshot, focus neighborEnd
 			len(hits), pluralSuffix(len(hits)), strings.Join(names, ", "), verb, focus.Name),
 		Detail: detail,
 	}, true
-}
-
-// vueTemplateLineRange returns the lines of a component's top-level template,
-// from its opening `<template` line to its closing `</template>` line, both
-// written at the start of a line as top-level blocks are.
-func vueTemplateLineRange(lines []string) (int, int, bool) {
-	start := -1
-	for index, line := range lines {
-		if start < 0 && strings.HasPrefix(line, "<template") {
-			start = index
-			continue
-		}
-		if start >= 0 && strings.HasPrefix(strings.TrimRight(line, " \t\r"), "</template>") {
-			return start, index + 1, true
-		}
-	}
-	return 0, 0, false
 }
 
 // withInventoryMentionDisclosure returns warnings plus the disclosure for focus

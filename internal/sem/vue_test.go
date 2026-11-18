@@ -6,7 +6,7 @@ import (
 )
 
 const vueTaskCardSample = `<template>
-  <!-- <script>commentedOut()</script> -->
+  <!-- An archived <template> with <script>commentedOut()</script> -->
   <article id="card-root" :task-id="task.id">
     <template v-if="task.done"><span>done</span></template>
     <button @click="toggleDone">toggle</button>
@@ -299,6 +299,9 @@ func TestVueScriptSources(t *testing.T) {
 	if got := vueScriptSources(source); len(got) != 1 || got[0] != "./TicketTimer.js" {
 		t.Fatalf("sources = %v", got)
 	}
+	if got := vueScriptSources("<script src='./external.ts'/>"); len(got) != 1 || got[0] != "./external.ts" {
+		t.Fatalf("self-closing script src = %v", got)
+	}
 	if got := vueScriptSources("<script setup>\nconst a = 1\n</script>\n"); len(got) != 0 {
 		t.Fatalf("inline script reported a src: %v", got)
 	}
@@ -385,5 +388,46 @@ func TestBuildVuexStoreNeedsComponentsAndAVuexRoot(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestVuexCallsResolveRootAndSameLineMembers(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "App.vue", "<template><div/></template>")
+	writeFile(t, repo, "store.js", `import Vuex from 'vuex'
+import module from './module'
+export default new Vuex.Store({
+	actions: { load() {} }, mutations: { save() {} },
+	modules: { module }
+})
+`)
+	writeFile(t, repo, "module.js", `export default {
+	namespaced: true,
+	mutations: { save() {} },
+	actions: { load() {},
+		refresh({dispatch, commit}) {
+			dispatch('load', nested(1, 2), { root: true })
+			commit('save', null, { root: true })
+		},
+		local({dispatch, commit}) {
+			dispatch('load', { root: true })
+			commit('save', null, { root: false })
+		}
+	}
+}`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"load", "save"} {
+		for _, caller := range []string{"refresh", "local"} {
+			for _, path := range []string{"store.js", "module.js"} {
+				want := (caller == "refresh") == (path == "store.js")
+				got := hasRelationBySymbolNameAndFile(snapshot, "CALLS", caller, "module.js", target, path)
+				if got != want {
+					t.Errorf("%s -> %s in %s = %v, want %v", caller, target, path, got, want)
+				}
+			}
+		}
 	}
 }

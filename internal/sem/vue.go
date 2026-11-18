@@ -35,7 +35,7 @@ type vueScriptView struct {
 // declares a lang the provider does not parse (coffee, livescript), in which
 // case the caller keeps the inventory-only extraction.
 func vueScriptViewOf(content string) (vueScriptView, bool) {
-	blocks := vueScriptBlocks(content)
+	blocks := vueBlocks(content, "script")
 	dialect := ""
 	hasBody := false
 	for _, block := range blocks {
@@ -105,7 +105,7 @@ var vueSrcAttrRe = regexp.MustCompile(`(?i)(?:^|\s)src\s*=\s*["']([^"']+)["']`)
 // a component whose script lives in another file.
 func vueScriptSources(content string) []string {
 	var sources []string
-	for _, block := range vueScriptBlocks(content) {
+	for _, block := range vueBlocks(content, "script") {
 		if match := vueSrcAttrRe.FindStringSubmatch(block.attrs); match != nil {
 			sources = append(sources, match[1])
 		}
@@ -127,17 +127,25 @@ func (view vueScriptView) languageSpec() (languageSpec, bool) {
 	return treeSitterLanguages[".js"], false
 }
 
-type vueScriptBlock struct {
+type vueBlock struct {
 	attrs              string
 	bodyStart, bodyEnd int
 }
 
-// vueScriptBlocks returns the top-level <script> blocks of a single-file
-// component. Only top-level blocks count: template, style and custom blocks are
-// skipped whole (a <template> may nest further <template> tags), and HTML
-// comments between blocks are ignored.
-func vueScriptBlocks(content string) []vueScriptBlock {
-	var blocks []vueScriptBlock
+// VueTemplateBody returns the body of the top-level template. Its byte range
+// excludes neighboring scripts even when the blocks share a single line.
+func VueTemplateBody(content string) string {
+	blocks := vueBlocks(content, "template")
+	if len(blocks) == 0 {
+		return ""
+	}
+	return content[blocks[0].bodyStart:blocks[0].bodyEnd]
+}
+
+// vueBlocks walks the outer blocks of a Vue SFC, skipping comments and
+// preserving the attributes of self-closing blocks such as <script src="…"/>.
+func vueBlocks(content, wanted string) []vueBlock {
+	var blocks []vueBlock
 	lower := asciiLower(content)
 	for i := 0; i < len(content); {
 		lt := strings.IndexByte(content[i:], '<')
@@ -146,11 +154,7 @@ func vueScriptBlocks(content string) []vueScriptBlock {
 		}
 		i += lt
 		if strings.HasPrefix(content[i:], "<!--") {
-			end := strings.Index(content[i+4:], "-->")
-			if end < 0 {
-				break
-			}
-			i += 4 + end + 3
+			i = vueCommentEnd(content, i)
 			continue
 		}
 		name, attrs, tagEnd, selfClosing, ok := vueOpenTag(content, i)
@@ -158,23 +162,23 @@ func vueScriptBlocks(content string) []vueScriptBlock {
 			i++
 			continue
 		}
-		if selfClosing {
-			i = tagEnd
-			continue
+		bodyEnd, next := tagEnd, tagEnd
+		if !selfClosing {
+			bodyEnd, next = vueBlockEnd(content, lower, name, tagEnd)
 		}
-		if name == "script" {
-			closeAt := strings.Index(lower[tagEnd:], "</script")
-			if closeAt < 0 {
-				blocks = append(blocks, vueScriptBlock{attrs: attrs, bodyStart: tagEnd, bodyEnd: len(content)})
-				break
-			}
-			blocks = append(blocks, vueScriptBlock{attrs: attrs, bodyStart: tagEnd, bodyEnd: tagEnd + closeAt})
-			i = tagEnd + closeAt + len("</script")
-			continue
+		if name == wanted {
+			blocks = append(blocks, vueBlock{attrs: attrs, bodyStart: tagEnd, bodyEnd: bodyEnd})
 		}
-		i = vueSkipBlock(content, lower, name, tagEnd)
+		i = next
 	}
 	return blocks
+}
+
+func vueCommentEnd(content string, start int) int {
+	if end := strings.Index(content[start+4:], "-->"); end >= 0 {
+		return start + 4 + end + 3
+	}
+	return len(content)
 }
 
 // vueOpenTag parses the opening tag at content[at] ('<'). It returns the
@@ -209,31 +213,33 @@ func vueOpenTag(content string, at int) (name, attrs string, end int, selfClosin
 	return "", "", 0, false, false
 }
 
-// vueSkipBlock returns the index just past the close of a non-script top-level
+// vueBlockEnd returns the start and end of the closing tag for a top-level
 // block named name whose opening tag ends at from. Same-name tags nest (a
 // <template> holds <template v-slot> children); raw-text blocks like <style>
 // have no nested tags of their own name.
-func vueSkipBlock(content, lower, name string, from int) int {
+func vueBlockEnd(content, lower, name string, from int) (int, int) {
 	depth := 1
 	open, closing := "<"+name, "</"+name
 	for i := from; i < len(content); {
 		next := strings.IndexByte(content[i:], '<')
 		if next < 0 {
-			return len(content)
+			return len(content), len(content)
 		}
 		i += next
 		switch {
+		case name == "template" && strings.HasPrefix(content[i:], "<!--"):
+			i = vueCommentEnd(content, i)
 		case strings.HasPrefix(lower[i:], closing) && vueTagNameEnds(lower, i+len(closing)):
 			depth--
 			gt := strings.IndexByte(content[i:], '>')
 			if gt < 0 {
-				return len(content)
+				return len(content), len(content)
+			}
+			if depth == 0 {
+				return i, i + gt + 1
 			}
 			i += gt + 1
-			if depth == 0 {
-				return i
-			}
-		case strings.HasPrefix(lower[i:], open) && vueTagNameEnds(lower, i+len(open)):
+		case name != "script" && name != "style" && strings.HasPrefix(lower[i:], open) && vueTagNameEnds(lower, i+len(open)):
 			_, _, end, selfClosing, ok := vueOpenTag(content, i)
 			if !ok {
 				i++
@@ -247,7 +253,7 @@ func vueSkipBlock(content, lower, name string, from int) int {
 			i++
 		}
 	}
-	return len(content)
+	return len(content), len(content)
 }
 
 // asciiLower lowercases ASCII letters only, so the result keeps the input's
@@ -780,7 +786,7 @@ func buildVuexStore(files []FileRecord, recordsByFile map[string][]SymbolRecord,
 // declared inside its `actions`, `mutations` and `getters` objects, whether
 // those are module constants (`const actions = { ... }`) or written inline in
 // the exported options. The objects themselves are usually unexported
-// constants with no symbol, so members are placed by the object's line range.
+// constants with no symbol, so members are placed by the object's source range.
 func (store *vuexStore) index(path, namespace, content string, records []SymbolRecord) {
 	type span struct {
 		kind       string
@@ -813,16 +819,25 @@ func (store *vuexStore) index(path, namespace, content string, records []SymbolR
 		}
 		spans = append(spans, span{
 			kind:  vuexMemberContainer[name],
-			start: strings.Count(stripped[:open], "\n") + 1,
-			end:   strings.Count(stripped[:closeAt], "\n") + 1,
+			start: open,
+			end:   closeAt,
 		})
 	}
+	lineStarts := jsLineStarts(content)
 	for _, record := range records {
 		if record.Kind != "method" && record.Kind != "function" {
 			continue
 		}
+		start := record.sourceStartByte
+		if record.sourceEndByte <= start {
+			// Older or synthetic records carry only the declaration line.
+			if record.StartLine < 1 || record.StartLine > len(lineStarts) {
+				continue
+			}
+			start = lineStarts[record.StartLine-1]
+		}
 		for _, object := range spans {
-			if record.StartLine <= object.start || record.StartLine > object.end {
+			if start <= object.start || start >= object.end {
 				continue
 			}
 			key := record.Name
@@ -898,34 +913,65 @@ type vuexCall struct {
 	detail string
 }
 
+// vuexRootOption inspects the third argument only. Payloads may themselves
+// contain commas, nested calls, or a root property.
+func vuexRootOption(call string) bool {
+	open := strings.IndexByte(call, '(')
+	closeAt := findMatchingStaticDelimiter(call, open, '(', ')')
+	if closeAt < 0 {
+		return false
+	}
+	args := splitTopLevelStaticComma(strings.TrimSuffix(strings.TrimSpace(call[open+1:closeAt]), ","))
+	if len(args) != 3 {
+		return false
+	}
+	options := strings.TrimSpace(args[2])
+	if !strings.HasPrefix(options, "{") || !strings.HasSuffix(options, "}") {
+		return false
+	}
+	for _, field := range splitTopLevelStaticComma(strings.TrimSuffix(strings.TrimSpace(options[1:len(options)-1]), ",")) {
+		key, value, ok := strings.Cut(field, ":")
+		if ok && strings.Trim(strings.TrimSpace(key), "\"'") == "root" {
+			return strings.TrimSpace(value) == "true"
+		}
+	}
+	return false
+}
+
 // callsIn returns the store members a code block reaches: by dispatch, commit
 // or getter string, or through a map-helper binding used as `this.name`.
 func (store *vuexStore) callsIn(fromPath, block string, bindings map[string]vuexBinding) []vuexCall {
 	var calls []vuexCall
 	seen := map[string]bool{}
-	add := func(kind, key string) {
-		member, ok := store.resolve(kind, key, fromPath)
+	add := func(kind, key, scopePath string) {
+		member, ok := store.resolve(kind, key, scopePath)
 		if !ok || seen[member.ID] {
 			return
 		}
 		seen[member.ID] = true
 		calls = append(calls, vuexCall{target: member, detail: key})
 	}
-	for _, match := range vuexDispatchRe.FindAllStringSubmatch(block, -1) {
-		add("action", match[1])
-	}
-	for _, match := range vuexCommitRe.FindAllStringSubmatch(block, -1) {
-		add("mutation", match[1])
+	for _, operation := range []struct {
+		kind string
+		call *regexp.Regexp
+	}{{"action", vuexDispatchRe}, {"mutation", vuexCommitRe}} {
+		for _, match := range operation.call.FindAllStringSubmatchIndex(block, -1) {
+			scopePath := fromPath
+			if store.namespaceOf[fromPath] != "" && vuexRootOption(block[match[0]:]) {
+				scopePath = "" // explicit root lookup bypasses the module namespace
+			}
+			add(operation.kind, block[match[2]:match[3]], scopePath)
+		}
 	}
 	for _, re := range []*regexp.Regexp{vuexGetterIndexRe, vuexGetterMemberRe} {
 		for _, match := range re.FindAllStringSubmatch(block, -1) {
-			add("getter", match[1])
+			add("getter", match[1], fromPath)
 		}
 	}
 	if len(bindings) > 0 {
 		for _, match := range vuexThisMemberRe.FindAllStringSubmatch(block, -1) {
 			if binding, ok := bindings[match[1]]; ok {
-				add(binding.kind, binding.key)
+				add(binding.kind, binding.key, fromPath)
 			}
 		}
 	}

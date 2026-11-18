@@ -1261,7 +1261,6 @@ func TestTypeScriptRelationScanParseTimeoutRecordsPartialFailure(t *testing.T) {
 	jsScanParseTimeout = 1 * time.Nanosecond
 	defer func() { jsScanParseTimeout = saved }()
 
-	repo := t.TempDir()
 	// The relation-phase scope parse must be big enough that tree-sitter
 	// observes the already-expired deadline mid-parse; the entity phase keeps
 	// the full parse budget and is unaffected.
@@ -1271,25 +1270,34 @@ func TestTypeScriptRelationScanParseTimeoutRecordsPartialFailure(t *testing.T) {
 	for i := 0; i < 2000; i++ {
 		fmt.Fprintf(&source, "export function generated%d(value: number) { return value; }\n", i)
 	}
-	writeFile(t, repo, "src/parser.ts", source.String())
-	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, failure := range snapshot.Header.PartialFailures {
-		if failure.FilePath != "src/parser.ts" {
-			continue
-		}
-		if failure.Code == "E_PARSE_TIMEOUT" && strings.Contains(failure.EffectOnCompleteness, "relation-phase") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("relation-phase scope parse timeout was not surfaced as a partial failure: %#v", snapshot.Header.PartialFailures)
-	}
-	if len(snapshot.Symbols) == 0 {
-		t.Fatalf("entity-phase parsing should be unaffected by the relation-phase timeout: %#v", snapshot.Symbols)
+	for _, path := range []string{"src/parser.ts", "src/Parser.vue"} {
+		t.Run(path, func(t *testing.T) {
+			repo := t.TempDir()
+			code := source.String()
+			if isVuePath(path) {
+				code = "<script lang='ts'>\n" + code + "</script>"
+			}
+			writeFile(t, repo, path, code)
+			snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, failure := range snapshot.Header.PartialFailures {
+				if failure.FilePath != path {
+					continue
+				}
+				if failure.Code == "E_PARSE_TIMEOUT" && strings.Contains(failure.EffectOnCompleteness, "relation-phase") {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("relation-phase scope parse timeout was not surfaced as a partial failure: %#v", snapshot.Header.PartialFailures)
+			}
+			if len(snapshot.Symbols) == 0 {
+				t.Fatalf("entity-phase parsing should be unaffected by the relation-phase timeout: %#v", snapshot.Symbols)
+			}
+		})
 	}
 }
 

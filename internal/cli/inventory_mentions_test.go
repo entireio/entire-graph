@@ -10,7 +10,7 @@ import (
 
 func TestInventoryMentionDisclosure(t *testing.T) {
 	snapshot := sem.ProviderSnapshot{
-		Header: sem.SnapshotHeader{LanguageTiers: map[string]string{
+		Header: sem.SnapshotHeader{Commit: "committed", LanguageTiers: map[string]string{
 			"Svelte": "inventory-only", "Markdown": "inventory-only", "TypeScript": "semantic",
 		}},
 		Files: []sem.FileRecord{
@@ -31,6 +31,9 @@ func TestInventoryMentionDisclosure(t *testing.T) {
 		"src/Badge.vue": {"<template>", "  <span>{{ formatDue(due) }}</span>", "</template>", "", "<script setup>", "import { formatDue } from './format'", "</script>"},
 		// A script mention is modelled already: this one does not.
 		"src/Plain.vue": {"<template>", "  <span>{{ due }}</span>", "</template>", "", "<script setup>", "import { formatDue } from './format'", "formatDue(due)", "</script>"},
+	}
+	for i, file := range snapshot.Files {
+		snapshot.Files[i].Bytes = len(strings.Join(source[file.Path], "\n"))
 	}
 	read := func(path string) ([]string, bool) {
 		lines, ok := source[path]
@@ -62,9 +65,9 @@ func TestInventoryMentionDisclosure(t *testing.T) {
 	// A byte budget that runs out after the first mention stops the scan and
 	// says so; a scan that finds nothing before stopping reports nothing.
 	defer func(limit int) { inventoryMentionMaxBytes = limit }(inventoryMentionMaxBytes)
-	inventoryMentionMaxBytes = 50
+	inventoryMentionMaxBytes = len(strings.Join(source["src/Badge.vue"], "\n"))
 	warning, ok = inventoryMentionDisclosure(snapshot, neighborEndpoint{Name: "formatDue", Language: "TypeScript"}, read)
-	if !ok || !strings.HasPrefix(warning.Detail, "files: src/Badge.vue;") || !strings.Contains(warning.Detail, "scan stopped after 2 files") {
+	if !ok || !strings.HasPrefix(warning.Detail, "files: src/Badge.vue;") || !strings.Contains(warning.Detail, "scan stopped after 1 file") {
 		t.Fatalf("truncated warning = %+v (ok=%v)", warning, ok)
 	}
 }
@@ -78,7 +81,7 @@ func TestInventoryMentionDisclosureReachesImpactAndNeighbors(t *testing.T) {
 	git(t, repo, "config", "user.email", "inventory-mention@example.invalid")
 	write(t, repo, "src/format.ts", "export function formatDue(date: string): string {\n  return date\n}\n")
 	write(t, repo, "src/Card.svelte", "<script>\n  import { formatDue } from './format'\n  export let due\n</script>\n\n<p>{formatDue(due)}</p>\n")
-	write(t, repo, "src/Badge.vue", "<template>\n  <span>{{ formatDue(due) }}</span>\n</template>\n\n<script setup>\nimport { formatDue } from './format'\ndefineProps(['due'])\n</script>\n")
+	write(t, repo, "src/Badge.vue", "<template><span>{{ formatDue(due) }}</span></template><script setup>\nimport { formatDue } from './format'\ndefineProps(['due'])\n</script>\n")
 	git(t, repo, "add", "-A")
 	git(t, repo, "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base")
 
@@ -112,5 +115,44 @@ func TestInventoryMentionDisclosureReachesImpactAndNeighbors(t *testing.T) {
 				t.Fatalf("output lacks %q:\n%s", testCase.want, out)
 			}
 		})
+	}
+}
+
+func TestInventoryMentionReadBudgetIncludesScriptOnlyFiles(t *testing.T) {
+	source := "<script setup>const x = 1</script>"
+	snapshot := sem.ProviderSnapshot{Header: sem.SnapshotHeader{Commit: "committed"}, Files: []sem.FileRecord{
+		{Path: "a.vue", Language: "Vue", Bytes: len(source)},
+		{Path: "b.vue", Language: "Vue", Bytes: len(source)},
+	}}
+	saved := inventoryMentionMaxBytes
+	inventoryMentionMaxBytes = len(source) + 1
+	t.Cleanup(func() { inventoryMentionMaxBytes = saved })
+	reads := 0
+	_, _ = inventoryMentionDisclosure(snapshot, neighborEndpoint{Name: "x", Language: "Vue"}, func(path string) ([]string, bool) {
+		reads++
+		return []string{source}, true
+	})
+	if reads != 1 {
+		t.Fatalf("read %d files when only one fits the byte budget", reads)
+	}
+	// The same snapshot metadata cannot bound a later worktree read.
+	snapshot.Header.Commit = ""
+	_, _ = inventoryMentionDisclosure(snapshot, neighborEndpoint{Name: "x", Language: "Vue"}, func(string) ([]string, bool) {
+		t.Fatal("started a mutable read without room for the per-file ceiling")
+		return nil, false
+	})
+
+}
+
+func TestInventoryMentionIgnoresScriptSharingTemplateLine(t *testing.T) {
+	content := "<template><template v-if='ok'>{{ show }}</template></template><script setup>const hide = 1</script>"
+	snapshot := sem.ProviderSnapshot{Files: []sem.FileRecord{{Path: "app.vue", Language: "Vue", Bytes: len(content)}}}
+	for _, name := range []string{"show", "hide"} {
+		_, found := inventoryMentionDisclosure(snapshot, neighborEndpoint{Name: name, Language: "Vue"}, func(string) ([]string, bool) {
+			return []string{content}, true
+		})
+		if found != (name == "show") {
+			t.Errorf("template mention of %s = %v", name, found)
+		}
 	}
 }
