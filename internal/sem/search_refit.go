@@ -161,9 +161,9 @@ func shrinkSearchSignatureTypesOneStep(block []SearchSignatureType) []SearchSign
 	for _, entry := range block {
 		widest = maxInt(widest, maxInt(len(entry.Methods), len(entry.Fields)))
 	}
-	for _, cap := range []int{8, 5, 3, 2} {
-		if widest > cap {
-			return shrinkSearchSignatureTypes(block, cap)
+	for _, limit := range []int{8, 5, 3, 2} {
+		if widest > limit {
+			return shrinkSearchSignatureTypes(block, limit)
 		}
 	}
 	return block[:len(block)-1]

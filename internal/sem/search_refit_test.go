@@ -250,12 +250,7 @@ func TestSearchRepositoryPostAllocatorPassesHoldTheCeiling(t *testing.T) {
 			DocumentResolution: true,
 		},
 	}
-	for _, corpus := range []struct {
-		name  string
-		repo  string
-		query string
-		fired map[string]func(SearchResponse) bool
-	}{
+	for _, corpus := range []refitSweepCorpus{
 		{
 			name: "code", repo: refitCodeCorpus(t), query: "settle the amber ledger vessel count",
 			fired: map[string]func(SearchResponse) bool{
@@ -281,34 +276,58 @@ func TestSearchRepositoryPostAllocatorPassesHoldTheCeiling(t *testing.T) {
 			},
 		},
 	} {
-		seen := map[string]bool{}
-		for name, lever := range levers {
-			for ceiling := 160; ceiling <= 9000; ceiling += 487 {
-				options := lever
-				options.Worktree, options.Profile, options.MaxContextBytes = true, ProfileFast, ceiling
-				response, err := SearchRepository(t.Context(), corpus.repo, "test", corpus.query, options)
-				if err != nil {
-					t.Fatalf("%s/%s at %d: %v", corpus.name, name, ceiling, err)
-				}
-				if err := response.Validate(); err != nil {
-					t.Fatalf("%s/%s at %d: %v", corpus.name, name, ceiling, err)
-				}
-				if response.budgetRefitShed != 0 {
-					t.Fatalf("%s/%s at %d: a post-allocator pass overshot its share of the ceiling and the "+
-						"final re-fit had to remove %d item(s); fix that pass, the re-fit only keeps callers "+
-						"from seeing the failure", corpus.name, name, ceiling, response.budgetRefitShed)
-				}
-				for pass, fired := range corpus.fired {
-					seen[pass] = seen[pass] || fired(response)
-				}
+		sweepRefitCorpus(t, corpus, levers)
+	}
+}
+
+// refitSweepCorpus is one repository the ceiling sweep runs on, with the passes it must see fire.
+type refitSweepCorpus struct {
+	name  string
+	repo  string
+	query string
+	fired map[string]func(SearchResponse) bool
+}
+
+// sweepRefitCorpus runs every lever at every swept ceiling on one corpus, then fails if a pass the
+// corpus exists for never added anything.
+func sweepRefitCorpus(t *testing.T, corpus refitSweepCorpus, levers map[string]SearchOptions) {
+	t.Helper()
+	seen := map[string]bool{}
+	for name, lever := range levers {
+		for ceiling := 160; ceiling <= 9000; ceiling += 487 {
+			options := lever
+			options.Worktree, options.Profile, options.MaxContextBytes = true, ProfileFast, ceiling
+			label := fmt.Sprintf("%s/%s at %d", corpus.name, name, ceiling)
+			response, err := SearchRepository(t.Context(), corpus.repo, "test", corpus.query, options)
+			if err != nil {
+				t.Fatalf("%s: %v", label, err)
+			}
+			if err := response.Validate(); err != nil {
+				t.Fatalf("%s: %v", label, err)
+			}
+			assertSearchRefitIdle(t, label, response)
+			for pass, fired := range corpus.fired {
+				seen[pass] = seen[pass] || fired(response)
 			}
 		}
-		for pass := range corpus.fired {
-			if !seen[pass] {
-				t.Fatalf("%s corpus: %s never added anything, so the sweep proves nothing about it",
-					corpus.name, pass)
-			}
+	}
+	for pass := range corpus.fired {
+		if !seen[pass] {
+			t.Fatalf("%s corpus: %s never added anything, so the sweep proves nothing about it",
+				corpus.name, pass)
 		}
+	}
+}
+
+// assertSearchRefitIdle fails when the final re-fit had to remove anything. The re-fit keeps a
+// caller from seeing an overshoot, so a response it rescued would otherwise pass every budget check
+// while some post-allocator pass still spends bytes it was never given.
+func assertSearchRefitIdle(t *testing.T, label string, response SearchResponse) {
+	t.Helper()
+	if response.budgetRefitShed != 0 {
+		t.Fatalf("%s: a post-allocator pass overshot its share of the ceiling and the final re-fit had "+
+			"to remove %d item(s); fix that pass, the re-fit only keeps callers from seeing the failure",
+			label, response.budgetRefitShed)
 	}
 }
 
