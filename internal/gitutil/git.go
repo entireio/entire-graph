@@ -557,7 +557,6 @@ func readCheckAttrRecords(reader *bufio.Reader, visit func(path, value string)) 
 	}
 }
 
-// gitConfigGetRegexp is the `git config` option that lists every key matching a pattern.
 const gitConfigGetRegexp = "--get-regexp"
 
 // binaryDiffDrivers reports, for each diff driver Git's configuration sets
