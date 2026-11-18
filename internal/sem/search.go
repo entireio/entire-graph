@@ -386,6 +386,7 @@ type SearchStats struct {
 	PreselectionPasses             int     `json:"preselection_passes,omitempty"`
 	PreselectionFilesExamined      int     `json:"preselection_files_examined,omitempty"`
 	PreselectionConfidence         float64 `json:"preselection_confidence,omitempty"`
+	PreselectionBoundaryGap        float64 `json:"preselection_boundary_gap,omitempty"`
 	PreselectionCoverage           float64 `json:"preselection_coverage,omitempty"`
 	PreselectionDiversity          float64 `json:"preselection_diversity,omitempty"`
 	PreselectionWidened            bool    `json:"preselection_widened,omitempty"`
@@ -1356,6 +1357,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 				PreselectionPasses:        selection.preselectionPasses,
 				PreselectionFilesExamined: selection.preselectionFilesExamined,
 				PreselectionConfidence:    selection.preselectionConfidence,
+				PreselectionBoundaryGap:   selection.preselectionBoundaryGap,
 				PreselectionCoverage:      selection.preselectionCoverage,
 				PreselectionDiversity:     selection.preselectionDiversity,
 				PreselectionWidened:       selection.preselectionWidened,
@@ -1634,6 +1636,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		PreselectionPasses:        selection.preselectionPasses,
 		PreselectionFilesExamined: selection.preselectionFilesExamined,
 		PreselectionConfidence:    selection.preselectionConfidence,
+		PreselectionBoundaryGap:   selection.preselectionBoundaryGap,
 		PreselectionCoverage:      selection.preselectionCoverage,
 		PreselectionDiversity:     selection.preselectionDiversity,
 		PreselectionWidened:       selection.preselectionWidened,
@@ -2512,6 +2515,7 @@ type searchFileSelection struct {
 	preselectionPasses        int
 	preselectionFilesExamined int
 	preselectionConfidence    float64
+	preselectionBoundaryGap   float64
 	preselectionCoverage      float64
 	preselectionDiversity     float64
 	preselectionWidened       bool
@@ -3076,6 +3080,7 @@ func preselectSearchFiles(
 		selection.files = assessment.Files
 		selection.preselectionPasses = assessment.Passes
 		selection.preselectionConfidence = assessment.Confidence
+		selection.preselectionBoundaryGap = assessment.BoundaryGap
 		selection.preselectionCoverage = assessment.Coverage
 		selection.preselectionDiversity = assessment.Diversity
 		selection.preselectionWidened = assessment.Widened

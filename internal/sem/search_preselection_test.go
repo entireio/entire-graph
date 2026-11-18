@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"reflect"
@@ -98,7 +99,7 @@ func TestProgressivePreselectionStopsAtConfidentCoveredDiverseBase(t *testing.T)
 	if !reflect.DeepEqual(got.Files, []string{"cmd/main.go", "internal/service.go", "pkg/model.go", "tools/task.go"}) {
 		t.Fatalf("files = %#v", got.Files)
 	}
-	if got.Confidence < searchPreselectionMinConfidence || got.Coverage != 1 || got.Diversity != 1 {
+	if got.BoundaryGap < searchPreselectionMinBoundaryGap || got.Confidence != 1 || got.Coverage != 1 || got.Diversity != 1 {
 		t.Fatalf("assessment metrics = %#v", got)
 	}
 }
@@ -170,6 +171,68 @@ func TestProgressivePreselectionStopsAtFourXBound(t *testing.T) {
 	got := selectProgressiveSearchFiles(fuseSearchPreselectionEvidence(evidence), []bool{true, true}, q, 2)
 	if len(got.Files) != 8 || got.Examined != 14 || !got.Bounded || got.Coverage >= 1 {
 		t.Fatalf("assessment = %#v, want the four-times cap with incomplete coverage", got)
+	}
+}
+
+// TestProgressivePreselectionConfidenceIsNotTheRRFStep pins issue 273. Five hundred files
+// that match the one query term equally well sit in a single fusion channel, so each fused
+// score is 1/(61+rank) and the boundary gap is the RRF step at the cut, 1/445 at the
+// 384-file cap. That gap still decides widening, so the selection is unchanged, but it said
+// nothing about the files kept and preselection_confidence used to report it as if it did.
+// Every kept file holds the term, so the confidence reported now is 1.
+func TestProgressivePreselectionConfidenceIsNotTheRRFStep(t *testing.T) {
+	q := preselectionTestQuery("alpha")
+	evidence := make([]searchPreselectionEvidence, 0, 500)
+	for index := 0; index < 500; index++ {
+		evidence = append(evidence, searchPreselectionEvidence{
+			Path:          fmt.Sprintf("src/file%03d.go", index),
+			OriginalScore: float64(500 - index),
+			ContentScore:  float64(500 - index),
+			MatchedTerms:  []bool{true},
+		})
+	}
+	got := selectProgressiveSearchFiles(fuseSearchPreselectionEvidence(evidence), []bool{true}, q, 96)
+	if got.Passes != 3 || len(got.Files) != 384 || !got.Widened || !got.Bounded {
+		t.Fatalf("assessment = passes %d files %d widened %v bounded %v, want widths 96, 192, 384 and the cap",
+			got.Passes, len(got.Files), got.Widened, got.Bounded)
+	}
+	if want := 1.0 / 445; math.Abs(got.BoundaryGap-want) > 1e-12 {
+		t.Fatalf("boundary gap = %.17g, want the RRF step %.17g", got.BoundaryGap, want)
+	}
+	if got.Confidence != 1 || got.Coverage != 1 {
+		t.Fatalf("confidence = %v coverage = %v, want 1: every kept file holds the query term", got.Confidence, got.Coverage)
+	}
+}
+
+// TestProgressivePreselectionConfidenceFallsWhenTheCapDropsATerm: the only file holding
+// "beta" ranks below twenty files that match "alpha" by path and content, so the 8-file cap
+// leaves it out and the kept files hold half of the query's matched-term weight.
+func TestProgressivePreselectionConfidenceFallsWhenTheCapDropsATerm(t *testing.T) {
+	q := preselectionTestQuery("alpha", "beta")
+	evidence := make([]searchPreselectionEvidence, 0, 21)
+	for index := 0; index < 20; index++ {
+		evidence = append(evidence, searchPreselectionEvidence{
+			Path:          fmt.Sprintf("src/alpha%02d.go", index),
+			OriginalScore: float64(40 - index),
+			PathScore:     float64(20 - index),
+			ContentScore:  float64(20 - index),
+			MatchedTerms:  []bool{true, false},
+		})
+	}
+	evidence = append(evidence, searchPreselectionEvidence{
+		Path: "src/other.go", OriginalScore: 1, ContentScore: 1, MatchedTerms: []bool{false, true},
+	})
+	got := selectProgressiveSearchFiles(fuseSearchPreselectionEvidence(evidence), []bool{true, true}, q, 2)
+	if len(got.Files) != 8 || !got.Bounded {
+		t.Fatalf("assessment = %#v, want the 8-file cap", got)
+	}
+	for _, path := range got.Files {
+		if path == "src/other.go" {
+			t.Fatalf("files = %#v, want the beta file left out", got.Files)
+		}
+	}
+	if got.Confidence != 0.5 || got.Coverage != 0.5 {
+		t.Fatalf("confidence = %v coverage = %v, want 0.5", got.Confidence, got.Coverage)
 	}
 }
 

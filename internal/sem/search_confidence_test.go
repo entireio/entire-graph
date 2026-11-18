@@ -1,6 +1,10 @@
 package sem
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 func confidenceResponse(scores []float64, files []string, section string) SearchResponse {
 	results := make([]SearchResult, 0, len(scores))
@@ -237,5 +241,122 @@ func TestAssessSearchConfidenceIgnoresTheDirectionOfTheTopTwoGap(t *testing.T) {
 		if !assessment.Low {
 			t.Fatalf("a 0.01-point tie at %v was not reported", scores)
 		}
+	}
+}
+
+// A capped cold selection that left out every file matching part of the query is marked
+// whatever the ranking looks like, and ahead of the ranking's own reasons: the advice for it
+// is to widen or re-query, not to conclude the repository lacks the answer.
+func TestAssessSearchConfidenceMarksAColdIndexThatDroppedPartOfTheQuery(t *testing.T) {
+	t.Parallel()
+	threeFiles := []string{"src/a.go", "src/b.go", "src/c.go"}
+	withStats := func(scores []float64, stats SearchStats) SearchResponse {
+		response := confidenceResponse(scores, threeFiles, "")
+		response.Stats = stats
+		return response
+	}
+	cases := []struct {
+		name       string
+		response   SearchResponse
+		wantLow    bool
+		wantReason string
+	}{
+		{
+			name:     "a complete capped selection is not marked",
+			response: withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: 1}),
+		},
+		{
+			// Every path without a capped cold selection: the committed-tree grep, an
+			// explicit --max-indexed-files, a corpus under the limit.
+			name:     "no capped selection is not marked",
+			response: withStats([]float64{35.3, 33.3, 33.1}, SearchStats{}),
+		},
+		{
+			name:       "a strong ranking over a selection that dropped a term is marked",
+			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: 0.5}),
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.50)",
+		},
+		{
+			name:       "the dropped term outranks a weak score",
+			response:   withStats([]float64{4.1, 3.0, 2.0}, SearchStats{PreselectionBounded: true, PreselectionConfidence: 0.75}),
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.75)",
+		},
+		{
+			name:       "the printed confidence never rounds up to 1",
+			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: 0.996}),
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.99)",
+		},
+		{
+			name:     "an empty payload is still not marked",
+			response: SearchResponse{Stats: SearchStats{PreselectionBounded: true, PreselectionConfidence: 0.5}},
+		},
+	}
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got := AssessSearchConfidence(testCase.response)
+			if got.Low != testCase.wantLow || got.Reason != testCase.wantReason {
+				t.Fatalf("assessment = Low %v reason %q, want Low %v reason %q",
+					got.Low, got.Reason, testCase.wantLow, testCase.wantReason)
+			}
+			if wantAdvice := testCase.wantReason != ""; (got.Advice != "") != wantAdvice {
+				t.Fatalf("advice = %q, want advice only with the preselection reason", got.Advice)
+			}
+		})
+	}
+}
+
+// TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept runs the default cold
+// working-tree path end to end. Four hundred files name "needle" in their path and body; one
+// other file holds "quillwort" and nothing else, so it ranks last and the 384-file cap leaves
+// it out. The selection is what it was before issue 273's fix: still widened to the cap. The
+// confidence now says a query term is missing from every indexed file, and the notice says so.
+func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	for index := 0; index < 400; index++ {
+		write(t, repo, fmt.Sprintf("docs/needle_%03d.md", index), "needle\n")
+	}
+	write(t, repo, "docs/zz_other.md", "quillwort\n")
+
+	complete, err := SearchRepository(t.Context(), repo, "test", "needle", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := complete.Stats
+	if stats.FilesIndexed != 384 || !stats.PreselectionBounded || stats.PreselectionPasses != 3 {
+		t.Fatalf("stats = %#v, want the cold selection widened to its 384-file cap", stats)
+	}
+	if stats.PreselectionConfidence != 1 {
+		t.Fatalf("preselection confidence = %v, want 1: every indexed file holds the only term", stats.PreselectionConfidence)
+	}
+	if stats.PreselectionBoundaryGap <= 0 || stats.PreselectionBoundaryGap >= searchPreselectionMinBoundaryGap {
+		t.Fatalf("boundary gap = %v, want the small RRF step that keeps widening", stats.PreselectionBoundaryGap)
+	}
+
+	dropped, err := SearchRepository(t.Context(), repo, "test", "needle quillwort", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats = dropped.Stats
+	if stats.FilesIndexed != 384 || !stats.PreselectionBounded {
+		t.Fatalf("stats = %#v, want the 384-file cap", stats)
+	}
+	if stats.PreselectionConfidence <= 0 || stats.PreselectionConfidence >= 1 {
+		t.Fatalf("preselection confidence = %v, want below 1: no indexed file holds quillwort", stats.PreselectionConfidence)
+	}
+	if assessment := AssessSearchConfidence(dropped); !assessment.Low ||
+		!strings.HasPrefix(assessment.Reason, "the cold index left out every file matching part of the query") {
+		t.Fatalf("assessment = %#v, want the preselection notice", assessment)
 	}
 }

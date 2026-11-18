@@ -9,8 +9,12 @@ import (
 const (
 	searchPreselectionRRFConstant       = 60
 	searchPreselectionMaxWideningFactor = 4
-	searchPreselectionMinConfidence     = 0.15
-	searchPreselectionDirectoryTarget   = 3
+	// searchPreselectionMinBoundaryGap is the relative fused-score drop at the cut
+	// that counts as a decisive boundary. Fusion keeps only ranks, so it is reached
+	// where the first file left out drops out of a channel the last file kept is
+	// in, not by an ordinary step down one channel (see searchPreselectionBoundaryGap).
+	searchPreselectionMinBoundaryGap  = 0.15
+	searchPreselectionDirectoryTarget = 3
 )
 
 // searchPreselectionEvidence holds independent, file-level signals gathered
@@ -36,6 +40,15 @@ type searchPreselectionAssessment struct {
 	Diversity  float64
 	Widened    bool
 	Bounded    bool
+	// BoundaryGap is the relative drop in fused score between the last file kept
+	// and the first file left out, 1 when nothing was left out. It decides whether
+	// the cut is decisive enough to stop widening, but it does not describe the
+	// files kept: two neighbours in the same channels differ by about 1/(61+rank),
+	// so it is near zero at almost every cut. Confidence, which the stats report as
+	// preselection_confidence, is Coverage instead: below 1, a query term that
+	// matches files in the repository matches none of the files kept, so the
+	// ranking cannot see an answer that lives in the files left out.
+	BoundaryGap float64
 }
 
 // fuseSearchPreselectionEvidence applies reciprocal-rank fusion to the
@@ -97,7 +110,7 @@ func selectProgressiveSearchFiles(
 	baseLimit int,
 ) searchPreselectionAssessment {
 	if baseLimit <= 0 || len(evidence) == 0 {
-		return searchPreselectionAssessment{Coverage: 1, Diversity: 1}
+		return searchPreselectionAssessment{BoundaryGap: 1, Confidence: 1, Coverage: 1, Diversity: 1}
 	}
 	if !searchPreselectionFused(evidence) {
 		evidence = fuseSearchPreselectionEvidence(evidence)
@@ -115,10 +128,11 @@ func selectProgressiveSearchFiles(
 		for index, item := range selected {
 			assessment.Files[index] = item.Path
 		}
-		assessment.Confidence = searchPreselectionConfidence(evidence, limit)
+		assessment.BoundaryGap = searchPreselectionBoundaryGap(evidence, limit)
 		assessment.Coverage = searchPreselectionCoverage(selected, matchedAnywhere, q)
 		assessment.Diversity = searchPreselectionDiversity(selected, evidence)
-		if assessment.Confidence >= searchPreselectionMinConfidence &&
+		assessment.Confidence = assessment.Coverage
+		if assessment.BoundaryGap >= searchPreselectionMinBoundaryGap &&
 			assessment.Coverage == 1 && assessment.Diversity == 1 {
 			assessment.Widened = assessment.Passes > 1
 			return assessment
@@ -146,7 +160,12 @@ func searchPreselectionFused(evidence []searchPreselectionEvidence) bool {
 	return false
 }
 
-func searchPreselectionConfidence(evidence []searchPreselectionEvidence, limit int) float64 {
+// searchPreselectionBoundaryGap is 1 - next/current over the fused scores at the
+// cut. Reciprocal-rank fusion keeps only ranks, so a file one rank below its
+// neighbour in the same channels scores (60+r)/(61+r) of it and the gap is about
+// 1/(61+r): 0.0064 at the default 96 files, 0.0022 at the 384-file cap. Only a
+// file that drops out of a channel opens a gap near the stop threshold.
+func searchPreselectionBoundaryGap(evidence []searchPreselectionEvidence, limit int) float64 {
 	if limit >= len(evidence) {
 		return 1
 	}
