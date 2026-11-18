@@ -606,3 +606,37 @@ func vueAliasSuffixTarget(spec string, knownFiles map[string]bool) (string, bool
 	}
 	return match, match != ""
 }
+
+var (
+	// Component events and event buses: `this.$emit('reply-sent')`,
+	// `EventBus.$emit('ticket:assigned')`, a mitt bus's `bus.emit('x')`, and the
+	// `emit('task-moved')` function defineEmits returns. Vuex `dispatch` is a
+	// store call, not an event, so unlike emitCallRe it is not an emit verb.
+	vueEmitMemberRe = regexp.MustCompile(`\.\s*\$?(?:emit|publish|broadcast)\s*\(\s*["']([^"']+)["']`)
+	vueEmitBareRe   = regexp.MustCompile(`(?:^|[^\w$.])\$?emit\s*\(\s*["']([^"']+)["']`)
+	vueListenRe     = regexp.MustCompile(`\.\s*\$?(?:on|once|subscribe|addEventListener|addListener)\s*\(\s*["']([^"']+)["']`)
+)
+
+// vueChannelEvents is channelEvents for a component's script: Vue's `$`-prefixed
+// instance events count, and Vuex dispatch does not.
+func vueChannelEvents(content string) []channelEvent {
+	var out []channelEvent
+	seen := map[string]bool{}
+	add := func(relation, name string) {
+		key := relation + " " + name
+		if name == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, channelEvent{Relation: relation, Name: name})
+	}
+	for _, re := range []*regexp.Regexp{vueEmitMemberRe, vueEmitBareRe} {
+		for _, m := range re.FindAllStringSubmatch(content, -1) {
+			add("EMITS", m[1])
+		}
+	}
+	for _, m := range vueListenRe.FindAllStringSubmatch(content, -1) {
+		add("LISTENS_ON", m[1])
+	}
+	return out
+}

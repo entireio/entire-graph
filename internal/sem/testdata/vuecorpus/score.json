@@ -1,6 +1,6 @@
 {
   "helpdesk": {
-    "found": 195,
+    "found": 209,
     "total": 316,
     "tags": {
       "baseline": {
@@ -12,7 +12,7 @@
         "total": 5
       },
       "event-bus": {
-        "found": 0,
+        "found": 14,
         "total": 21
       },
       "false-elements": {
@@ -113,6 +113,17 @@
       "relation CONTAINS src/views/Login.vue#Login:component -\u003e src/views/Login.vue#signIn",
       "relation CONTAINS src/views/Reports.vue#Reports:component -\u003e src/views/Reports.vue#mounted",
       "relation CONTAINS src/views/TicketDetail.vue#TicketDetail:component -\u003e src/views/TicketDetail.vue#loadTicket",
+      "relation EMITS src/components/agents/AgentSelect.vue#assign -\u003e ext:assigned",
+      "relation EMITS src/components/agents/AgentSelect.vue#assign -\u003e ext:ticket:assigned",
+      "relation EMITS src/components/reports/ReportChart.js#onHover -\u003e ext:hover",
+      "relation EMITS src/components/tickets/CannedResponsePicker.vue#insert -\u003e ext:insert",
+      "relation EMITS src/components/tickets/TicketReplyForm.vue#submitReply -\u003e ext:reply-sent",
+      "relation EMITS src/components/tickets/TicketReplyForm.vue#submitReply -\u003e ext:reply:posted",
+      "relation EMITS src/components/tickets/TicketRow.vue#select -\u003e ext:select",
+      "relation EMITS src/mixins/slaTimerMixin.js#tickSla -\u003e ext:sla:breached",
+      "relation EMITS src/store/modules/tickets.js#updateStatus -\u003e ext:ticket:updated",
+      "relation EMITS src/views/Dashboard.vue#claimNext -\u003e ext:ticket:assigned",
+      "relation EMITS src/views/TicketDetail.vue#takeOwnership -\u003e ext:ticket:assigned",
       "relation IMPORTS src/App.vue -\u003e src/components/layout/AppHeader.vue",
       "relation IMPORTS src/App.vue -\u003e src/components/notifications/NotificationTray.vue",
       "relation IMPORTS src/components/notifications/NotificationTray.vue -\u003e src/eventBus.js",
@@ -131,6 +142,9 @@
       "relation INHERITS|EXTENDS src/views/Customers.vue#Customers:component -\u003e src/components/base/BaseListView.vue#BaseListView:component",
       "relation INHERITS|EXTENDS src/views/Login.vue#Login:component -\u003e src/mixins/formValidationMixin.js#formValidationMixin",
       "relation INHERITS|EXTENDS src/views/TicketDetail.vue#TicketDetail:component -\u003e src/mixins/slaTimerMixin.js#slaTimerMixin",
+      "relation LISTENS_ON src/components/notifications/NotificationTray.vue#created -\u003e ext:sla:breached",
+      "relation LISTENS_ON src/components/notifications/NotificationTray.vue#created -\u003e ext:ticket:assigned",
+      "relation LISTENS_ON src/views/TicketDetail.vue#created -\u003e ext:ticket:updated",
       "relation OVERRIDES src/views/Customers.vue#fetchPage -\u003e src/components/base/BaseListView.vue#fetchPage",
       "symbol src/App.vue#App:component",
       "symbol src/App.vue#helpdesk-app:element",
@@ -271,7 +285,7 @@
     ]
   },
   "taskboard": {
-    "found": 217,
+    "found": 220,
     "total": 306,
     "tags": {
       "baseline": {
@@ -283,7 +297,7 @@
         "total": 16
       },
       "event-bus": {
-        "found": 0,
+        "found": 3,
         "total": 15
       },
       "false-elements": {
@@ -372,6 +386,9 @@
       "relation CONTAINS src/components/TaskCard.vue#TaskCard:component -\u003e src/components/TaskCard.vue#select",
       "relation CONTAINS src/components/base/BaseButton.vue#BaseButton:component -\u003e src/components/base/BaseButton.vue#handleClick",
       "relation CONTAINS src/stores/tasks.ts#useTaskStore -\u003e src/stores/tasks.ts#addTask",
+      "relation EMITS src/components/CommentItem.vue#reply -\u003e ext:reply",
+      "relation EMITS src/components/TaskCard.vue#select -\u003e ext:select",
+      "relation EMITS src/components/TaskForm.vue#onSubmit -\u003e ext:submit",
       "relation EMITS src/stores/tasks.ts#addTask -\u003e ext:task:created",
       "relation IMPORTS src/App.vue -\u003e src/components/AppHeader.vue",
       "relation IMPORTS src/App.vue -\u003e src/components/NotificationStack.vue",

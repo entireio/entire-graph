@@ -228,6 +228,34 @@ func TestVueAliasSuffixTarget(t *testing.T) {
 	}
 }
 
+func TestVueChannelEvents(t *testing.T) {
+	script := `
+this.$emit('reply-sent', reply)
+EventBus.$emit('ticket:assigned', id)
+emit('task-moved', payload)
+bus.emit('refresh')
+EventBus.$on('ticket:assigned', this.onAssigned)
+window.addEventListener('resize', onResize)
+this.$store.dispatch('tickets/fetchTickets')
+store.dispatch('auth/restoreSession')
+submit('not-an-event')
+`
+	got := map[string]bool{}
+	for _, event := range vueChannelEvents(script) {
+		got[event.Relation+" "+event.Name] = true
+	}
+	for _, want := range []string{"EMITS reply-sent", "EMITS ticket:assigned", "EMITS task-moved", "EMITS refresh", "LISTENS_ON ticket:assigned", "LISTENS_ON resize"} {
+		if !got[want] {
+			t.Errorf("missing %s; got %v", want, got)
+		}
+	}
+	for _, unwanted := range []string{"EMITS tickets/fetchTickets", "EMITS auth/restoreSession", "EMITS not-an-event"} {
+		if got[unwanted] {
+			t.Errorf("Vuex dispatch or a plain call read as an event: %s", unwanted)
+		}
+	}
+}
+
 // Characters whose lowercase form has a different byte length must not move
 // script boundaries: the block scan indexes a lowercase copy with offsets into
 // the source.

@@ -5667,13 +5667,12 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			}
 		}
 		// Components consume routes and services; they never declare them. Their
-		// api.get(...) calls would read as route handlers, and the shared
-		// emit/listen patterns read Vuex dispatch as an event, so these scans
-		// stay off for Vue.
+		// api.get(...) calls would read as route handlers, so these scans stay
+		// off for Vue. Its channel scan uses Vue's own event patterns.
 		fileNeedsRouteScan := spec.emits("HANDLES_ROUTE") && routeScanLanguage(file.Language) && !vueFile
 		fileNeedsHTTPScan := spec.emits("HTTP_CALLS") && httpScanLanguage(file.Language)
 		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language) && !vueFile
-		fileNeedsChannelScan := channelScanLanguage(file.Language) && !vueFile
+		fileNeedsChannelScan := channelScanLanguage(file.Language)
 		var fileStringConstants map[string]string
 		if fileNeedsRouteScan || fileNeedsHTTPScan {
 			fileStringConstants = constantsByFile.forFile(file.Path, content)
@@ -6461,7 +6460,11 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 				}
 			}
 			if fileNeedsChannelScan {
-				for _, event := range channelEvents(block) {
+				events := channelEvents(block)
+				if vueFile {
+					events = vueChannelEvents(block)
+				}
+				for _, event := range events {
 					if !spec.emits(event.Relation) {
 						continue
 					}
