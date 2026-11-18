@@ -294,6 +294,16 @@ func TestVuexStoreResolvesStoreStrings(t *testing.T) {
 	}
 }
 
+func TestVueScriptSources(t *testing.T) {
+	source := "<template><div/></template>\n<script src=\"./TicketTimer.js\"></script>\n<style src='./timer.css'></style>\n"
+	if got := vueScriptSources(source); len(got) != 1 || got[0] != "./TicketTimer.js" {
+		t.Fatalf("sources = %v", got)
+	}
+	if got := vueScriptSources("<script setup>\nconst a = 1\n</script>\n"); len(got) != 0 {
+		t.Fatalf("inline script reported a src: %v", got)
+	}
+}
+
 // Characters whose lowercase form has a different byte length must not move
 // script boundaries: the block scan indexes a lowercase copy with offsets into
 // the source.

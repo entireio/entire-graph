@@ -5036,6 +5036,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	// Every relation scanner rereads source through readContent. Single-file
 	// components read as their script view, so no scanner can see template
 	// markup and every offset still matches the file (see vue.go).
+	readRawContent := readContent
 	readContent = vueScriptReader(readContent)
 	needsTool := spec.emits("HANDLES_TOOL")
 	needsCallScan := spec.emits("CALLS") && spec.callResolution != "none"
@@ -5444,7 +5445,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 	// their methods answer `this.x()` unless the component defines x itself.
 	// Merging them here, before any worker reads the map, lets receiver
 	// resolution find them with no Vue-specific lookup.
-	vueParents := vueComponentParents(files, recordsByFile, readContent, knownFiles, manifestImports, shouldStop)
+	vueParents := vueComponentParents(files, recordsByFile, readContent, readRawContent, knownFiles, manifestImports, shouldStop)
 	if needsReceiverCalls || needsOverrides {
 		vueMergeParentMethods(vueParents, methodsByContainer)
 	}
@@ -5571,6 +5572,13 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			}
 			if !havePrecomputedImports {
 				imports = importsFor(file.Path, content)
+			}
+		}
+		if vueFile && readRawContent != nil {
+			// <script src="./x.js"> imports the component's script; the tag is
+			// blank in the script view, so its src comes from the raw file.
+			if raw, ok := readRawContent(file.Path); ok {
+				imports = append(imports, vueScriptSources(raw)...)
 			}
 		}
 		fromID := fileID(repoKey, file.Path)

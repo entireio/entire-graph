@@ -1,6 +1,6 @@
 {
   "helpdesk": {
-    "found": 228,
+    "found": 231,
     "total": 316,
     "tags": {
       "baseline": {
@@ -56,7 +56,7 @@
         "total": 8
       },
       "script-src": {
-        "found": 0,
+        "found": 3,
         "total": 7
       },
       "store-members": {
@@ -146,11 +146,13 @@
       "relation IMPORTS src/App.vue -\u003e src/components/layout/AppHeader.vue",
       "relation IMPORTS src/App.vue -\u003e src/components/notifications/NotificationTray.vue",
       "relation IMPORTS src/components/notifications/NotificationTray.vue -\u003e src/eventBus.js",
+      "relation IMPORTS src/components/reports/ReportChart.vue -\u003e src/components/reports/ReportChart.js",
       "relation IMPORTS src/components/tickets/TicketFilters.vue -\u003e src/utils/priority.js",
       "relation IMPORTS src/components/tickets/TicketList.vue -\u003e src/components/tickets/TicketRow.vue",
       "relation IMPORTS src/components/tickets/TicketReplyForm.vue -\u003e src/components/tickets/CannedResponsePicker.vue",
       "relation IMPORTS src/components/tickets/TicketRow.vue -\u003e src/mixins/slaTimerMixin.js",
       "relation IMPORTS src/components/tickets/TicketTimer.js -\u003e src/mixins/slaTimerMixin.js",
+      "relation IMPORTS src/components/tickets/TicketTimer.vue -\u003e src/components/tickets/TicketTimer.js",
       "relation IMPORTS src/main.js -\u003e src/components/base/BaseButton.vue",
       "relation IMPORTS src/main.js -\u003e src/router/index.js",
       "relation IMPORTS src/views/Login.vue -\u003e src/mixins/formValidationMixin.js",
@@ -158,6 +160,7 @@
       "relation INHERITS|EXTENDS src/components/tickets/TicketList.vue#TicketList:component -\u003e src/mixins/paginationMixin.js#paginationMixin",
       "relation INHERITS|EXTENDS src/components/tickets/TicketReplyForm.vue#TicketReplyForm:component -\u003e src/mixins/formValidationMixin.js#formValidationMixin",
       "relation INHERITS|EXTENDS src/components/tickets/TicketRow.vue#TicketRow:component -\u003e src/mixins/slaTimerMixin.js#slaTimerMixin",
+      "relation INHERITS|EXTENDS src/components/tickets/TicketTimer.vue#TicketTimer:component -\u003e src/mixins/slaTimerMixin.js#slaTimerMixin",
       "relation INHERITS|EXTENDS src/views/Customers.vue#Customers:component -\u003e src/components/base/BaseListView.vue#BaseListView:component",
       "relation INHERITS|EXTENDS src/views/Login.vue#Login:component -\u003e src/mixins/formValidationMixin.js#formValidationMixin",
       "relation INHERITS|EXTENDS src/views/TicketDetail.vue#TicketDetail:component -\u003e src/mixins/slaTimerMixin.js#slaTimerMixin",

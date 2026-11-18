@@ -99,6 +99,20 @@ func vueMergeDialect(current, lang string) string {
 	return "js"
 }
 
+var vueSrcAttrRe = regexp.MustCompile(`(?i)(?:^|\s)src\s*=\s*["']([^"']+)["']`)
+
+// vueScriptSources returns the src of each top-level <script src="..."> block:
+// a component whose script lives in another file.
+func vueScriptSources(content string) []string {
+	var sources []string
+	for _, block := range vueScriptBlocks(content) {
+		if match := vueSrcAttrRe.FindStringSubmatch(block.attrs); match != nil {
+			sources = append(sources, match[1])
+		}
+	}
+	return sources
+}
+
 // languageSpec returns the grammar spec for the view's dialect and whether its
 // TypeScript must be masked as TSX.
 func (view vueScriptView) languageSpec() (languageSpec, bool) {
@@ -450,7 +464,10 @@ var (
 // declaration or, through the component's imports, to the named export of the
 // imported module; a component imported from a .vue file is that file's
 // component.
-func vueComponentParents(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool, manifestImports manifestImportResolver, stop func() bool) map[string][]vueComponentParent {
+//
+// A component whose script is external (<script src="./x.js">) declares its
+// options in that file, so they are read, and their imports resolved, there.
+func vueComponentParents(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent, readRaw contentReader, knownFiles map[string]bool, manifestImports manifestImportResolver, stop func() bool) map[string][]vueComponentParent {
 	parents := map[string][]vueComponentParent{}
 	for _, file := range files {
 		if stop != nil && stop() {
@@ -467,9 +484,22 @@ func vueComponentParents(files []FileRecord, recordsByFile map[string][]SymbolRe
 		if !ok {
 			continue
 		}
+		optionsPath := file.Path
+		if strings.TrimSpace(content) == "" && readRaw != nil {
+			if raw, rawOK := readRaw(file.Path); rawOK {
+				for _, src := range vueScriptSources(raw) {
+					if target, found := resolveLocalImport(file.Path, src, knownFiles); found {
+						if external, readOK := readContent(target); readOK {
+							optionsPath, content = target, external
+						}
+						break
+					}
+				}
+			}
+		}
 		var imports map[string][]string
 		resolve := func(name, relation string) (vueComponentParent, bool) {
-			for _, record := range recordsByFile[file.Path] {
+			for _, record := range recordsByFile[optionsPath] {
 				if record.Name == name && !vueFileLevelKind(record.Kind) {
 					return vueComponentParent{targetID: record.ID, relation: relation, name: name, resolution: "exact"}, true
 				}
@@ -479,9 +509,9 @@ func vueComponentParents(files []FileRecord, recordsByFile map[string][]SymbolRe
 			}
 			for _, spec := range imports[name] {
 				resolution := "import_resolved"
-				target, ok := resolveLocalImport(file.Path, spec, knownFiles)
+				target, ok := resolveLocalImport(optionsPath, spec, knownFiles)
 				if !ok {
-					resolved, manifestOK := manifestImports.resolve(file.Path, spec)
+					resolved, manifestOK := manifestImports.resolve(optionsPath, spec)
 					target = resolved.Path
 					if !manifestOK {
 						// An alias the resolver cannot read (a jsconfig.json or
