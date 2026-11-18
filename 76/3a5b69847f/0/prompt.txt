@@ -1,0 +1,34 @@
+What is the plan to support Vue files?
+
+---
+
+how is a vue js project supported?
+is there something that can be made better?
+
+---
+
+show me this graph with brain viz
+
+---
+
+make larger project with multiple vue files and then make another same project with JSX files and then open both of their entire brain viz
+
+---
+
+Write the gaps by doing a comparative analysis for this.
+
+---
+
+turn off all brains
+
+---
+
+build bigger 2 vue apps which can be distilled to help improve the vue support on entire-graph.
+
+---
+
+I meant distill as in run graph on these apps, identify the gaps compared to a similar react app and give me the steps to improve the vue support on entire graph
+
+---
+
+plan the iomplementation for supporting vue better
