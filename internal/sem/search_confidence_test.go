@@ -565,7 +565,7 @@ func TestSearchGitUnreadTermsReachesATermAnotherMissingTermHid(t *testing.T) {
 	unread, passes := searchGitUnreadTerms(
 		t.Context(), repo, q, newSearchQueryTermMatcher(q),
 		map[string]bool{"a.md": true, "read.md": true}, map[string]bool{"read.md": true},
-		make([]bool, len(q.terms)), nil,
+		make([]bool, len(q.terms)),
 	)
 	want := map[string]bool{"wren": true, "lark": true, "osprey": false}
 	for index, term := range q.terms {
@@ -604,7 +604,7 @@ func TestSearchStatsKeepAZeroPreselectionConfidenceInJSON(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := strings.Contains(string(encoded), `"preselection_confidence":0`); got != tc.want {
+		if strings.Contains(string(encoded), `"preselection_confidence":0`) != tc.want {
 			t.Fatalf("json = %s, want preselection_confidence present: %v", encoded, tc.want)
 		}
 	}

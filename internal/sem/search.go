@@ -3140,12 +3140,14 @@ func preselectSearchFiles(
 	// surely as the ones the cut dropped. An explicit MaxIndexedFiles is an exact limit the
 	// caller chose, so it gets no confidence and no extra Git pass, as before.
 	assessConfidence := !options.explicitMaxIndexedFiles && (progressive || truncated || shortlistDroppedTerms != nil)
+	// unread marks the terms matched in files the content pass never read. After the Git
+	// passes it also marks matchedAnywhere's terms, which the coverage below ORs in anyway.
 	var unread []bool
 	if assessConfidence {
 		unread = shortlistDroppedTerms
 		if usedGitIndexPreselection {
 			var passes int
-			unread, passes = searchGitUnreadTerms(ctx, source.absRepo, q, matcher, gitAllowed, contentReadPaths, matchedAnywhere, unread)
+			unread, passes = searchGitUnreadTerms(ctx, source.absRepo, q, matcher, gitAllowed, contentReadPaths, searchTermsEither(matchedAnywhere, unread))
 			gitIndexPasses += passes
 		}
 	}
@@ -3190,29 +3192,29 @@ func preselectSearchFiles(
 // errSearchUnreadTermsFound stops a searchGitUnreadTerms pass once every term it greps for is found.
 var errSearchUnreadTermsFound = errors.New("every unread query term found")
 
-// searchGitUnreadTerms returns unread, the query terms Git sampled in files the content pass
-// never read, plus the terms neither that pass nor the sample saw but Git finds in such a
-// file (one outside read, including a shortlisted file too large to read). The sample keeps
-// at most 32 lines a file and searches at most six patterns, so a term can be absent from it
-// while a file the pass skipped holds it. Each pass greps for just the terms still missing,
-// which are rare by construction, and confirms each line with the query's own matcher. A pass
-// keeps 32 lines a file too, so one missing term can hide another in the same file; the next
-// pass greps without the terms already found and so reaches it. The passes stop when one finds
-// nothing new, which means no such file holds a remaining term. A failed pass keeps what it
-// confirmed, so the confidence can only read high, never low. The int counts the passes Git
-// ran, so the caller counts them too.
+// searchGitUnreadTerms returns known, the query terms already matched (by the content pass,
+// or by Git's sample in files that pass never read), plus the terms neither saw but Git finds
+// in a file the pass never read: one outside read, including a shortlisted file too large to
+// read. The sample keeps at most 32 lines a file and searches at most six patterns, so a term
+// can be absent from it while a file the pass skipped holds it. Each pass greps for just the
+// terms still missing, which are rare by construction, and confirms each line with the query's
+// own matcher. A pass keeps 32 lines a file too, so one missing term can hide another in the
+// same file; the next pass greps without the terms already found and so reaches it. The passes
+// stop when one finds nothing new, which means no such file holds a remaining term. A failed
+// pass keeps what it confirmed, so the confidence can only read high, never low. The int
+// counts the passes Git ran, so the caller counts them too.
 func searchGitUnreadTerms(
 	ctx context.Context,
 	absRepo string,
 	q searchQuery,
 	matcher searchTermMatcher,
 	allowed, read map[string]bool,
-	matchedAnywhere, unread []bool,
+	known []bool,
 ) ([]bool, int) {
 	result := make([]bool, len(q.terms))
-	copy(result, unread)
+	copy(result, known)
 	passes := 0
-	for missing := searchMissingQueryTerms(q, matchedAnywhere, result); len(missing) > 0 && ctx.Err() == nil; missing = searchMissingQueryTerms(q, matchedAnywhere, result) {
+	for missing := searchMissingQueryTerms(q, result); len(missing) > 0 && ctx.Err() == nil; missing = searchMissingQueryTerms(q, result) {
 		patterns := searchGitAliasPatternsForTerms(q, missing)
 		if patterns == nil {
 			break
@@ -3223,7 +3225,7 @@ func searchGitUnreadTerms(
 			if !allowed[match.Path] || read[match.Path] {
 				return ctx.Err()
 			}
-			found += markSearchUnseenTerms(result, matchedAnywhere, matcher.match(match.Text))
+			found += markSearchUnseenTerms(result, matcher.match(match.Text))
 			if found == len(missing) {
 				return errSearchUnreadTermsFound
 			}
@@ -3236,23 +3238,32 @@ func searchGitUnreadTerms(
 	return result, passes
 }
 
-// searchMissingQueryTerms lists the query terms neither marked nor matchedAnywhere holds.
-func searchMissingQueryTerms(q searchQuery, matchedAnywhere, marked []bool) []string {
+// searchTermsEither marks each term either slice marks.
+func searchTermsEither(left, right []bool) []bool {
+	either := make([]bool, maxInt(len(left), len(right)))
+	for index := range either {
+		either[index] = searchTermMarked(left, index) || searchTermMarked(right, index)
+	}
+	return either
+}
+
+// searchMissingQueryTerms lists the query terms marked does not mark.
+func searchMissingQueryTerms(q searchQuery, marked []bool) []string {
 	missing := make([]string, 0, len(q.terms))
 	for index, term := range q.terms {
-		if !searchTermMarked(marked, index) && !searchTermMarked(matchedAnywhere, index) {
+		if !searchTermMarked(marked, index) {
 			missing = append(missing, term)
 		}
 	}
 	return missing
 }
 
-// markSearchUnseenTerms marks in result each hit neither result nor matchedAnywhere holds
-// yet, and returns how many it marked.
-func markSearchUnseenTerms(result, matchedAnywhere, hits []bool) int {
+// markSearchUnseenTerms marks in result each hit it does not mark yet, and returns how many
+// it marked.
+func markSearchUnseenTerms(result, hits []bool) int {
 	marked := 0
 	for index, hit := range hits {
-		if hit && index < len(result) && !result[index] && !searchTermMarked(matchedAnywhere, index) {
+		if hit && index < len(result) && !result[index] {
 			result[index] = true
 			marked++
 		}
