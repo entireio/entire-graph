@@ -5440,6 +5440,14 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 	}
 	manifestImports := buildManifestImportResolver(files, readContent, shouldStop)
+	// Vue merges a component's mixins and extends base into the component, so
+	// their methods answer `this.x()` unless the component defines x itself.
+	// Merging them here, before any worker reads the map, lets receiver
+	// resolution find them with no Vue-specific lookup.
+	vueParents := vueComponentParents(files, recordsByFile, readContent, knownFiles, manifestImports, shouldStop)
+	if needsReceiverCalls || needsOverrides {
+		vueMergeParentMethods(vueParents, methodsByContainer)
+	}
 	// Import blocks of files OTHER than the one being scanned, which the Go
 	// interface-implementation hop needs to decide package qualifiers across the
 	// declaring files. Lazy and memoised: only files that actually reach a
@@ -6745,6 +6753,48 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 					result.inheritance = append(result.inheritance, r)
 				}
 				emit(r)
+			}
+		}
+		if needsTypes && vueFile {
+			if component, ok := vueComponentRecord(recordsByFile[file.Path]); ok {
+				for _, parent := range vueParents[component.ID] {
+					if !spec.emits(parent.relation) {
+						continue
+					}
+					reason := "Vue component lists the mixin in its mixins option"
+					if parent.relation == "EXTENDS" {
+						reason = "Vue component names the component in its extends option"
+					}
+					r := RelationRecord{
+						RecordType:    "relation",
+						FromID:        component.ID,
+						ToID:          parent.targetID,
+						Type:          parent.relation,
+						Confidence:    0.85,
+						Reason:        reason,
+						RelationScope: "module",
+						Resolution:    parent.resolution,
+						TargetKind:    "symbol",
+						Evidence: []Evidence{{
+							Kind:     "component_option",
+							FilePath: file.Path,
+							Detail:   parent.name,
+						}},
+						WarningCodes: []string{},
+					}
+					if r.Type == "EXTENDS" {
+						result.inheritance = append(result.inheritance, r)
+						emit(r)
+						// As for a class, extending a component also inherits its
+						// members, so EXTENDS carries its INHERITS pair.
+						if spec.emits("INHERITS") {
+							r.Type = "INHERITS"
+							emit(r)
+						}
+						continue
+					}
+					emit(r)
+				}
 			}
 		}
 		if needsExtensionMembers {

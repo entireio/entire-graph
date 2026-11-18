@@ -201,6 +201,33 @@ func TestVueMacroTypeText(t *testing.T) {
 	}
 }
 
+func TestVueAliasSuffixTarget(t *testing.T) {
+	known := map[string]bool{
+		"src/mixins/paging.js":                true,
+		"src/components/base/BaseList.vue":    true,
+		"src/util/format.ts":                  true,
+		"packages/admin/src/util/format.ts":   true,
+		"src/components/forms/index.js":       true,
+		"src/components/forms/FieldGroup.vue": true,
+		"src/core/index.ts":                   true,
+	}
+	for _, testCase := range []struct{ spec, want string }{
+		{"@/mixins/paging", "src/mixins/paging.js"},
+		{"~/components/base/BaseList.vue", "src/components/base/BaseList.vue"},
+		{"@/components/forms", "src/components/forms/index.js"},
+		{"@/util/format", ""},   // two files end in util/format.ts
+		{"./mixins/paging", ""}, // not an alias
+		{"@/missing/thing", ""},
+		{"@vueuse/core", ""}, // a scoped package, not an alias, though src/core/index.ts exists
+		{"~@/mixins/paging", "src/mixins/paging.js"},
+	} {
+		got, ok := vueAliasSuffixTarget(testCase.spec, known)
+		if got != testCase.want || ok != (testCase.want != "") {
+			t.Errorf("%s: got (%q, %v), want %q", testCase.spec, got, ok, testCase.want)
+		}
+	}
+}
+
 // Characters whose lowercase form has a different byte length must not move
 // script boundaries: the block scan indexes a lowercase copy with offsets into
 // the source.

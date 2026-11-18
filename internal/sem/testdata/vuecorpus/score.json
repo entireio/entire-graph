@@ -1,6 +1,6 @@
 {
   "helpdesk": {
-    "found": 181,
+    "found": 195,
     "total": 316,
     "tags": {
       "baseline": {
@@ -36,7 +36,7 @@
         "total": 8
       },
       "mixins": {
-        "found": 0,
+        "found": 14,
         "total": 15
       },
       "options-api": {
@@ -84,18 +84,24 @@
       "absent src/views/Dashboard.vue#lastClaimedId",
       "absent src/views/TicketDetail.vue#ticketKey",
       "absent src/views/Tickets.vue#selectedId",
+      "relation CALLS src/components/base/BaseListView.vue#load -\u003e src/mixins/paginationMixin.js#setTotal",
       "relation CALLS src/components/tickets/PriorityBadge.vue#colorClass -\u003e src/utils/priority.js#priorityColor",
       "relation CALLS src/components/tickets/PriorityBadge.vue#label -\u003e src/utils/priority.js#priorityLabel",
       "relation CALLS src/components/tickets/TicketFilters.vue#reset -\u003e src/components/tickets/TicketFilters.vue#apply",
+      "relation CALLS src/components/tickets/TicketList.vue#handleKeydown -\u003e src/mixins/paginationMixin.js#nextPage",
+      "relation CALLS src/components/tickets/TicketList.vue#handleKeydown -\u003e src/mixins/paginationMixin.js#prevPage",
       "relation CALLS src/components/tickets/TicketList.vue#refresh -\u003e src/components/tickets/TicketList.vue#fetchPage",
       "relation CALLS src/components/tickets/TicketReplyForm.vue#submitReply -\u003e src/components/tickets/TicketReplyForm.vue#validate",
+      "relation CALLS src/components/tickets/TicketReplyForm.vue#validate -\u003e src/mixins/formValidationMixin.js#validateMaxLength",
       "relation CALLS src/components/tickets/TicketRow.vue#breached -\u003e src/utils/sla.js#slaStatus",
       "relation CALLS src/mixins/paginationMixin.js#nextPage -\u003e src/mixins/paginationMixin.js#goToPage",
       "relation CALLS src/mixins/slaTimerMixin.js#tickSla -\u003e src/utils/sla.js#isBreached",
       "relation CALLS src/store/modules/tickets.js#fetchTickets -\u003e src/api/tickets.js#fetchTicketList",
       "relation CALLS src/views/Customers.vue#created -\u003e src/utils/debounce.js#debounce",
+      "relation CALLS src/views/Customers.vue#fetchPage -\u003e src/components/base/BaseListView.vue#load",
       "relation CALLS src/views/Dashboard.vue#atRiskCount -\u003e src/utils/sla.js#slaStatus",
       "relation CALLS src/views/Login.vue#signIn -\u003e src/views/Login.vue#validate",
+      "relation CALLS src/views/Login.vue#validate -\u003e src/mixins/formValidationMixin.js#validateEmail",
       "relation CALLS src/views/Reports.vue#mounted -\u003e src/views/Reports.vue#loadReports",
       "relation CALLS src/views/TicketDetail.vue#onTicketUpdated -\u003e src/views/TicketDetail.vue#loadTicket",
       "relation CALLS src/views/TicketDetail.vue#ticket -\u003e src/utils/date.js#formatDate",
@@ -118,6 +124,14 @@
       "relation IMPORTS src/main.js -\u003e src/components/base/BaseButton.vue",
       "relation IMPORTS src/main.js -\u003e src/router/index.js",
       "relation IMPORTS src/views/Login.vue -\u003e src/mixins/formValidationMixin.js",
+      "relation INHERITS|EXTENDS src/components/base/BaseListView.vue#BaseListView:component -\u003e src/mixins/paginationMixin.js#paginationMixin",
+      "relation INHERITS|EXTENDS src/components/tickets/TicketList.vue#TicketList:component -\u003e src/mixins/paginationMixin.js#paginationMixin",
+      "relation INHERITS|EXTENDS src/components/tickets/TicketReplyForm.vue#TicketReplyForm:component -\u003e src/mixins/formValidationMixin.js#formValidationMixin",
+      "relation INHERITS|EXTENDS src/components/tickets/TicketRow.vue#TicketRow:component -\u003e src/mixins/slaTimerMixin.js#slaTimerMixin",
+      "relation INHERITS|EXTENDS src/views/Customers.vue#Customers:component -\u003e src/components/base/BaseListView.vue#BaseListView:component",
+      "relation INHERITS|EXTENDS src/views/Login.vue#Login:component -\u003e src/mixins/formValidationMixin.js#formValidationMixin",
+      "relation INHERITS|EXTENDS src/views/TicketDetail.vue#TicketDetail:component -\u003e src/mixins/slaTimerMixin.js#slaTimerMixin",
+      "relation OVERRIDES src/views/Customers.vue#fetchPage -\u003e src/components/base/BaseListView.vue#fetchPage",
       "symbol src/App.vue#App:component",
       "symbol src/App.vue#helpdesk-app:element",
       "symbol src/App.vue#main-content:element",

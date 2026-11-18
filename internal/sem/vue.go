@@ -429,3 +429,180 @@ func vueComponentRecord(records []SymbolRecord) (SymbolRecord, bool) {
 	}
 	return SymbolRecord{}, false
 }
+
+// vueComponentParent is a component's mixin, or the component it extends.
+type vueComponentParent struct {
+	targetID   string
+	relation   string // "INHERITS" for a mixin, "EXTENDS" for extends
+	name       string // the identifier written in the option
+	resolution string
+}
+
+var (
+	vueMixinsOptionRe  = regexp.MustCompile(`(?:^|[\s,{])mixins\s*:\s*\[([^\]]*)\]`)
+	vueExtendsOptionRe = regexp.MustCompile(`(?:^|[\s,{])extends\s*:\s*([A-Za-z_$][\w$]*)`)
+	vueIdentifierRe    = regexp.MustCompile(`[A-Za-z_$][\w$]*`)
+)
+
+// vueComponentParents resolves each component's `extends:` and `mixins: [...]`
+// options to the symbols they name, keyed by the component's symbol ID, extends
+// first and mixins in declaration order. An identifier resolves to a same-file
+// declaration or, through the component's imports, to the named export of the
+// imported module; a component imported from a .vue file is that file's
+// component.
+func vueComponentParents(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool, manifestImports manifestImportResolver, stop func() bool) map[string][]vueComponentParent {
+	parents := map[string][]vueComponentParent{}
+	for _, file := range files {
+		if stop != nil && stop() {
+			return parents
+		}
+		if file.Language != "Vue" {
+			continue
+		}
+		component, ok := vueComponentRecord(recordsByFile[file.Path])
+		if !ok {
+			continue
+		}
+		content, ok := readContent(file.Path)
+		if !ok {
+			continue
+		}
+		var imports map[string][]string
+		resolve := func(name, relation string) (vueComponentParent, bool) {
+			for _, record := range recordsByFile[file.Path] {
+				if record.Name == name && !vueFileLevelKind(record.Kind) {
+					return vueComponentParent{targetID: record.ID, relation: relation, name: name, resolution: "exact"}, true
+				}
+			}
+			if imports == nil {
+				imports = importedJavaScriptNames(content)
+			}
+			for _, spec := range imports[name] {
+				resolution := "import_resolved"
+				target, ok := resolveLocalImport(file.Path, spec, knownFiles)
+				if !ok {
+					resolved, manifestOK := manifestImports.resolve(file.Path, spec)
+					target = resolved.Path
+					if !manifestOK {
+						// An alias the resolver cannot read (a jsconfig.json or
+						// bundler alias) still names the file by its path suffix;
+						// accept it only when exactly one file matches.
+						if target, ok = vueAliasSuffixTarget(spec, knownFiles); !ok {
+							continue
+						}
+						resolution = "pattern"
+					}
+				}
+				if isVuePath(target) {
+					if parent, ok := vueComponentRecord(recordsByFile[target]); ok {
+						return vueComponentParent{targetID: parent.ID, relation: relation, name: name, resolution: resolution}, true
+					}
+					continue
+				}
+				for _, record := range recordsByFile[target] {
+					if record.Name == name && record.ContainerID == "" {
+						return vueComponentParent{targetID: record.ID, relation: relation, name: name, resolution: resolution}, true
+					}
+				}
+			}
+			return vueComponentParent{}, false
+		}
+		var list []vueComponentParent
+		if match := vueExtendsOptionRe.FindStringSubmatch(content); match != nil {
+			if parent, ok := resolve(match[1], "EXTENDS"); ok {
+				list = append(list, parent)
+			}
+		}
+		if match := vueMixinsOptionRe.FindStringSubmatch(content); match != nil {
+			for _, name := range vueIdentifierRe.FindAllString(match[1], -1) {
+				if parent, ok := resolve(name, "INHERITS"); ok {
+					list = append(list, parent)
+				}
+			}
+		}
+		if len(list) > 0 {
+			parents[component.ID] = list
+		}
+	}
+	return parents
+}
+
+// vueMergeParentMethods gives each component the methods of its mixins and
+// extends base, as Vue merges them: the component's own methods win, a later
+// mixin wins over an earlier one, and every mixin wins over the extends base.
+// A parent is merged before its children, so a component extending a component
+// that uses a mixin reaches the mixin's methods too. Merged entries keep their
+// own symbol IDs, so `this.nextPage()` resolves to the mixin's declaration and
+// override derivation (which skips identical IDs) sees no false override.
+func vueMergeParentMethods(parents map[string][]vueComponentParent, methodsByContainer map[string]map[string]SymbolRecord) {
+	merged := map[string]bool{}
+	var merge func(id string, visiting map[string]bool)
+	merge = func(id string, visiting map[string]bool) {
+		if merged[id] || visiting[id] {
+			return
+		}
+		visiting[id] = true
+		list := parents[id]
+		for _, parent := range list {
+			merge(parent.targetID, visiting)
+		}
+		own := methodsByContainer[id]
+		for i := len(list) - 1; i >= 0; i-- {
+			for name, method := range methodsByContainer[list[i].targetID] {
+				if own == nil {
+					own = map[string]SymbolRecord{}
+				}
+				if _, exists := own[name]; !exists {
+					own[name] = method
+				}
+			}
+		}
+		if own != nil {
+			methodsByContainer[id] = own
+		}
+		merged[id] = true
+	}
+	for _, id := range sortedKeysOf(parents) {
+		merge(id, map[string]bool{})
+	}
+}
+
+// vueAliasSuffixTarget resolves an aliased module spec (`@/mixins/paging`,
+// `~/components/X.vue`) by the path that follows the alias: the one known file
+// ending in it, with the usual script extensions or index files tried for an
+// extensionless spec. More than one match is no match.
+//
+// Only the conventional root aliases count (`@/`, `~/`, webpack's `~@/`): a
+// scoped package such as `@vueuse/core` also starts with `@` and must never be
+// matched against local files by suffix.
+func vueAliasSuffixTarget(spec string, knownFiles map[string]bool) (string, bool) {
+	suffix := ""
+	for _, alias := range []string{"~@/", "@/", "~/"} {
+		if strings.HasPrefix(spec, alias) {
+			suffix = spec[len(alias):]
+			break
+		}
+	}
+	if suffix == "" {
+		return "", false
+	}
+	suffixes := []string{suffix}
+	if filepath.Ext(suffix) == "" {
+		suffixes = nil
+		for _, ext := range []string{".js", ".ts", ".jsx", ".tsx", ".vue"} {
+			suffixes = append(suffixes, suffix+ext, suffix+"/index"+ext)
+		}
+	}
+	match := ""
+	for path := range knownFiles {
+		for _, candidate := range suffixes {
+			if path == candidate || strings.HasSuffix(path, "/"+candidate) {
+				if match != "" && match != path {
+					return "", false
+				}
+				match = path
+			}
+		}
+	}
+	return match, match != ""
+}
