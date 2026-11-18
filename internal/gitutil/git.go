@@ -557,10 +557,13 @@ func readCheckAttrRecords(reader *bufio.Reader, visit func(path, value string)) 
 	}
 }
 
+// gitConfigGetRegexp is the `git config` option that lists every key matching a pattern.
+const gitConfigGetRegexp = "--get-regexp"
+
 // binaryDiffDrivers reports, for each diff driver Git's configuration sets
 // `diff.<driver>.binary` for, whether it is true. The last setting wins, as it does for Git.
 func binaryDiffDrivers(ctx context.Context, repo string) (map[string]bool, error) {
-	args := []string{"config", "-z", "--bool", "--get-regexp", `^diff\..*\.binary$`}
+	args := []string{"config", "-z", "--bool", gitConfigGetRegexp, `^diff\..*\.binary$`}
 	stdout, stderr, err := runWithStderr(ctx, repo, "git", args...)
 	var exitError *exec.ExitError
 	if err != nil && ctx.Err() == nil && errors.As(err, &exitError) && exitError.ExitCode() == 1 && stdout == "" && stderr == "" {
@@ -2861,7 +2864,7 @@ func (r *LimitedFileReader) Close() error {
 }
 
 func RemoteURLs(ctx context.Context, repo string) ([]string, error) {
-	out, err := run(ctx, repo, "git", "config", "--get-regexp", `^remote\..*\.url$`)
+	out, err := run(ctx, repo, "git", "config", gitConfigGetRegexp, `^remote\..*\.url$`)
 	if err != nil {
 		return nil, err
 	}
@@ -2872,7 +2875,7 @@ func RemoteURLs(ctx context.Context, repo string) ([]string, error) {
 // config exits 1 with no output when nothing matches, and that is (nil, nil). Every other failure,
 // including a cancelled ctx, is an error. RemoteURLs reports both as an error.
 func RemoteURLsStrict(ctx context.Context, repo string) ([]string, error) {
-	args := []string{"config", "--get-regexp", `^remote\..*\.url$`}
+	args := []string{"config", gitConfigGetRegexp, `^remote\..*\.url$`}
 	stdout, stderr, err := runWithStderr(ctx, repo, "git", args...)
 	if err != nil {
 		var exitError *exec.ExitError
