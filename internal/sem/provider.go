@@ -159,6 +159,9 @@ var heuristicRelationTypeSet = relationTypeSet(heuristicRelationTypes...)
 var ooRelationSupport = map[string][]string{
 	"Java":       {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
 	"TypeScript": {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
+	// Vue component scripts get TypeScript's relations, less the service
+	// handlers components never declare.
+	"Vue": {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
 	// JavaScript has no type annotations, but the USES_TYPE pass reads type
 	// names out of the signature TEXT, and a default argument that constructs a
 	// local class (`function draw(p = new Point())`) puts one there. The
@@ -1026,7 +1029,7 @@ func supportsCallExtraction(spec languageSpec) bool {
 // analysis".
 func callExtractionLanguage(language string) bool {
 	switch language {
-	case "Bash", "C", "C++", "C#", "Clojure", "ClojureScript", "Dart", "Elixir", "Erlang", "F#", "Go", "Groovy", "Haskell", "Java", "JavaScript", "Julia", "Kotlin", "Lua", "Objective-C", "OCaml", "Perl", "PHP", "Python", "R", "Ruby", "Rust", "Scala", "SQL", "Swift", "TypeScript", "Zig", "Zsh":
+	case "Bash", "C", "C++", "C#", "Clojure", "ClojureScript", "Dart", "Elixir", "Erlang", "F#", "Go", "Groovy", "Haskell", "Java", "JavaScript", "Julia", "Kotlin", "Lua", "Objective-C", "OCaml", "Perl", "PHP", "Python", "R", "Ruby", "Rust", "Scala", "SQL", "Swift", "TypeScript", "Vue", "Zig", "Zsh":
 		return true
 	default:
 		return false
@@ -4555,7 +4558,7 @@ func jsCrossFileNamespaceLookup(ctx context.Context, readContent contentReader, 
 	var mu sync.Mutex
 	cache := map[string]map[string]string{}
 	return func(symbol SymbolRecord) string {
-		if symbol.Language != "JavaScript" && symbol.Language != "TypeScript" {
+		if language := scriptAnalysisLanguage(symbol.Language); language != "JavaScript" && language != "TypeScript" {
 			return ""
 		}
 		mu.Lock()
@@ -4624,7 +4627,7 @@ func resolveImportedCallTargets(name string, from SymbolRecord, candidates []Sym
 }
 
 func jsExportedImportFallbackTargets(name string, from SymbolRecord, candidates []SymbolRecord, modules []string, allowMethodTargets bool) []resolvedCallTarget {
-	if len(modules) == 0 || (from.Language != "JavaScript" && from.Language != "TypeScript") {
+	if language := scriptAnalysisLanguage(from.Language); len(modules) == 0 || (language != "JavaScript" && language != "TypeScript") {
 		return nil
 	}
 	var exported []SymbolRecord
@@ -5030,6 +5033,10 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		emitStructuralRelations(repoKey, files, recordsByFile, shouldStop, emit)
 		return
 	}
+	// Every relation scanner rereads source through readContent. Single-file
+	// components read as their script view, so no scanner can see template
+	// markup and every offset still matches the file (see vue.go).
+	readContent = vueScriptReader(readContent)
 	needsTool := spec.emits("HANDLES_TOOL")
 	needsCallScan := spec.emits("CALLS") && spec.callResolution != "none"
 	needsReceiverCalls := spec.emits("CALLS") && spec.callResolution == "full"
@@ -5309,7 +5316,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 				if !typeLikeKind(symbol.Kind) {
 					continue
 				}
-				for _, edge := range supertypesFromSignature(symbol.Language, symbol.Signature) {
+				for _, edge := range supertypesFromSignature(scriptAnalysisLanguage(symbol.Language), symbol.Signature) {
 					sup, ok := firstTypeLikeNamed(symbolsByFile[symbol.FilePath], edge.Super)
 					if !ok || sup.ID == symbol.ID {
 						sup, ok = firstTypeLikeNamed(sharedTypeCandidates(symbol, symbolsByShortName[edge.Super]), edge.Super)
@@ -5533,6 +5540,13 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		if shouldStop() {
 			return result
 		}
+		// A Vue component's script is analysed as TypeScript from here on. The
+		// emitted records keep "Vue": symbol IDs and the file record are built
+		// elsewhere, and file is this worker's own copy.
+		vueFile := file.Language == "Vue"
+		if vueFile {
+			file.Language = scriptAnalysisLanguage(file.Language)
+		}
 		imports, havePrecomputedImports := precomputedImports[file.Path]
 		content := ""
 		if !havePrecomputedImports || !skipFastProfilePerSymbolScan(spec, file.Language) {
@@ -5628,6 +5642,9 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 		lines := strings.Split(content, "\n")
 		currentFileSymbols := recordsByFile[file.Path]
+		if vueFile {
+			currentFileSymbols = vueScriptSymbols(currentFileSymbols)
+		}
 		// callExtractionLanguage keeps the scan inside the set `capabilities
 		// --json` declares CALLS for. Without it the scan also ran over
 		// inventory-only `document` symbols (whose block is the whole file) and
@@ -5641,10 +5658,14 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 				pythonIncompleteAliases = pythonIncompleteAliasContexts(importedPythonBindings(content))
 			}
 		}
-		fileNeedsRouteScan := spec.emits("HANDLES_ROUTE") && routeScanLanguage(file.Language)
+		// Components consume routes and services; they never declare them. Their
+		// api.get(...) calls would read as route handlers, and the shared
+		// emit/listen patterns read Vuex dispatch as an event, so these scans
+		// stay off for Vue.
+		fileNeedsRouteScan := spec.emits("HANDLES_ROUTE") && routeScanLanguage(file.Language) && !vueFile
 		fileNeedsHTTPScan := spec.emits("HTTP_CALLS") && httpScanLanguage(file.Language)
-		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language)
-		fileNeedsChannelScan := channelScanLanguage(file.Language)
+		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language) && !vueFile
+		fileNeedsChannelScan := channelScanLanguage(file.Language) && !vueFile
 		var fileStringConstants map[string]string
 		if fileNeedsRouteScan || fileNeedsHTTPScan {
 			fileStringConstants = constantsByFile.forFile(file.Path, content)
@@ -7075,7 +7096,7 @@ func typeRelationsForFile(repoKey string, file FileRecord, content string, fileS
 		if !typeLikeKind(symbol.Kind) {
 			continue
 		}
-		for _, edge := range supertypesFromSignature(symbol.Language, symbol.Signature) {
+		for _, edge := range supertypesFromSignature(scriptAnalysisLanguage(symbol.Language), symbol.Signature) {
 			relations = append(relations, buildTypeRelation(repoKey, symbol, edge.Super, edge.Relation, edge.Confidence, sameFileSymbols, symbolsByShortName))
 			if edge.Relation == "EXTENDS" {
 				relations = append(relations, buildTypeRelation(repoKey, symbol, edge.Super, "INHERITS", edge.Confidence, sameFileSymbols, symbolsByShortName))
@@ -7882,7 +7903,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 			localTypes[name] = typeName
 		}
 	}
-	if from.Language == "TypeScript" {
+	if scriptAnalysisLanguage(from.Language) == "TypeScript" {
 		// Declared-type and Angular-DI locals (`const router: Router = ...`,
 		// `const ref = inject(ViewContainerRef)`), which the generic
 		// constructor-assignment scan cannot type.
@@ -8009,7 +8030,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 		}
 	}
 	typeScriptPropReceivers := map[string]bool{}
-	if from.Language == "TypeScript" {
+	if scriptAnalysisLanguage(from.Language) == "TypeScript" {
 		for name, typeName := range typeScriptPropTypes {
 			if _, exists := varTypes[name]; !exists {
 				varTypes[name] = typeName
@@ -8280,7 +8301,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 				resolution = "name_only"
 			}
 		}
-		if !ok && from.Language == "TypeScript" && targetID != "" {
+		if !ok && scriptAnalysisLanguage(from.Language) == "TypeScript" && targetID != "" {
 			if impl, implOK := uniqueImplementedMethod(targetID, call.Method, methodsByContainer, superContainerByID, implementersByContainer); implOK {
 				method, ok = impl, true
 				confidence = minFloat(confidence, 0.72)
@@ -8328,7 +8349,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 			}},
 			WarningCodes: []string{},
 		})
-		if from.Language == "TypeScript" && strings.HasPrefix(strings.TrimSpace(method.Signature), "abstract ") {
+		if scriptAnalysisLanguage(from.Language) == "TypeScript" && strings.HasPrefix(strings.TrimSpace(method.Signature), "abstract ") {
 			if impl, implOK := uniqueImplementedMethod(targetID, call.Method, methodsByContainer, superContainerByID, implementersByContainer); implOK && impl.ID != method.ID {
 				implScope := "file"
 				if impl.FilePath != from.FilePath {

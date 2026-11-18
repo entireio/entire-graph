@@ -1,6 +1,6 @@
 {
   "helpdesk": {
-    "found": 158,
+    "found": 173,
     "total": 316,
     "tags": {
       "baseline": {
@@ -40,7 +40,7 @@
         "total": 15
       },
       "options-api": {
-        "found": 41,
+        "found": 47,
         "total": 52
       },
       "path-alias": {
@@ -48,7 +48,7 @@
         "total": 9
       },
       "script-calls": {
-        "found": 0,
+        "found": 9,
         "total": 9
       },
       "script-imports": {
@@ -84,9 +84,24 @@
       "absent src/views/Dashboard.vue#lastClaimedId",
       "absent src/views/TicketDetail.vue#ticketKey",
       "absent src/views/Tickets.vue#selectedId",
+      "relation CALLS src/components/tickets/PriorityBadge.vue#colorClass -\u003e src/utils/priority.js#priorityColor",
+      "relation CALLS src/components/tickets/PriorityBadge.vue#label -\u003e src/utils/priority.js#priorityLabel",
+      "relation CALLS src/components/tickets/TicketFilters.vue#reset -\u003e src/components/tickets/TicketFilters.vue#apply",
+      "relation CALLS src/components/tickets/TicketList.vue#refresh -\u003e src/components/tickets/TicketList.vue#fetchPage",
+      "relation CALLS src/components/tickets/TicketReplyForm.vue#submitReply -\u003e src/components/tickets/TicketReplyForm.vue#validate",
+      "relation CALLS src/components/tickets/TicketRow.vue#breached -\u003e src/utils/sla.js#slaStatus",
       "relation CALLS src/mixins/paginationMixin.js#nextPage -\u003e src/mixins/paginationMixin.js#goToPage",
       "relation CALLS src/mixins/slaTimerMixin.js#tickSla -\u003e src/utils/sla.js#isBreached",
       "relation CALLS src/store/modules/tickets.js#fetchTickets -\u003e src/api/tickets.js#fetchTicketList",
+      "relation CALLS src/views/Customers.vue#created -\u003e src/utils/debounce.js#debounce",
+      "relation CALLS src/views/Dashboard.vue#atRiskCount -\u003e src/utils/sla.js#slaStatus",
+      "relation CALLS src/views/Login.vue#signIn -\u003e src/views/Login.vue#validate",
+      "relation CALLS src/views/Reports.vue#mounted -\u003e src/views/Reports.vue#loadReports",
+      "relation CALLS src/views/TicketDetail.vue#onTicketUpdated -\u003e src/views/TicketDetail.vue#loadTicket",
+      "relation CALLS src/views/TicketDetail.vue#ticket -\u003e src/utils/date.js#formatDate",
+      "relation CALLS|ASYNC_CALLS src/components/tickets/NewTicketForm.vue#submit -\u003e src/api/tickets.js#createTicket",
+      "relation CALLS|ASYNC_CALLS src/views/Reports.vue#loadReports -\u003e src/api/reports.js#fetchSlaReport",
+      "relation CALLS|ASYNC_CALLS src/views/Reports.vue#loadReports -\u003e src/api/reports.js#fetchVolumeReport",
       "relation CONTAINS src/components/tickets/TicketList.vue#TicketList:component -\u003e src/components/tickets/TicketList.vue#fetchPage",
       "relation CONTAINS src/components/tickets/TicketRow.vue#TicketRow:component -\u003e src/components/tickets/TicketRow.vue#breached",
       "relation CONTAINS src/views/Login.vue#Login:component -\u003e src/views/Login.vue#signIn",
@@ -234,7 +249,7 @@
     ]
   },
   "taskboard": {
-    "found": 157,
+    "found": 172,
     "total": 306,
     "tags": {
       "baseline": {
@@ -270,7 +285,7 @@
         "total": 17
       },
       "script-calls": {
-        "found": 0,
+        "found": 9,
         "total": 10
       },
       "script-imports": {
@@ -294,7 +309,7 @@
         "total": 8
       },
       "ts-types": {
-        "found": 1,
+        "found": 7,
         "total": 14
       }
     },
@@ -309,9 +324,18 @@
       "absent src/views/BoardView.vue#selectedTaskId",
       "absent src/views/ProjectsView.vue#id",
       "absent src/views/TaskView.vue#taskId",
+      "relation CALLS src/components/BoardColumn.vue#countLabel -\u003e src/utils/format.ts#pluralize",
+      "relation CALLS src/components/CommentItem.vue#postedAt -\u003e src/utils/format.ts#formatDate",
+      "relation CALLS src/components/LabelBadge.vue#badgeStyle -\u003e src/components/LabelBadge.vue#contrastColor",
+      "relation CALLS src/components/TaskCard.vue#dueLabel -\u003e src/utils/format.ts#formatDate",
+      "relation CALLS src/components/TaskCard.vue#overdue -\u003e src/types/task.ts#isOverdue",
+      "relation CALLS src/components/TaskDetailPanel.vue#dueText -\u003e src/utils/format.ts#relativeDueLabel",
+      "relation CALLS src/components/TaskForm.vue#reset -\u003e src/components/TaskForm.vue#emptyDraft",
       "relation CALLS src/composables/useFilters.ts#useFilters -\u003e src/composables/useFilters.ts#matchesFilters",
       "relation CALLS src/router/index.ts -\u003e src/router/index.ts#authGuard",
       "relation CALLS src/stores/auth.ts#login -\u003e src/stores/auth.ts#applySession",
+      "relation CALLS src/views/LoginView.vue#handleLogin -\u003e src/views/LoginView.vue#redirectTarget",
+      "relation CALLS|ASYNC_CALLS src/components/CommentList.vue#load -\u003e src/api/comments.ts#fetchComments",
       "relation CALLS|ASYNC_CALLS src/stores/tasks.ts#addTask -\u003e src/api/tasks.ts#createTask",
       "relation CONTAINS src/components/LabelBadge.vue#LabelBadge:component -\u003e src/components/LabelBadge.vue#contrastColor",
       "relation CONTAINS src/components/ProjectSwitcher.vue#ProjectSwitcher:component -\u003e src/components/ProjectSwitcher.vue#onChange",
@@ -324,7 +348,13 @@
       "relation IMPORTS src/router/index.ts -\u003e src/views/SettingsView.vue",
       "relation IMPORTS src/stores/tasks.ts -\u003e src/api/tasks.ts",
       "relation LISTENS_ON src/composables/useNotifications.ts#useNotifications -\u003e ext:task:created",
+      "relation USES_TYPE|PARAM_TYPE src/components/AssigneePicker.vue#choose -\u003e src/types/user.ts#User",
+      "relation USES_TYPE|PARAM_TYPE src/components/LabelBadge.vue#badgeStyle -\u003e src/types/task.ts#Label",
+      "relation USES_TYPE|PARAM_TYPE src/components/ProjectSwitcher.vue#toOption -\u003e src/types/project.ts#Project",
+      "relation USES_TYPE|PARAM_TYPE src/views/BoardView.vue#onTaskMoved -\u003e src/types/task.ts#TaskMovedPayload",
+      "relation USES_TYPE|PARAM_TYPE src/views/SettingsView.vue#onDensityChange -\u003e src/stores/settings.ts#Density",
       "relation USES_TYPE|RETURNS_TYPE src/components/ProjectSwitcher.vue#toOption -\u003e src/components/ProjectSwitcher.vue#SwitcherOption",
+      "relation USES_TYPE|RETURNS_TYPE src/components/TaskForm.vue#emptyDraft -\u003e src/types/task.ts#TaskDraft",
       "symbol index.html#app:element",
       "symbol src/App.vue#App:component",
       "symbol src/App.vue#app-shell:element",

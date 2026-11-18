@@ -54,7 +54,7 @@ import (
 // v25 retires summaries that report valid Go the bundled grammar cannot fully
 // parse as an E_PARSE_ERROR partial failure; this build reports it as a
 // W_GO_GRAMMAR_GAP warning, and a replayed v24 summary would keep the failure.
-const providerRecordsCacheVersion = "provider-records-v25-" + IdentityRevision
+const providerRecordsCacheVersion = "provider-records-v26-" + IdentityRevision
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+commit+tree+mode+profile+

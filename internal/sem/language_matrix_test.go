@@ -126,7 +126,7 @@ var languageMatrix = []languageFixture{
 	{dir: "scala", symbols: []string{"class:Ledger", "class:LedgerApp", "method:add", "method:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "sql", symbols: []string{"table:ledger", "view:ledger_totals", "function:ledger_add", "function:ledger_double"}, relations: []string{"DEFINES", "CALLS"}},
 	{dir: "swift", symbols: []string{"struct:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS", "IMPORTS"}},
-	{dir: "vue", symbols: []string{"component:LedgerPanel", "class:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS"}},
+	{dir: "vue", symbols: []string{"component:LedgerPanel", "class:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "typescript", symbols: []string{"class:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS", "READS_FIELD"}},
 	{dir: "yaml", symbols: []string{"section:service", "section:routes"}, relations: []string{"DEFINES"}},
 	{dir: "zig", symbols: []string{"struct:Ledger", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "PARAM_TYPE", "USES_TYPE"}},

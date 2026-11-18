@@ -1,5 +1,5 @@
 {
-  "fixture_count": 29,
+  "fixture_count": 30,
   "file_languages": {
     "C": 1,
     "C#": 3,
@@ -19,18 +19,22 @@
     "Rust": 2,
     "Scala": 1,
     "Swift": 1,
-    "TypeScript": 8,
+    "TypeScript": 9,
+    "Vue": 2,
     "YAML": 1,
     "Zig": 1
   },
   "symbol_kinds": {
     "block": 4,
     "class": 24,
-    "field": 22,
-    "function": 57,
-    "interface": 7,
+    "component": 2,
+    "document": 2,
+    "element": 1,
+    "field": 24,
+    "function": 59,
+    "interface": 8,
     "message": 2,
-    "method": 57,
+    "method": 60,
     "resource": 1,
     "rpc": 1,
     "section": 4,
@@ -42,12 +46,12 @@
   },
   "relation_types": {
     "ASYNC_CALLS": 1,
-    "CALLS": 37,
+    "CALLS": 40,
     "CONFIGURES": 12,
     "CONSTRUCTS": 3,
-    "CONTAINS": 91,
+    "CONTAINS": 98,
     "DATA_FLOWS": 27,
-    "DEFINES": 197,
+    "DEFINES": 210,
     "EMITS": 1,
     "EXTENDS": 9,
     "HANDLES_GRAPHQL": 2,
@@ -63,10 +67,10 @@
     "PARAM_TYPE": 18,
     "READS_FIELD": 12,
     "RESOURCE_DEPENDS_ON": 4,
-    "RETURNS_TYPE": 18,
+    "RETURNS_TYPE": 19,
     "SIMILAR_TO": 2,
     "TESTS": 1,
-    "USES_TYPE": 26,
+    "USES_TYPE": 27,
     "WRITES_FIELD": 4
   }
 }

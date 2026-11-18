@@ -85,6 +85,11 @@ func newJSScanState(ctx context.Context, path, content string) (*jsScanState, er
 	if err := ctx.Err(); err != nil {
 		return emptyJSScanState(content), fmt.Errorf("tree-sitter scope parse stopped by caller: %w", err)
 	}
+	if isVuePath(path) {
+		// A component's script view carries no extension of its own and may be
+		// either dialect: try TypeScript, then TSX, as content-only callers do.
+		return newJSScanStateForContent(ctx, content), nil
+	}
 	grammar, parseSrc := jsScanGrammar(path, content)
 	return buildJSScanState(ctx, grammar, parseSrc, content)
 }

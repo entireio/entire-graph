@@ -452,7 +452,7 @@ func declaredPrivate(symbol SymbolRecord) bool {
 			return true
 		}
 	}
-	switch symbol.Language {
+	switch scriptAnalysisLanguage(symbol.Language) {
 	case "Python", "Ruby", "JavaScript", "TypeScript":
 		return strings.HasPrefix(symbol.Name, "_") || strings.HasPrefix(symbol.Name, "#")
 	case "Go":

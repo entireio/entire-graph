@@ -2313,7 +2313,7 @@ func sortedStringSet(seen map[string]struct{}) []string {
 // astSignatureTypeTexts for what the string split gets wrong.
 func symbolTypeReferences(symbol SymbolRecord) map[string][]string {
 	if !symbol.signatureTypesKnown {
-		return signatureTypeReferences(symbol.Language, symbol.Signature)
+		return signatureTypeReferences(scriptAnalysisLanguage(symbol.Language), symbol.Signature)
 	}
 	return map[string][]string{
 		"PARAM_TYPE":   typeNamesFromText(symbol.paramTypeText),

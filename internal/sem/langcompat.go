@@ -55,7 +55,8 @@ var typeSharingLanguageGroups = [][]string{
 	{"Clojure", "ClojureScript"},
 	// TypeScript is a superset of JavaScript, declaration files describe
 	// JavaScript, and JSDoc annotations in JavaScript name TypeScript types.
-	{"JavaScript", "TypeScript"},
+	// Vue components' scripts are JavaScript or TypeScript.
+	{"JavaScript", "TypeScript", "Vue"},
 	// The CLR. F# names C# types directly.
 	{"C#", "F#"},
 }

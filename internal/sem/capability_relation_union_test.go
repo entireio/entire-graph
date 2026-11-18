@@ -546,6 +546,32 @@ export function make(a: number, b: number): Point {
   return q;
 }
 `},
+	// The TypeScript probe inside a component: the script is analysed under the
+	// TypeScript rules while its records stay "Vue", so Vue must declare what
+	// that analysis emits.
+	"Vue": {path: "src/Flow.vue", source: `<template>
+  <span :data-sum="total(1, 2)">{{ pointSum(origin) }}</span>
+</template>
+
+<script lang="ts">
+export class Point {
+  x: number = 0;
+  y: number = 0;
+}
+
+export function add(a: number, b: number): number { return a + b; }
+
+export function total(a: number, b: number): number { return add(a, b); }
+
+export function pointSum(p: Point): number { return add(p.x, p.y); }
+
+export function make(a: number, b: number): Point {
+  const q = new Point();
+  q.x = a;
+  return q;
+}
+</script>
+`},
 	// Zig extracts the struct but not its fields, so no field symbol exists for
 	// a READS_FIELD/WRITES_FIELD edge to land on however the body is written.
 	"Zig": {path: "src/flow.zig", source: `const Point = struct {

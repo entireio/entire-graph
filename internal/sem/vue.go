@@ -2,8 +2,10 @@ package sem
 
 import (
 	"context"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Vue single-file components (.vue) are parsed through their script blocks.
@@ -284,4 +286,88 @@ func parseVueComponent(ctx context.Context, path, content string, view vueScript
 	}
 	entities = append(entities, scripts...)
 	return entities, "Vue", status
+}
+
+// isVuePath reports whether path is a single-file component.
+func isVuePath(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".vue")
+}
+
+// vueScriptReader wraps the relation phase's content reader so every reread of
+// a .vue file returns its script view: the scanners see the script at its real
+// offsets and never the template. A component without a parseable script reads
+// as blank lines, so nothing in its markup can turn into a relation.
+//
+// Components are reread many times in one pass (imports, mixins, the worker,
+// readable-import checks), so each view is computed once per path.
+func vueScriptReader(read contentReader) contentReader {
+	if read == nil {
+		return nil
+	}
+	var mu sync.Mutex
+	views := map[string]string{}
+	return func(path string) (string, bool) {
+		if !isVuePath(path) {
+			return read(path)
+		}
+		mu.Lock()
+		view, cached := views[path]
+		mu.Unlock()
+		if cached {
+			return view, true
+		}
+		content, ok := read(path)
+		if !ok {
+			return content, false
+		}
+		if script, scriptOK := vueScriptViewOf(content); scriptOK {
+			view = script.content
+		} else {
+			view = vueBlankView(content)
+		}
+		mu.Lock()
+		views[path] = view
+		mu.Unlock()
+		return view, true
+	}
+}
+
+func vueBlankView(content string) string {
+	blank := []byte(content)
+	for i, ch := range blank {
+		if ch != '\n' && ch != '\r' {
+			blank[i] = ' '
+		}
+	}
+	return string(blank)
+}
+
+// scriptAnalysisLanguage is the language whose relation rules apply to a
+// symbol or file. A Vue component's script is analysed as TypeScript, the
+// superset its JavaScript and TypeScript dialects share; every other language
+// is itself.
+func scriptAnalysisLanguage(language string) string {
+	if language == "Vue" {
+		return "TypeScript"
+	}
+	return language
+}
+
+// vueFileLevelKind reports the symbols every .vue file carries for the file as
+// a whole. They span the file or a template line, so they are neither callers
+// nor declarations the script-level scanners should mask out.
+func vueFileLevelKind(kind string) bool {
+	return kind == "component" || kind == "document" || kind == "element"
+}
+
+// vueScriptSymbols drops a component's file-level symbols from the set the
+// relation scanners walk.
+func vueScriptSymbols(symbols []SymbolRecord) []SymbolRecord {
+	out := make([]SymbolRecord, 0, len(symbols))
+	for _, symbol := range symbols {
+		if !vueFileLevelKind(symbol.Kind) {
+			out = append(out, symbol)
+		}
+	}
+	return out
 }

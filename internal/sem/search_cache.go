@@ -61,7 +61,7 @@ import (
 // v29 retires body-laden Julia signatures and module DATA_FLOWS edges.
 // v30 retires headers that report valid Go the bundled grammar cannot fully
 // parse as an E_PARSE_ERROR partial failure instead of a W_GO_GRAMMAR_GAP warning.
-const searchSnapshotCacheVersion = "search-snapshot-v30-" + IdentityRevision
+const searchSnapshotCacheVersion = "search-snapshot-v31-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
