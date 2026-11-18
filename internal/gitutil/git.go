@@ -816,27 +816,28 @@ func GrepIndexPatternFiles(ctx context.Context, repo string, patterns []string, 
 	return runGrepPatterns(ctx, repo, "", patterns, []string{"-l"}, nil, read)
 }
 
-// GrepIndexPatternFilesIn is GrepIndexPatternFiles over only the named tracked worktree
-// files, each searched as text (`--text`) whatever Git's binary detection or .gitattributes
-// say, so the caller decides which of them are text. Only the named files are read: name
-// the few a caller needs, such as the files .gitattributes marks binary that it must check.
+// GrepIndexPatternFilesIn is GrepIndexPatternFiles over only the named worktree files,
+// tracked or not (`--untracked`, so an ignored file is still skipped), each searched as text
+// (`--text`) whatever Git's binary detection or .gitattributes say, so the caller decides
+// which of them are text. Only the named files are read: name the few a caller needs, such
+// as the files .gitattributes marks binary that it must check.
 func GrepIndexPatternFilesIn(ctx context.Context, repo string, patterns, files []string, visit func(path string) error) error {
 	read := func(reader *bufio.Reader) error {
 		return readGrepPaths(reader, visit)
 	}
-	return grepPatternsInFiles(ctx, repo, patterns, []string{"--text", "-l"}, files, read)
+	return grepPatternsInFiles(ctx, repo, patterns, []string{"--untracked", "--text", "-l"}, files, read)
 }
 
 // GrepIndexPatternEveryInFiles streams every line matching one of the expressions in the
-// named tracked worktree files, with no per-file limit, for a caller that confirms each line
-// itself and must not let lines it rejects hide a later one. Only the named files are
-// searched, as text like GrepIndexPatternFilesIn, so pick them first and keep the list
-// short. A visit error stops the scan.
+// named worktree files, with no per-file limit, for a caller that confirms each line itself
+// and must not let lines it rejects hide a later one. Only the named files are searched,
+// tracked or not and as text, like GrepIndexPatternFilesIn, so pick them first and keep the
+// list short. A visit error stops the scan.
 func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, files []string, visit func(GrepMatch) error) error {
 	read := func(reader *bufio.Reader) error {
 		return readGrepPatternLines(reader, visit)
 	}
-	return grepPatternsInFiles(ctx, repo, patterns, []string{"--text"}, files, read)
+	return grepPatternsInFiles(ctx, repo, patterns, []string{"--untracked", "--text"}, files, read)
 }
 
 // grepPatternsInFiles runs runGrepPatterns over the named files only: they become literal

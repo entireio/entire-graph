@@ -438,6 +438,9 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		{query: "heron egret", maxParseBytes: 64, low: true, gitPasses: 1},
 		{query: "heron plover", maxParseBytes: 64, low: true, gitPasses: 2},
 		{query: "heron curlew", maxParseBytes: 64, gitPasses: 1},
+		// godwit is only in an untracked file too large to read, which Git's listing of
+		// tracked files never reaches.
+		{query: "heron godwit", maxParseBytes: 64, low: true, gitPasses: 2},
 		{query: "needle sandpiper", low: true, gitPasses: 2},
 		// Git's sample matched redwing in a dropped file whose NUL byte comes after the 8,000
 		// bytes Git sniffs, so the content pass would never index it, even with every file.
@@ -490,7 +493,8 @@ func (tc gitShortlistCase) check(t *testing.T, response SearchResponse) {
 }
 
 // writeGitShortlistFixture commits an 11,508-file worktree, past minGitGrepPreselectionFiles,
-// holding each way TestSearchRepositoryCountsTermsTheGitShortlistDropped hides a term.
+// and leaves one more file untracked, holding each way
+// TestSearchRepositoryCountsTermsTheGitShortlistDropped hides a term.
 func writeGitShortlistFixture(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -532,6 +536,9 @@ func writeGitShortlistFixture(t *testing.T) string {
 	write(t, repo, "large/zz_wade_test.go", "package p\n\n// curlew\nfunc wadeCommand() {}\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "large corpus")
+	// Never added, so only the worktree listing has it; the content pass reads it unless a
+	// read cap leaves it out.
+	write(t, repo, "large/zz_untracked.md", "godwit\n"+strings.Repeat("// padding\n", 40))
 	return repo
 }
 
@@ -647,6 +654,51 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 		// One listing pass, then each unread corpus file it listed.
 		if passes != 1 || examined != tc.examined {
 			t.Fatalf("%q: passes = %d, files examined again = %d, want 1 and %d", tc.query, passes, examined, tc.examined)
+		}
+	}
+}
+
+// The content pass reads every untracked corpus file, so an unread one is too large to read,
+// and Git's listing, which covers tracked files, never reaches it. Such a file counts as a
+// tracked one would: streamed when its first 8,000 bytes hold no NUL, a file .gitattributes
+// marks binary included. An untracked file whose first 8,000 bytes hold a NUL, one the pass
+// read and one outside the corpus are never searched.
+func TestSearchGitUnreadTermsSearchesUntrackedFiles(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, ".gitattributes", "*.log binary\n")
+	write(t, repo, "kept.md", "needle\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "fixture")
+	// Written after the commit and never added, so Git's index does not track them. Each is
+	// over the 200-byte read cap below, except seen.md, which the content pass read.
+	padding := strings.Repeat("x\n", 200)
+	write(t, repo, "new.md", "quillwort\n"+padding)
+	write(t, repo, "new.log", "pipit\n"+padding)
+	write(t, repo, "newbin.md", "\x00\nruff\n"+padding)
+	write(t, repo, "seen.md", "knot\n")
+	write(t, repo, "third_party/new.md", "stint\n"+padding)
+	allowed := map[string]bool{"kept.md": true, "new.md": true, "new.log": true, "newbin.md": true, "seen.md": true}
+	files := searchTestUnreadFiles(repo, allowed, map[string]bool{"kept.md": true, "seen.md": true}, 200)
+	files.untracked = []string{"new.log", "new.md", "newbin.md", "seen.md"}
+
+	for _, tc := range []struct {
+		query string
+		known []string
+		want  map[string]bool
+	}{
+		{query: "needle quillwort", known: []string{"needle"}, want: map[string]bool{"needle": true, "quillwort": true}},
+		{query: "pipit ruff knot stint", want: map[string]bool{"pipit": true, "ruff": false, "knot": false, "stint": false}},
+	} {
+		q := buildSearchQuery(tc.query)
+		marked, passes, examined := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, tc.known))
+		requireSearchTermsMarked(t, tc.query, q, marked, tc.want)
+		// One listing pass, then the one untracked file it listed, streamed.
+		if passes != 1 || examined != 1 {
+			t.Fatalf("%q: passes = %d, files examined again = %d, want 1 and 1", tc.query, passes, examined)
 		}
 	}
 }

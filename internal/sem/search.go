@@ -2756,6 +2756,7 @@ func preselectSearchFiles(
 	// It is empty unless the shortlist dropped a candidate.
 	var shortlistDropped []searchFileCandidate
 	var gitAllowed map[string]bool
+	var gitUntracked []string
 	gitIndexPasses := 1
 	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
 		allowed := make(map[string]bool, len(source.paths))
@@ -2972,6 +2973,7 @@ func preselectSearchFiles(
 				scanPaths = append(scanPaths, candidate.path)
 			}
 			shortlistDropped = provisional[poolLimit:]
+			gitUntracked = untracked
 			scanPaths = append(scanPaths, untracked...)
 			if len(scanPaths) == 0 && !coalescedAliases {
 				scanPaths = source.paths
@@ -3139,10 +3141,11 @@ func preselectSearchFiles(
 	if assessConfidence {
 		if usedGitIndexPreselection {
 			unreadFiles := searchUnreadFiles{
-				absRepo: source.absRepo,
-				allowed: gitAllowed,
-				read:    contentReadPaths,
-				sampled: shortlistDropped,
+				absRepo:   source.absRepo,
+				allowed:   gitAllowed,
+				read:      contentReadPaths,
+				sampled:   shortlistDropped,
+				untracked: gitUntracked,
 				readFile: func(filePath string) (string, bool) {
 					content, ok := source.read(filePath)
 					if ok {
@@ -3209,13 +3212,15 @@ const searchBinarySniffBytes = 8000
 
 // searchUnreadFiles is how searchGitUnreadTerms reaches the files the content pass did not
 // read: allowed is the corpus, read the files that pass read, sampled the candidates the Git
-// shortlist dropped with the terms Git's sample matched in each, and readFile and readPrefix
-// read a file whole (under the same cap) or its first bytes.
+// shortlist dropped with the terms Git's sample matched in each, untracked the corpus files
+// Git's index does not track, and readFile and readPrefix read a file whole (under the same
+// cap) or its first bytes.
 type searchUnreadFiles struct {
 	absRepo    string
 	allowed    map[string]bool
 	read       map[string]bool
 	sampled    []searchFileCandidate
+	untracked  []string
 	readFile   func(path string) (string, bool)
 	readPrefix func(path string, limit int) (string, bool)
 }
@@ -3334,12 +3339,14 @@ func (files searchUnreadFiles) confirmSampled(ctx context.Context, matcher searc
 }
 
 // list returns the corpus files the content pass did not read that have a line matching one
-// of patterns. One Git pass over the worktree lists the text files. That pass skips the files
-// Git's attributes make binary without reading them, so of the unread corpus files, those are
-// found by attribute (gitutil.FilesMarkedBinary) and searched as text, except the ones whose
-// first searchBinarySniffBytes hold a NUL byte: text skips those however they are read, and
-// Git would load each whole to grep it as text. No excluded asset or binary outside them is
-// read in full.
+// of patterns. One Git pass over the worktree lists the tracked text files. That pass skips
+// the files Git's attributes make binary without reading them, and every untracked file, so
+// of the unread corpus files, those are found by attribute (gitutil.FilesMarkedBinary) and
+// from untracked, and searched as text, except the ones whose first searchBinarySniffBytes
+// hold a NUL byte: text skips those however they are read, as Git's own test would for an
+// untracked one, and Git would load each whole to grep it as text. The content pass reads
+// every untracked corpus file, so the unread ones are only those too large to read or
+// unreadable. No excluded asset or binary outside them is read in full.
 func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]string, error) {
 	var unread []string
 	keep := func(filePath string) error {
@@ -3362,7 +3369,13 @@ func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]s
 	if err != nil {
 		return nil, err
 	}
-	marked = slices.DeleteFunc(marked, files.sniffsBinary)
+	for _, filePath := range files.untracked {
+		if files.eligible(filePath) {
+			marked = append(marked, filePath)
+		}
+	}
+	slices.Sort(marked)
+	marked = slices.DeleteFunc(slices.Compact(marked), files.sniffsBinary)
 	if err := gitutil.GrepIndexPatternFilesIn(ctx, files.absRepo, patterns, marked, keep); err != nil {
 		return nil, err
 	}
