@@ -2986,6 +2986,12 @@ func preselectSearchFiles(
 	var matchedMu sync.Mutex
 	contentReads := 0
 	contentReadFailures := 0
+	// contentReadPaths holds the files this pass actually read, which on the Git path is
+	// fewer than it scheduled: an oversized or unreadable file stays unread.
+	var contentReadPaths map[string]bool
+	if usedGitIndexPreselection {
+		contentReadPaths = make(map[string]bool, len(scanPaths))
+	}
 	scoreFile := func(filePath string) (searchFileCandidate, bool) {
 		if err := ctx.Err(); err != nil {
 			return searchFileCandidate{}, false
@@ -2994,6 +3000,9 @@ func preselectSearchFiles(
 		contentReadMu.Lock()
 		if ok {
 			contentReads++
+			if contentReadPaths != nil {
+				contentReadPaths[filePath] = true
+			}
 		} else {
 			// Unread, oversized or failed: whether it contains a query term is UNKNOWN, so
 			// this pass can no longer give an exact repository-wide document frequency.
@@ -3122,21 +3131,31 @@ func preselectSearchFiles(
 	// read, which were left out of the index as surely as the ones the cut dropped. An
 	// explicit MaxIndexedFiles is an exact limit the caller chose, so it gets no confidence
 	// and no extra Git pass, as before.
-	if progressive || (options.progressivePreselection && shortlistDroppedTerms != nil) {
-		unread := shortlistDroppedTerms
+	assessConfidence := progressive || (options.progressivePreselection && shortlistDroppedTerms != nil)
+	var unread []bool
+	if assessConfidence {
+		unread = shortlistDroppedTerms
 		if usedGitIndexPreselection {
-			var scannedAgain bool
-			unread, scannedAgain = searchGitUnreadTerms(ctx, source.absRepo, q, matcher, gitAllowed, scanPaths, matchedAnywhere, unread)
-			if scannedAgain {
-				gitIndexPasses++
-			}
+			var passes int
+			unread, passes = searchGitUnreadTerms(ctx, source.absRepo, q, matcher, gitAllowed, contentReadPaths, matchedAnywhere, unread)
+			gitIndexPasses += passes
 		}
-		confidence := searchKeptTermCoverage(files, selection.files, matchedAnywhere, unread, q)
-		selection.preselectionConfidence = &confidence
 	}
 	// An explicit MaxIndexedFiles is an exact compatibility limit, so the bridge
 	// spends only what preselection left unused.
 	selection.files = bridgeRegistrationHandlerFiles(ctx, source, selection.files, options.MaxIndexedFiles-len(selection.files))
+	if assessConfidence {
+		// The confidence describes the files indexed, so it is taken after the bridge: a
+		// handler file it adds can hold a term every file the cut kept lacks.
+		confidence := searchKeptTermCoverage(files, selection.files, matchedAnywhere, unread, q, func(filePath string) []bool {
+			content, ok := source.read(filePath)
+			if !ok || strings.IndexByte(content, 0) >= 0 {
+				return nil
+			}
+			return matcher.match(content)
+		})
+		selection.preselectionConfidence = &confidence
+	}
 	selection.filesContentRead += contentReads
 	selection.preselectionBackend = "go-content"
 	selection.preselectionFilesExamined = len(scanPaths)
@@ -3160,63 +3179,64 @@ func preselectSearchFiles(
 	return selection, nil
 }
 
-// errSearchUnreadTermsFound stops searchGitUnreadTerms' Git pass once every term is found.
+// errSearchUnreadTermsFound stops a searchGitUnreadTerms pass once every term it greps for is found.
 var errSearchUnreadTermsFound = errors.New("every unread query term found")
 
 // searchGitUnreadTerms returns unread, the query terms Git sampled in files the content pass
 // never read, plus the terms neither that pass nor the sample saw but Git finds in such a
-// file. The sample keeps at most 32 lines a file and searches at most six patterns, so a term
-// can be absent from it while a file the pass skipped holds it. This pass greps for just those
-// terms, which are rare by construction, and confirms each line with the query's own matcher.
-// A failed pass keeps what it confirmed, so the confidence can only read high, never low.
-// The bool reports whether Git ran, so the caller counts the pass.
+// file (one outside read, including a shortlisted file too large to read). The sample keeps
+// at most 32 lines a file and searches at most six patterns, so a term can be absent from it
+// while a file the pass skipped holds it. Each pass greps for just the terms still missing,
+// which are rare by construction, and confirms each line with the query's own matcher. A pass
+// keeps 32 lines a file too, so one missing term can hide another in the same file; the next
+// pass greps without the terms already found and so reaches it. The passes stop when one finds
+// nothing new, which means no such file holds a remaining term. A failed pass keeps what it
+// confirmed, so the confidence can only read high, never low. The int counts the passes Git
+// ran, so the caller counts them too.
 func searchGitUnreadTerms(
 	ctx context.Context,
 	absRepo string,
 	q searchQuery,
 	matcher searchTermMatcher,
-	allowed map[string]bool,
-	scanned []string,
+	allowed, read map[string]bool,
 	matchedAnywhere, unread []bool,
-) ([]bool, bool) {
-	result, missing := searchUnseenQueryTerms(q, matchedAnywhere, unread)
-	if len(missing) == 0 {
-		return result, false
-	}
-	patterns := searchGitAliasPatternsForTerms(q, missing)
-	if patterns == nil {
-		return result, false
-	}
-	read := make(map[string]bool, len(scanned))
-	for _, filePath := range scanned {
-		read[filePath] = true
-	}
-	remaining := len(missing)
-	_ = gitutil.GrepIndexPatternSample(ctx, absRepo, patterns, func(match gitutil.GrepMatch) error {
-		if !allowed[match.Path] || read[match.Path] {
-			return ctx.Err()
-		}
-		remaining -= markSearchUnseenTerms(result, matchedAnywhere, matcher.match(match.Text))
-		if remaining == 0 {
-			return errSearchUnreadTermsFound
-		}
-		return ctx.Err()
-	})
-	return result, true
-}
-
-// searchUnseenQueryTerms copies unread and lists the query terms it and matchedAnywhere
-// both lack.
-func searchUnseenQueryTerms(q searchQuery, matchedAnywhere, unread []bool) ([]bool, []string) {
+) ([]bool, int) {
 	result := make([]bool, len(q.terms))
 	copy(result, unread)
+	passes := 0
+	for missing := searchMissingQueryTerms(q, matchedAnywhere, result); len(missing) > 0 && ctx.Err() == nil; missing = searchMissingQueryTerms(q, matchedAnywhere, result) {
+		patterns := searchGitAliasPatternsForTerms(q, missing)
+		if patterns == nil {
+			break
+		}
+		passes++
+		found := 0
+		err := gitutil.GrepIndexPatternSample(ctx, absRepo, patterns, func(match gitutil.GrepMatch) error {
+			if !allowed[match.Path] || read[match.Path] {
+				return ctx.Err()
+			}
+			found += markSearchUnseenTerms(result, matchedAnywhere, matcher.match(match.Text))
+			if found == len(missing) {
+				return errSearchUnreadTermsFound
+			}
+			return ctx.Err()
+		})
+		if found == 0 || (err != nil && found < len(missing)) {
+			break
+		}
+	}
+	return result, passes
+}
+
+// searchMissingQueryTerms lists the query terms neither marked nor matchedAnywhere holds.
+func searchMissingQueryTerms(q searchQuery, matchedAnywhere, marked []bool) []string {
 	missing := make([]string, 0, len(q.terms))
 	for index, term := range q.terms {
-		if !result[index] && !searchTermMarked(matchedAnywhere, index) {
+		if !searchTermMarked(marked, index) && !searchTermMarked(matchedAnywhere, index) {
 			missing = append(missing, term)
 		}
 	}
-	return result, missing
+	return missing
 }
 
 // markSearchUnseenTerms marks in result each hit neither result nor matchedAnywhere holds

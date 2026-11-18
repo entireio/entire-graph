@@ -414,8 +414,10 @@ func requirePreselectionNotice(t *testing.T, query string, response SearchRespon
 // 4*MaxIndexedFiles before the content pass, so the content pass never sees a term whose
 // every file ranks below that shortlist. The confidence must still count it, or the query
 // reports 1 and the notice stays silent. Each corpus below hides its second term a different
-// way: in a shortlisted-out file, past the 32 lines Git samples from such a file, and behind
-// a shortlist whose files are too large to read, which leaves too few for the capped cut.
+// way: in a shortlisted-out file, past the 32 lines Git samples from such a file, behind a
+// shortlist whose files are too large to read, which leaves too few for the capped cut, and
+// in a shortlisted file too large to read. A handler file the registration bridge adds back
+// is indexed, so the term it holds is not missing.
 func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -431,8 +433,12 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		write(t, repo, fmt.Sprintf("docs/needle_%03d.md", index), "needle\n")
 		write(t, repo, fmt.Sprintf("sample/thistle_%03d.md", index), "thistle\n")
 		content := large
-		if index < 50 {
+		switch {
+		case index < 50:
 			content = "heron\n"
+		case index == named-1:
+			// Too large to read, and ranked first for "heron plover", so it is shortlisted.
+			content = large + "plover\n"
 		}
 		write(t, repo, fmt.Sprintf("large/heron_%03d.md", index), content)
 	}
@@ -440,6 +446,11 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 	// Git samples 32 matching lines a file, so this one's sample holds only thistle.
 	write(t, repo, "sample/zz_mixed.md", strings.Repeat("thistle\n", 40)+"bramble\n")
 	write(t, repo, "large/zz_egret.md", "egret\n")
+	// The table is shortlisted for any heron query. The handler holds curlew, and a test
+	// file's demotion ranks it below the shortlist; the bridge adds it back because the
+	// table names it.
+	write(t, repo, "large/commands/heron.json", `{"function":"wadeCommand","summary":"heron"}`)
+	write(t, repo, "large/zz_wade_test.go", "package p\n\n// curlew\nfunc wadeCommand() {}\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "large corpus")
 
@@ -457,6 +468,8 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		// 450 of the 500 heron files exceed the read cap, so the content pass keeps at most
 		// 50 and the capped cut never runs; the Git shortlist alone dropped egret.
 		{query: "heron egret", maxParseBytes: 64, low: true, gitPasses: 1},
+		{query: "heron plover", maxParseBytes: 64, low: true, gitPasses: 2},
+		{query: "heron curlew", maxParseBytes: 64, gitPasses: 1},
 	} {
 		response, err := SearchRepository(t.Context(), repo, "test", tc.query, SearchOptions{
 			Worktree:      true,
@@ -466,7 +479,7 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		requireGitShortlistPath(t, tc.query, response.Stats, tc.maxParseBytes == 0)
+		requireGitShortlistPath(t, tc.query, response.Stats, tc.maxParseBytes == 0, tc.gitPasses)
 		if examined, corpus := response.Stats.PreselectionFilesExamined, response.Stats.FilesScanned; examined < tc.gitPasses*corpus || examined >= (tc.gitPasses+1)*corpus {
 			t.Fatalf("%q: files examined = %d over a %d-file corpus, want %d Git passes counted", tc.query, examined, corpus, tc.gitPasses)
 		}
@@ -481,14 +494,47 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 }
 
 // requireGitShortlistPath fails unless the query took the large-worktree Git path, and, when
-// capped is false, unless it also skipped the capped selection.
-func requireGitShortlistPath(t *testing.T, query string, stats SearchStats, capped bool) {
+// capped is false, unless it also skipped the capped selection, whose one pass is then
+// counted with Git's gitPasses.
+func requireGitShortlistPath(t *testing.T, query string, stats SearchStats, capped bool, gitPasses int) {
 	t.Helper()
 	if stats.PreselectionBackend != "git-index-grep+go-content" || stats.FilesIndexed > 384 {
 		t.Fatalf("%q: stats = %#v, want the Git shortlist path", query, stats)
 	}
-	if !capped && (stats.PreselectionPasses > 2 || stats.FilesIndexed > 96) {
-		t.Fatalf("%q: stats = %#v, want no capped selection", query, stats)
+	if !capped && (stats.PreselectionPasses != 1+gitPasses || stats.FilesIndexed > 96) {
+		t.Fatalf("%q: stats = %#v, want no capped selection and %d Git passes", query, stats, gitPasses)
+	}
+}
+
+// Each recovery pass keeps 32 matching lines a file, so a missing term can hide another in the
+// same file. The next pass greps without the term found and reaches it, and a pass that finds
+// nothing ends them.
+func TestSearchGitUnreadTermsReachesATermAnotherMissingTermHid(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.md", strings.Repeat("wren\n", 40)+"lark\n")
+	write(t, repo, "read.md", "osprey\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "fixture")
+
+	q := buildSearchQuery("wren lark osprey")
+	unread, passes := searchGitUnreadTerms(
+		t.Context(), repo, q, newSearchQueryTermMatcher(q),
+		map[string]bool{"a.md": true, "read.md": true}, map[string]bool{"read.md": true},
+		make([]bool, len(q.terms)), nil,
+	)
+	want := map[string]bool{"wren": true, "lark": true, "osprey": false}
+	for index, term := range q.terms {
+		if expected, ok := want[term]; ok && unread[index] != expected {
+			t.Fatalf("term %q marked %v, want %v (terms %v, marked %v)", term, unread[index], expected, q.terms, unread)
+		}
+	}
+	// wren, then lark, then a pass that finds osprey only in the file already read.
+	if passes != 3 {
+		t.Fatalf("passes = %d, want 3", passes)
 	}
 }
 
