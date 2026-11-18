@@ -1112,9 +1112,21 @@ func shortDigest(value string) string {
 // pushed through that channel would change the canonical semantic hash and
 // break the projection comparison. A warning is metadata ABOUT the stream, not
 // a record in it.
+var compactSnapshotUTF8BOM = []byte{0xef, 0xbb, 0xbf}
+
 func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarning, error) {
 	var warnings []ProviderWarning
 	reader := bufio.NewReaderSize(in, 64*1024)
+	// One leading UTF-8 byte-order mark is a save artifact, not content:
+	// Windows PowerShell 5.1 writes one for Out-File/Set-Content -Encoding
+	// utf8, so `snapshot > file` then `snapshot-query --input file` failed on
+	// the first byte. Only the very first bytes are forgiven; a BOM anywhere
+	// else still fails as malformed JSON.
+	if head, err := reader.Peek(len(compactSnapshotUTF8BOM)); err == nil && bytes.Equal(head, compactSnapshotUTF8BOM) {
+		if _, err := reader.Discard(len(compactSnapshotUTF8BOM)); err != nil {
+			return warnings, fmt.Errorf("compact snapshot scan: %w", err)
+		}
+	}
 	dictionary := []string{""}
 	known := map[string]bool{"": true}
 	seenHeader, seenSummary := false, false
