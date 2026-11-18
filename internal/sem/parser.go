@@ -4082,7 +4082,12 @@ func markdownEntities(content string, stop func() bool) []Entity {
 	return entities
 }
 
-var htmlEntitiesIdRe = regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
+// htmlEntitiesIdRe matches a literal `id` attribute. The attribute name must start
+// the line or follow whitespace: `\b` also matched after `-` and `:`, so
+// `data-id=`, `:task-id="selectedId"` and the Vue bindings `:id="inputId"` and
+// `v-bind:id="rowDomId"` minted elements named after data attributes or bound
+// expressions.
+var htmlEntitiesIdRe = regexp.MustCompile(`(?:^|\s)id\s*=\s*["']([^"']+)["']`)
 
 func htmlEntities(path, content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")

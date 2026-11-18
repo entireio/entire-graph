@@ -1,6 +1,6 @@
 {
   "helpdesk": {
-    "found": 102,
+    "found": 112,
     "total": 316,
     "tags": {
       "baseline": {
@@ -16,7 +16,7 @@
         "total": 21
       },
       "false-elements": {
-        "found": 1,
+        "found": 11,
         "total": 11
       },
       "false-relations": {
@@ -73,7 +73,17 @@
       }
     },
     "found_facts": [
+      "absent src/components/agents/AgentSelect.vue#inputId",
+      "absent src/components/base/BaseModal.vue#titleId",
+      "absent src/components/layout/AppSidebar.vue#main-nav",
+      "absent src/components/tickets/TicketFilters.vue#priorityInputId",
+      "absent src/components/tickets/TicketList.vue#assigningTicketId",
+      "absent src/components/tickets/TicketRow.vue#row",
+      "absent src/components/tickets/TicketRow.vue#rowDomId",
       "absent src/components/tickets/TicketRow.vue#ticket-row",
+      "absent src/views/Dashboard.vue#lastClaimedId",
+      "absent src/views/TicketDetail.vue#ticketKey",
+      "absent src/views/Tickets.vue#selectedId",
       "relation CALLS src/mixins/paginationMixin.js#nextPage -\u003e src/mixins/paginationMixin.js#goToPage",
       "relation CALLS src/mixins/slaTimerMixin.js#tickSla -\u003e src/utils/sla.js#isBreached",
       "relation CALLS src/store/modules/tickets.js#fetchTickets -\u003e src/api/tickets.js#fetchTicketList",
@@ -178,7 +188,7 @@
     ]
   },
   "taskboard": {
-    "found": 104,
+    "found": 114,
     "total": 306,
     "tags": {
       "baseline": {
@@ -194,7 +204,7 @@
         "total": 15
       },
       "false-elements": {
-        "found": 0,
+        "found": 10,
         "total": 10
       },
       "global-registration": {
@@ -243,6 +253,16 @@
       }
     },
     "found_facts": [
+      "absent src/components/BoardColumn.vue#id",
+      "absent src/components/CommentList.vue#commentInputId",
+      "absent src/components/NotificationStack.vue#id",
+      "absent src/components/TaskCard.vue#card",
+      "absent src/components/TaskCard.vue#id",
+      "absent src/components/TaskDetailPanel.vue#id",
+      "absent src/components/TaskForm.vue#assigneeId",
+      "absent src/views/BoardView.vue#selectedTaskId",
+      "absent src/views/ProjectsView.vue#id",
+      "absent src/views/TaskView.vue#taskId",
       "relation CALLS src/composables/useFilters.ts#useFilters -\u003e src/composables/useFilters.ts#matchesFilters",
       "relation CALLS src/router/index.ts -\u003e src/router/index.ts#authGuard",
       "relation CALLS src/stores/auth.ts#login -\u003e src/stores/auth.ts#applySession",
