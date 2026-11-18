@@ -619,6 +619,8 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 	write(t, repo, "vendor/asset.dat", "curlew\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "fixture")
+	// The worktree listing keeps a tracked file an exclude rule covers, and so must the search.
+	write(t, repo, ".git/info/exclude", "marked.txt\nbig-marked.log\n")
 	allowed := map[string]bool{
 		"a.md": true, "b.go": true, "read.md": true, "marked.txt": true, "big-marked.log": true,
 		"bin.dat": true, "bigbin.dat": true, "raw.bin": true, "out.gen": true,

@@ -3231,18 +3231,20 @@ func TestFilesMarkedBinaryFollowsGitsDefaultDriver(t *testing.T) {
 	}
 }
 
-// The named-file searches reach a file Git's index does not track, as the whole-worktree
-// listing does not, and still skip one an exclude rule ignores.
-func TestGrepIndexPatternFilesInSearchesNamedUntrackedFiles(t *testing.T) {
+// The named-file searches reach a file Git's index does not track, which the whole-worktree
+// listing does not, and a tracked file an exclude rule covers, which `--untracked` alone would
+// hide. An ignored file the caller does not name is never searched.
+func TestGrepIndexPatternFilesInSearchesEveryNamedFile(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	git(t, repo, "init")
-	write(t, repo, ".gitignore", "ignored.md\n")
 	write(t, repo, "tracked.md", "plover\n")
+	write(t, repo, "excluded.md", "plover\n")
 	git(t, repo, "add", ".")
+	write(t, repo, ".git/info/exclude", "excluded.md\nignored.md\n")
 	write(t, repo, "new.md", "plover\nplover\n")
 	write(t, repo, "ignored.md", "plover\n")
-	named := []string{"ignored.md", "new.md", "tracked.md"}
+	named := []string{"excluded.md", "new.md", "tracked.md"}
 	var whole, listed []string
 	if err := GrepIndexPatternFiles(t.Context(), repo, []string{"plover"}, func(path string) error { whole = append(whole, path); return nil }); err != nil {
 		t.Fatal(err)
@@ -3250,13 +3252,14 @@ func TestGrepIndexPatternFilesInSearchesNamedUntrackedFiles(t *testing.T) {
 	if err := GrepIndexPatternFilesIn(t.Context(), repo, []string{"plover"}, named, func(path string) error { listed = append(listed, path); return nil }); err != nil {
 		t.Fatal(err)
 	}
+	sort.Strings(whole)
 	sort.Strings(listed)
-	if !reflect.DeepEqual(whole, []string{"tracked.md"}) || !reflect.DeepEqual(listed, []string{"new.md", "tracked.md"}) {
-		t.Fatalf("whole-worktree listing = %q, named listing = %q, want only the tracked file and then the untracked one too", whole, listed)
+	if !reflect.DeepEqual(whole, []string{"excluded.md", "tracked.md"}) || !reflect.DeepEqual(listed, named) {
+		t.Fatalf("whole-worktree listing = %q, named listing = %q, want the tracked files and then every named one", whole, listed)
 	}
 	lines := 0
-	if err := GrepIndexPatternEveryInFiles(t.Context(), repo, []string{"plover"}, []string{"new.md"}, func(GrepMatch) error { lines++; return nil }); err != nil || lines != 2 {
-		t.Fatalf("streamed %d lines of the untracked file, %v, want 2", lines, err)
+	if err := GrepIndexPatternEveryInFiles(t.Context(), repo, []string{"plover"}, []string{"excluded.md", "new.md"}, func(GrepMatch) error { lines++; return nil }); err != nil || lines != 3 {
+		t.Fatalf("streamed %d lines of the excluded and untracked files, %v, want 3", lines, err)
 	}
 }
 

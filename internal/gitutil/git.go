@@ -817,7 +817,8 @@ func GrepIndexPatternFiles(ctx context.Context, repo string, patterns []string, 
 }
 
 // GrepIndexPatternFilesIn is GrepIndexPatternFiles over only the named worktree files,
-// tracked or not (`--untracked`, so an ignored file is still skipped), each searched as text
+// tracked or not and whatever exclude rules say (`--untracked --no-exclude-standard`: with
+// `--untracked` alone Git applies them to tracked files too), each searched as text
 // (`--text`) whatever Git's binary detection or .gitattributes say, so the caller decides
 // which of them are text. Only the named files are read: name the few a caller needs, such
 // as the files .gitattributes marks binary that it must check.
@@ -825,20 +826,26 @@ func GrepIndexPatternFilesIn(ctx context.Context, repo string, patterns, files [
 	read := func(reader *bufio.Reader) error {
 		return readGrepPaths(reader, visit)
 	}
-	return grepPatternsInFiles(ctx, repo, patterns, []string{"--untracked", "--text", "-l"}, files, read)
+	return grepPatternsInFiles(ctx, repo, patterns, []string{gitGrepNamedFiles, gitGrepNoExcludes, "--text", "-l"}, files, read)
 }
 
 // GrepIndexPatternEveryInFiles streams every line matching one of the expressions in the
 // named worktree files, with no per-file limit, for a caller that confirms each line itself
 // and must not let lines it rejects hide a later one. Only the named files are searched,
-// tracked or not and as text, like GrepIndexPatternFilesIn, so pick them first and keep the
-// list short. A visit error stops the scan.
+// tracked or not, whatever exclude rules say and as text, like GrepIndexPatternFilesIn, so
+// pick them first and keep the list short. A visit error stops the scan.
 func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, files []string, visit func(GrepMatch) error) error {
 	read := func(reader *bufio.Reader) error {
 		return readGrepPatternLines(reader, visit)
 	}
-	return grepPatternsInFiles(ctx, repo, patterns, []string{"--untracked", "--text"}, files, read)
+	return grepPatternsInFiles(ctx, repo, patterns, []string{gitGrepNamedFiles, gitGrepNoExcludes, "--text"}, files, read)
 }
+
+// gitGrepNamedFiles and gitGrepNoExcludes make a named-file search reach every file it names.
+const (
+	gitGrepNamedFiles = "--untracked"
+	gitGrepNoExcludes = "--no-exclude-standard"
+)
 
 // grepPatternsInFiles runs runGrepPatterns over the named files only: they become literal
 // pathspecs, in batches that fit the command line.
