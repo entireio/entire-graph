@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -263,7 +264,7 @@ func TestAssessSearchConfidenceMarksAColdIndexThatDroppedPartOfTheQuery(t *testi
 	}{
 		{
 			name:     "a complete capped selection is not marked",
-			response: withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionDiversity: 1, PreselectionConfidence: 1}),
+			response: withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(1)}),
 		},
 		{
 			// Every path without a capped cold selection: the committed-tree grep, an
@@ -273,38 +274,38 @@ func TestAssessSearchConfidenceMarksAColdIndexThatDroppedPartOfTheQuery(t *testi
 		},
 		{
 			name:       "a strong ranking over a selection that dropped a term is marked",
-			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionDiversity: 1, PreselectionConfidence: 0.5}),
+			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(0.5)}),
 			wantLow:    true,
 			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.50)",
 		},
 		{
 			// The Git shortlist of a large worktree can drop a term before the cap is reached.
 			name:       "a selection that dropped a term before its cap is marked",
-			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionDiversity: 1, PreselectionConfidence: 0.5}),
+			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionConfidence: preselectionConfidenceOf(0.5)}),
 			wantLow:    true,
 			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.50)",
 		},
 		{
 			name:       "a selection whose files hold no matched term is marked",
-			response:   withStats([]float64{4.1, 3.0, 2.0}, SearchStats{PreselectionDiversity: 1, PreselectionConfidence: 0}),
+			response:   withStats([]float64{4.1, 3.0, 2.0}, SearchStats{PreselectionConfidence: preselectionConfidenceOf(0)}),
 			wantLow:    true,
 			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.00)",
 		},
 		{
 			name:       "the dropped term outranks a weak score",
-			response:   withStats([]float64{4.1, 3.0, 2.0}, SearchStats{PreselectionBounded: true, PreselectionDiversity: 1, PreselectionConfidence: 0.75}),
+			response:   withStats([]float64{4.1, 3.0, 2.0}, SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(0.75)}),
 			wantLow:    true,
 			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.75)",
 		},
 		{
 			name:       "the printed confidence never rounds up to 1",
-			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionDiversity: 1, PreselectionConfidence: 0.996}),
+			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(0.996)}),
 			wantLow:    true,
 			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.99)",
 		},
 		{
 			name:     "an empty payload is still not marked",
-			response: SearchResponse{Stats: SearchStats{PreselectionBounded: true, PreselectionDiversity: 1, PreselectionConfidence: 0.5}},
+			response: SearchResponse{Stats: SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(0.5)}},
 		},
 	}
 	for _, testCase := range cases {
@@ -347,8 +348,8 @@ func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testin
 	if stats.FilesIndexed != 384 || !stats.PreselectionBounded || stats.PreselectionPasses != 3 {
 		t.Fatalf("stats = %#v, want the cold selection widened to its 384-file cap", stats)
 	}
-	if stats.PreselectionConfidence != 1 {
-		t.Fatalf("preselection confidence = %v, want 1: every indexed file holds the only term", stats.PreselectionConfidence)
+	if confidenceValue(stats.PreselectionConfidence) != 1 {
+		t.Fatalf("preselection confidence = %v, want 1: every indexed file holds the only term", confidenceValue(stats.PreselectionConfidence))
 	}
 	if stats.PreselectionBoundaryGap <= 0 || stats.PreselectionBoundaryGap >= searchPreselectionMinBoundaryGap {
 		t.Fatalf("boundary gap = %v, want the small RRF step that keeps widening", stats.PreselectionBoundaryGap)
@@ -365,8 +366,8 @@ func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testin
 	if stats.FilesIndexed != 384 || !stats.PreselectionBounded {
 		t.Fatalf("stats = %#v, want the 384-file cap", stats)
 	}
-	if stats.PreselectionConfidence <= 0 || stats.PreselectionConfidence >= 1 {
-		t.Fatalf("preselection confidence = %v, want below 1: no indexed file holds quillwort", stats.PreselectionConfidence)
+	if confidenceValue(stats.PreselectionConfidence) <= 0 || confidenceValue(stats.PreselectionConfidence) >= 1 {
+		t.Fatalf("preselection confidence = %v, want below 1: no indexed file holds quillwort", confidenceValue(stats.PreselectionConfidence))
 	}
 	if assessment := AssessSearchConfidence(dropped); !assessment.Low ||
 		!strings.HasPrefix(assessment.Reason, "the cold index left out every file matching part of the query") {
@@ -384,7 +385,7 @@ func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deep.Stats.PreselectionConfidence <= 0 || deep.Stats.PreselectionConfidence >= 1 || deep.Stats.SparseFilesRead == 0 {
+	if confidenceValue(deep.Stats.PreselectionConfidence) <= 0 || confidenceValue(deep.Stats.PreselectionConfidence) >= 1 || deep.Stats.SparseFilesRead == 0 {
 		t.Fatalf("stats = %#v, want the same capped selection plus a sparse pass", deep.Stats)
 	}
 	for _, result := range deep.Results {
@@ -399,36 +400,54 @@ func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testin
 }
 
 // A worktree of at least minGitGrepPreselectionFiles files shortlists Git's matches to
-// 4*MaxIndexedFiles before the content pass. The only file holding quillwort ranks below
-// that shortlist, so the content pass never sees the term; the confidence must still
-// count it, or the query reports 1 and the notice stays silent.
+// 4*MaxIndexedFiles before the content pass, so the content pass never sees a term whose
+// every file ranks below that shortlist. The confidence must still count it, or the query
+// reports 1 and the notice stays silent. Each corpus below hides its second term a different
+// way: in a shortlisted-out file, past the 32 lines Git samples from such a file, and behind
+// a shortlist whose files are too large to read, which leaves too few for the capped cut.
 func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
-	const needles = 500
-	for index := 0; index < minGitGrepPreselectionFiles-needles; index++ {
+	for index := 0; index < minGitGrepPreselectionFiles; index++ {
 		write(t, repo, fmt.Sprintf("fill/f_%05d.md", index), "filler\n")
 	}
-	for index := 0; index < needles; index++ {
+	const named = 500
+	large := "heron\n" + strings.Repeat("// padding\n", 40)
+	for index := 0; index < named; index++ {
 		write(t, repo, fmt.Sprintf("docs/needle_%03d.md", index), "needle\n")
+		write(t, repo, fmt.Sprintf("sample/thistle_%03d.md", index), "thistle\n")
+		content := large
+		if index < 50 {
+			content = "heron\n"
+		}
+		write(t, repo, fmt.Sprintf("large/heron_%03d.md", index), content)
 	}
 	write(t, repo, "docs/zz_other.md", "quillwort\n")
+	// Git samples 32 matching lines a file, so this one's sample holds only thistle.
+	write(t, repo, "sample/zz_mixed.md", strings.Repeat("thistle\n", 40)+"bramble\n")
+	write(t, repo, "large/zz_egret.md", "egret\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "large corpus")
 
 	for _, tc := range []struct {
-		query string
-		low   bool
+		query         string
+		maxParseBytes int
+		low           bool
 	}{
 		{query: "needle"},
 		{query: "needle quillwort", low: true},
+		{query: "thistle bramble", low: true},
+		// 450 of the 500 heron files exceed the read cap, so the content pass keeps at most
+		// 50 and the capped cut never runs; the Git shortlist alone dropped egret.
+		{query: "heron egret", maxParseBytes: 64, low: true},
 	} {
 		response, err := SearchRepository(t.Context(), repo, "test", tc.query, SearchOptions{
-			Worktree: true,
-			Profile:  ProfileSyntaxOnly,
+			Worktree:      true,
+			Profile:       ProfileSyntaxOnly,
+			MaxParseBytes: tc.maxParseBytes,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -437,20 +456,54 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		if stats.PreselectionBackend != "git-index-grep+go-content" || stats.FilesIndexed > 384 {
 			t.Fatalf("%q: stats = %#v, want the Git shortlist path", tc.query, stats)
 		}
+		if tc.maxParseBytes != 0 && (stats.PreselectionPasses > 2 || stats.FilesIndexed > 96) {
+			t.Fatalf("%q: stats = %#v, want no capped selection", tc.query, stats)
+		}
 		assessment := AssessSearchConfidence(response)
 		if !tc.low {
-			if stats.PreselectionConfidence != 1 {
-				t.Fatalf("%q: preselection confidence = %v, want 1", tc.query, stats.PreselectionConfidence)
+			if confidenceValue(stats.PreselectionConfidence) != 1 {
+				t.Fatalf("%q: preselection confidence = %v, want 1", tc.query, confidenceValue(stats.PreselectionConfidence))
 			}
 			continue
 		}
-		if stats.PreselectionConfidence <= 0 || stats.PreselectionConfidence >= 1 {
-			t.Fatalf("%q: preselection confidence = %v, want below 1: the shortlist dropped the only quillwort file",
-				tc.query, stats.PreselectionConfidence)
+		if confidence := confidenceValue(stats.PreselectionConfidence); confidence <= 0 || confidence >= 1 {
+			t.Fatalf("%q: preselection confidence = %v, want below 1: the shortlist dropped the only file holding the second term",
+				tc.query, confidence)
 		}
 		if !assessment.Low ||
 			!strings.HasPrefix(assessment.Reason, "the cold index left out every file matching part of the query") {
 			t.Fatalf("%q: assessment = %#v, want the preselection notice", tc.query, assessment)
+		}
+	}
+}
+
+func preselectionConfidenceOf(value float64) *float64 { return &value }
+
+// confidenceValue reads a reported preselection confidence, -1 when none was reported.
+func confidenceValue(confidence *float64) float64 {
+	if confidence == nil {
+		return -1
+	}
+	return *confidence
+}
+
+// A capped selection whose kept files hold none of the matched terms reports 0, which must
+// stay distinguishable in JSON from a query that never ran the capped selection.
+func TestSearchStatsKeepAZeroPreselectionConfidenceInJSON(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		stats SearchStats
+		want  bool
+	}{
+		{stats: SearchStats{PreselectionConfidence: preselectionConfidenceOf(0)}, want: true},
+		{stats: SearchStats{}, want: false},
+	} {
+		encoded, err := json.Marshal(tc.stats)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(string(encoded), `"preselection_confidence":0`); got != tc.want {
+			t.Fatalf("json = %s, want preselection_confidence present: %v", encoded, tc.want)
 		}
 	}
 }

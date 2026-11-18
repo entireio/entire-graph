@@ -267,7 +267,7 @@ func TestColdPreselectionKeepsLegacyOrderAndStatsWhenEligibleSetFitsBase(t *test
 		selection.preselectionFilesExamined != 8 || selection.filesContentRead != 8 {
 		t.Fatalf("legacy scan stats changed: %#v", selection)
 	}
-	if selection.preselectionConfidence != 0 || selection.preselectionCoverage != 0 ||
+	if selection.preselectionConfidence != nil || selection.preselectionCoverage != 0 ||
 		selection.preselectionDiversity != 0 || selection.preselectionWidened || selection.preselectionBounded {
 		t.Fatalf("small eligible set unexpectedly reported progressive metrics: %#v", selection)
 	}
@@ -298,7 +298,7 @@ func TestColdPreselectionExcludesConstraintOnlyDistractorWhenLegacySetFitsBase(t
 	if !reflect.DeepEqual(selection.files, []string{"src/target.go"}) {
 		t.Fatalf("selected files = %#v, want only the ordinary path/content match", selection.files)
 	}
-	if selection.preselectionPasses != 1 || selection.preselectionConfidence != 0 ||
+	if selection.preselectionPasses != 1 || selection.preselectionConfidence != nil ||
 		selection.preselectionCoverage != 0 || selection.preselectionDiversity != 0 ||
 		selection.preselectionWidened || selection.preselectionBounded {
 		t.Fatalf("constraint-only file incorrectly activated progressive selection: %#v", selection)

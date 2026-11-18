@@ -228,16 +228,12 @@ const searchPreselectionLowAdvice = "Re-query with the identifier's exact spelli
 // searchPreselectionLowReason names a capped cold selection that left out every file
 // matching part of the query (preselection_confidence below 1). It is empty when no such
 // selection ran, which is every committed-tree query answered from a complete index.
-// Only that selection sets preselection_diversity, and never to zero: it keeps at least
-// one file, so at least one directory. Confidence can be zero there, when the files kept
-// hold none of the matched terms, and Bounded can be false, when the Git shortlist of a
-// large worktree dropped the term before the cap.
 func searchPreselectionLowReason(stats SearchStats) string {
-	if stats.PreselectionDiversity <= 0 || stats.PreselectionConfidence >= 1 {
+	if stats.PreselectionConfidence == nil || *stats.PreselectionConfidence >= 1 {
 		return ""
 	}
 	// Floor, not round: 0.996 must not print as 1.00 in a notice that says it is below 1.
-	shown := math.Floor(stats.PreselectionConfidence*100) / 100
+	shown := math.Floor(*stats.PreselectionConfidence*100) / 100
 	return fmt.Sprintf(
 		"the cold index left out every file matching part of the query (preselection confidence %.2f)", shown)
 }

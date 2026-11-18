@@ -47,9 +47,9 @@ type searchPreselectionAssessment struct {
 	// so it is near zero at almost every cut. Confidence, which the stats report as
 	// preselection_confidence, is Coverage instead: below 1, a query term that
 	// matches files in the repository matches none of the files kept, so the
-	// ranking cannot see an answer that lives in the files left out. A caller whose
-	// candidates were already narrowed recomputes it over every matched term (see
-	// searchPreselectionKeptCoverage).
+	// ranking cannot see an answer that lives in the files left out. The reported value
+	// is recomputed over every matched term, including those only in files the content
+	// pass never read (see searchKeptTermCoverage).
 	BoundaryGap float64
 }
 
@@ -178,18 +178,18 @@ func searchPreselectionBoundaryGap(evidence []searchPreselectionEvidence, limit 
 	return math.Max(0, 1-next/current)
 }
 
-// searchPreselectionKeptCoverage is the coverage of the kept files against every term
-// matched in the repository: matchedAnywhere from the files the content pass scored, plus
-// unscanned, the terms Git matched only in files that pass never read. With no unscanned
-// terms it equals the selection's own Coverage.
-func searchPreselectionKeptCoverage(
-	evidence []searchPreselectionEvidence,
+// searchKeptTermCoverage is the coverage of the kept files against every term matched in
+// the repository: matchedAnywhere from the files the content pass scored, plus unread, the
+// terms Git matched only in files that pass never read. With no unread terms it equals the
+// capped selection's own Coverage.
+func searchKeptTermCoverage(
+	files []searchFileCandidate,
 	kept []string,
-	matchedAnywhere, unscanned []bool,
+	matchedAnywhere, unread []bool,
 	q searchQuery,
 ) float64 {
 	matched := append([]bool(nil), matchedAnywhere...)
-	for index, hit := range unscanned {
+	for index, hit := range unread {
 		if hit && index < len(matched) {
 			matched[index] = true
 		}
@@ -199,9 +199,9 @@ func searchPreselectionKeptCoverage(
 		keptPaths[path] = true
 	}
 	selected := make([]searchPreselectionEvidence, 0, len(kept))
-	for _, item := range evidence {
-		if keptPaths[item.Path] {
-			selected = append(selected, item)
+	for _, file := range files {
+		if keptPaths[file.path] {
+			selected = append(selected, searchPreselectionEvidence{Path: file.path, MatchedTerms: file.matchedTerms})
 		}
 	}
 	return searchPreselectionCoverage(selected, matched, q)
