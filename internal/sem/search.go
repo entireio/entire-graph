@@ -1975,11 +1975,13 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	//     result that is.
 	var typeCard []TypeCardEntry
 	var coverageNote *SearchCoverageNote
+	var coveredAnchor SymbolRecord
 	if anchors := searchTypeCardAnchor(results, symbolsByID, symbolsByFile, searchEnclosureHeadRanks); len(anchors) > 0 {
 		context := buildSearchContractContext(
 			results, anchors, q, snapshot.Relations, symbolsByID, symbolsByFile, read,
 			options.IncludeTypeCard,
 		)
+		coveredAnchor = context.anchor
 		results, typeCard, coverageNote, stats.CoveringTests, stats.TypeCardEntries =
 			mergeSearchContractContext(results, context, options.MaxContextBytes, options.TopK)
 	}
@@ -2003,10 +2005,11 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// search_refit.go for the removal order and why it never edits a snippet.
 	refit := refitSearchPayloadToBudget(
 		results, typeCard, signatureTypes, options.MaxContextBytes, searchEnclosureHeadRanks,
+		searchCoveredAnchorKeys(results, coveredAnchor, symbolsByID, symbolsByFile),
 	)
 	budgetRefitShed := refit.shed()
 	if budgetRefitShed > 0 {
-		results, typeCard, signatureTypes = settleSearchBudgetRefit(refit, &stats, q)
+		results, typeCard, signatureTypes = settleSearchBudgetRefit(refit, &stats)
 		if stats.CoveringTests == 0 {
 			// The note describes the test it accompanies, so it cannot outlive it.
 			coverageNote = nil

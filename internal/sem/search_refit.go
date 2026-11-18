@@ -1,5 +1,7 @@
 package sem
 
+import "slices"
+
 // The budget re-fit
 // =================
 //
@@ -25,14 +27,15 @@ package sem
 //  2. the type card, last entry first;
 //  3. the signature-type block, shorter member lists first, then its last entry;
 //  4. the rest of the ranking from the bottom, the covering test last of the non-head entries, and
-//     the head only when nothing else is left.
+//     the head only when nothing else is left. The ranked hit the covering test was chosen for is
+//     kept with the head, so a covering test never outlives its fix site.
 //
 // It removes WHOLE results and never edits a snippet. That is deliberate: a clipped body would keep
 // its complete-symbol or full-unit signal and claim a completeness it no longer has, which is the
 // false-positive class the fitter's own owner has documented (see
 // search_agent_marker_sweep_test.go). Every removal is reported (stats.results_dropped_by_budget and
-// the per-block counters), so a payload that came back smaller says so, and the docs-and-fixtures
-// decision is taken again on what is left (settleSearchBudgetRefit).
+// the per-block counters), so a payload that came back smaller says so, and the all-docs fallback
+// of the section pass is applied again to what is left (settleSearchBudgetRefit).
 //
 // Two passes run after the anchored blocks by design: the prose promotion (a promoted passage must
 // never become an anchor) and the completeness certificate. Shedding in yield order after them could
@@ -67,6 +70,50 @@ type searchBudgetRefit struct {
 	// signature-type shrink or drop steps taken.
 	typeCardEntries int
 	signatureSteps  int
+	// protected names the ranked results that leave only with the head: the fix site the covering
+	// test was chosen for (searchCoveredAnchorKeys).
+	protected map[searchRefitKey]bool
+}
+
+// searchRefitKey identifies one result across the re-fit's renumbering.
+type searchRefitKey struct {
+	filePath, symbolID string
+	startLine, endLine int
+}
+
+func searchRefitKeyOf(result SearchResult) searchRefitKey {
+	return searchRefitKey{
+		filePath: result.FilePath, symbolID: result.SymbolID,
+		startLine: result.StartLine, endLine: result.EndLine,
+	}
+}
+
+// searchCoveredAnchorKeys names the ranked results the covering test in `results` was chosen for:
+// the primary hits whose symbol is the contract anchor, resolved the way searchTypeCardAnchor
+// resolved it. That anchor is one of the first primary hits, which is not the same as the first
+// positions: docs hits can hold the head, putting the anchor below it. With no covering test in the
+// payload there is nothing to keep it for, and the result is nil.
+func searchCoveredAnchorKeys(
+	results []SearchResult,
+	anchor SymbolRecord,
+	symbolsByID map[string]SymbolRecord,
+	symbolsByFile map[string][]SymbolRecord,
+) map[searchRefitKey]bool {
+	if anchor.ID == "" || !slices.ContainsFunc(results, func(result SearchResult) bool {
+		return result.Section == searchSectionCoveringTest
+	}) {
+		return nil
+	}
+	keys := map[searchRefitKey]bool{}
+	for _, result := range results {
+		if result.Section != searchSectionPrimary {
+			continue
+		}
+		if symbol, ok := searchTypeCardResultSymbol(result, symbolsByID, symbolsByFile); ok && symbol.ID == anchor.ID {
+			keys[searchRefitKeyOf(result)] = true
+		}
+	}
+	return keys
 }
 
 // shed is the number of removals the re-fit made. Zero means every pass held its own share.
@@ -107,7 +154,8 @@ func searchPayloadOverBudget(
 }
 
 // refitSearchPayloadToBudget brings the funded payload back under budget by whole removals, in the
-// order the file comment gives. budget <= 0 means unbounded. headRanks is the protected head.
+// order the file comment gives. budget <= 0 means unbounded. headRanks is the protected head, and
+// protected names the ranked results that are removed only with it.
 //
 // The empty ranking is the floor: it is what the fitter itself returns when nothing fits, and it
 // cannot get smaller, so a budget below its two bytes stops the re-fit there rather than looping.
@@ -116,8 +164,11 @@ func refitSearchPayloadToBudget(
 	typeCard []TypeCardEntry,
 	signatureTypes []SearchSignatureType,
 	budget, headRanks int,
+	protected map[searchRefitKey]bool,
 ) searchBudgetRefit {
-	refit := searchBudgetRefit{results: results, typeCard: typeCard, signatureTypes: signatureTypes}
+	refit := searchBudgetRefit{
+		results: results, typeCard: typeCard, signatureTypes: signatureTypes, protected: protected,
+	}
 	if budget <= 0 {
 		return refit
 	}
@@ -147,7 +198,7 @@ func (refit *searchBudgetRefit) shedOne(headRanks int) bool {
 		refit.signatureSteps++
 		return true
 	}
-	if index, ok := searchRefitTailIndex(refit.results, floor); ok {
+	if index, ok := searchRefitTailIndex(refit.results, floor, refit.protected); ok {
 		refit.dropResult(index)
 		return true
 	}
@@ -161,11 +212,12 @@ func (refit *searchBudgetRefit) dropResult(index int) {
 }
 
 // searchRefitTailIndex picks the next result to drop once no redundant fragment is left: the
-// lowest-ranked entry below the head that is not the covering test, then the covering test (the
-// block that yields last, see search_blocks.go), then the head from the bottom.
-func searchRefitTailIndex(results []SearchResult, floor int) (int, bool) {
+// lowest-ranked entry below the head that is neither the covering test nor protected, then the
+// covering test (the block that yields last, see search_blocks.go), then the head and the protected
+// results from the bottom.
+func searchRefitTailIndex(results []SearchResult, floor int, protected map[searchRefitKey]bool) (int, bool) {
 	for index := len(results) - 1; index >= floor; index-- {
-		if results[index].Section != searchSectionCoveringTest {
+		if results[index].Section != searchSectionCoveringTest && !protected[searchRefitKeyOf(results[index])] {
 			return index, true
 		}
 	}
@@ -197,15 +249,40 @@ func shrinkSearchSignatureTypesOneStep(block []SearchSignatureType) []SearchSign
 }
 
 // settleSearchBudgetRefit adopts a re-fit that removed something: the counters are brought in line
-// with the payload that is going out, and the docs-and-fixtures decision is taken again, because
-// assignSearchSections keeps an all-docs payload primary and the re-fit may have removed the last
-// primary hit. That decision can only remove labels here, so it never grows the payload: every
-// primary result left was already present, and already labelled, when the section pass last ran.
+// with the payload that is going out, and the section pass's all-docs fallback is applied again.
 func settleSearchBudgetRefit(
-	refit searchBudgetRefit, stats *SearchStats, q searchQuery,
+	refit searchBudgetRefit, stats *SearchStats,
 ) ([]SearchResult, []TypeCardEntry, []SearchSignatureType) {
 	applySearchBudgetRefitStats(stats, refit)
-	return assignSearchSections(refit.results, q), refit.typeCard, refit.signatureTypes
+	return keepSearchAllDocsFallback(refit.results), refit.typeCard, refit.signatureTypes
+}
+
+// keepSearchAllDocsFallback re-applies the one decision of assignSearchSections a removal can
+// invalidate. A ranking whose hits are all docs stays primary, because those hits are the only
+// answer there is; when the re-fit removed the last primary hit, the docs hits left are that answer
+// again. It only promotes. It never labels: re-running assignSearchSections itself could, because
+// the related sites and the covering test seated after it change how many results it counts, and a
+// label is bytes the ceiling was not asked to fund.
+func keepSearchAllDocsFallback(results []SearchResult) []SearchResult {
+	docs := 0
+	for _, result := range results {
+		switch result.Section {
+		case searchSectionPrimary:
+			return results
+		case searchSectionDocs:
+			docs++
+		}
+	}
+	if docs == 0 {
+		return results
+	}
+	promoted := append([]SearchResult(nil), results...)
+	for index := range promoted {
+		if promoted[index].Section == searchSectionDocs {
+			promoted[index].Section = searchSectionPrimary
+		}
+	}
+	return promoted
 }
 
 // applySearchBudgetRefitStats keeps the counters describing the payload that is going out. Only

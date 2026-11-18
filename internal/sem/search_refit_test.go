@@ -53,7 +53,7 @@ func TestRefitSearchPayloadLeavesAFittingPayloadAlone(t *testing.T) {
 	card := []TypeCardEntry{{Name: "Ledger", Decl: "type Ledger struct{}"}}
 	budget := serializedSearchResultBytes(results) + serializedSearchResultBytes(card)
 	for _, ceiling := range []int{0, budget, budget + 1} {
-		refit := refitSearchPayloadToBudget(results, card, nil, ceiling, searchEnclosureHeadRanks)
+		refit := refitSearchPayloadToBudget(results, card, nil, ceiling, searchEnclosureHeadRanks, nil)
 		if refit.shed() != 0 || len(refit.results) != len(results) || len(refit.typeCard) != 1 {
 			t.Fatalf("ceiling %d: a fitting payload was changed: shed %d, %s",
 				ceiling, refit.shed(), refitPaths(refit.results))
@@ -68,7 +68,7 @@ func TestRefitSearchPayloadDropsARedundantFragmentFirst(t *testing.T) {
 	results := refitFixtureRanking()
 	card := []TypeCardEntry{{Name: "Ledger", Decl: "type Ledger struct{ Lantern string }"}}
 	over := serializedSearchResultBytes(results) + serializedSearchResultBytes(card) - 10
-	refit := refitSearchPayloadToBudget(results, card, nil, over, searchEnclosureHeadRanks)
+	refit := refitSearchPayloadToBudget(results, card, nil, over, searchEnclosureHeadRanks, nil)
 	if got, want := refitPaths(refit.results), "a.go,b.go,c.go,d.go,e.go,f.go,g.go"; got != want {
 		t.Fatalf("re-fit kept %s, want %s (the rank-6 second fragment of a.go goes first)", got, want)
 	}
@@ -104,10 +104,10 @@ func TestRefitSearchPayloadFollowsTheBlockYieldOrder(t *testing.T) {
 		{Name: "Ledger", FilePath: "a.go", StartLine: 3, Methods: methods, MethodsTotal: len(methods)},
 		{Name: "Vessel", FilePath: "a.go", StartLine: 9, Methods: methods[:2], MethodsTotal: 2},
 	}
-	full := refitSearchPayloadToBudget(results, card, signature, 0, searchEnclosureHeadRanks).fundedBytes()
+	full := refitSearchPayloadToBudget(results, card, signature, 0, searchEnclosureHeadRanks, nil).fundedBytes()
 
 	// One byte over: the card's LAST entry is the first thing to go.
-	refit := refitSearchPayloadToBudget(results, card, signature, full-1, searchEnclosureHeadRanks)
+	refit := refitSearchPayloadToBudget(results, card, signature, full-1, searchEnclosureHeadRanks, nil)
 	if len(refit.typeCard) != 1 || refit.typeCard[0].Name != "First" || len(refit.dropped) != 0 ||
 		refit.signatureSteps != 0 {
 		t.Fatalf("one byte over: card %+v, dropped %d, signature steps %d",
@@ -116,7 +116,7 @@ func TestRefitSearchPayloadFollowsTheBlockYieldOrder(t *testing.T) {
 
 	// Past the whole card: the signature block shrinks 10 -> 8 members before it drops an entry.
 	cardBytes := serializedSearchResultBytes(card)
-	refit = refitSearchPayloadToBudget(results, card, signature, full-cardBytes-1, searchEnclosureHeadRanks)
+	refit = refitSearchPayloadToBudget(results, card, signature, full-cardBytes-1, searchEnclosureHeadRanks, nil)
 	if len(refit.typeCard) != 0 || len(refit.signatureTypes) != 2 || len(refit.signatureTypes[0].Methods) != 8 ||
 		refit.signatureTypes[0].MethodsTotal != 10 || len(refit.dropped) != 0 {
 		t.Fatalf("past the card: card %d, signature %+v, dropped %d",
@@ -125,7 +125,7 @@ func TestRefitSearchPayloadFollowsTheBlockYieldOrder(t *testing.T) {
 
 	// Past both blocks: the ranking loses its bottom entry, never the head.
 	ranking := serializedSearchResultBytes(results)
-	refit = refitSearchPayloadToBudget(results, card, signature, ranking-1, searchEnclosureHeadRanks)
+	refit = refitSearchPayloadToBudget(results, card, signature, ranking-1, searchEnclosureHeadRanks, nil)
 	if len(refit.typeCard) != 0 || len(refit.signatureTypes) != 0 {
 		t.Fatalf("a block outlived a dropped ranked hit: card %d, signature %d",
 			len(refit.typeCard), len(refit.signatureTypes))
@@ -146,26 +146,83 @@ func TestRefitSearchPayloadDropsTheCoveringTestLastAndTheHeadFromTheBottom(t *te
 	results = append(results, covering, refitFixtureResult(7, "g.go", 400))
 	one := serializedSearchResultBytes(results[:1])
 
-	refit := refitSearchPayloadToBudget(results, nil, nil, serializedSearchResultBytes(results)-1, searchEnclosureHeadRanks)
+	refit := refitSearchPayloadToBudget(results, nil, nil, serializedSearchResultBytes(results)-1, searchEnclosureHeadRanks, nil)
 	if got, want := refitPaths(refit.results), "a.go,b.go,c.go,d.go,e.go,a_test.go"; got != want {
 		t.Fatalf("first drop: %s, want %s", got, want)
 	}
-	refit = refitSearchPayloadToBudget(results, nil, nil, serializedSearchResultBytes(results[:5])+1, searchEnclosureHeadRanks)
+	refit = refitSearchPayloadToBudget(results, nil, nil, serializedSearchResultBytes(results[:5])+1, searchEnclosureHeadRanks, nil)
 	if got, want := refitPaths(refit.results), "a.go,b.go,c.go,d.go,e.go"; got != want {
 		t.Fatalf("covering test: %s, want %s", got, want)
 	}
-	refit = refitSearchPayloadToBudget(results, nil, nil, one, searchEnclosureHeadRanks)
+	refit = refitSearchPayloadToBudget(results, nil, nil, one, searchEnclosureHeadRanks, nil)
 	if got, want := refitPaths(refit.results), "a.go"; got != want {
 		t.Fatalf("head: %s, want %s", got, want)
 	}
 	assertRefitRanks(t, refit.results)
 }
 
+// The contract anchor is one of the first PRIMARY hits, which docs hits holding the head can push
+// below the protected positions. The covering test was chosen for that hit, so the hit leaves only
+// with the head, after the test: a covering test never outlives its fix site.
+func TestRefitSearchPayloadKeepsTheCoveredAnchorUntilItsTest(t *testing.T) {
+	t.Parallel()
+	var results []SearchResult
+	for rank := 1; rank <= 5; rank++ {
+		result := refitFixtureResult(rank, fmt.Sprintf("notes/%d.md", rank), 400)
+		result.Section = searchSectionDocs
+		results = append(results, result)
+	}
+	anchor := refitFixtureResult(6, "pkg/anchor.go", 400)
+	covering := refitFixtureResult(8, "pkg/anchor_test.go", 400)
+	covering.Section = searchSectionCoveringTest
+	results = append(results, anchor, refitFixtureResult(7, "pkg/tail.go", 400), covering)
+	protected := map[searchRefitKey]bool{searchRefitKeyOf(anchor): true}
+	head := serializedSearchResultBytes(results[:5])
+
+	for _, tc := range []struct {
+		budget int
+		want   string
+	}{
+		{serializedSearchResultBytes(results) - 1, "pkg/anchor.go,pkg/anchor_test.go"},
+		{head + 2*serializedSearchResultBytes(results[5:6]), "pkg/anchor.go"},
+		{head + 1, ""},
+	} {
+		refit := refitSearchPayloadToBudget(results, nil, nil, tc.budget, searchEnclosureHeadRanks, protected)
+		if got := refitPaths(refit.results[5:]); got != tc.want {
+			t.Fatalf("budget %d: below the head %q, want %q", tc.budget, got, tc.want)
+		}
+		assertRefitRanks(t, refit.results)
+	}
+}
+
+// The anchor keys come from the contract anchor resolved the way the card resolved it, and only
+// while a covering test is there to be kept for.
+func TestSearchCoveredAnchorKeysNeedsTheCoveringTest(t *testing.T) {
+	t.Parallel()
+	anchor := SymbolRecord{ID: "settle", Name: "Settle", FilePath: "pkg/ledger.go", StartLine: 1, EndLine: 1}
+	symbolsByID := map[string]SymbolRecord{anchor.ID: anchor}
+	hit := refitFixtureResult(1, anchor.FilePath, 10)
+	hit.SymbolID = anchor.ID
+	covering := refitFixtureResult(2, "pkg/ledger_test.go", 10)
+	covering.Section = searchSectionCoveringTest
+
+	keys := searchCoveredAnchorKeys([]SearchResult{hit, covering}, anchor, symbolsByID, nil)
+	if len(keys) != 1 || !keys[searchRefitKeyOf(hit)] {
+		t.Fatalf("with the covering test: keys %v, want the anchor's hit", keys)
+	}
+	if keys := searchCoveredAnchorKeys([]SearchResult{hit}, anchor, symbolsByID, nil); keys != nil {
+		t.Fatalf("without a covering test: keys %v, want none", keys)
+	}
+	if keys := searchCoveredAnchorKeys([]SearchResult{hit, covering}, SymbolRecord{}, symbolsByID, nil); keys != nil {
+		t.Fatalf("without an anchor: keys %v, want none", keys)
+	}
+}
+
 // A budget below the empty ranking stops at the empty ranking instead of looping: `[]` is the
 // floor every fitter returns, and nothing is smaller.
 func TestRefitSearchPayloadStopsAtTheEmptyRanking(t *testing.T) {
 	t.Parallel()
-	refit := refitSearchPayloadToBudget(refitFixtureRanking(), nil, nil, 1, searchEnclosureHeadRanks)
+	refit := refitSearchPayloadToBudget(refitFixtureRanking(), nil, nil, 1, searchEnclosureHeadRanks, nil)
 	if len(refit.results) != 0 || len(refit.dropped) != 8 {
 		t.Fatalf("budget 1: kept %d, dropped %d", len(refit.results), len(refit.dropped))
 	}
@@ -217,6 +274,11 @@ func TestSettleSearchBudgetRefitRedecidesTheDocsSection(t *testing.T) {
 		result.Section = searchSectionDocs
 		return result
 	}
+	covering := func(rank int) SearchResult {
+		result := refitFixtureResult(rank, "notes_test.go", 10)
+		result.Section = searchSectionCoveringTest
+		return result
+	}
 	for _, tc := range []struct {
 		name    string
 		results []SearchResult
@@ -232,12 +294,25 @@ func TestSettleSearchBudgetRefitRedecidesTheDocsSection(t *testing.T) {
 			results: []SearchResult{refitFixtureResult(1, "pkg/a.go", 10), docs(2, "notes/b.md")},
 			want:    []string{searchSectionPrimary, searchSectionDocs},
 		},
+		{
+			// The section pass promoted an all-docs ranking, and a covering test was seated after it.
+			// Re-running that pass would now count three results and label the two notes, adding
+			// bytes after the re-fit; the fallback only ever promotes.
+			name: "a promoted all-docs ranking with a covering test",
+			results: []SearchResult{
+				refitFixtureResult(1, "notes/a.md", 10), refitFixtureResult(2, "notes/b.md", 10), covering(3),
+			},
+			want: []string{searchSectionPrimary, searchSectionPrimary, searchSectionCoveringTest},
+		},
 	} {
 		refit := searchBudgetRefit{
 			results: tc.results, dropped: []SearchResult{refitFixtureResult(3, "pkg/c.go", 10)},
 		}
 		var stats SearchStats
-		results, _, _ := settleSearchBudgetRefit(refit, &stats, searchQuery{})
+		results, _, _ := settleSearchBudgetRefit(refit, &stats)
+		if len(results) != len(tc.want) {
+			t.Fatalf("%s: %d results, want %d", tc.name, len(results), len(tc.want))
+		}
 		for index, result := range results {
 			if result.Section != tc.want[index] {
 				t.Fatalf("%s: result %d is in section %q, want %q", tc.name, index, result.Section, tc.want[index])
