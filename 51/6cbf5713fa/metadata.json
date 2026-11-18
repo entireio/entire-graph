@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.13.4",
+  "checkpoint_id": "516cbf5713fa",
+  "strategy": "manual-commit",
+  "branch": "vue-corpus",
+  "checkpoints_count": 8,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/51/6cbf5713fa/0/metadata.json",
+      "transcript": "/51/6cbf5713fa/0/full.jsonl",
+      "compact_transcript": "/51/6cbf5713fa/0/transcript.jsonl",
+      "content_hash": "/51/6cbf5713fa/0/content_hash.txt",
+      "prompt": "/51/6cbf5713fa/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 30,
+    "cache_creation_tokens": 28902,
+    "cache_read_tokens": 8628440,
+    "output_tokens": 21021,
+    "api_call_count": 15
+  },
+  "redaction": {
+    "replacements": 0,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}
