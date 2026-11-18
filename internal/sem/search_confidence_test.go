@@ -457,6 +457,7 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 	for _, tc := range []struct {
 		query         string
 		maxParseBytes int
+		topK          int
 		low           bool
 		// gitPasses counts Git's passes over the corpus: the sample, plus the pass for
 		// terms the sample missed when there are any.
@@ -464,6 +465,9 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 	}{
 		{query: "needle", gitPasses: 1},
 		{query: "needle quillwort", low: true, gitPasses: 1},
+		// --top-k 40 raises the limit to 120 without the caller setting one, so the cut is
+		// still assessed: 480 files shortlisted, then a fixed cut to 120.
+		{query: "needle quillwort", topK: 40, low: true, gitPasses: 1},
 		{query: "thistle bramble", low: true, gitPasses: 2},
 		// 450 of the 500 heron files exceed the read cap, so the content pass keeps at most
 		// 50 and the capped cut never runs; the Git shortlist alone dropped egret.
@@ -475,11 +479,15 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 			Worktree:      true,
 			Profile:       ProfileSyntaxOnly,
 			MaxParseBytes: tc.maxParseBytes,
+			TopK:          tc.topK,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		requireGitShortlistPath(t, tc.query, response.Stats, tc.maxParseBytes == 0, tc.gitPasses)
+		if tc.topK > 0 && response.Stats.FilesIndexed != 120 {
+			t.Fatalf("%q at top-k %d: files indexed = %d, want the adaptive 120", tc.query, tc.topK, response.Stats.FilesIndexed)
+		}
 		if examined, corpus := response.Stats.PreselectionFilesExamined, response.Stats.FilesScanned; examined < tc.gitPasses*corpus || examined >= (tc.gitPasses+1)*corpus {
 			t.Fatalf("%q: files examined = %d over a %d-file corpus, want %d Git passes counted", tc.query, examined, corpus, tc.gitPasses)
 		}
@@ -490,6 +498,39 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 			continue
 		}
 		requirePreselectionNotice(t, tc.query, response)
+	}
+}
+
+// A TopK-adaptive limit is not one the caller chose, so its fixed cut is assessed like the
+// capped selection's; an explicit --max-indexed-files of the same size reports nothing.
+func TestSearchRepositoryReportsPreselectionConfidenceForAnAdaptiveLimit(t *testing.T) {
+	t.Parallel()
+	repo := writeNeedleQuillwortFixture(t)
+	const query = "needle quillwort"
+	response, err := SearchRepository(t.Context(), repo, "test", query, SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.FilesIndexed != 120 {
+		t.Fatalf("files indexed = %d, want the adaptive 120", response.Stats.FilesIndexed)
+	}
+	requirePreselectionNotice(t, query, response)
+
+	response, err = SearchRepository(t.Context(), repo, "test", query, SearchOptions{
+		Worktree:        true,
+		Profile:         ProfileSyntaxOnly,
+		TopK:            40,
+		MaxIndexedFiles: 120,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.PreselectionConfidence != nil {
+		t.Fatalf("explicit limit: preselection confidence = %v, want none", *response.Stats.PreselectionConfidence)
 	}
 }
 

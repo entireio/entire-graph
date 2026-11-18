@@ -96,6 +96,10 @@ type SearchOptions struct {
 	// standard cold default may widen adaptively; explicit and TopK-adaptive
 	// MaxIndexedFiles values remain exact compatibility limits.
 	progressivePreselection bool
+	// explicitMaxIndexedFiles is internal: the caller set MaxIndexedFiles. That limit is
+	// an exact one the caller chose, so preselection reports no confidence for its cut
+	// and spends no extra Git pass on one. A TopK-adaptive limit is not explicit.
+	explicitMaxIndexedFiles bool
 	// coldCompleteEligible is internal policy, set by searchRepository: this query
 	// missed the complete preindex, and nothing it asked for rules out the
 	// cold-complete build (a cache directory is in use, the search is on HEAD, and
@@ -1167,6 +1171,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// An explicit --max-indexed-files bounds cold parsing, so it also rules out
 	// building the complete snapshot on a cold miss (see coldCompletePolicy).
 	explicitIndexedFileBound := options.MaxIndexedFiles > 0
+	options.explicitMaxIndexedFiles = explicitIndexedFileBound
 	if options.MaxIndexedFiles <= 0 {
 		options.MaxIndexedFiles = defaultSearchIndexedFiles(options.TopK)
 		if options.defaultIndexedFilesForTest > 0 {
@@ -3087,6 +3092,8 @@ func preselectSearchFiles(
 		}
 	}
 	progressive := options.progressivePreselection && len(legacyFiles) > options.MaxIndexedFiles
+	// truncated is the fixed cut a TopK-adaptive (or explicit) limit makes instead.
+	truncated := false
 	if progressive {
 		evidence := make([]searchPreselectionEvidence, len(files))
 		for index, file := range files {
@@ -3118,6 +3125,7 @@ func preselectSearchFiles(
 		})
 		if len(legacyFiles) > options.MaxIndexedFiles {
 			legacyFiles = legacyFiles[:options.MaxIndexedFiles]
+			truncated = true
 		}
 		selection.files = make([]string, len(legacyFiles))
 		for index, file := range legacyFiles {
@@ -3125,13 +3133,13 @@ func preselectSearchFiles(
 		}
 		selection.preselectionPasses = 1
 	}
-	// Either cut (the capped selection or the Git shortlist before it) can leave out every
-	// file holding a query term. Widening reads matchedAnywhere alone, as ranking does; the
-	// reported confidence also counts the terms matched only in files the content pass never
-	// read, which were left out of the index as surely as the ones the cut dropped. An
-	// explicit MaxIndexedFiles is an exact limit the caller chose, so it gets no confidence
-	// and no extra Git pass, as before.
-	assessConfidence := progressive || (options.progressivePreselection && shortlistDroppedTerms != nil)
+	// Any cut (the capped selection, the fixed cut of a TopK-adaptive limit, or the Git
+	// shortlist before either) can leave out every file holding a query term. Widening reads
+	// matchedAnywhere alone, as ranking does; the reported confidence also counts the terms
+	// matched only in files the content pass never read, which were left out of the index as
+	// surely as the ones the cut dropped. An explicit MaxIndexedFiles is an exact limit the
+	// caller chose, so it gets no confidence and no extra Git pass, as before.
+	assessConfidence := !options.explicitMaxIndexedFiles && (progressive || truncated || shortlistDroppedTerms != nil)
 	var unread []bool
 	if assessConfidence {
 		unread = shortlistDroppedTerms
