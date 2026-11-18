@@ -576,7 +576,8 @@ func requireGitShortlistPath(t *testing.T, query string, stats SearchStats, capp
 // another, and neither can lines Git matches but the query's matcher rejects: in the C locale
 // "éint" matches the int alias's ASCII boundary, and the matcher refuses it. A text file that
 // .gitattributes marks `-diff` or `binary` still counts, whole or streamed, as the content
-// pass reads it; a file holding a NUL byte does not, as the content pass skips it.
+// pass reads it; a file holding a NUL byte does not, as the content pass skips it. Git's own
+// listing skips an unmarked binary, and a marked file outside the corpus is never searched.
 func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -588,14 +589,19 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 	write(t, repo, "b.go", strings.Repeat("éint x\n", 40)+"func readInt() {}\n")
 	write(t, repo, "read.md", "osprey\n")
 	write(t, repo, "vendor/off.md", strings.Repeat("kestrel\n", 2000))
-	write(t, repo, ".gitattributes", "marked.txt -diff\nbig-marked.log binary\n")
+	write(t, repo, ".gitattributes", "marked.txt -diff\nbig-marked.log binary\n*.dat binary\n")
 	write(t, repo, "marked.txt", "sandpiper\n")
 	write(t, repo, "big-marked.log", "dunlin\n"+strings.Repeat("x\n", 200))
 	write(t, repo, "bin.dat", "godwit\n\x00\n")
 	write(t, repo, "bigbin.dat", "\x00\nwhimbrel\n"+strings.Repeat("x\n", 200))
+	write(t, repo, "raw.bin", "\x00\nplover\n")
+	write(t, repo, "vendor/asset.dat", "curlew\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "fixture")
-	allowed := map[string]bool{"a.md": true, "b.go": true, "read.md": true, "marked.txt": true, "big-marked.log": true, "bin.dat": true, "bigbin.dat": true}
+	allowed := map[string]bool{
+		"a.md": true, "b.go": true, "read.md": true, "marked.txt": true, "big-marked.log": true,
+		"bin.dat": true, "bigbin.dat": true, "raw.bin": true,
+	}
 	files := searchTestUnreadFiles(repo, allowed, map[string]bool{"read.md": true}, 200)
 
 	for _, tc := range []struct {
@@ -609,9 +615,12 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 		// kestrel is only in a file outside the corpus, which Git lists but never streams.
 		{query: "wren kestrel", want: map[string]bool{"wren": true, "kestrel": false}, examined: 1},
 		{query: "integer value", known: []string{"integer", "value"}, want: map[string]bool{"int": true}, examined: 1},
+		// The four marked corpus files are examined; raw.bin and vendor/asset.dat never are.
 		{
-			query:    "sandpiper dunlin godwit whimbrel",
-			want:     map[string]bool{"sandpiper": true, "dunlin": true, "godwit": false, "whimbrel": false},
+			query: "sandpiper dunlin godwit whimbrel plover curlew",
+			want: map[string]bool{
+				"sandpiper": true, "dunlin": true, "godwit": false, "whimbrel": false, "plover": false, "curlew": false,
+			},
 			examined: 4,
 		},
 	} {

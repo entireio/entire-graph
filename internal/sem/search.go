@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -3250,8 +3251,9 @@ func (files searchUnreadFiles) text(filePath string) (content string, readable, 
 // so a term can be absent from it while a file the pass skipped holds it. One Git pass lists
 // the files with a line matching just the missing terms, which are rare by construction
 // (`git grep -l` stops reading a file at its first match, so files outside allowed or already
-// read cost little), searching every file as text. Each listed file is then judged as the
-// content pass would judge it (searchUnreadFiles.text): one it can read is matched whole with
+// read cost little), and the corpus files .gitattributes marks binary are searched apart, as
+// text (searchUnreadFiles.list). Each listed file is then judged as the content pass would
+// judge it (searchUnreadFiles.text): one it can read is matched whole with
 // the query's matcher, and Git streams every matching line of the text files too large to
 // read, confirming each with that matcher, so neither a missing term nor a line Git matches
 // but the matcher rejects can crowd out a later one. A file holding a NUL byte is skipped, as
@@ -3308,16 +3310,41 @@ func searchGitUnreadTerms(
 }
 
 // list returns the corpus files the content pass did not read that have a line matching one
-// of patterns, searched as text.
+// of patterns. One Git pass over the worktree lists the text files. That pass skips the files
+// .gitattributes marks binary without reading them, so those are listed by attribute, and
+// only the ones in the corpus and unread are searched, as text. No excluded asset or binary
+// outside them is read in full.
 func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]string, error) {
 	var unread []string
-	err := gitutil.GrepIndexPatternFiles(ctx, files.absRepo, patterns, func(filePath string) error {
-		if files.allowed[filePath] && !files.read[filePath] {
+	keep := func(filePath string) error {
+		if files.eligible(filePath) {
 			unread = append(unread, filePath)
 		}
 		return ctx.Err()
-	})
-	return unread, err
+	}
+	if err := gitutil.GrepIndexPatternFiles(ctx, files.absRepo, patterns, keep); err != nil {
+		return nil, err
+	}
+	marked, err := gitutil.ListIndexFilesMarkedBinary(ctx, files.absRepo)
+	if err != nil {
+		return nil, err
+	}
+	eligible := make([]string, 0, len(marked))
+	for _, filePath := range marked {
+		if files.eligible(filePath) {
+			eligible = append(eligible, filePath)
+		}
+	}
+	if err := gitutil.GrepIndexPatternFilesIn(ctx, files.absRepo, patterns, eligible, keep); err != nil {
+		return nil, err
+	}
+	sort.Strings(unread)
+	return slices.Compact(unread), nil
+}
+
+// eligible reports whether filePath is a corpus file the content pass did not read.
+func (files searchUnreadFiles) eligible(filePath string) bool {
+	return files.allowed[filePath] && !files.read[filePath]
 }
 
 // searchTermsEither marks each term either slice marks.

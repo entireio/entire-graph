@@ -478,6 +478,15 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 	return listBoundedWorktreePaths(newCmd(ctx, repo, "git", "ls-files", "-z"))
 }
 
+// ListIndexFilesMarkedBinary lists the tracked files that Git's attributes mark `-diff`, the
+// `binary` macro included (`git ls-files -z -- ':(attr:-diff)'`). These are the files a
+// `git grep -I` skips without reading them. Listing them reads attributes only, never file
+// content. A file whose custom diff driver is configured `binary` is skipped by Git too, but
+// is not listed.
+func ListIndexFilesMarkedBinary(ctx context.Context, repo string) ([]string, error) {
+	return listBoundedWorktreePaths(newCmd(ctx, repo, "git", "ls-files", "-z", "--", ":(attr:-diff)"))
+}
+
 // ListWorktreeFiles lists the working tree the way Git itself sees it: tracked
 // files plus untracked files that no exclude rule covers
 // (`git ls-files --cached --others --exclude-standard`). Delegating the exclude
@@ -673,38 +682,43 @@ func GrepIndexPatternSample(ctx context.Context, repo string, patterns []string,
 
 // GrepIndexPatternFiles visits each tracked worktree file that has a line matching one of
 // the caller-built POSIX expressions (`git grep -l`). Git stops reading a file at its first
-// match, so a file full of matches costs no more than one with a single match. Every file is
-// searched as text (`--text`), whatever Git's binary detection or .gitattributes say, so a
-// text file marked `binary` or `-diff` is listed too: the caller decides which files are text.
+// match, so a file full of matches costs no more than one with a single match. Like every
+// runGrepPatterns search it skips the files Git counts as binary. Git does not even read a
+// file .gitattributes marks binary; ListIndexFilesMarkedBinary lists those.
 func GrepIndexPatternFiles(ctx context.Context, repo string, patterns []string, visit func(path string) error) error {
-	return runGrepPatterns(ctx, repo, "", patterns, []string{"--text", "-l"}, nil, func(reader *bufio.Reader) error {
-		for {
-			path, err := reader.ReadString(0)
-			if err == io.EOF && path == "" {
-				return nil
-			}
-			if err != nil {
-				return fmt.Errorf("git grep returned a non-NUL-terminated path: %w", err)
-			}
-			if err := visit(strings.TrimSuffix(path, "\x00")); err != nil {
-				return err
-			}
-		}
-	})
+	read := func(reader *bufio.Reader) error {
+		return readGrepPaths(reader, visit)
+	}
+	return runGrepPatterns(ctx, repo, "", patterns, []string{"-l"}, nil, read)
+}
+
+// GrepIndexPatternFilesIn is GrepIndexPatternFiles over only the named tracked worktree
+// files, each searched as text (`--text`) whatever Git's binary detection or .gitattributes
+// say, so the caller decides which of them are text. Only the named files are read: name
+// the few a caller needs, such as the files .gitattributes marks binary that it must check.
+func GrepIndexPatternFilesIn(ctx context.Context, repo string, patterns, files []string, visit func(path string) error) error {
+	read := func(reader *bufio.Reader) error {
+		return readGrepPaths(reader, visit)
+	}
+	return grepPatternsInFiles(ctx, repo, patterns, []string{"--text", "-l"}, files, read)
 }
 
 // GrepIndexPatternEveryInFiles streams every line matching one of the expressions in the
 // named tracked worktree files, with no per-file limit, for a caller that confirms each line
 // itself and must not let lines it rejects hide a later one. Only the named files are
-// searched: they become literal pathspecs, in batches that fit the command line, so pick
-// them first (GrepIndexPatternFiles) and keep the list short. They are searched as text, as
-// GrepIndexPatternFiles lists them, so the caller has already decided they are text. A visit
-// error stops the scan.
+// searched, as text like GrepIndexPatternFilesIn, so pick them first and keep the list
+// short. A visit error stops the scan.
 func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, files []string, visit func(GrepMatch) error) error {
-	batchBytes := grepPathBatchBytes()
 	read := func(reader *bufio.Reader) error {
 		return readGrepPatternLines(reader, visit)
 	}
+	return grepPatternsInFiles(ctx, repo, patterns, []string{"--text"}, files, read)
+}
+
+// grepPatternsInFiles runs runGrepPatterns over the named files only: they become literal
+// pathspecs, in batches that fit the command line.
+func grepPatternsInFiles(ctx context.Context, repo string, patterns, modeArgs, files []string, read func(*bufio.Reader) error) error {
+	batchBytes := grepPathBatchBytes()
 	for start := 0; start < len(files); {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -720,12 +734,28 @@ func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, fi
 			pathspecs = append(pathspecs, pathspec)
 			end++
 		}
-		if err := runGrepPatterns(ctx, repo, "", patterns, []string{"--text"}, pathspecs, read); err != nil {
+		if err := runGrepPatterns(ctx, repo, "", patterns, modeArgs, pathspecs, read); err != nil {
 			return err
 		}
 		start = end
 	}
 	return nil
+}
+
+// readGrepPaths visits each NUL-terminated path `git grep -l -z` prints.
+func readGrepPaths(reader *bufio.Reader, visit func(path string) error) error {
+	for {
+		path, err := reader.ReadString(0)
+		if err == io.EOF && path == "" {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("git grep returned a non-NUL-terminated path: %w", err)
+		}
+		if err := visit(strings.TrimSuffix(path, "\x00")); err != nil {
+			return err
+		}
+	}
 }
 
 func grepPatternLines(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int, visit func(GrepMatch) error) error {
