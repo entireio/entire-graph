@@ -1092,6 +1092,47 @@ func shortDigest(value string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+var compactSnapshotUTF8BOM = []byte{0xef, 0xbb, 0xbf}
+
+// compactSnapshotWideEncodings are the byte-order marks of the encodings a
+// compact snapshot is never written in. The documented save-then-query flow
+// goes through a shell redirect, and in Windows PowerShell 5.1 -- still the
+// "Windows PowerShell" on a stock Windows 11 -- `>` and Out-File without
+// -Encoding save UTF-16LE. The decoder met that file as
+// `invalid character '\xff' looking for beginning of value`, a complaint
+// about one byte that names neither the encoding nor a way out.
+//
+// The four-byte UTF-32 marks are listed first because the UTF-32LE mark
+// BEGINS with the UTF-16LE mark, so the shorter one would otherwise claim it.
+var compactSnapshotWideEncodings = []struct {
+	bom  []byte
+	name string
+}{
+	{[]byte{0xff, 0xfe, 0x00, 0x00}, "UTF-32LE"},
+	{[]byte{0x00, 0x00, 0xfe, 0xff}, "UTF-32BE"},
+	{[]byte{0xff, 0xfe}, "UTF-16LE"},
+	{[]byte{0xfe, 0xff}, "UTF-16BE"},
+}
+
+// compactSnapshotWideEncoding names the non-UTF-8 encoding a leading
+// byte-order mark declares, if any. It consumes nothing: a stream with no mark
+// is left exactly as it was found, for the UTF-8 BOM skip and the decoder.
+//
+// A UTF-16 file saved without its mark is not detectable here and still fails
+// as malformed JSON, which is the behaviour it already had.
+func compactSnapshotWideEncoding(reader *bufio.Reader) (string, bool) {
+	// Peek returns the bytes it does have together with io.EOF on a stream
+	// shorter than the request, and a stream too short to hold a mark cannot
+	// carry one, so the error is not a failure here.
+	head, _ := reader.Peek(4)
+	for _, candidate := range compactSnapshotWideEncodings {
+		if bytes.HasPrefix(head, candidate.bom) {
+			return candidate.name, true
+		}
+	}
+	return "", false
+}
+
 // DecodeCompactSnapshot validates and decodes records incrementally. It retains
 // only the string dictionary; callers that need materialization use the loader.
 // DecodeCompactSnapshot streams a compact snapshot, calling emit for each
@@ -1112,11 +1153,16 @@ func shortDigest(value string) string {
 // pushed through that channel would change the canonical semantic hash and
 // break the projection comparison. A warning is metadata ABOUT the stream, not
 // a record in it.
-var compactSnapshotUTF8BOM = []byte{0xef, 0xbb, 0xbf}
-
 func DecodeCompactSnapshot(in io.Reader, emit func(any) error) ([]ProviderWarning, error) {
 	var warnings []ProviderWarning
 	reader := bufio.NewReaderSize(in, 64*1024)
+	// A UTF-16 or UTF-32 file is refused by name before anything tries to read
+	// JSON out of it. It cannot be decoded here -- the whole artifact is in
+	// that encoding, not just its first bytes -- and the generic refusal it
+	// used to get named neither the encoding nor anything the caller could do.
+	if encoding, ok := compactSnapshotWideEncoding(reader); ok {
+		return warnings, fmt.Errorf("compact snapshot is %s, not the UTF-8 it must be: a redirect through Windows PowerShell 5.1 (`snapshot --format compact-ndjson > file`) saves UTF-16LE. Write the file with `entire graph snapshot --format compact-ndjson --output <file>`, which never meets a shell, or re-save this one as UTF-8", encoding)
+	}
 	// One leading UTF-8 byte-order mark is a save artifact, not content:
 	// Windows PowerShell 5.1 writes one for Out-File/Set-Content -Encoding
 	// utf8, so `snapshot > file` then `snapshot-query --input file` failed on

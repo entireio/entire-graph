@@ -132,6 +132,13 @@ auto-generated notes on
 
 ### Fixed
 
+- `snapshot-query` now names the encoding when its input is a UTF-16 or UTF-32
+  file, and says how to produce a readable one, instead of reporting
+  `invalid character '\xff' looking for beginning of value`. It also accepts
+  one leading UTF-8 byte-order mark, which Windows PowerShell 5.1 writes for
+  `Out-File`/`Set-Content -Encoding utf8`; a mark anywhere else is still
+  malformed input.
+
 - `query`'s `VERIFY:` block no longer names an ancestor Gradle build for a file in
   a Gradle project directory that build does not own. With `include ':app'` in the
   root settings script and an undeclared `lib/build.gradle`, an edit in `lib/` used
