@@ -1446,7 +1446,20 @@ func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, e
 }
 
 // discoverImplicitCheckoutRoot applies an inherited ceiling without a Git
-// subprocess. With no usable ceiling it keeps the established two-spelling
+// subprocess.
+//
+// It is not the only answer to GIT_CEILING_DIRECTORIES in this binary, and the
+// other one is deliberately weaker. internal/agentsetup applies the same rule
+// lexically, never touching the filesystem, and leaves its walk unfenced when
+// an entry does not match. That is right there: its answer only decides where
+// a guide is written, while the path THIS function returns is one Git is then
+// run in, so an entry that cannot be resolved safely has to fail closed here.
+//
+// Consolidating the two is not available. internal/cli imports
+// internal/agentsetup, so the dependency cannot run the other way; the guarded
+// resolver below lives on internal/sem; and entire-brain keeps its own copy of
+// internal/agentsetup, byte-identical file by file, with no sem package at all
+// -- a dependency there would fork the two copies for good. With no usable ceiling it keeps the established two-spelling
 // filesystem fallback. Git canonicalizes entries before the first empty list
 // element, while an empty element promises that subsequent entries contain no
 // symlinks and can stay lexical. Canonicalization uses the provider's guarded
