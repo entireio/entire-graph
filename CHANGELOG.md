@@ -14,6 +14,14 @@ auto-generated notes on
 
 ### Added
 
+- `snapshot`, `symbols` and `edges` take `--output <path>`, which writes the
+  record stream to a file instead of stdout. The bytes are the ones stdout
+  would have received. Saving a compact snapshot used to require a shell
+  redirect, and the shell chooses the encoding: Windows PowerShell 5.1's `>`
+  is `Out-File`, whose default is UTF-16LE, so the documented
+  save-then-`snapshot-query` flow produced a file the loader could not read.
+  A refused invocation never opens, and so never truncates, the destination.
+
 - `setup` can install the Claude Code status line, opt-in: a `statusLine`
   running `entire graph statusline` in the per-user
   `.claude/settings.local.json`, merged into existing settings and added once.
