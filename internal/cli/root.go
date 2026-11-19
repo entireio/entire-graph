@@ -578,17 +578,30 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if scip && flags.Progress {
 		return errors.New("--format scip cannot be combined with --progress; stderr is reserved for the JSON omission note")
 	}
-	// --output is opened only after every flag combination has been judged, so
-	// a rejected invocation never truncates a file. The destination replaces
-	// stdout for the record stream alone: progress, warnings and the SCIP
-	// omission note are stderr's, as they are without the flag, and the bytes
-	// written here are the same ones stdout would have received -- terminal
-	// safety wrap included -- so a file saved either way is identical.
+	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
+	if err != nil {
+		return err
+	}
+	// --output is opened after every flag combination has been judged, so a
+	// rejected invocation never truncates a file, and after the repository is
+	// known, because the destination is judged against it. `--output
+	// graph.compact.ndjson` is the in-repo spelling the documentation shows,
+	// and a path inside the scanned checkout was chosen by the repository
+	// rather than by the caller, so a committed symlink there is refused
+	// instead of followed. That is `index --report`'s rule and literally its
+	// code (openOutputFile, internal/cli/outputpath.go); a second caller-named
+	// destination with its own answer would be the one that gets it wrong.
+	//
+	// The destination replaces stdout for the record stream alone: progress,
+	// warnings and the SCIP omission note are stderr's, as they are without
+	// the flag, and the bytes written here are the same ones stdout would have
+	// received -- terminal safety wrap included -- so a file saved either way
+	// is identical.
 	recordsOut := opts.Stdout
 	if flags.Output != "" {
-		file, createErr := os.Create(flags.Output)
-		if createErr != nil {
-			return fmt.Errorf("create --output file: %w", createErr)
+		file, openErr := openOutputFile(ctx, repo, flags.Output, 0o644)
+		if openErr != nil {
+			return fmt.Errorf("open --output file: %w", openErr)
 		}
 		recordsOut = file
 		defer func() {
@@ -599,10 +612,6 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 				err = fmt.Errorf("close --output file: %w", closeErr)
 			}
 		}()
-	}
-	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
-	if err != nil {
-		return err
 	}
 	profile, err := parseProfile(flags.Profile)
 	if err != nil {

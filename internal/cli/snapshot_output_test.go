@@ -207,3 +207,76 @@ func TestEdgesOutputWritesTheMatchedRelationsToAFile(t *testing.T) {
 		t.Fatalf("--output wrote %d byte(s), a redirect wrote %d; they must be the same artifact", len(written), len(redirected))
 	}
 }
+
+// TestSnapshotOutputObeysTheCallerNamedOutputRule holds --output to the rule
+// `index --report` already answers to, because they are now the same code.
+//
+// `--output graph.compact.ndjson` is the in-repo spelling the documentation
+// shows, and a file sitting at a path inside the scanned checkout was chosen by
+// the repository, not by the caller: a hostile clone commits that name as a
+// symlink and an ordinary os.Create truncates whatever it points at. A path
+// outside every implicated checkout stays caller-owned and keeps working,
+// symlinked parent directories included -- that is what /tmp is on macOS.
+func TestSnapshotOutputObeysTheCallerNamedOutputRule(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a symlink committed inside the repository is refused", func(t *testing.T) {
+		requireSymlinkSupport(t)
+		repo := truncatedSnapshotRepo(t)
+		victim, victimContent := plantVictim(t)
+		saved := filepath.Join(repo, "graph.compact.ndjson")
+		if err := os.Symlink(victim, saved); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "add", ".")
+		git(t, repo, "commit", "-m", "hostile snapshot path")
+
+		var stdout, stderr bytes.Buffer
+		err := Run(t.Context(), Options{
+			Version: "test-version",
+			Env:     EntireEnv{PluginDataDir: t.TempDir()},
+			Stdout:  &stdout,
+			Stderr:  &stderr,
+		}, []string{"snapshot", "--repo", repo, "--format", "compact-ndjson", "--output", saved})
+		if err == nil {
+			t.Fatal("--output followed a symlink committed inside the repository")
+		}
+		if !strings.Contains(err.Error(), "symbolic link") {
+			t.Fatalf("refusal does not say why: %v", err)
+		}
+		assertVictimIntact(t, victim, victimContent)
+		info, err := os.Lstat(saved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatal("the repository's symlink was replaced by a regular file")
+		}
+	})
+
+	t.Run("a caller-owned path outside it still works", func(t *testing.T) {
+		requireSymlinkSupport(t)
+		repo := truncatedSnapshotRepo(t)
+		real := t.TempDir()
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if err := Run(t.Context(), Options{
+			Version: "test-version",
+			Env:     EntireEnv{PluginDataDir: t.TempDir()},
+			Stdout:  &stdout,
+			Stderr:  &stderr,
+		}, []string{"snapshot", "--repo", repo, "--format", "compact-ndjson", "--output", filepath.Join(link, "graph.compact.ndjson")}); err != nil {
+			t.Fatalf("--output to a caller-owned path failed: %v (stderr %q)", err, stderr.String())
+		}
+		written, err := os.ReadFile(filepath.Join(real, "graph.compact.ndjson"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(written) == 0 {
+			t.Fatal("the caller-owned destination is empty")
+		}
+	})
+}

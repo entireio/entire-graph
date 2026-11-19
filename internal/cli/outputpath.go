@@ -15,8 +15,8 @@ import (
 	"github.com/entireio/entire-graph/internal/sem"
 )
 
-// Caller-named output files: `index --report`
-// ============================================
+// Caller-named output files: `index --report`, `snapshot/symbols/edges --output`
+// ===============================================================================
 //
 // The verb writes ONE file to a path the CALLER names, documented to take a path
 // anywhere on the machine: docs/trust-and-security.md says it writes "to the path
@@ -943,6 +943,24 @@ func writeOutputFile(
 	return writeOutputFileUnderAny(confinementRoots(ctx, repoRoot), path, data, perm)
 }
 
+// openOutputFile is writeOutputFile for a caller-named file that is STREAMED.
+// `snapshot --output` writes the graph record by record and never holds it, so
+// it cannot hand one byte slice to the sink above; it needs the destination
+// open instead. The rule, the refusals and the order they are applied in are
+// not merely the same as writeOutputFile's, they ARE writeOutputFile's: that
+// function is now this open followed by a write.
+//
+// A second caller-named path was the moment to make sure of that. The hazard
+// is identical -- `--output graph.compact.ndjson` is the in-repo spelling the
+// documentation shows, and a hostile clone can commit that name as a symlink
+// -- and a second sink with its own answer would be the one that gets it
+// wrong.
+func openOutputFile(
+	ctx context.Context, repoRoot, path string, perm os.FileMode,
+) (*os.File, error) {
+	return openOutputFileUnderAny(confinementRoots(ctx, repoRoot), path, perm)
+}
+
 // writeOutputFileUnder is writeOutputFile with the boundary already resolved. The
 // split exists because finding that boundary runs `git rev-parse` — a subprocess,
 // and the only part of this sink that is neither a syscall nor arithmetic — which a
@@ -966,15 +984,31 @@ func writeOutputFileUnder(
 func writeOutputFileUnderAny(
 	confinements []string, path string, data []byte, perm os.FileMode,
 ) error {
+	file, err := openOutputFileUnderAny(confinements, path, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+// openOutputFileUnderAny is where that classification happens, for the
+// buffered sink above and the streaming one alike.
+func openOutputFileUnderAny(
+	confinements []string, path string, perm os.FileMode,
+) (*os.File, error) {
 	var outside repoOutputTarget
 	decided := false
 	for _, confinement := range confinements {
 		target, err := classifyOutputPath(confinement, path)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if target.insideRepo() {
-			return writeConfinedOutputFile(confinements, target, data, perm)
+			return openConfinedOutputFileUnder(confinements, target, perm)
 		}
 		if !decided {
 			outside, decided = target, true
@@ -984,19 +1018,23 @@ func writeOutputFileUnderAny(
 		// confinementRoots never returns an empty list, and writeOutputFileUnder
 		// passes exactly one. Classifying against nothing would silently write
 		// unconfined, so it is an error rather than a default.
-		return fmt.Errorf("refusing to write %s: no confinement boundary was resolved", path)
+		return nil, fmt.Errorf("refusing to write %s: no confinement boundary was resolved", path)
 	}
-	return writeUnconfinedOutputFile(confinements, outside, data, perm)
+	return openUnconfinedOutputFile(confinements, outside, perm)
 }
 
-// writeConfinedOutputFile writes a target under the boundary that owns its
+// openConfinedOutputFileUnder opens a target under the boundary that owns its
 // destination, after refusing route links owned by any implicated boundary.
-func writeConfinedOutputFile(
-	confinements []string, target repoOutputTarget, data []byte, perm os.FileMode,
-) error {
+//
+// The root is closed as this returns: it bounded the openat walk inside
+// openConfinedOutputFile, which is what confinement means here, and the file
+// that walk produced is an ordinary handle that does not depend on it.
+func openConfinedOutputFileUnder(
+	confinements []string, target repoOutputTarget, perm os.FileMode,
+) (*os.File, error) {
 	root, err := os.OpenRoot(target.root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer root.Close()
 	// This is the STATIC answer, and it is not what makes the write safe — see
@@ -1005,17 +1043,9 @@ func writeConfinedOutputFile(
 	// components no longer contain) can be judged at all, and because it names the
 	// offending component in the message before anything is created on disk.
 	if err := refuseRepositorySymlinks(root, confinements, target); err != nil {
-		return err
+		return nil, err
 	}
-	file, err := openConfinedOutputFile(root, target, perm)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
-	}
-	return file.Close()
+	return openConfinedOutputFile(root, target, perm)
 }
 
 // The links this walk follows are bounded by agentsetup.LinkHopLimit — the SAME budget
@@ -1029,8 +1059,8 @@ func writeConfinedOutputFile(
 // that Darwin, the BSDs, illumos, Solaris and AIX all refuse, and wrote to a
 // destination the host's own pathname resolution cannot reach.
 
-// writeUnconfinedOutputFile writes the caller-owned half of the rule at the top of
-// this file, and it exists for the same reason openConfinedOutputFile does.
+// The caller-owned half of the rule at the top of this file exists for the same
+// reason openConfinedOutputFile does.
 //
 // "Caller-owned" is a verdict about the DESTINATION, and it was reached by two
 // separate readings of the same spelling — realOutputPath, which resolves the
@@ -1050,20 +1080,7 @@ func writeConfinedOutputFile(
 // committed link on the route is refused wherever it is found rather than followed,
 // and a caller-owned one is followed, which is the same ownership rule the checks
 // apply — asked here of the objects the write actually uses.
-func writeUnconfinedOutputFile(
-	confinements []string, target repoOutputTarget, data []byte, perm os.FileMode,
-) error {
-	file, err := openUnconfinedOutputFile(confinements, target, perm)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
-	}
-	return file.Close()
-}
-
+//
 // openUnconfinedOutputFile walks target.traversed the way the kernel does — pinning
 // every directory it enters — and returns the destination open for writing.
 //

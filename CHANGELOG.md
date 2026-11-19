@@ -20,7 +20,11 @@ auto-generated notes on
   redirect, and the shell chooses the encoding: Windows PowerShell 5.1's `>`
   is `Out-File`, whose default is UTF-16LE, so the documented
   save-then-`snapshot-query` flow produced a file the loader could not read.
-  A refused invocation never opens, and so never truncates, the destination.
+  A refused invocation never opens, and so never truncates, the destination,
+  and the path is judged by the same rule `index --report` uses: inside a
+  scanned checkout it was chosen by the repository, so a committed symlink
+  there is refused instead of followed; outside one it is yours and is written
+  as before.
 
 - `setup` can install the Claude Code status line, opt-in: a `statusLine`
   running `entire graph statusline` in the per-user
