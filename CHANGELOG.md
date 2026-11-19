@@ -136,6 +136,15 @@ auto-generated notes on
 
 ### Fixed
 
+- An ignore file whose first bytes are a UTF-8 byte-order mark no longer loses
+  its first rule. Git drops exactly one mark at byte zero of an exclude file;
+  this did not, so the first pattern of such a `.graphignore`, `.gitignore`,
+  `--ignore-file` or `--include-file` was the mark plus the pattern, matched
+  nothing, and the path it was written to exclude was indexed with nothing
+  reporting it. Windows PowerShell 5.1 writes that mark for `Out-File` and
+  `Set-Content -Encoding utf8`. A second mark, or one on a later line, is
+  still pattern text.
+
 - `snapshot-query` now names the encoding when its input is a UTF-16 or UTF-32
   file, and says how to produce a readable one, instead of reporting
   `invalid character '\xff' looking for beginning of value`. It also accepts

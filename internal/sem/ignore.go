@@ -1432,6 +1432,8 @@ func (m *ignoreMatcher) loadReader(source io.Reader, includeMode bool, origin ig
 	return m.loadReaderWithBudget(source, includeMode, nil, origin)
 }
 
+var ignoreUTF8BOM = []byte{0xef, 0xbb, 0xbf}
+
 func (m *ignoreMatcher) loadReaderWithBudget(
 	source io.Reader,
 	includeMode bool,
@@ -1439,6 +1441,24 @@ func (m *ignoreMatcher) loadReaderWithBudget(
 	origin ignoreOrigin,
 ) (resultErr error) {
 	reader := bufio.NewReaderSize(source, maxIgnoreRuleBytes+1)
+	// Git accepts exactly one UTF-8 byte-order mark at byte zero of an exclude
+	// file and drops it before the first pattern (verified against git 2.54.0:
+	// `check-ignore -v` on a BOM-prefixed .gitignore reports the rule as
+	// `vendor/`). Without the same step the first rule of such a file is
+	// `\ufeffvendor/`, which matches nothing, and the file it was written to
+	// exclude is indexed with no warning anywhere -- a silent disagreement with
+	// git about what this repository asked to keep out. Windows PowerShell 5.1
+	// writes that mark for Out-File and Set-Content -Encoding utf8, so this is
+	// how a .graphignore created there arrives.
+	//
+	// One, at byte zero, exactly as the git-config preflight and the Claude
+	// settings reader already do. A second mark, or one on a later line, is
+	// pattern text and stays.
+	if head, err := reader.Peek(len(ignoreUTF8BOM)); err == nil && bytes.Equal(head, ignoreUTF8BOM) {
+		if _, err := reader.Discard(len(ignoreUTF8BOM)); err != nil {
+			return err
+		}
+	}
 	totalBytes := 0
 	charged := 0
 	defer func() {
