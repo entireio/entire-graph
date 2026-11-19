@@ -72,6 +72,21 @@ cache. CI additionally runs the POSIX shell suite
 - **User-visible behavior** belongs in `CHANGELOG.md` under the unreleased
   section, grouped by Keep a Changelog heading. Tagged releases publish that
   section verbatim as their release notes.
+- **A test that creates a symlink fixture** must skip where the host withholds
+  the privilege rather than fail. An ordinary Windows account without Developer
+  Mode refuses `os.Symlink`, and nothing a pull request is checked on can see
+  that: CI runners and Developer Mode machines both grant the privilege, so
+  such a test stays green everywhere it is checked and fails only for a
+  contributor. Three forms are in use and all are correct --
+  `skipIfSymlinksUnrepresentable(t)` before the fixture, which
+  `internal/agentsetup`'s fatal `symlinkForTest` helper requires and
+  `TestSymlinkFixturesProbeFirst` enforces from source; `t.Skipf` on the
+  `os.Symlink` error itself, which is what `internal/sem` uses; and a
+  `runtime.GOOS == "windows"` skip for a test that is specifically about Unix
+  symlink spelling. `t.Fatal` on that error is the one that is wrong. Audited
+  across `internal/sem` 2026-11-19: of 75 fixture sites, 23 are in files that
+  are never compiled on Windows, 34 skip on refusal, 17 sit under a Windows
+  skip or a probe, and the remainder is a background goroutine that returns.
 - **Benchmark numbers** carry a documented provenance standard. Read
   `bench/memory/README.md` and `docs/benchmarks.md` before adding, changing, or
   quoting one, and never quote a number that has no registered run behind it.
