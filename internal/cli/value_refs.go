@@ -97,16 +97,23 @@ func withValueReferenceDisclosure(warnings []sem.ProviderWarning, focus neighbor
 	return append(append(make([]sem.ProviderWarning, 0, len(warnings)+1), warnings...), disclosure)
 }
 
-// snapshotWarnings returns warnings without the query-scoped disclosure, for the completeness
+// queryScopedDisclosureCodes are the warnings a query adds about its own answer (value references,
+// unparsed files that mention the symbol), not diagnostics of the snapshot.
+var queryScopedDisclosureCodes = map[string]bool{
+	valueReferenceDisclosureCode:   true,
+	inventoryMentionDisclosureCode: true,
+}
+
+// snapshotWarnings returns warnings without the query-scoped disclosures, for the completeness
 // banners, which report diagnostics "in this snapshot".
 func snapshotWarnings(warnings []sem.ProviderWarning) []sem.ProviderWarning {
 	for index, warning := range warnings {
-		if warning.Code != valueReferenceDisclosureCode {
+		if !queryScopedDisclosureCodes[warning.Code] {
 			continue
 		}
 		kept := append(make([]sem.ProviderWarning, 0, len(warnings)-1), warnings[:index]...)
 		for _, rest := range warnings[index+1:] {
-			if rest.Code != valueReferenceDisclosureCode {
+			if !queryScopedDisclosureCodes[rest.Code] {
 				kept = append(kept, rest)
 			}
 		}

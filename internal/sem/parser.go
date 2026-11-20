@@ -425,6 +425,15 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 	if !ok {
 		return nil, "", ParseStatus{}
 	}
+	if spec.language == "Vue" {
+		// A single-file component parses through its script blocks under their
+		// JavaScript or TypeScript grammar (see vue.go). A component with no
+		// script, or a script language the provider does not parse, keeps the
+		// grammar-less component/element extraction below.
+		if view, ok := vueScriptViewOf(content); ok {
+			return parseVueComponent(ctx, path, content, view)
+		}
+	}
 	if spec.language == "Kustomize" && looksLikeFluxKustomizationManifest(content) {
 		spec = treeSitterLanguages[".yaml"]
 	}
@@ -451,6 +460,14 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 	if spec.language == "SQL" {
 		spec.grammar = pgsql.GetLanguage()
 	}
+	return parseWithSpec(ctx, path, content, spec, strings.EqualFold(filepath.Ext(path), ".tsx"), flowJS)
+}
+
+// parseWithSpec parses content under an already selected language spec. tsx
+// selects the TSX mask for TypeScript, and flowJS the Flow mask for JavaScript
+// parsed with the TSX grammar. It is ParseWithStatusCtx minus spec selection, so
+// a .vue file can parse its script view under the script's own grammar.
+func parseWithSpec(ctx context.Context, path, content string, spec languageSpec, tsx, flowJS bool) ([]Entity, string, ParseStatus) {
 	// The stop predicate is built HERE, above the three return paths that never
 	// reach tree-sitter, not below them: the dedicated Groovy parser, every
 	// grammar-less fallback parser and YAML's entity extraction each returned
@@ -557,7 +574,7 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 		parseSrc = []byte(maskYAMLUnsupportedSyntax(content))
 	}
 	if spec.language == "TypeScript" {
-		if strings.EqualFold(filepath.Ext(path), ".tsx") {
+		if tsx {
 			parseSrc = []byte(maskTSXUnsupportedSyntax(content))
 		} else {
 			parseSrc = []byte(maskTypeScriptUnsupportedSyntax(content))
@@ -4082,7 +4099,12 @@ func markdownEntities(content string, stop func() bool) []Entity {
 	return entities
 }
 
-var htmlEntitiesIdRe = regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
+// htmlEntitiesIdRe matches a literal `id` attribute. The attribute name must start
+// the line or follow whitespace: `\b` also matched after `-` and `:`, so
+// `data-id=`, `:task-id="selectedId"` and the Vue bindings `:id="inputId"` and
+// `v-bind:id="rowDomId"` minted elements named after data attributes or bound
+// expressions.
+var htmlEntitiesIdRe = regexp.MustCompile(`(?:^|\s)id\s*=\s*["']([^"']+)["']`)
 
 func htmlEntities(path, content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")

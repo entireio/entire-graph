@@ -85,6 +85,11 @@ func newJSScanState(ctx context.Context, path, content string) (*jsScanState, er
 	if err := ctx.Err(); err != nil {
 		return emptyJSScanState(content), fmt.Errorf("tree-sitter scope parse stopped by caller: %w", err)
 	}
+	if isVuePath(path) {
+		// A component's script view carries no extension of its own and may be
+		// either dialect: try TypeScript, then TSX, as content-only callers do.
+		return newJSScanStateForContent(ctx, content)
+	}
 	grammar, parseSrc := jsScanGrammar(path, content)
 	return buildJSScanState(ctx, grammar, parseSrc, content)
 }
@@ -92,16 +97,15 @@ func newJSScanState(ctx context.Context, path, content string) (*jsScanState, er
 // newJSScanStateForContent serves content-only callers (no path available):
 // it prefers the TypeScript grammar and falls back to TSX when the parse
 // fails outright.
-func newJSScanStateForContent(ctx context.Context, content string) *jsScanState {
+func newJSScanStateForContent(ctx context.Context, content string) (*jsScanState, error) {
 	if ctx.Err() != nil {
-		return emptyJSScanState(content)
+		return emptyJSScanState(content), ctx.Err()
 	}
-	state, _ := buildJSScanState(ctx, treesitterts.GetLanguage(), []byte(maskTypeScriptUnsupportedSyntax(content)), content)
-	if state.parsed {
-		return state
+	state, err := buildJSScanState(ctx, treesitterts.GetLanguage(), []byte(maskTypeScriptUnsupportedSyntax(content)), content)
+	if state.parsed || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		return state, err
 	}
-	state, _ = buildJSScanState(ctx, treesittertsx.GetLanguage(), []byte(content), content)
-	return state
+	return buildJSScanState(ctx, treesittertsx.GetLanguage(), []byte(content), content)
 }
 
 // emptyJSScanState is the "nothing was scanned" state every failure path
@@ -851,7 +855,8 @@ func jsFunctionLikeNodeAt(node *sitter.Node, depth int) *sitter.Node {
 // call resolution needs the source range to distinguish same-named
 // declarations in `namespace A` and `namespace B`.
 func jsNamespaceScopes(ctx context.Context, fileContent string) []jsNamespaceScope {
-	return newJSScanStateForContent(ctx, fileContent).namespaces
+	state, _ := newJSScanStateForContent(ctx, fileContent)
+	return state.namespaces
 }
 
 // jsCanonicalNamespaceWithPrefix resolves a dotted receiver path against the

@@ -51,6 +51,14 @@ const (
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
 	//
+	// Revision 9: HTML and Vue element symbols come only from a literal `id`
+	// attribute. `data-id=`, `:task-id=`, `:id=` and `v-bind:id=` no longer mint
+	// elements, so snapshots of unchanged trees must drop those phantom symbols.
+	// Vue single-file components also parse their <script> and <script setup>
+	// blocks, found on an ASCII-only lowercase copy that keeps byte offsets, so
+	// unchanged .vue trees gain function, class and method symbols nested under
+	// the component.
+	//
 	// Revision 8: recover PostgreSQL identity columns, named CHECK constraints,
 	// and DO blocks with LANGUAGE clauses while preserving static declarations.
 	// Stop treating identifier prefixes as constraints. Invalidate cached partial
@@ -86,7 +94,7 @@ const (
 	// `C.helper` (kind "method"). This re-keys every Python nested-callable
 	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
 	// real same-named members.
-	IdentityRevision     = "8"
+	IdentityRevision     = "9"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
@@ -151,6 +159,9 @@ var heuristicRelationTypeSet = relationTypeSet(heuristicRelationTypes...)
 var ooRelationSupport = map[string][]string{
 	"Java":       {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
 	"TypeScript": {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
+	// Vue component scripts get TypeScript's relations, less the service
+	// handlers components never declare.
+	"Vue": {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
 	// JavaScript has no type annotations, but the USES_TYPE pass reads type
 	// names out of the signature TEXT, and a default argument that constructs a
 	// local class (`function draw(p = new Point())`) puts one there. The
@@ -887,8 +898,10 @@ func supportsSemanticExtraction(spec languageSpec) bool {
 		return true
 	}
 	// SQL and Groovy have no grammar in the extension table but are backed by
-	// dedicated parsers (pgsql grammar and the structural Groovy scanner).
-	return spec.language == "SQL" || spec.language == "Groovy"
+	// dedicated parsers (pgsql grammar and the structural Groovy scanner). Vue
+	// single-file components parse their script blocks under the script's own
+	// JavaScript or TypeScript grammar (vue.go).
+	return spec.language == "SQL" || spec.language == "Groovy" || spec.language == "Vue"
 }
 
 // languageTiers classifies the languages present in a snapshot as "semantic"
@@ -1016,7 +1029,7 @@ func supportsCallExtraction(spec languageSpec) bool {
 // analysis".
 func callExtractionLanguage(language string) bool {
 	switch language {
-	case "Bash", "C", "C++", "C#", "Clojure", "ClojureScript", "Dart", "Elixir", "Erlang", "F#", "Go", "Groovy", "Haskell", "Java", "JavaScript", "Julia", "Kotlin", "Lua", "Objective-C", "OCaml", "Perl", "PHP", "Python", "R", "Ruby", "Rust", "Scala", "SQL", "Swift", "TypeScript", "Zig", "Zsh":
+	case "Bash", "C", "C++", "C#", "Clojure", "ClojureScript", "Dart", "Elixir", "Erlang", "F#", "Go", "Groovy", "Haskell", "Java", "JavaScript", "Julia", "Kotlin", "Lua", "Objective-C", "OCaml", "Perl", "PHP", "Python", "R", "Ruby", "Rust", "Scala", "SQL", "Swift", "TypeScript", "Vue", "Zig", "Zsh":
 		return true
 	default:
 		return false
@@ -4545,7 +4558,7 @@ func jsCrossFileNamespaceLookup(ctx context.Context, readContent contentReader, 
 	var mu sync.Mutex
 	cache := map[string]map[string]string{}
 	return func(symbol SymbolRecord) string {
-		if symbol.Language != "JavaScript" && symbol.Language != "TypeScript" {
+		if language := scriptAnalysisLanguage(symbol.Language); language != "JavaScript" && language != "TypeScript" {
 			return ""
 		}
 		mu.Lock()
@@ -4614,7 +4627,7 @@ func resolveImportedCallTargets(name string, from SymbolRecord, candidates []Sym
 }
 
 func jsExportedImportFallbackTargets(name string, from SymbolRecord, candidates []SymbolRecord, modules []string, allowMethodTargets bool) []resolvedCallTarget {
-	if len(modules) == 0 || (from.Language != "JavaScript" && from.Language != "TypeScript") {
+	if language := scriptAnalysisLanguage(from.Language); len(modules) == 0 || (language != "JavaScript" && language != "TypeScript") {
 		return nil
 	}
 	var exported []SymbolRecord
@@ -5020,6 +5033,11 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		emitStructuralRelations(repoKey, files, recordsByFile, shouldStop, emit)
 		return
 	}
+	// Every relation scanner rereads source through readContent. Single-file
+	// components read as their script view, so no scanner can see template
+	// markup and every offset still matches the file (see vue.go).
+	readRawContent := readContent
+	readContent = vueScriptReader(readContent)
 	needsTool := spec.emits("HANDLES_TOOL")
 	needsCallScan := spec.emits("CALLS") && spec.callResolution != "none"
 	needsReceiverCalls := spec.emits("CALLS") && spec.callResolution == "full"
@@ -5299,7 +5317,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 				if !typeLikeKind(symbol.Kind) {
 					continue
 				}
-				for _, edge := range supertypesFromSignature(symbol.Language, symbol.Signature) {
+				for _, edge := range supertypesFromSignature(scriptAnalysisLanguage(symbol.Language), symbol.Signature) {
 					sup, ok := firstTypeLikeNamed(symbolsByFile[symbol.FilePath], edge.Super)
 					if !ok || sup.ID == symbol.ID {
 						sup, ok = firstTypeLikeNamed(sharedTypeCandidates(symbol, symbolsByShortName[edge.Super]), edge.Super)
@@ -5423,6 +5441,20 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 	}
 	manifestImports := buildManifestImportResolver(files, readContent, shouldStop)
+	// Vue merges a component's mixins and extends base into the component, so
+	// their methods answer `this.x()` unless the component defines x itself.
+	// Merging them here, before any worker reads the map, lets receiver
+	// resolution find them with no Vue-specific lookup.
+	vueParents := vueComponentParents(files, recordsByFile, readContent, readRawContent, knownFiles, manifestImports, shouldStop)
+	if needsReceiverCalls || needsOverrides {
+		vueMergeParentMethods(vueParents, methodsByContainer)
+	}
+	// Vuex reaches store members by string (dispatch, commit, getters, map
+	// helpers); nil when the repository has no Vuex store.
+	var vuex *vuexStore
+	if needsCallScan {
+		vuex = buildVuexStore(files, recordsByFile, readContent, knownFiles, manifestImports, shouldStop)
+	}
 	// Import blocks of files OTHER than the one being scanned, which the Go
 	// interface-implementation hop needs to decide package qualifiers across the
 	// declaring files. Lazy and memoised: only files that actually reach a
@@ -5523,6 +5555,13 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		if shouldStop() {
 			return result
 		}
+		// A Vue component's script is analysed as TypeScript from here on. The
+		// emitted records keep "Vue": symbol IDs and the file record are built
+		// elsewhere, and file is this worker's own copy.
+		vueFile := file.Language == "Vue"
+		if vueFile {
+			file.Language = scriptAnalysisLanguage(file.Language)
+		}
 		imports, havePrecomputedImports := precomputedImports[file.Path]
 		content := ""
 		if !havePrecomputedImports || !skipFastProfilePerSymbolScan(spec, file.Language) {
@@ -5533,6 +5572,13 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			}
 			if !havePrecomputedImports {
 				imports = importsFor(file.Path, content)
+			}
+		}
+		if vueFile && readRawContent != nil {
+			// <script src="./x.js"> imports the component's script; the tag is
+			// blank in the script view, so its src comes from the raw file.
+			if raw, ok := readRawContent(file.Path); ok {
+				imports = append(imports, vueScriptSources(raw)...)
 			}
 		}
 		fromID := fileID(repoKey, file.Path)
@@ -5618,6 +5664,9 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		}
 		lines := strings.Split(content, "\n")
 		currentFileSymbols := recordsByFile[file.Path]
+		if vueFile {
+			currentFileSymbols = vueScriptSymbols(currentFileSymbols)
+		}
 		// callExtractionLanguage keeps the scan inside the set `capabilities
 		// --json` declares CALLS for. Without it the scan also ran over
 		// inventory-only `document` symbols (whose block is the whole file) and
@@ -5631,9 +5680,12 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 				pythonIncompleteAliases = pythonIncompleteAliasContexts(importedPythonBindings(content))
 			}
 		}
-		fileNeedsRouteScan := spec.emits("HANDLES_ROUTE") && routeScanLanguage(file.Language)
+		// Components consume routes and services; they never declare them. Their
+		// api.get(...) calls would read as route handlers, so these scans stay
+		// off for Vue. Its channel scan uses Vue's own event patterns.
+		fileNeedsRouteScan := spec.emits("HANDLES_ROUTE") && routeScanLanguage(file.Language) && !vueFile
 		fileNeedsHTTPScan := spec.emits("HTTP_CALLS") && httpScanLanguage(file.Language)
-		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language)
+		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language) && !vueFile
 		fileNeedsChannelScan := channelScanLanguage(file.Language)
 		var fileStringConstants map[string]string
 		if fileNeedsRouteScan || fileNeedsHTTPScan {
@@ -5759,6 +5811,43 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			// and enum-case pattern bindings (`case .available(var buffer):`)
 			// can resolve.
 			swiftTypes = swiftFileTypeInfo(content)
+		}
+		vuexFile := vuex != nil && needsCallScan && jsImporterExtension(filepath.Ext(file.Path))
+		var vuexBindings map[string]vuexBinding
+		if vuexFile {
+			vuexBindings = vuexMapBindings(content)
+		}
+		// emitVuexCalls links the store members a block reaches by string, from a
+		// symbol's own block or, for the top-level pass, from the file or component.
+		emitVuexCalls := func(from SymbolRecord, block string) {
+			for _, call := range vuex.callsIn(file.Path, block, vuexBindings) {
+				if call.target.ID == from.ID {
+					continue
+				}
+				scope := "file"
+				if call.target.FilePath != file.Path {
+					scope = "module"
+				}
+				emit(RelationRecord{
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          call.target.ID,
+					Type:          "CALLS",
+					Confidence:    0.7,
+					Reason:        "Vuex dispatch, commit, getter or map-helper string names the store member",
+					RelationScope: scope,
+					Resolution:    "pattern",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "store_call_site",
+						FilePath:  file.Path,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    call.detail,
+					}},
+					WarningCodes: []string{},
+				})
+			}
 		}
 		for _, from := range currentFileSymbols {
 			if shouldStop() {
@@ -6421,8 +6510,17 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 					result.httpCalls = append(result.httpCalls, httpCallEntry{route: call.Path, relation: relation})
 				}
 			}
+			// A variable whose value is an object (a mixin, an options object)
+			// encloses the methods that make the calls; they are the callers.
+			if vuexFile && !typeLikeKind(from.Kind) && from.Kind != "variable" {
+				emitVuexCalls(from, block)
+			}
 			if fileNeedsChannelScan {
-				for _, event := range channelEvents(block) {
+				events := channelEvents(block)
+				if vueFile {
+					events = vueChannelEvents(block)
+				}
+				for _, event := range events {
 					if !spec.emits(event.Relation) {
 						continue
 					}
@@ -6535,6 +6633,20 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 					Name:     filepath.Base(file.Path),
 					FilePath: file.Path,
 					Language: file.Language,
+				}
+				if vueFile {
+					// A component's top-level script runs as the component's own
+					// setup, so its calls belong to the component, as a function
+					// component's calls belong to that function.
+					if component, ok := vueComponentRecord(recordsByFile[file.Path]); ok {
+						fileSource = component
+						fileSource.Language = file.Language
+					}
+				}
+				// Store strings outside any declaration: a <script setup> body's own
+				// `store.dispatch(...)` or a `computed(() => store.getters[...])`.
+				if vuexFile {
+					emitVuexCalls(fileSource, topLevel)
 				}
 				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
@@ -6705,6 +6817,48 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 					result.inheritance = append(result.inheritance, r)
 				}
 				emit(r)
+			}
+		}
+		if needsTypes && vueFile {
+			if component, ok := vueComponentRecord(recordsByFile[file.Path]); ok {
+				for _, parent := range vueParents[component.ID] {
+					if !spec.emits(parent.relation) {
+						continue
+					}
+					reason := "Vue component lists the mixin in its mixins option"
+					if parent.relation == "EXTENDS" {
+						reason = "Vue component names the component in its extends option"
+					}
+					r := RelationRecord{
+						RecordType:    "relation",
+						FromID:        component.ID,
+						ToID:          parent.targetID,
+						Type:          parent.relation,
+						Confidence:    0.85,
+						Reason:        reason,
+						RelationScope: "module",
+						Resolution:    parent.resolution,
+						TargetKind:    "symbol",
+						Evidence: []Evidence{{
+							Kind:     "component_option",
+							FilePath: file.Path,
+							Detail:   parent.name,
+						}},
+						WarningCodes: []string{},
+					}
+					if r.Type == "EXTENDS" {
+						result.inheritance = append(result.inheritance, r)
+						emit(r)
+						// As for a class, extending a component also inherits its
+						// members, so EXTENDS carries its INHERITS pair.
+						if spec.emits("INHERITS") {
+							r.Type = "INHERITS"
+							emit(r)
+						}
+						continue
+					}
+					emit(r)
+				}
 			}
 		}
 		if needsExtensionMembers {
@@ -7065,7 +7219,7 @@ func typeRelationsForFile(repoKey string, file FileRecord, content string, fileS
 		if !typeLikeKind(symbol.Kind) {
 			continue
 		}
-		for _, edge := range supertypesFromSignature(symbol.Language, symbol.Signature) {
+		for _, edge := range supertypesFromSignature(scriptAnalysisLanguage(symbol.Language), symbol.Signature) {
 			relations = append(relations, buildTypeRelation(repoKey, symbol, edge.Super, edge.Relation, edge.Confidence, sameFileSymbols, symbolsByShortName))
 			if edge.Relation == "EXTENDS" {
 				relations = append(relations, buildTypeRelation(repoKey, symbol, edge.Super, "INHERITS", edge.Confidence, sameFileSymbols, symbolsByShortName))
@@ -7872,7 +8026,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 			localTypes[name] = typeName
 		}
 	}
-	if from.Language == "TypeScript" {
+	if scriptAnalysisLanguage(from.Language) == "TypeScript" {
 		// Declared-type and Angular-DI locals (`const router: Router = ...`,
 		// `const ref = inject(ViewContainerRef)`), which the generic
 		// constructor-assignment scan cannot type.
@@ -7999,7 +8153,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 		}
 	}
 	typeScriptPropReceivers := map[string]bool{}
-	if from.Language == "TypeScript" {
+	if scriptAnalysisLanguage(from.Language) == "TypeScript" {
 		for name, typeName := range typeScriptPropTypes {
 			if _, exists := varTypes[name]; !exists {
 				varTypes[name] = typeName
@@ -8270,7 +8424,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 				resolution = "name_only"
 			}
 		}
-		if !ok && from.Language == "TypeScript" && targetID != "" {
+		if !ok && scriptAnalysisLanguage(from.Language) == "TypeScript" && targetID != "" {
 			if impl, implOK := uniqueImplementedMethod(targetID, call.Method, methodsByContainer, superContainerByID, implementersByContainer); implOK {
 				method, ok = impl, true
 				confidence = minFloat(confidence, 0.72)
@@ -8318,7 +8472,7 @@ func receiverCallRelations(from SymbolRecord, body symbolBody, methodsByContaine
 			}},
 			WarningCodes: []string{},
 		})
-		if from.Language == "TypeScript" && strings.HasPrefix(strings.TrimSpace(method.Signature), "abstract ") {
+		if scriptAnalysisLanguage(from.Language) == "TypeScript" && strings.HasPrefix(strings.TrimSpace(method.Signature), "abstract ") {
 			if impl, implOK := uniqueImplementedMethod(targetID, call.Method, methodsByContainer, superContainerByID, implementersByContainer); implOK && impl.ID != method.ID {
 				implScope := "file"
 				if impl.FilePath != from.FilePath {
@@ -12967,7 +13121,11 @@ func signatureTypeRelations(stop func() bool, recordsByFile map[string][]SymbolR
 			if stop != nil && stop() {
 				return relations
 			}
-			if symbol.Kind != "function" && symbol.Kind != "method" || symbol.Signature == "" {
+			// A component takes part only when the parser recorded its declared
+			// types (Vue's defineProps<T>() and friends); its signature alone
+			// names no types.
+			componentTypes := symbol.Kind == "component" && symbol.signatureTypesKnown
+			if symbol.Kind != "function" && symbol.Kind != "method" && !componentTypes || symbol.Signature == "" {
 				continue
 			}
 			importsByName := resolvedImportsByFile[path]
@@ -20883,7 +21041,7 @@ func importCapableExtension(ext string) bool {
 // (rather than an external package) for the importing file's language.
 func isRelativeImportSpec(importingPath, spec string) bool {
 	switch strings.ToLower(filepath.Ext(importingPath)) {
-	case ".js", ".jsx", ".ts", ".tsx":
+	case ".js", ".jsx", ".ts", ".tsx", ".vue":
 		return strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../")
 	case ".py":
 		return strings.HasPrefix(spec, ".")
@@ -20901,7 +21059,7 @@ func resolveLocalImport(importingPath, spec string, knownFiles map[string]bool) 
 	switch strings.ToLower(filepath.Ext(importingPath)) {
 	case ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx":
 		return resolveCFamilyLocalInclude(importingPath, spec, knownFiles)
-	case ".js", ".jsx", ".ts", ".tsx":
+	case ".js", ".jsx", ".ts", ".tsx", ".vue":
 		for _, candidate := range jsLocalImportCandidates(importingPath, spec) {
 			if knownFiles[candidate] {
 				return candidate, true
@@ -20936,7 +21094,7 @@ func resolveLocalImport(importingPath, spec string, knownFiles map[string]bool) 
 
 func resolveReadableLocalImport(importingPath, spec string, readContent contentReader) (string, bool) {
 	switch strings.ToLower(filepath.Ext(importingPath)) {
-	case ".js", ".jsx", ".ts", ".tsx":
+	case ".js", ".jsx", ".ts", ".tsx", ".vue":
 		for _, candidate := range jsLocalImportCandidates(importingPath, spec) {
 			if _, ok := readContent(candidate); ok {
 				return candidate, true
@@ -20951,7 +21109,10 @@ func jsLocalImportCandidates(importingPath, spec string) []string {
 		return nil
 	}
 	base := filepath.ToSlash(filepath.Join(filepath.Dir(importingPath), spec))
-	exts := []string{".ts", ".tsx", ".js", ".jsx"}
+	// .vue comes last: Vue CLI and webpack projects list it in
+	// resolve.extensions, so `import Base from './Base'` names Base.vue when no
+	// script file of that name exists.
+	exts := []string{".ts", ".tsx", ".js", ".jsx", ".vue"}
 	var candidates []string
 	if ext := strings.ToLower(filepath.Ext(base)); ext != "" {
 		candidates = append(candidates, base)
@@ -21334,7 +21495,7 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader, 
 		if strings.EqualFold(filepath.Ext(file.Path), ".go") {
 			goPaths = append(goPaths, filepath.ToSlash(file.Path))
 		}
-		if jsLikeExtension(filepath.Ext(file.Path)) {
+		if jsImporterExtension(filepath.Ext(file.Path)) {
 			jsPaths = append(jsPaths, filepath.ToSlash(file.Path))
 		}
 		if strings.EqualFold(filepath.Ext(file.Path), ".py") {
@@ -21414,6 +21575,12 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader, 
 			return resolver
 		}
 		key := strings.TrimSuffix(path, filepath.Ext(path))
+		if isVuePath(path) {
+			// Components are imported with their extension (`@/views/X.vue`),
+			// so they keep it as their key: `X.vue` and a sibling `X.ts` must not
+			// compete for the extensionless `X`.
+			key = path
+		}
 		if _, exists := resolver.jsModuleFiles[key]; !exists {
 			resolver.jsModuleFiles[key] = path
 		}
@@ -22426,7 +22593,7 @@ func (resolver manifestImportResolver) resolve(importingPath, spec string) (mani
 	if ext == ".go" {
 		return resolver.resolveGoImport(importingPath, spec)
 	}
-	if jsLikeExtension(ext) {
+	if jsImporterExtension(ext) {
 		return resolver.resolveJSImport(importingPath, spec)
 	}
 	if ext == ".py" {
@@ -22701,6 +22868,13 @@ func (resolver manifestImportResolver) resolveJSModulePath(module string) (strin
 	}
 	if path, ok := resolver.jsModuleFiles[module]; ok {
 		return path, true
+	}
+	// Components are keyed with their extension; an extensionless alias
+	// (`@/components/Base`) reaches one as webpack's resolve.extensions does.
+	if filepath.Ext(module) == "" {
+		if path, ok := resolver.jsModuleFiles[module+".vue"]; ok {
+			return path, true
+		}
 	}
 	return "", false
 }
@@ -23726,6 +23900,7 @@ var importScanners = map[string]func(content string) []string{
 	".jsx":    jsImportFn,
 	".ts":     jsImportFn,
 	".tsx":    jsImportFn,
+	".vue":    jsImportFn,
 	".lua":    regexImportScan(luaRequireRe),
 	".ml":     regexImportScan(ocamlImportOpenRe),
 	".mli":    regexImportScan(ocamlImportOpenRe),
@@ -23986,7 +24161,7 @@ func importedNamesFor(path, content string) map[string][]string {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".go":
 		return importedGoNames(content)
-	case ".js", ".jsx", ".ts", ".tsx":
+	case ".js", ".jsx", ".ts", ".tsx", ".vue":
 		return importedJavaScriptNames(content)
 	case ".kt", ".kts":
 		return importedKotlinNames(content)

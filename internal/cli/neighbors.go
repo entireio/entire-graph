@@ -511,6 +511,7 @@ func buildNeighborResponseFromReader(
 	// value reference could be the missing caller. See value_refs.go.
 	if len(focuses) == 1 && flags.Relation == "CALLS" && neighborDirectionQueried(flags.Direction, "in") {
 		response.Warnings = withValueReferenceDisclosure(response.Warnings, endpointForSymbol(focuses[0]))
+		response.Warnings = withInventoryMentionDisclosure(response.Warnings, snapshot, endpointForSymbol(focuses[0]), readSource)
 	}
 	finalizeNeighborEvidence(&response, focuses)
 	return response
@@ -863,6 +864,9 @@ func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {
 			if note := valueReferenceNote(response.Warnings, match.Symbol.Name); note != "" {
 				fmt.Fprintln(out, note)
 			}
+			if note := inventoryMentionNote(response.Warnings); note != "" {
+				fmt.Fprintln(out, note)
+			}
 		} else {
 			writeNeighborSectionNotQueried(out, "Callers", "out")
 		}
@@ -989,6 +993,9 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 				"!value-refs-unmodelled: "+valueReferenceGrep(match.Symbol.Name)+"\n",
 				"!value-refs-unmodelled\n",
 			)
+		}
+		if note := inventoryMentionNote(response.Warnings); note != "" && neighborDirectionQueried(response.Direction, "in") {
+			appendVariant(note+"\n", "!unparsed-mentions\n")
 		}
 		for _, edge := range match.Incoming {
 			appendVariant(compactNeighborEdge("<", edge))

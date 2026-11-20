@@ -478,6 +478,8 @@ func buildImpactResponseFromReader(
 	// Callers come from CALLS edges only; disclose the value references they cannot
 	// include. See value_refs.go.
 	response.Warnings = withValueReferenceDisclosure(response.Warnings, focusEndpoint)
+	// Nor can they include callers in files the graph does not parse. See inventory_mentions.go.
+	response.Warnings = withInventoryMentionDisclosure(response.Warnings, snapshot, focusEndpoint, readSource)
 	if focus.ContainerID != "" {
 		if container, ok := endpoints[focus.ContainerID]; ok {
 			response.Container = &container
@@ -1048,6 +1050,9 @@ func writeImpactDegenerate(out io.Writer, response impactResponse, reason string
 	// marker line itself is unchanged: consumers match on its prefix.
 	if response.Focus != nil {
 		if note := valueReferenceNote(response.Warnings, response.Focus.Name); note != "" {
+			fmt.Fprintln(out, note)
+		}
+		if note := inventoryMentionNote(response.Warnings); note != "" {
 			fmt.Fprintln(out, note)
 		}
 	}

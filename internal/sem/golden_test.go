@@ -614,6 +614,9 @@ var goldenFixtures = []string{
 	"typescript-http",
 	"typescript-imports",
 	"typescript-oo",
+	// vue-basic: script-setup and Options API components, analysed as their
+	// script under the TypeScript rules while their records stay "Vue".
+	"vue-basic",
 	"services-config",
 }
 

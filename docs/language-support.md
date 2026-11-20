@@ -16,8 +16,8 @@ and honest unsupported/degraded coverage reporting.
 Current generated counts:
 
 - Supported language/filetype names: 185
-- Semantic languages: 36
-- Inventory-only languages: 149
+- Semantic languages: 37
+- Inventory-only languages: 148
 
 ## Semantic Languages
 
@@ -54,6 +54,7 @@ Current generated counts:
 - Scala
 - Swift
 - TypeScript
+- Vue
 - YAML
 - Zig
 - Zsh
@@ -215,7 +216,6 @@ and hashes; genuinely malformed files still surface as partial failures.
 - Vala
 - Vim Script
 - Visual Basic .NET
-- Vue
 - VuePress
 - WebAssembly
 - Wolfram Language

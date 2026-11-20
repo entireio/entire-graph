@@ -38,6 +38,14 @@ function as a value (assigned to a variable, passed as an argument, stored in a
 struct field or map) are not modelled, and the line gives a `grep` that finds
 them. Any non-comment hit that is not a call is a dependent the graph cannot see.
 
+For a JavaScript, TypeScript or Vue symbol, the same answers add a
+`W_INVENTORY_MENTIONS_UNMODELLED` warning and line when the symbol is mentioned
+by name where calls are not modelled: in files the graph keeps only as inventory
+(Svelte, Astro, HTML, Handlebars, Pug, CoffeeScript, LiveScript, Elm, Mint), or
+in a Vue component's template. A caller written there is missing from the
+answer; the line names the files to read. It is a bounded text scan, so a hit
+may also be a comment or an unrelated symbol of the same name.
+
 Cache visibility differs by command and format. JSON from `query`, `impact`,
 and `neighbors` includes cache fields. Text output from `impact` and
 `neighbors` starts with an `Index: cache-hit` or `cache-miss` header. Agent

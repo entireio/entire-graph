@@ -324,8 +324,10 @@ type channelEvent struct {
 }
 
 var (
-	emitCallRe   = regexp.MustCompile(`(?i)\.\s*(?:emit|publish|dispatch|broadcast)\s*\(\s*["']([^"']+)["']`)
-	listenCallRe = regexp.MustCompile(`(?i)\.\s*(?:on|once|subscribe|addeventlistener|addlistener)\s*\(\s*["']([^"']+)["']`)
+	// The optional `$` admits Vue's instance and event-bus API (`this.$emit`,
+	// `EventBus.$on`), which mixins and store modules use from plain .js files.
+	emitCallRe   = regexp.MustCompile(`(?i)\.\s*\$?(?:emit|publish|dispatch|broadcast)\s*\(\s*["']([^"']+)["']`)
+	listenCallRe = regexp.MustCompile(`(?i)\.\s*\$?(?:on|once|subscribe|addeventlistener|addlistener)\s*\(\s*["']([^"']+)["']`)
 )
 
 // channelEvents extracts emit/listen calls naming a channel from a code block.
@@ -2313,7 +2315,7 @@ func sortedStringSet(seen map[string]struct{}) []string {
 // astSignatureTypeTexts for what the string split gets wrong.
 func symbolTypeReferences(symbol SymbolRecord) map[string][]string {
 	if !symbol.signatureTypesKnown {
-		return signatureTypeReferences(symbol.Language, symbol.Signature)
+		return signatureTypeReferences(scriptAnalysisLanguage(symbol.Language), symbol.Signature)
 	}
 	return map[string][]string{
 		"PARAM_TYPE":   typeNamesFromText(symbol.paramTypeText),

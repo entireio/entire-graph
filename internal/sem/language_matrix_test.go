@@ -126,6 +126,7 @@ var languageMatrix = []languageFixture{
 	{dir: "scala", symbols: []string{"class:Ledger", "class:LedgerApp", "method:add", "method:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "sql", symbols: []string{"table:ledger", "view:ledger_totals", "function:ledger_add", "function:ledger_double"}, relations: []string{"DEFINES", "CALLS"}},
 	{dir: "swift", symbols: []string{"struct:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS", "IMPORTS"}},
+	{dir: "vue", symbols: []string{"component:LedgerPanel", "class:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS"}},
 	{dir: "typescript", symbols: []string{"class:Ledger", "field:total", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "CONSTRUCTS", "READS_FIELD"}},
 	{dir: "yaml", symbols: []string{"section:service", "section:routes"}, relations: []string{"DEFINES"}},
 	{dir: "zig", symbols: []string{"struct:Ledger", "method:add", "function:ledgerDouble"}, relations: []string{"DEFINES", "CONTAINS", "CALLS", "PARAM_TYPE", "USES_TYPE"}},
@@ -144,7 +145,7 @@ var languageMatrixLanguages = map[string]string{
 	"kotlin": "Kotlin", "lua": "Lua", "objc": "Objective-C", "ocaml": "OCaml",
 	"perl": "Perl", "php": "PHP", "protobuf": "Protocol Buffers", "python": "Python",
 	"r": "R", "ruby": "Ruby", "rust": "Rust", "scala": "Scala", "sql": "SQL",
-	"swift": "Swift", "typescript": "TypeScript", "yaml": "YAML", "zig": "Zig",
+	"swift": "Swift", "typescript": "TypeScript", "vue": "Vue", "yaml": "YAML", "zig": "Zig",
 	"zsh": "Zsh",
 }
 

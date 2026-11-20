@@ -292,7 +292,7 @@ func declarationDialectNamed(key string) (declarationDialect, bool) {
 	case "c", "h", "c++", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "objective-c", "objc", "m", "mm":
 		return declarationDialect{rawEscapes: true, doubleBracketAttributes: true}, true
 	case "java", "go", "javascript", "js", "jsx", "mjs", "cjs", "typescript", "ts",
-		"tsx", "groovy", "gradle", "css", "scss", "less", "zig", "protocol buffers", "protobuf", "proto":
+		"tsx", "vue", "groovy", "gradle", "css", "scss", "less", "zig", "protocol buffers", "protobuf", "proto":
 		return declarationDialect{rawEscapes: true}, true
 	}
 	return declarationDialect{}, false
