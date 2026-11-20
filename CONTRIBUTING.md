@@ -11,8 +11,19 @@ external contributions are a meaningful share of what lands here.
   grammars from C sources vendored under `internal/sem/`, so a build with
   `CGO_ENABLED=0` fails rather than degrading. Install `gcc` or `clang` on
   Linux, the Xcode command line tools on macOS, and a MinGW-w64 toolchain on
-  Windows. If you see undefined references to `tree_sitter_*` symbols, cgo is
-  off or no C compiler was found.
+  Windows. Go turns cgo **off** when it finds no C compiler, so the first
+  symptom is usually not a link error but
+
+  ```
+  imports github.com/entireio/entire-graph/internal/sem/grammars/clojure:
+  build constraints exclude all Go files in .../internal/sem/grammars/clojure
+  ```
+
+  one line per vendored grammar (`GOOS=windows CGO_ENABLED=0 go build ./...`
+  reproduces it anywhere: 14 of them). Undefined references to `tree_sitter_*`
+  symbols are the other shape of the same cause. Released binaries are
+  unaffected; this is a prerequisite for building, which on Windows means
+  installing MinGW-w64 before the repository compiles at all.
 - **Git 2.36 or later** on `PATH`, which is also the runtime requirement.
 
 ```sh
@@ -72,6 +83,21 @@ cache. CI additionally runs the POSIX shell suite
 - **User-visible behavior** belongs in `CHANGELOG.md` under the unreleased
   section, grouped by Keep a Changelog heading. Tagged releases publish that
   section verbatim as their release notes.
+- **A test that creates a symlink fixture** must skip where the host withholds
+  the privilege rather than fail. An ordinary Windows account without Developer
+  Mode refuses `os.Symlink`, and nothing a pull request is checked on can see
+  that: CI runners and Developer Mode machines both grant the privilege, so
+  such a test stays green everywhere it is checked and fails only for a
+  contributor. Three forms are in use and all are correct --
+  `skipIfSymlinksUnrepresentable(t)` before the fixture, which
+  `internal/agentsetup`'s fatal `symlinkForTest` helper requires and
+  `TestSymlinkFixturesProbeFirst` enforces from source; `t.Skipf` on the
+  `os.Symlink` error itself, which is what `internal/sem` uses; and a
+  `runtime.GOOS == "windows"` skip for a test that is specifically about Unix
+  symlink spelling. `t.Fatal` on that error is the one that is wrong. Audited
+  across `internal/sem` 2026-11-19: of 75 fixture sites, 23 are in files that
+  are never compiled on Windows, 34 skip on refusal, 17 sit under a Windows
+  skip or a probe, and the remainder is a background goroutine that returns.
 - **Benchmark numbers** carry a documented provenance standard. Read
   `bench/memory/README.md` and `docs/benchmarks.md` before adding, changing, or
   quoting one, and never quote a number that has no registered run behind it.

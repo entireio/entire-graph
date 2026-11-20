@@ -260,6 +260,7 @@ func TestCoordinationLegacyMarkerValidation(t *testing.T) {
 }
 
 func TestCoordinationLegacyAliasesAndProtectedTargets(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
 	t.Run("non-markdown generated legacy landing", func(t *testing.T) {
 		repo := t.TempDir()
 		mkdirAllForTest(t, filepath.Join(repo, ".entire"))
