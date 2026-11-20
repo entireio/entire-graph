@@ -257,7 +257,15 @@ these rules existed misses instead of re-emitting the paths it named.
   This also refuses a hard link to a harmless file, including one outside the
   project. A symlink remains the preferred instruction-file alias.
 - `index --report <path>` writes a Markdown graph report to the path you give
-  it.
+  it, and `snapshot`/`symbols`/`edges` `--output <path>` write their record
+  stream to one. Both take a path anywhere on the machine, and both apply the
+  same rule to it: a destination that lands inside a checkout the invocation
+  implicates was chosen by the repository, not by you, so a committed symlink
+  on that path -- at any depth -- is refused rather than followed, and the
+  write goes through `os.Root`, which cannot be made to leave the repository
+  root. A destination outside every such checkout is yours; it is written as
+  before, symlinked parent directories included, which is what `/tmp` is on
+  macOS.
 
 No other command family writes into the repository unless a caller-provided
 command does so.

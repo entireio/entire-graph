@@ -14,6 +14,18 @@ auto-generated notes on
 
 ### Added
 
+- `snapshot`, `symbols` and `edges` take `--output <path>`, which writes the
+  record stream to a file instead of stdout. The bytes are the ones stdout
+  would have received. Saving a compact snapshot used to require a shell
+  redirect, and the shell chooses the encoding: Windows PowerShell 5.1's `>`
+  is `Out-File`, whose default is UTF-16LE, so the documented
+  save-then-`snapshot-query` flow produced a file the loader could not read.
+  A refused invocation never opens, and so never truncates, the destination,
+  and the path is judged by the same rule `index --report` uses: inside a
+  scanned checkout it was chosen by the repository, so a committed symlink
+  there is refused instead of followed; outside one it is yours and is written
+  as before.
+
 - `setup` can install the Claude Code status line, opt-in: a `statusLine`
   running `entire graph statusline` in the per-user
   `.claude/settings.local.json`, merged into existing settings and added once.
@@ -123,6 +135,22 @@ auto-generated notes on
   `setup` last.
 
 ### Fixed
+
+- An ignore file whose first bytes are a UTF-8 byte-order mark no longer loses
+  its first rule. Git drops exactly one mark at byte zero of an exclude file;
+  this did not, so the first pattern of such a `.graphignore`, `.gitignore`,
+  `--ignore-file` or `--include-file` was the mark plus the pattern, matched
+  nothing, and the path it was written to exclude was indexed with nothing
+  reporting it. Windows PowerShell 5.1 writes that mark for `Out-File` and
+  `Set-Content -Encoding utf8`. A second mark, or one on a later line, is
+  still pattern text.
+
+- `snapshot-query` now names the encoding when its input is a UTF-16 or UTF-32
+  file, and says how to produce a readable one, instead of reporting
+  `invalid character '\xff' looking for beginning of value`. It also accepts
+  one leading UTF-8 byte-order mark, which Windows PowerShell 5.1 writes for
+  `Out-File`/`Set-Content -Encoding utf8`; a mark anywhere else is still
+  malformed input.
 
 - `query`'s `VERIFY:` block no longer names an ancestor Gradle build for a file in
   a Gradle project directory that build does not own. With `include ':app'` in the
