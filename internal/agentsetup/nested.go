@@ -42,7 +42,13 @@ func OuterRepo(root string) string {
 	if err != nil {
 		return ""
 	}
+	ceilings := gitCeilingDirectories()
 	for p := filepath.Dir(abs); ; p = filepath.Dir(p) {
+		// Never step up into a GIT_CEILING_DIRECTORIES entry: git would not
+		// see a repository there, so neither may this walk.
+		if isGitCeiling(p, ceilings) {
+			return ""
+		}
 		if _, err := os.Lstat(filepath.Join(p, ".git")); err == nil {
 			return p
 		} else if !os.IsNotExist(err) {

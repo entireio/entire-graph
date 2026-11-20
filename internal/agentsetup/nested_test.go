@@ -30,8 +30,11 @@ func TestOuterRepoFindsTheProjectAroundANestedClone(t *testing.T) {
 // The ordinary case must stay silent, or the warning becomes noise everyone
 // learns to ignore.
 func TestOuterRepoIsEmptyForATopLevelRepo(t *testing.T) {
-	// A repo whose ancestors hold no .git.
+	// A repo whose ancestors hold no .git. A temp dir alone does not promise
+	// that: on a machine whose home folder is a git repository, the temp dir
+	// is inside one. Fence the walk at the test's own tree.
 	parent := t.TempDir()
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(parent))
 	repo := mkrepo(t, filepath.Join(parent, "project"))
 
 	if got := OuterRepo(repo); got != "" {
@@ -66,8 +69,8 @@ func TestOuterRepoDetectsAGitFileNotJustADirectory(t *testing.T) {
 // This fires on an ordinary layout, not a contrived one: a monorepo
 // subdirectory, or anything under a dotfiles-tracked home directory.
 func TestOuterRepoRequiresAnInnerRepository(t *testing.T) {
-	t.Parallel()
-
+	// Not parallel: the last case sets GIT_CEILING_DIRECTORIES, and t.Setenv
+	// is unavailable to a parallel test.
 	outer := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(outer, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -103,12 +106,42 @@ func TestOuterRepoRequiresAnInnerRepository(t *testing.T) {
 		t.Errorf("a worktree root carries .git as a FILE and must still be reported: got %q", got)
 	}
 
-	// And a repository with no outer repository reports nothing.
+	// And a repository with no outer repository reports nothing -- once the
+	// walk is fenced at the test's own tree, since the temp dir itself may sit
+	// inside a repository (a home folder under version control).
 	lone := t.TempDir()
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(lone))
 	if err := os.MkdirAll(filepath.Join(lone, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if got := OuterRepo(lone); got != "" {
 		t.Errorf("a top-level repository has no outer repository, got %q", got)
+	}
+}
+
+// TestOuterRepoHonoursGitCeilingDirectories: the nested-repository warning
+// must not name a repository git itself would refuse to see. Without the
+// ceiling, a home folder under version control is the "outer repository" of
+// every clone on the machine.
+func TestOuterRepoHonoursGitCeilingDirectories(t *testing.T) {
+	outer := mkrepo(t, t.TempDir())
+	inner := mkrepo(t, filepath.Join(outer, "clone"))
+	nestedDeeper := mkrepo(t, filepath.Join(outer, "a", "b", "clone"))
+
+	t.Setenv("GIT_CEILING_DIRECTORIES", "")
+	if got := OuterRepo(inner); got != outer {
+		t.Fatalf("without a ceiling the outer repository must be found: got %q, want %q", got, outer)
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", outer)
+	if got := OuterRepo(inner); got != "" {
+		t.Fatalf("a ceiling at the outer repository must hide it: got %q", got)
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Join(outer, "a"))
+	if got := OuterRepo(nestedDeeper); got != "" {
+		t.Fatalf("a ceiling between the clone and the outer repository must stop the walk: got %q", got)
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Join(outer, "a", "b", "clone", "unrelated"))
+	if got := OuterRepo(nestedDeeper); got != outer {
+		t.Fatalf("a ceiling below the start must change nothing: got %q, want %q", got, outer)
 	}
 }

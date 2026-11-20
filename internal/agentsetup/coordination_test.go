@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -165,7 +167,12 @@ func TestCoordinationNoRuntimeProbes(t *testing.T) {
 	}
 }
 func TestCoordinationOutsideRepository(t *testing.T) {
-	t.Chdir(t.TempDir())
+	// "Outside a repository" is a property of every ancestor, not of the temp
+	// dir: on a machine whose home folder is a git repository, the temp dir is
+	// inside one. Pin the ceiling so the walk cannot leave the test's own tree.
+	dir := t.TempDir()
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))
+	t.Chdir(dir)
 	root, err := Context("", "")
 	if err != nil || root != "" {
 		t.Fatal(root, err)
@@ -177,6 +184,68 @@ func TestCoordinationOutsideRepository(t *testing.T) {
 		}
 	}
 }
+
+// TestContextHonoursGitCeilingDirectories pins Context to git's own discovery
+// rule. Context finds the nearest repository without invoking git, so nothing
+// made it respect GIT_CEILING_DIRECTORIES, and a user who set it precisely to
+// keep an enclosing repository (a home folder under version control) out of
+// reach was answered with that repository anyway. Where git is installed, each
+// case is also checked against `git rev-parse --show-toplevel`, so the two
+// cannot drift apart.
+func TestContextHonoursGitCeilingDirectories(t *testing.T) {
+	outer := t.TempDir()
+	deep := filepath.Join(outer, "inner", "deep")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitPresent := false
+	if _, err := exec.LookPath("git"); err == nil {
+		gitPresent = true
+		if out, err := exec.Command("git", "init", "-q", outer).CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v: %s", err, out)
+		}
+	} else if err := os.Mkdir(filepath.Join(outer, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := t.TempDir()
+	differentCase := outer
+	if runtime.GOOS == "windows" {
+		differentCase = strings.ToUpper(outer)
+	}
+
+	for _, tc := range []struct {
+		name, cwd, ceiling string
+		wantRepo           bool
+	}{
+		{"no ceiling finds the enclosing repository", deep, "", true},
+		{"a ceiling at the repository stops the walk", deep, outer, false},
+		{"a ceiling below the repository stops the walk", deep, filepath.Join(outer, "inner"), false},
+		{"an unrelated ceiling changes nothing", deep, other, true},
+		{"the starting directory is still examined", outer, outer, true},
+		{"one entry of a list is enough", deep, other + string(os.PathListSeparator) + outer, false},
+		{"letter case does not matter where the filesystem ignores it", deep, differentCase, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GIT_CEILING_DIRECTORIES", tc.ceiling)
+			t.Chdir(tc.cwd)
+			root, err := Context("", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotRepo := root != ""; gotRepo != tc.wantRepo {
+				t.Fatalf("Context from %s with GIT_CEILING_DIRECTORIES=%q = %q; want a repository: %v", tc.cwd, tc.ceiling, root, tc.wantRepo)
+			}
+			if !gitPresent {
+				return
+			}
+			gitErr := exec.Command("git", "rev-parse", "--show-toplevel").Run()
+			if gitFound := gitErr == nil; gitFound != tc.wantRepo {
+				t.Fatalf("git disagrees with this case: git found a repository: %v (%v)", gitFound, gitErr)
+			}
+		})
+	}
+}
+
 func TestCoordinationLegacyMarkerValidation(t *testing.T) {
 	for _, product := range []string{"graph", "brain"} {
 		repo := t.TempDir()
