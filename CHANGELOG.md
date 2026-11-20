@@ -241,6 +241,14 @@ auto-generated notes on
   focus when entire-graph runs without a console, as a Claude Code status line
   render does.
 
+- A clone made with `core.autocrlf=true`, the Git for Windows default, can now
+  pass the checks `CONTRIBUTING.md` asks for. `.gitattributes` pins Go source
+  and every script with a `#!` line to LF at checkout. Without it each Go file
+  arrived with CRLF and `gofmt -s -l .` listed all 872 of them, and the POSIX
+  shell suite (`sh scripts/entire-graph-statusline_test.sh`) died at its second
+  line with exit 2. The pin changes checkout only, never committed content, and
+  no CI runner could see the problem because all of them check out LF.
+
 ## [0.5.0] - 2026-10-23
 
 ### Removed
