@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.11.5-nightly.202610100625.1f44a6f96.0.20261024214757-e7c0393725dd",
+  "checkpoint_id": "3cb5629db81b",
+  "strategy": "manual-commit",
+  "branch": "fix/semantic-diff-fires-and-owns-its-subject",
+  "checkpoints_count": 11,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/3c/b5629db81b/0/metadata.json",
+      "transcript": "/3c/b5629db81b/0/full.jsonl",
+      "compact_transcript": "/3c/b5629db81b/0/transcript.jsonl",
+      "content_hash": "/3c/b5629db81b/0/content_hash.txt",
+      "prompt": "/3c/b5629db81b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8,
+    "cache_creation_tokens": 3684,
+    "cache_read_tokens": 851102,
+    "output_tokens": 1947,
+    "api_call_count": 4
+  },
+  "redaction": {
+    "replacements": 423,
+    "layers": {
+      "betterleaks": 5,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 67,
+      "credentialed_uri": 3,
+      "entropy": 355,
+      "key_context": 0,
+      "provider_token": 9,
+      "shell_stdin": 0
+    }
+  }
+}
