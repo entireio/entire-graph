@@ -249,6 +249,16 @@ auto-generated notes on
   line with exit 2. The pin changes checkout only, never committed content, and
   no CI runner could see the problem because all of them check out LF.
 
+- The Graph Semantic Diff trail runner runs again, and reports the semantic
+  diff rather than a textual one. It declared `trigger_types` of `["api"]`
+  alone -- the only one of the seven checked-in runners that omitted `push`
+  -- so no pushed branch ever started it, and its absence from a trail read
+  exactly like a monitor with nothing to say. Its prompt also treated
+  `entire graph diff` as optional supplementary evidence to `git diff`, and
+  fell back silently; the entity-level diff is now the runner's subject, and
+  a fallback has to open its summary with `Textual diff only:` and the
+  reason.
+
 ## [0.5.0] - 2026-10-23
 
 ### Removed
