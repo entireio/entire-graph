@@ -21,7 +21,8 @@
   },
   "select": {
     "trigger_types": [
-      "api"
+      "api",
+      "push"
     ]
   },
   "output": {
