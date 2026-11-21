@@ -50,7 +50,7 @@ func TestSearchStoreRoundTripsSnapshot(t *testing.T) {
 	}
 
 	storePath := filepath.Join(t.TempDir(), "store.sqlite")
-	if err := buildSearchStore(t.Context(), storePath, "digest-a", &cache); err != nil {
+	if err := buildSearchStore(t.Context(), storePath, "digest-a", nil, &cache); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loadSearchStore(t.Context(), storePath, "digest-b"); err == nil {
@@ -124,7 +124,7 @@ func TestSearchStoreContextServesTaskContext(t *testing.T) {
 	}
 	cache := newCachedSearchSnapshot("store-test", "commit-a", "tree-a", ProviderSnapshotOptions{}, snapshot, t.Context())
 	storePath := filepath.Join(t.TempDir(), "store.sqlite")
-	if err := buildSearchStore(t.Context(), storePath, "digest-a", &cache); err != nil {
+	if err := buildSearchStore(t.Context(), storePath, "digest-a", nil, &cache); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,7 +205,7 @@ func TestSearchStoreReadProjectionMatchesCanonicalRecords(t *testing.T) {
 	}
 	cache := newCachedSearchSnapshot("projection", "commit", "tree", ProviderSnapshotOptions{}, snapshot, t.Context())
 	path := filepath.Join(t.TempDir(), "store.sqlite")
-	if err = buildSearchStore(t.Context(), path, "digest", &cache); err != nil {
+	if err = buildSearchStore(t.Context(), path, "digest", nil, &cache); err != nil {
 		t.Fatal(err)
 	}
 	db, err := sql.Open("sqlite", "file:"+sqliteURLPath(path)+"?mode=ro&immutable=1")

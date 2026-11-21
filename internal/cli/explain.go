@@ -192,6 +192,26 @@ type ExplainResponse struct {
 	Commit           string `json:"commit,omitempty"`
 	Tree             string `json:"tree,omitempty"`
 	WorktreeSnapshot bool   `json:"worktree_snapshot,omitempty"`
+	// Warnings reports what went wrong in this run's own work rather than the
+	// graph's diagnostics: today a sqlite store this run could not write
+	// (explainWarnings). Absent when there is none.
+	Warnings []sem.ProviderWarning `json:"warnings,omitempty"`
+}
+
+// explainWarnings selects the snapshot warnings explain reports. Explain has
+// never printed the graph's own diagnostics, and a working-tree snapshot
+// always carries one, so passing them all through would change every answer.
+// A failed store write is different: it is this run's partial failure, and
+// it is never dropped silently. def's text and agent cards report the same
+// selection.
+func explainWarnings(warnings []sem.ProviderWarning) []sem.ProviderWarning {
+	var reported []sem.ProviderWarning
+	for _, warning := range warnings {
+		if sem.IsRunWarning(warning.Code) {
+			reported = append(reported, warning)
+		}
+	}
+	return reported
 }
 
 type explainFlags struct {
@@ -278,13 +298,13 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 	// Worktree is the default on purpose: the agent has just edited the tree, and a declaration read
 	// from HEAD would describe code that no longer exists. --head remains available for callers that
 	// explicitly want the committed baseline.
-	snapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
+	snapshot, _, err := loadLookupSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Worktree:     flags.Worktree,
 		IgnoreFiles:  flags.IgnoreFile,
 		IncludeFiles: flags.IncludeFile,
 		Profile:      profile,
-	}, cacheDir, flags.DisableCache)
+	}, cacheDir, flags.DisableCache, explainLookupFocus(candidates), opts.Env.TraceLoad, opts.Stderr)
 	if err != nil {
 		return err
 	}
@@ -295,6 +315,7 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 	useHead := !flags.Worktree && snapshot.Header.Commit != ""
 	response.Commit, response.Tree = snapshot.Header.Commit, snapshot.Header.Tree
 	response.WorktreeSnapshot = !useHead
+	response.Warnings = explainWarnings(snapshot.Header.Warnings)
 	switch flags.Format {
 	case "json":
 		encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
@@ -621,7 +642,29 @@ func RenderExplain(response ExplainResponse, maxBytes int) []byte {
 // RenderExplainWithProvenance renders the same declaration block while making
 // its source view explicit. useHead is true only when a committed snapshot was
 // actually selected; the no-HEAD fallback therefore keeps the worktree label.
+// Any response warnings follow the block, one "- warning" line each, as in
+// the neighbors and impact coverage banner.
 func RenderExplainWithProvenance(response ExplainResponse, maxBytes int, useHead bool) []byte {
+	block := renderExplainBlock(response, maxBytes, useHead)
+	// The warning lines sit outside the byte budget, which bounds the
+	// declarations: a budget that dropped them would drop a failure silently.
+	return appendWarningLines(block, response.Warnings)
+}
+
+// appendWarningLines appends one "- warning" line per warning, the form
+// explain and def print their explainWarnings in.
+func appendWarningLines(block []byte, warnings []sem.ProviderWarning) []byte {
+	for _, warning := range warnings {
+		if warning.FilePath == "" {
+			block = fmt.Appendf(block, "- warning %s\n", warning.Code)
+		} else {
+			block = fmt.Appendf(block, "- warning %s: %s\n", warning.Code, termsafe.Line(warning.FilePath))
+		}
+	}
+	return block
+}
+
+func renderExplainBlock(response ExplainResponse, maxBytes int, useHead bool) []byte {
 	if len(response.Symbols) == 0 {
 		return nil
 	}

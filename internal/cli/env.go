@@ -33,6 +33,11 @@ const (
 	// envMaxSearches is how many searches of that session actually run a query (default 1, `0`
 	// disables the echo). See searchSession for the measurement.
 	envMaxSearches = "EG_MAX_SEARCHES"
+	// envTraceLoad, set to 1, makes a lookup verb (neighbors, def, impact, explain) write one
+	// stderr line naming the load that served it, focused or full, so a test at the process
+	// boundary can tell a focused read that failed quietly from one that answered. It is never
+	// verb output and is not documented for users.
+	envTraceLoad = "ENTIRE_GRAPH_TRACE_LOAD"
 )
 
 // cacheDirName is this provider's directory inside the platform's per-user cache
@@ -87,6 +92,9 @@ type EntireEnv struct {
 	SearchSession string
 	// MaxSearches is how many of that task's searches run a query; empty means the default of 1.
 	MaxSearches string
+	// TraceLoad makes each lookup verb write which load served it to stderr
+	// (traceLookupLoad). It is a test hook, not a user feature; see envTraceLoad.
+	TraceLoad bool
 }
 
 func EnvFromOS() EntireEnv {
@@ -103,6 +111,7 @@ func EnvFromOS() EntireEnv {
 		PresearchPath:   presearch,
 		SearchSession:   os.Getenv(envSearchSession),
 		MaxSearches:     os.Getenv(envMaxSearches),
+		TraceLoad:       os.Getenv(envTraceLoad) == "1",
 	}
 }
 

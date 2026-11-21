@@ -78,6 +78,9 @@ def graph_argv(env):
 COMPACT_HEADER = re.compile(r"^I:[a-z-]+/(?:\d+|-)(?: [QPT]:\d+)*$")
 COMPACT_DIAG = re.compile(r"^![ND](?: W\d+ F\d+ L\d+/\d+)?(?: I:[a-z-]+(?:/\d+)?)?(?: X\d+)?$")
 COMPACT_LOW = re.compile(r"^!LOW s=-?\d+(?:\.\d+)?$")
+# The run-warning line query prints after its answer: the codes sem.IsRunWarning covers
+# (internal/sem/search_store.go). It reports this run's store write, not repository content.
+RUN_WARNING = re.compile(r"^- warning W_SEARCH_STORE_UNAVAILABLE$")
 
 
 def clean(answer):
@@ -101,6 +104,8 @@ def clean(answer):
         if re.match(r"^(?:\d+\. )?[^\n]+:\d+(?:-\d+)?(?:\s|$)", line):
             source = True
         keep.append(line)
+    while keep and RUN_WARNING.match(keep[-1]):
+        keep.pop()
     # Diagnostics without a source location do not establish useful context.
     if not source:
         return ""
