@@ -7,27 +7,24 @@
 // Usage:
 //
 //	go run ./cmd/grammar-refresh -lang zig -ref v1.1.2
-//	go run ./cmd/grammar-refresh -lang fsharp -ref <commit> -path fsharp -allow-local-changes
+//	go run ./cmd/grammar-refresh -lang fsharp -ref <commit> -path fsharp
 //	go run ./cmd/grammar-refresh -lang newlang -ref v1.0.0 -url https://github.com/o/tree-sitter-newlang
 //	go run ./cmd/grammar-refresh -lang rust -ref v0.24.2 -url https://github.com/tree-sitter/tree-sitter-rust -generate
 //	go run ./cmd/grammar-refresh -lang csharp -ref v0.24.0 -tree-sitter-cli 0.26.7
 //
 // The vendored src/parser.c must be within the ABI range the go-tree-sitter
 // runtime loads (minABI-maxABI). A manifest entry's local_build block, or
-// -generate, builds it instead of copying it: the entry's patch is applied to
-// the checkout, then `npx tree-sitter-cli@<version> generate <args>` runs
+// -generate, builds it instead of copying it: the entry's copy list places
+// upstream files kept outside the grammar directory (read from the checkout,
+// so a new revision brings its own), the entry's patch is applied to the
+// checkout, then `npx tree-sitter-cli@<version> generate <args>` runs
 // (default --abi maxABI), which needs Node.js. The recorded revision
 // regenerates with the recorded version; a new revision uses @latest and
 // records the version it ran. -tree-sitter-cli pins one, which is the fix if
 // a future tree-sitter release stops generating maxABI. binding.go is never
-// touched, so
-// a new language still needs one. A grammar that changes parse results needs
-// an IdentityRevision bump (internal/sem/provider.go) in the same commit.
-//
-// A manifest entry with local_changes carries edits that upstream does not
-// have, and copying upstream verbatim would discard them. The tool refuses
-// such a grammar unless -allow-local-changes is passed, and the maintainer then
-// reapplies the steps in the entry's note. Notes survive every refresh.
+// touched, so a new language still needs one. A grammar that changes parse
+// results needs an IdentityRevision bump (internal/sem/provider.go) in the
+// same commit. An entry's note survives every refresh.
 package main
 
 import (
@@ -49,7 +46,6 @@ func main() {
 		subdir       = flag.String("path", "", "grammar subdirectory within the repository; defaults to the manifest entry")
 		manifestPath = flag.String("manifest", "internal/sem/grammars/grammars.json", "path to the grammar manifest")
 		grammarsDir  = flag.String("dir", "internal/sem/grammars", "directory holding vendored grammars")
-		allowLocal   = flag.Bool("allow-local-changes", false, "overwrite a grammar whose manifest entry records local changes; they must then be reapplied by hand")
 		generateFlag = flag.Bool("generate", false, "regenerate the parser with tree-sitter-cli (via npx) even if the manifest entry records no local build")
 		cliFlag      = flag.String("tree-sitter-cli", "", "tree-sitter-cli version to generate with; implies -generate")
 	)
@@ -59,15 +55,14 @@ func main() {
 		os.Exit(2)
 	}
 	o := options{
-		Lang:              *lang,
-		Ref:               *ref,
-		URL:               *url,
-		Subdir:            *subdir,
-		ManifestPath:      *manifestPath,
-		GrammarsDir:       *grammarsDir,
-		AllowLocalChanges: *allowLocal,
-		Generate:          *generateFlag,
-		TreeSitterCLI:     *cliFlag,
+		Lang:          *lang,
+		Ref:           *ref,
+		URL:           *url,
+		Subdir:        *subdir,
+		ManifestPath:  *manifestPath,
+		GrammarsDir:   *grammarsDir,
+		Generate:      *generateFlag,
+		TreeSitterCLI: *cliFlag,
 	}
 	if err := refresh(o); err != nil {
 		fmt.Fprintln(os.Stderr, "grammar-refresh:", err)
@@ -82,7 +77,6 @@ var languageNamePattern = regexp.MustCompile(`^[a-z0-9_]+$`)
 type options struct {
 	Lang, Ref, URL, Subdir    string
 	ManifestPath, GrammarsDir string
-	AllowLocalChanges         bool
 	// Generate regenerates the parser even when the entry records no
 	// tree-sitter-cli; TreeSitterCLI overrides the version chosen.
 	Generate      bool
@@ -120,9 +114,6 @@ func refresh(o options) error {
 	if subdir != "" && !filepath.IsLocal(subdir) {
 		return fmt.Errorf("invalid path %q for %s in %s: must be a relative path inside the repository", subdir, lang, manifestPath)
 	}
-	if existing.LocalChanges && !o.AllowLocalChanges {
-		return fmt.Errorf("%s has local changes that a verbatim refresh would discard (%s); pass -allow-local-changes to overwrite it, then reapply them by hand", lang, existing.Note)
-	}
 	build := existing.LocalBuild
 	var patchFile string
 	if build != nil && build.Patch != "" {
@@ -134,6 +125,16 @@ func refresh(o options) error {
 		}
 	}
 	generating := wantsGeneration(existing, o)
+	if build != nil {
+		for _, c := range build.Copy {
+			if !filepath.IsLocal(c.From) || !filepath.IsLocal(c.To) {
+				return fmt.Errorf("invalid copy %q -> %q for %s in %s: both must be relative paths inside the repository", c.From, c.To, lang, manifestPath)
+			}
+			if !generating && !vendoredDirectly(filepath.ToSlash(filepath.Clean(c.To))) {
+				return fmt.Errorf("copy to %s reaches the vendored grammar only through a regenerated parser; set local_build.tree_sitter_cli for %s in %s, or pass -generate", c.To, lang, manifestPath)
+			}
+		}
+	}
 	if patchFile != "" && !generating {
 		// #357 vendored a Swift parser built from a hand-applied grammar.js
 		// patch, and nothing in the tree said the two were connected. The tool
@@ -173,6 +174,13 @@ func refresh(o options) error {
 	if err != nil {
 		return err
 	}
+	if build != nil {
+		for _, c := range build.Copy {
+			if err := copyUpstreamFile(tmp, subdir, c); err != nil {
+				return fmt.Errorf("%s at %s: %w", url, ref, err)
+			}
+		}
+	}
 	if patchFile != "" {
 		if err := applyPatch(tmp, subdir, patchFile); err != nil {
 			return fmt.Errorf("%s at %s: %w", url, ref, err)
@@ -207,19 +215,15 @@ func refresh(o options) error {
 		Path:      subdir,
 		Files:     files,
 		ABI:       abi,
-		// Kept across a revision change: that is when a note's manual steps
-		// are due. A note the new revision makes obsolete is removed by hand.
-		LocalChanges: existing.LocalChanges,
-		Note:         existing.Note,
-		LocalBuild:   build,
+		// Kept across a revision change; a note the new revision makes
+		// obsolete is removed by hand.
+		Note:       existing.Note,
+		LocalBuild: build,
 	})
 	if err := saveManifest(manifestPath, grammars); err != nil {
 		return err
 	}
 	fmt.Printf("vendored %s %s (%s, ABI %d) into %s\n", lang, ref, revision[:7], abi, filepath.Join(grammarsDir, lang))
-	if existing.LocalChanges {
-		fmt.Printf("warning: %s now lacks its local changes; reapply them before committing\n", lang)
-	}
 	if existing.Note != "" {
 		fmt.Printf("note: %s\n", existing.Note)
 	}
@@ -232,6 +236,29 @@ func git(dir string, args ...string) error {
 	cmd.Dir = dir
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// copyUpstreamFile copies c.From (relative to the checkout) to c.To (relative
+// to the grammar at subdir). It fails rather than guess when the revision no
+// longer has the source, or already ships a file at the destination: either
+// way the manifest entry no longer describes this upstream.
+func copyUpstreamFile(checkout, subdir string, c FileCopy) error {
+	src := filepath.Join(checkout, c.From)
+	if info, err := os.Lstat(src); err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("copy %s: not a regular file at this revision; update local_build.copy", c.From)
+	}
+	dst := filepath.Join(checkout, subdir, c.To)
+	if _, err := os.Lstat(dst); err == nil {
+		return fmt.Errorf("copy %s: this revision already has %s; update local_build.copy", c.From, filepath.ToSlash(filepath.Join(subdir, c.To)))
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o644)
 }
 
 // applyPatch applies patchFile to the grammar at subdir inside checkout; the
