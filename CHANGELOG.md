@@ -79,6 +79,11 @@ auto-generated notes on
 
 ### Changed
 
+- Rust now uses vendored tree-sitter-rust 0.24.2, regenerated at ABI 14, instead
+  of the older grammar bundled with go-tree-sitter, so raw borrows
+  (`&raw const`, `&raw mut`), `gen` blocks, async closures and shebang lines no
+  longer report a parse error. The parser identity revision is bumped to
+  rebuild cached snapshots.
 - `stats` without `--sessions-dir` or `--transcript` reads transcripts from
   `$CLAUDE_CONFIG_DIR/projects/` when `CLAUDE_CONFIG_DIR` is set, as Claude Code
   writes them, instead of `~/.claude/projects/`.
