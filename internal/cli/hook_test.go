@@ -178,9 +178,10 @@ func TestInitAgentsInstallsClaudeSubagentHook(t *testing.T) {
 	if err := os.WriteFile(settingsPath, []byte(`{"permissions":{"allow":["Bash(ls)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./stop.sh"}]}]}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	home := tempHome(t)
 	initAgents := func(extra ...string) (string, error) {
 		var out bytes.Buffer
-		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, append([]string{"setup", "--repo", repo}, extra...))
+		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out, homeDir: home}, append([]string{"setup", "--repo", repo}, extra...))
 		return out.String(), err
 	}
 
@@ -213,14 +214,16 @@ func TestInitAgentsInstallsClaudeSubagentHook(t *testing.T) {
 
 func TestInitAgentsClaudeHookOptOutAndPreflight(t *testing.T) {
 	t.Parallel()
-	t.Run("opt out writes nothing under .claude", func(t *testing.T) {
+	// A non-interactive setup skips the status line unasked, so --no-claude-hook alone leaves .claude
+	// alone here; --no-statusline is the opt-out an interactive run would also need.
+	t.Run("opting out of both writes nothing under .claude", func(t *testing.T) {
 		repo := gitRepoForTest(t, false)
 		var out bytes.Buffer
-		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"setup", "--repo", repo, "--no-claude-hook"}); err != nil {
+		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"setup", "--repo", repo, "--no-claude-hook", "--no-statusline"}); err != nil {
 			t.Fatalf("%v\n%s", err, out.String())
 		}
 		if _, err := os.Stat(filepath.Join(repo, ".claude")); !os.IsNotExist(err) {
-			t.Fatalf("--no-claude-hook still created .claude (err %v)", err)
+			t.Fatalf("--no-claude-hook --no-statusline still created .claude (err %v)", err)
 		}
 		if _, err := os.Stat(filepath.Join(repo, agentsetup.Path)); err != nil {
 			t.Fatalf("guide not written: %v", err)
@@ -236,7 +239,7 @@ func TestInitAgentsClaudeHookOptOutAndPreflight(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out bytes.Buffer
-		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"setup", "--repo", repo})
+		err := Run(context.Background(), Options{Stdout: &out, Stderr: &out, homeDir: tempHome(t)}, []string{"setup", "--repo", repo})
 		if err == nil || !strings.Contains(err.Error(), "--no-claude-hook") {
 			t.Fatalf("err = %v, want a refusal naming the opt-out", err)
 		}

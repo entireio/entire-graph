@@ -97,6 +97,7 @@ func TestActivationLegacyMigration(t *testing.T) {
 }
 
 func TestActivationContainedAlias(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
 	repo := t.TempDir()
 	mkdirAllForTest(t, filepath.Join(repo, ".entire"))
 	writeFileForTest(t, filepath.Join(repo, "guide.md"), BrainGuide())
@@ -108,6 +109,7 @@ func TestActivationContainedAlias(t *testing.T) {
 }
 
 func TestActivationDoesNotReadOutsideRepo(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
 	repo := t.TempDir()
 	mkdirAllForTest(t, filepath.Join(repo, ".entire"))
 	outside := filepath.Join(t.TempDir(), "guide.md")

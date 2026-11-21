@@ -26,7 +26,18 @@ func isTerminal(w io.Writer) bool {
 		w = inner.Unwrap()
 	}
 	f, ok := w.(*os.File)
-	if !ok {
+	return ok && isTerminalFile(f)
+}
+
+// isTerminalReader is isTerminal for an input: whether r is an interactive terminal.
+func isTerminalReader(r io.Reader) bool {
+	f, ok := r.(*os.File)
+	return ok && isTerminalFile(f)
+}
+
+// isTerminalFile is the character-device check isTerminal and isTerminalReader share.
+func isTerminalFile(f *os.File) bool {
+	if f == nil {
 		return false
 	}
 	info, err := f.Stat()

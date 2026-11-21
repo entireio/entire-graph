@@ -177,10 +177,33 @@ repositories, migration, byte stability, invalid metadata, and filesystem
 protections. Activation and installer code and tests are mirrored in both
 repositories; historical runtime-detection helpers are no longer used by activation.
 
-`scripts/test-agent-coordination.py --graph-binary <build> --brain-binary <build>`
-in Brain exercises both compiled CLIs with isolated repositories and runtime
-stores. It checks single-product initialization despite both plugins being
-installed, both orders, read-only preview, migration, metadata errors, runtime
-state independence, context selection, and identical shared activation and
-installer sources. The host
-stub must receive no calls.
+Brain's `tools/integration` Go tests run both compiled products in both setup
+orders in isolated repositories. They check combined activation, preserved user
+text and repeatability, and compare the normal and strict guides each product
+renders. After changing `guide.go` or `strict.go` here, run them from an
+entire-brain checkout with the matching guide change, pointing the Graph binary
+at a build of this tree and requiring exact guide parity:
+
+```sh
+cd <entire-brain checkout>
+BRAIN_INTEGRATION_REQUIRED=1 BRAIN_INTEGRATION_REQUIRE_GUIDE_PARITY=1 \
+BRAIN_INTEGRATION_BRAIN_BINARY=<brain build> BRAIN_INTEGRATION_GRAPH_BINARY=<graph build of this tree> \
+go test ./tools/integration -count=1
+```
+
+"The matching guide change" is literal. `guide.go` and `strict.go` are mirrored
+in entire-brain, and strict parity is byte equality of the rendered guides, so
+every guide-text change has two halves, one per repository, and the parity leg
+passes only against a Brain checkout that carries the same wording. The
+`remember --path` rule is an example: the Brain-enabled guides say that each
+path segment uses only lowercase letters, digits and underscores
+(`project.ci_cache.layout`, not `project.ci-cache.layout`), and Brain states the
+same sentence verbatim (entireio/entire-brain#605). The COR-2308 memories-first
+wording is another: the Brain-enabled guides say that memories are the default
+retrieval surface, that the brief's precedent section lists each surfaced
+memory's source sessions, and that transcript history is an explicit
+escalation, in the same words Brain main already ships. A parity failure
+against a Brain checkout without the matching half reports that missing half,
+not a regression here. The matching Brain pin of this wording drops the last
+`compareGuideText` allowance, so both the default integration leg and
+`BRAIN_INTEGRATION_REQUIRE_GUIDE_PARITY=1` require exact equality.

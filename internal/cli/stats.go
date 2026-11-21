@@ -2,8 +2,10 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -11,6 +13,7 @@ import (
 	"math/bits"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,8 +26,9 @@ import (
 // stats answers the question users actually ask about a code graph: "did this save me
 // anything?". It is a local, read-only report over the coding-agent session transcripts that
 // already exist on disk (Claude Code writes one JSONL file per session under
-// ~/.claude/projects/<path-slug>/). Nothing is uploaded; the only thing written is a per-file
-// memo under the cache directory, which --no-cache turns off.
+// ~/.claude/projects/<path-slug>/, or $CLAUDE_CONFIG_DIR/projects/ when that is set). Nothing is
+// uploaded; the only thing written is a per-file memo under the cache directory, which --no-cache
+// turns off.
 //
 // The DEFAULT output is one line: a signed, explicitly counterfactual context model.
 // --verbose restores the full report (per-verb/per-kind tables, usage and model text), and
@@ -42,8 +46,8 @@ const savingsModelText = "Model (assumption, not a measurement): assume each obs
 	"token approximation. Unmatched queries, transformed or truncated outputs, and task quality " +
 	"are not controlled. Transcripts cannot establish what would have been read instead or causal " +
 	"billed-token savings. Legacy JSON savings fields retain their positive-only floor for " +
-	"compatibility; the status line uses the signed unfloored fields, and the stats headline uses " +
-	"observed follow-up rates instead of this assumption."
+	"compatibility; the status line shows modeled_balance_est_tokens and gross_covered_est_tokens, " +
+	"and the stats headline uses observed follow-up rates instead of this assumption."
 
 // bytesPerToken is the standard rough transcript-accounting conversion. Tool results are raw
 // text, so token counts are not recorded per call anywhere; 4 bytes/token is the usual
@@ -99,7 +103,7 @@ var graphVerbs = map[string]bool{
 	"query": true, "search": true, "context": true, "store": true, "neighbors": true, "impact": true, "diff": true, "commit": true,
 	"checkpoint": true, "analyze": true, "doctor": true, "capabilities": true,
 	"snapshot": true, "snapshot-query": true, "symbols": true, "edges": true, "index": true,
-	"stats": true, "def": true, "explain": true, "health": true, "risk": true,
+	"stats": true, "statusline": true, "def": true, "explain": true, "health": true, "risk": true,
 	"agent-guide": true, "setup": true, "hook": true, "version": true, "help": true,
 }
 
@@ -160,7 +164,8 @@ type statsTokens struct {
 }
 
 // statsResponse is a machine contract: fields are only ever ADDED, never removed or renamed.
-// The statusline reads the signed unfloored estimate plus comparison availability.
+// The status line reads modeled_balance_est_tokens, gross_covered_est_tokens and comparison
+// availability.
 type statsResponse struct {
 	FormatVersion             int          `json:"format_version"`
 	Provider                  string       `json:"provider"`
@@ -265,6 +270,12 @@ type statsResponse struct {
 	ModeledBalanceCreditedResults int    `json:"modeled_balance_credited_results"`
 	ComparableGraphLocateResults  int    `json:"comparable_graph_locate_results"`
 	FollowUpModel                 string `json:"follow_up_model"`
+
+	// GrossCoveredBytes is the sum over successful graph locate results of max(0, size of the
+	// distinct existing files the result names - the result's own bytes). Never negative per
+	// result. It is a gross figure: it assumes nothing about what the agent would have read.
+	GrossCoveredBytes     int64 `json:"gross_covered_bytes"`
+	GrossCoveredEstTokens int64 `json:"gross_covered_est_tokens"` // bytes / 4
 }
 
 func runStats(ctx context.Context, opts Options, args []string) error {
@@ -441,16 +452,17 @@ func parseSince(value string) (time.Duration, error) {
 	return time.Duration(amount) * scale, nil
 }
 
-// resolveSessionsDir maps a repo path to the Claude Code transcript directory. Claude Code
+// resolveSessionsDir maps a repo path to the Claude Code transcript directory under
+// <claudeConfigDir>/projects (CLAUDE_CONFIG_DIR when set, else ~/.claude). Claude Code
 // slugifies the absolute project path into a single directory name; historically that is a
 // straight `/` -> `-` substitution, but non-alphanumerics are also folded, so both candidates
 // are probed and the first that exists wins.
 func resolveSessionsDir(repo string) (string, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil || repo == "" {
+	configDir := claudeConfigDir()
+	if configDir == "" || repo == "" {
 		return "", false
 	}
-	root := filepath.Join(home, ".claude", "projects")
+	root := filepath.Join(configDir, "projects")
 	for _, slug := range sessionSlugCandidates(repo) {
 		candidate := filepath.Join(root, slug)
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
@@ -480,7 +492,9 @@ func sessionSlugCandidates(repo string) []string {
 type transcriptRecord struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
-	Message   struct {
+	// Cwd is the directory the agent ran the record's tool calls in.
+	Cwd     string `json:"cwd"`
+	Message struct {
 		ID      string          `json:"id"`
 		Content json.RawMessage `json:"content"`
 		Usage   *struct {
@@ -518,6 +532,17 @@ type summaryCall struct {
 	// Disp is the observed follow-up class (followUp* codes) of a graph locate call with a
 	// result; empty otherwise.
 	Disp string `json:"d,omitempty"`
+	// Paths are the normalized files a successful (non-error) locate result names, nil when the
+	// directory the call ran in is unknown (graphCallRootFromCommand), and Root is the directory
+	// that call resolved them against: its own --repo (absolute against the record's cwd, or the
+	// directory a leading cd moved to), else that directory, else empty for the report's --repo.
+	// Top is set when the call passed no --repo: the graph then resolved the checkout containing
+	// Root, so the sizer walks up to it. Only names are kept: the checkout root and file sizes are
+	// filesystem facts read at report time, never stored in this memo, which is keyed on the
+	// transcript alone.
+	Paths []string `json:"p,omitempty"`
+	Root  string   `json:"o,omitempty"`
+	Top   bool     `json:"t,omitempty"`
 }
 
 // summaryUsage is one assistant message's billed usage, kept per message.id so the same message
@@ -548,37 +573,43 @@ type fileSummary struct {
 	Unkeyed statsTokens `json:"unkeyed,omitempty"`
 }
 
-// fileScanner turns one transcript file into one fileSummary.
+// fileScanner turns one transcript file into one fileSummary. Its fields are its whole state, and
+// they are exported with JSON names because the status line checkpoints a scanner between two
+// lines (transcriptCheckpoint) and resumes it later: a field added here is checkpointed with the
+// rest. No map or slice is omitempty, since nil and empty differ for a timeline entry's Delivered.
 type fileScanner struct {
-	summary  fileSummary
-	pending  map[string]int // tool_use id -> index into summary.Calls
-	seenUse  map[string]bool
-	usageIdx map[string]int // message id -> index into summary.Usage
-	// timeline is every distinct tool call in file order, for the follow-up window;
-	// locateAt maps a locate call's summary.Calls index to its timeline entry; deliveries counts
+	Summary  fileSummary     `json:"summary"`
+	Pending  map[string]int  `json:"pending"` // tool_use id -> index into Summary.Calls
+	SeenUse  map[string]bool `json:"seen_use"`
+	UsageIdx map[string]int  `json:"usage_idx"` // message id -> index into Summary.Usage
+	// Timeline is every distinct tool call in file order, for the follow-up window;
+	// LocateAt maps a locate call's Summary.Calls index to its Timeline entry; Deliveries counts
 	// locate results in arrival order.
-	timeline   []timelineEntry
-	locateAt   map[int]int
-	deliveries int
+	Timeline   []timelineEntry `json:"timeline"`
+	LocateAt   map[int]int     `json:"locate_at"`
+	Deliveries int             `json:"deliveries"`
+	// LocateRoot maps a locate call's Summary.Calls index to the root it resolved against.
+	LocateRoot map[int]graphRoot `json:"locate_root"`
 }
 
 func newFileScanner() *fileScanner {
 	return &fileScanner{
-		pending:  map[string]int{},
-		seenUse:  map[string]bool{},
-		usageIdx: map[string]int{},
-		locateAt: map[int]int{},
+		Pending:    map[string]int{},
+		SeenUse:    map[string]bool{},
+		UsageIdx:   map[string]int{},
+		LocateAt:   map[int]int{},
+		LocateRoot: map[int]graphRoot{},
 	}
 }
 
 func (s *fileScanner) consume(record transcriptRecord) {
 	if ts, err := time.Parse(time.RFC3339, record.Timestamp); err == nil {
 		nanos := ts.UnixNano()
-		if s.summary.FirstUnixNano == 0 || nanos < s.summary.FirstUnixNano {
-			s.summary.FirstUnixNano = nanos
+		if s.Summary.FirstUnixNano == 0 || nanos < s.Summary.FirstUnixNano {
+			s.Summary.FirstUnixNano = nanos
 		}
-		if nanos > s.summary.LastUnixNano {
-			s.summary.LastUnixNano = nanos
+		if nanos > s.Summary.LastUnixNano {
+			s.Summary.LastUnixNano = nanos
 		}
 	}
 	if usage := record.Message.Usage; usage != nil {
@@ -592,7 +623,7 @@ func (s *fileScanner) consume(record transcriptRecord) {
 	for _, block := range decodeContentBlocks(record.Message.Content) {
 		switch block.Type {
 		case "tool_use":
-			s.consumeToolUse(block)
+			s.consumeToolUse(block, record.Cwd)
 		case "tool_result":
 			s.consumeToolResult(block)
 		}
@@ -614,46 +645,48 @@ func (s *fileScanner) consume(record transcriptRecord) {
 // usage exactly in 250/250 benchmark sessions).
 func (s *fileScanner) consumeUsage(id string, tokens statsTokens) {
 	if id == "" {
-		s.summary.Unkeyed.Input += tokens.Input
-		s.summary.Unkeyed.CacheWrite += tokens.CacheWrite
-		s.summary.Unkeyed.CacheRead += tokens.CacheRead
-		s.summary.Unkeyed.Output += tokens.Output
+		s.Summary.Unkeyed.Input += tokens.Input
+		s.Summary.Unkeyed.CacheWrite += tokens.CacheWrite
+		s.Summary.Unkeyed.CacheRead += tokens.CacheRead
+		s.Summary.Unkeyed.Output += tokens.Output
 		return
 	}
-	if index, ok := s.usageIdx[id]; ok {
-		s.summary.Usage[index].Tokens = tokens
+	if index, ok := s.UsageIdx[id]; ok {
+		s.Summary.Usage[index].Tokens = tokens
 		return
 	}
-	s.usageIdx[id] = len(s.summary.Usage)
-	s.summary.Usage = append(s.summary.Usage, summaryUsage{ID: id, Tokens: tokens})
+	s.UsageIdx[id] = len(s.Summary.Usage)
+	s.Summary.Usage = append(s.Summary.Usage, summaryUsage{ID: id, Tokens: tokens})
 }
 
-func (s *fileScanner) consumeToolUse(block contentBlock) {
+func (s *fileScanner) consumeToolUse(block contentBlock, cwd string) {
 	// One tool_use id is one API call. A re-serialised turn repeats the block, and counting
 	// every occurrence would bill the same call twice; first occurrence wins.
 	if block.ID != "" {
-		if s.seenUse[block.ID] {
+		if s.SeenUse[block.ID] {
 			return
 		}
-		s.seenUse[block.ID] = true
+		s.SeenUse[block.ID] = true
 	}
 	entry := timelineFromToolUse(block)
 	call, ok := classifyToolUse(block)
 	if !ok {
-		s.timeline = append(s.timeline, entry)
+		s.Timeline = append(s.Timeline, entry)
 		return
 	}
 	call.ID = block.ID
-	s.summary.Calls = append(s.summary.Calls, call)
-	index := len(s.summary.Calls) - 1
+	s.Summary.Calls = append(s.Summary.Calls, call)
+	index := len(s.Summary.Calls) - 1
 	if block.ID != "" {
-		s.pending[block.ID] = index
+		s.Pending[block.ID] = index
 	}
-	if entry.kind == timelineLocate {
-		entry.callIndex = index
-		s.locateAt[index] = len(s.timeline)
+	if entry.Kind == timelineLocate {
+		entry.CallIndex = index
+		s.LocateAt[index] = len(s.Timeline)
+		command, _ := block.Input["command"].(string)
+		s.LocateRoot[index] = graphCallRootFromCommand(command, cwd)
 	}
-	s.timeline = append(s.timeline, entry)
+	s.Timeline = append(s.Timeline, entry)
 }
 
 // classifyToolUse puts a tool_use in the graph bucket, the exploration bucket, or neither.
@@ -668,26 +701,36 @@ func classifyToolUse(block contentBlock) (summaryCall, bool) {
 }
 
 func (s *fileScanner) consumeToolResult(block contentBlock) {
-	index, ok := s.pending[block.ToolUseID]
+	index, ok := s.Pending[block.ToolUseID]
 	if !ok {
 		return
 	}
 	// Dropping the pending entry is what stops a repeated tool_result from being billed twice
 	// against the same call: the second one finds nothing pending.
-	delete(s.pending, block.ToolUseID)
+	delete(s.Pending, block.ToolUseID)
 	text := toolResultText(block.Content)
-	s.summary.Calls[index].Bytes = int64(len(text))
-	s.summary.Calls[index].HasResult = true
-	if at, ok := s.locateAt[index]; ok {
+	s.Summary.Calls[index].Bytes = int64(len(text))
+	s.Summary.Calls[index].HasResult = true
+	if at, ok := s.LocateAt[index]; ok {
 		// The follow-up window starts HERE, at delivery: calls already issued are not reactions.
-		entry := &s.timeline[at]
-		entry.hasResult, entry.isError = true, block.IsError
-		entry.deliveredAt, entry.deliverSeq = len(s.timeline), s.deliveries
-		s.deliveries++
-		entry.paths = graphOutputPaths(text)
-		entry.delivered = graphDeliveredSpans(text)
+		entry := &s.Timeline[at]
+		entry.HasResult, entry.IsError = true, block.IsError
+		entry.DeliveredAt, entry.DeliverSeq = len(s.Timeline), s.Deliveries
+		s.Deliveries++
+		entry.Paths = graphOutputPaths(text)
+		entry.Delivered = graphDeliveredSpans(text)
+		// A call whose directory is unknown keeps no Paths, so it drops out of the gross estimate;
+		// follow-up classification reads the timeline entry's own paths.
+		if root := s.LocateRoot[index]; !block.IsError && len(entry.Paths) > 0 && !root.Unknown {
+			s.Summary.Calls[index].Paths = entry.Paths
+			s.Summary.Calls[index].Root, s.Summary.Calls[index].Top = root.Dir, root.Top
+		}
 	}
 }
+
+// transcriptMaxLineBytes bounds one transcript line. Lines routinely exceed bufio's 64 KiB default
+// (large tool results inline); a longer line than this ends the scan as one malformed record.
+const transcriptMaxLineBytes = 16 * 1024 * 1024
 
 func summariseTranscript(path string) (fileSummary, bool) {
 	handle, err := os.Open(path) //nolint:gosec // the path comes from walking the caller's own transcript directory
@@ -695,29 +738,67 @@ func summariseTranscript(path string) (fileSummary, bool) {
 		return fileSummary{}, false // skip unreadable transcripts rather than abort the report
 	}
 	defer func() { _ = handle.Close() }()
-
 	scanner := newFileScanner()
-	lines := bufio.NewScanner(handle)
-	// Transcript lines routinely exceed bufio's 64KiB default (large tool results inline).
-	lines.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for lines.Scan() {
-		line := strings.TrimSpace(lines.Text())
-		if line == "" {
-			continue
-		}
-		var record transcriptRecord
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			scanner.summary.Malformed++
-			continue
-		}
-		scanner.consume(record)
-	}
-	if err := lines.Err(); err != nil {
-		// A truncated or over-long line is treated like a malformed line, not a hard failure.
-		scanner.summary.Malformed++
-	}
+	_, tail, _ := consumeTranscriptLines(scanner, bufio.NewReaderSize(handle, 64*1024), nil)
+	scanner.consumeLine(tail)
 	scanner.finishFollowUp()
-	return scanner.summary, true
+	return scanner.Summary, true
+}
+
+// consumeTranscriptLines feeds scanner each newline-terminated line of reader, also writing it to
+// digest when digest is not nil, and returns how many bytes those lines span. tail is a last line
+// with no newline yet, which Claude Code may still be writing: it is returned unconsumed. A line
+// over transcriptMaxLineBytes, or a read error, counts as one malformed record and ends the scan
+// (stopped, tail nil), as bufio.Scanner's error did.
+func consumeTranscriptLines(scanner *fileScanner, reader *bufio.Reader, digest io.Writer) (consumed int64, tail []byte, stopped bool) {
+	for {
+		line, err := readTranscriptLine(reader)
+		switch {
+		case err == nil:
+			scanner.consumeLine(line)
+			if digest != nil {
+				_, _ = digest.Write(line)
+			}
+			consumed += int64(len(line))
+		case errors.Is(err, io.EOF):
+			return consumed, line, false
+		default:
+			scanner.Summary.Malformed++
+			return consumed, nil, true
+		}
+	}
+}
+
+// readTranscriptLine returns reader's next line with its newline. At the end of the input it
+// returns what is left, possibly nothing, with io.EOF. A line over transcriptMaxLineBytes is
+// bufio.ErrTooLong.
+func readTranscriptLine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if len(line)+len(chunk) > transcriptMaxLineBytes {
+			return nil, bufio.ErrTooLong
+		}
+		line = append(line, chunk...)
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return line, err
+		}
+	}
+}
+
+// consumeLine feeds one transcript line to the scanner. A blank line is skipped, and a line that is
+// not a JSON record counts as malformed.
+func (s *fileScanner) consumeLine(line []byte) {
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 {
+		return
+	}
+	var record transcriptRecord
+	if err := json.Unmarshal(line, &record); err != nil {
+		s.Summary.Malformed++
+		return
+	}
+	s.consume(record)
 }
 
 // --- session assembly -------------------------------------------------------------------
@@ -736,6 +817,8 @@ type sessionAcc struct {
 	unkeyed             statsTokens
 	// displacement counts observed follow-up classes of locate calls with results.
 	displacement map[string]int
+	// covered is every counted locate result that names a file, for the gross estimate.
+	covered []summaryCall
 }
 
 func newSessionAcc() *sessionAcc {
@@ -769,11 +852,13 @@ func (a *sessionAcc) merge(summary fileSummary) {
 				// Keep its original classification and count the result only once.
 				if !previous.HasResult && call.HasResult {
 					previous.HasResult, previous.Bytes, previous.Disp = true, call.Bytes, call.Disp
+					previous.Paths, previous.Root, previous.Top = call.Paths, call.Root, call.Top
 					a.seenCalls[call.ID] = previous
 					if previous.Verb != "" {
 						a.verbResults[previous.Verb]++
 						a.verbBytes[previous.Verb] += call.Bytes
 						a.countDisplacement(previous)
+						a.countCovered(previous)
 					} else {
 						a.kindResults[previous.Kind]++
 						a.kindBytes[previous.Kind] += call.Bytes
@@ -789,6 +874,7 @@ func (a *sessionAcc) merge(summary fileSummary) {
 				a.verbResults[call.Verb]++
 				a.verbBytes[call.Verb] += call.Bytes
 				a.countDisplacement(call)
+				a.countCovered(call)
 			}
 			if a.firstLocate == "" {
 				a.firstLocate = "graph"
@@ -826,6 +912,14 @@ func (a *sessionAcc) merge(summary fileSummary) {
 func (a *sessionAcc) countDisplacement(call summaryCall) {
 	if graphLocateVerbs[call.Verb] && call.HasResult && call.Disp != "" {
 		a.displacement[call.Disp]++
+	}
+}
+
+// countCovered keeps a locate result naming files for the gross estimate, which is priced at
+// report time from the files on disk.
+func (a *sessionAcc) countCovered(call summaryCall) {
+	if graphLocateVerbs[call.Verb] && call.HasResult && len(call.Paths) > 0 {
+		a.covered = append(a.covered, call)
 	}
 }
 
@@ -940,6 +1034,9 @@ type statsCollector struct {
 	transcripts int
 	fromCache   int
 	malformed   int
+	// resume, when not nil, parses a transcript of statsCacheMinTranscriptBytes or more from its
+	// checkpoint (the status line's); nil parses every file in full (`stats`).
+	resume *transcriptResume
 }
 
 func newStatsCollector() *statsCollector {
@@ -1003,7 +1100,13 @@ func (c *statsCollector) summarise(file transcriptFile) (fileSummary, bool) {
 	if path == "" {
 		path = file.path
 	}
-	summary, ok := summariseTranscript(path)
+	var summary fileSummary
+	var ok bool
+	if c.resume != nil && file.size >= statsCacheMinTranscriptBytes {
+		summary, ok = c.resume.summarise(path)
+	} else {
+		summary, ok = summariseTranscript(path)
+	}
 	if !ok {
 		return fileSummary{}, false
 	}
@@ -1204,6 +1307,334 @@ func graphVerbFromSegments(command string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// graphRepoFromCommand returns the --repo argument of the graph call in command, or "" when that
+// call passes none. It finds the call exactly where graphVerbFromCommandDepth does: top-level
+// segments first, then command substitution bodies.
+func graphRepoFromCommand(command string) string {
+	return graphRepoFromCommandDepth(command, 0)
+}
+
+func graphRepoFromCommandDepth(command string, depth int) string {
+	for _, segment := range splitShellSegments(command) {
+		if _, ok := graphVerbFromSegments(segment); !ok {
+			continue
+		}
+		return graphRepoFromWords(shellArgWords(segment))
+	}
+	if depth >= maxSubstitutionDepth {
+		return ""
+	}
+	for _, body := range shellSubstitutionBodies(command) {
+		if repo := graphRepoFromCommandDepth(body, depth+1); repo != "" {
+			return repo
+		}
+	}
+	return ""
+}
+
+// graphRepoFromWords reads --repo only among the arguments after `entire graph <verb>`,
+// `entire sem <verb>` or `entire-graph <verb>`, so a wrapper's own options never count.
+func graphRepoFromWords(words []string) string {
+	for index, word := range words {
+		verbAt := -1
+		switch base := filepath.Base(word); {
+		case base == "entire" && index+2 < len(words) && (words[index+1] == "graph" || words[index+1] == "sem"):
+			verbAt = index + 2
+		case base == "entire-graph" && index+1 < len(words):
+			verbAt = index + 1
+		}
+		if verbAt < 0 {
+			continue
+		}
+		args := words[verbAt+1:]
+		for at, arg := range args {
+			if arg == "--repo" && at+1 < len(args) {
+				return args[at+1]
+			}
+			if value, ok := strings.CutPrefix(arg, "--repo="); ok {
+				return value
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
+// shellArgWords splits one shell segment into words the way the shell does: whitespace inside
+// quotes or a substitution does not split (shellQuoteMask), and quoting is removed from each
+// word, so `--query 'how does --repo work'` is two words and `--repo="C:/My Repo"` is one.
+func shellArgWords(segment string) []string {
+	runes := []rune(segment)
+	literal := shellQuoteMask(runes)
+	var words []string
+	var current []rune
+	for index, character := range runes {
+		if !literal[index] && (character == ' ' || character == '\t') {
+			if len(current) > 0 {
+				words = append(words, shellUnquote(current))
+				current = current[:0]
+			}
+			continue
+		}
+		current = append(current, character)
+	}
+	if len(current) > 0 {
+		words = append(words, shellUnquote(current))
+	}
+	return words
+}
+
+// shellUnquote removes quoting from one word. Single quotes are literal. A backslash escapes the
+// next character outside quotes, and inside double quotes only before $, a backtick, ", \ or a
+// newline, as in POSIX sh (so "C:\Users" keeps its backslash).
+func shellUnquote(word []rune) string {
+	var out []rune
+	var quote rune
+	for index := 0; index < len(word); index++ {
+		character := word[index]
+		switch {
+		case quote == 0 && (character == '\'' || character == '"'):
+			quote = character
+		case quote != 0 && character == quote:
+			quote = 0
+		case character == '\\' && quote != '\'' && index+1 < len(word) &&
+			(quote == 0 || strings.ContainsRune("$`\"\\\n", word[index+1])):
+			index++
+			out = append(out, word[index])
+		default:
+			out = append(out, character)
+		}
+	}
+	return string(out)
+}
+
+// graphRoot is the directory a graph call resolved its named paths against.
+type graphRoot struct {
+	Dir string `json:"dir"`
+	// Top: the call passed no --repo, so the graph resolved the checkout containing Dir.
+	Top bool `json:"top"`
+	// Unknown: the command line does not say which directory the call ran in.
+	Unknown bool `json:"unknown"`
+}
+
+// graphCallRootFromCommand is graphCallRoot for the graph call in command, run from the directory
+// the top-level segments before it moved to with cd. It finds the call where graphRepoFromCommand
+// does. An absolute --repo is the root whatever any cd before the call did. Otherwise a cd moves
+// only as `cd DIR` (also `builtin cd DIR`, `command cd DIR`, or inside a `{ ...; }` group)
+// followed by `&&`, `;` or a newline, to a DIR the command spells out (cdTarget); any other cd
+// form, a `pushd`, or a segment starting with `(` before the call leaves the root unknown. A cd in
+// a pipeline element (`cd DIR | ...`, or a `{ ...; }` group piped to or from another command)
+// moves nothing outside that element, because bash runs each element in a subshell. A call found
+// only inside a command substitution of a command that runs a cd anywhere has an unknown root. A
+// command without cd resolves as graphCallRoot always has.
+func graphCallRootFromCommand(command, cwd string) graphRoot {
+	segments := splitShellSeparated(command)
+	elements := shellPipelineElements(segments)
+	for at, segment := range segments {
+		if _, ok := graphVerbFromSegments(segment.text); !ok {
+			continue
+		}
+		repo := graphRepoFromWords(shellArgWords(segment.text))
+		if filepath.IsAbs(repo) {
+			return graphCallRoot(repo, cwd)
+		}
+		dir := cwd
+		for index, before := range segments[:at] {
+			if elements[index] != 0 && elements[index] != elements[at] {
+				continue // another pipeline element's subshell: it moves nothing here
+			}
+			moved, ok := shellSegmentDir(before, dir)
+			if !ok {
+				return graphRoot{Unknown: true}
+			}
+			dir = moved
+		}
+		return graphCallRoot(repo, dir)
+	}
+	repo := graphRepoFromCommand(command)
+	if filepath.IsAbs(repo) {
+		return graphCallRoot(repo, cwd)
+	}
+	if commandRunsCd(command, 0) {
+		return graphRoot{Unknown: true}
+	}
+	return graphCallRoot(repo, cwd)
+}
+
+// shellPipelineElements numbers, for each segment, the pipeline element it runs in when that
+// element is one of two or more joined by `|`; 0 is a segment in no such pipeline. A `{ ...; }`
+// group piped to or from another command is one element. Bash runs each such element in a
+// subshell, so a cd in one moves only the segments after it in the same element.
+func shellPipelineElements(segments []shellSegment) []int {
+	elements := make([]int, len(segments))
+	next := 0
+	var groups []int // the index of each open `{` segment
+	for index, segment := range segments {
+		if (index > 0 && shellPipe(segments[index-1].separator)) || shellPipe(segment.separator) {
+			next++
+			elements[index] = next
+		}
+		words := shellArgWords(segment.text)
+		if len(words) > 0 && words[0] == "{" {
+			groups = append(groups, index)
+		}
+		if len(words) > 0 && words[0] == "}" && len(groups) > 0 {
+			open := groups[len(groups)-1]
+			groups = groups[:len(groups)-1]
+			if (open > 0 && shellPipe(segments[open-1].separator)) || shellPipe(segment.separator) {
+				next++
+				for inner := open; inner <= index; inner++ {
+					elements[inner] = next
+				}
+			}
+		}
+	}
+	return elements
+}
+
+// shellPipe reports whether separator joins two pipeline elements: `|` or `|&`, possibly followed
+// by newlines.
+func shellPipe(separator string) bool {
+	rest := strings.ReplaceAll(separator, "\n", "")
+	return rest == "|" || rest == "|&"
+}
+
+// shellSegment is one splitShellSegments segment and the separator run that follows it, "" for
+// the last.
+type shellSegment struct {
+	text, separator string
+}
+
+// splitShellSeparated is splitShellSegments keeping the separators: the same segments, each with
+// the run of `|`, `;`, `&` and newline characters after it.
+func splitShellSeparated(command string) []shellSegment {
+	runes := []rune(stripHeredocBodies(command))
+	literal := shellQuoteMask(runes)
+	var segments []shellSegment
+	var current []rune
+	for index, character := range runes {
+		if !literal[index] && strings.ContainsRune("|;&\n", character) {
+			if len(current) > 0 {
+				segments = append(segments, shellSegment{text: string(current)})
+				current = current[:0]
+			}
+			if len(segments) > 0 {
+				segments[len(segments)-1].separator += string(character)
+			}
+			continue
+		}
+		current = append(current, character)
+	}
+	if len(current) > 0 {
+		segments = append(segments, shellSegment{text: string(current)})
+	}
+	return segments
+}
+
+// shellSegmentDir is the working directory after segment runs in dir, or false when it cannot be
+// told: the segment starts a subshell with `(`, runs pushd, or is a cd other than `cd DIR`
+// followed by `&&`, `;` or a newline to a DIR cdTarget resolves. Any other segment leaves dir.
+func shellSegmentDir(segment shellSegment, dir string) (string, bool) {
+	if strings.HasPrefix(strings.TrimLeft(segment.text, " \t"), "(") {
+		return "", false
+	}
+	name, operands, ok := shellDirectoryCommand(shellArgWords(segment.text))
+	if !ok {
+		return dir, true
+	}
+	if name == "pushd" || len(operands) != 1 || !cdCarries(segment.separator) {
+		return "", false
+	}
+	return cdTarget(operands[0], dir)
+}
+
+// shellDirectoryCommand is the directory-changing command a segment's words run, with its
+// operands: cd, also as `builtin cd` or `command cd`, or pushd. A leading `{` word (a brace group,
+// which runs in the current shell, so its cd carries) is skipped. ok is false for any other
+// command.
+func shellDirectoryCommand(words []string) (name string, operands []string, ok bool) {
+	if len(words) > 0 && words[0] == "{" {
+		words = words[1:]
+	}
+	if len(words) > 0 && (words[0] == "builtin" || words[0] == "command") {
+		words = words[1:]
+	}
+	if len(words) == 0 || (words[0] != "cd" && words[0] != "pushd") {
+		return "", nil, false
+	}
+	return words[0], words[1:], true
+}
+
+// cdCarries reports whether a cd followed by separator moves the next segment: `&&`, `;` or
+// newlines, possibly with newlines around them. After `|`, `||` or `&` the next segment may run
+// without the cd, or in another shell.
+func cdCarries(separator string) bool {
+	rest := strings.ReplaceAll(separator, "\n", "")
+	return separator != "" && (rest == "" || rest == "&&" || rest == ";")
+}
+
+// cdTarget is the directory `cd target` moves to from dir, or false when the command line does not
+// spell it out: a $ or backtick expands, ~ is the home, - the previous directory, and a flag or an
+// empty operand is not a plain DIR. On Windows the Git Bash form /x/rest is X:\rest, and any other
+// path rooted without a drive letter, or a drive-relative C:rest, has no directory to resolve.
+func cdTarget(target, dir string) (string, bool) {
+	if target == "" || strings.ContainsAny(target, "$`") || strings.HasPrefix(target, "~") || strings.HasPrefix(target, "-") {
+		return "", false
+	}
+	if runtime.GOOS == "windows" {
+		if len(target) >= 2 && target[0] == '/' && isASCIILetter(target[1]) && (len(target) == 2 || target[2] == '/') {
+			return filepath.Clean(strings.ToUpper(target[1:2]) + `:\` + filepath.FromSlash(target[min(3, len(target)):])), true
+		}
+		if strings.HasPrefix(target, "/") || strings.HasPrefix(target, `\`) ||
+			(filepath.VolumeName(target) != "" && !filepath.IsAbs(target)) {
+			return "", false
+		}
+	}
+	if filepath.IsAbs(target) {
+		return filepath.Clean(target), true
+	}
+	return filepath.Join(dir, target), true
+}
+
+func isASCIILetter(character byte) bool {
+	return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z')
+}
+
+// commandRunsCd reports whether any segment of command, or of a command substitution in it, runs
+// cd (also as `builtin cd` or `command cd`), including inside a `(` or `{` group.
+func commandRunsCd(command string, depth int) bool {
+	for _, segment := range splitShellSegments(command) {
+		if name, _, ok := shellDirectoryCommand(shellArgWords(strings.TrimLeft(segment, " \t({"))); ok && name == "cd" {
+			return true
+		}
+	}
+	if depth >= maxSubstitutionDepth {
+		return false
+	}
+	for _, body := range shellSubstitutionBodies(command) {
+		if commandRunsCd(body, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
+// graphCallRoot mirrors resolveRepo. An explicit --repo is used as given (the graph prints paths
+// relative to it, even for a subdirectory), made absolute against the record's cwd; a relative
+// --repo with no cwd stays relative and is resolved against the report's --repo. With no --repo
+// the graph resolves the git toplevel of its cwd, so the root is that cwd (else the report's
+// --repo, dir "") with top set.
+func graphCallRoot(repo, cwd string) graphRoot {
+	switch {
+	case repo == "":
+		return graphRoot{Dir: cwd, Top: true}
+	case filepath.IsAbs(repo) || cwd == "":
+		return graphRoot{Dir: repo}
+	default:
+		return graphRoot{Dir: filepath.Join(cwd, repo)}
+	}
 }
 
 // graphWrapperValueFlags are wrapper options whose value is the NEXT word (`nice -n 15`,
@@ -1920,6 +2351,8 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 
 	var windowStart, windowEnd int64
 	var exploreResults int
+	sizer := newCoveredFileSizer(report.RepoRoot)
+	defer sizer.close()
 	for _, key := range keys {
 		acc := c.sessions[key]
 		if cutoffNano != 0 && acc.lastNano != 0 && acc.lastNano < cutoffNano {
@@ -1986,6 +2419,9 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 			report.EstimatedSavingsBytes += saved
 			report.SessionsWithPositiveSavings++
 		}
+		for _, call := range acc.covered {
+			report.GrossCoveredBytes += max(0, sizer.size(call)-call.Bytes)
+		}
 	}
 
 	report.SessionTokens.Total = report.SessionTokens.Input + report.SessionTokens.CacheWrite +
@@ -2004,6 +2440,7 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 	report.EstimatedSavingsTokens = report.EstimatedSavingsBytes / bytesPerToken
 	report.EstimatedSavingsTokensUnfloored = report.EstimatedSavingsBytesUnfloored / bytesPerToken
 	report.ObservedNetTokens = report.ObservedNetBytes / bytesPerToken
+	report.GrossCoveredEstTokens = report.GrossCoveredBytes / bytesPerToken
 	report.GraphLocateReadAnyway = report.GraphLocateReadOverlapping + report.GraphLocateReadDifferentRegion +
 		report.GraphLocateReadUnknownSpan + report.GraphLocateReadShared
 	if classified := followUpClassified(*report); classified > 0 {
@@ -2034,6 +2471,107 @@ func (c *statsCollector) finish(report *statsResponse, cutoff time.Time) {
 	}
 	if windowEnd != 0 {
 		report.WindowEnd = time.Unix(0, windowEnd).UTC().Format(time.RFC3339)
+	}
+}
+
+// coveredFileSizer prices the gross estimate from the files on disk at report time. Each root is
+// resolved and opened once, and each distinct (root, path) is statted once. Reads go through
+// os.Root, so an absolute, `..`-escaping, symlink-escaping or UNC path NAMED BY A RESULT is
+// refused rather than followed. A refused, missing or non-regular path is size 0. Checkout roots
+// are found by a filesystem walk (discoverImplicitCheckoutRoot); stats never runs git.
+type coveredFileSizer struct {
+	reportRepo string
+	tops       map[string]string   // a call's cwd -> the checkout root containing it
+	roots      map[string]*os.Root // nil when the root cannot be opened
+	sizes      map[string]map[string]int64
+}
+
+func newCoveredFileSizer(reportRepo string) *coveredFileSizer {
+	return &coveredFileSizer{
+		reportRepo: reportRepo,
+		tops:       map[string]string{},
+		roots:      map[string]*os.Root{},
+		sizes:      map[string]map[string]int64{},
+	}
+}
+
+// remoteVolume reports a root spelled on a UNC or device volume: anything but a drive letter on
+// Windows, never elsewhere. The check is lexical on the spelling only. It does not see a
+// junction, symlink or mapped drive that redirects a local-looking path to the network.
+func remoteVolume(root string) bool {
+	return len(filepath.VolumeName(root)) > 2
+}
+
+// resolve is the absolute root a call's named paths are relative to, or "" when it has none.
+func (z *coveredFileSizer) resolve(call summaryCall) string {
+	root := call.Root
+	switch {
+	case root == "":
+		root = z.reportRepo
+	case !filepath.IsAbs(root) && z.reportRepo != "":
+		root = filepath.Join(z.reportRepo, root)
+	}
+	if root == "" || !call.Top || remoteVolume(root) {
+		return root
+	}
+	top, ok := z.tops[root]
+	if !ok {
+		top = root
+		if found, discovered := discoverImplicitCheckoutRoot(root); discovered {
+			top = found
+		}
+		z.tops[root] = top
+	}
+	return top
+}
+
+// size sums the on-disk bytes of the distinct paths a call names under its resolved root.
+func (z *coveredFileSizer) size(call summaryCall) int64 {
+	root := z.resolve(call)
+	if root == "" {
+		return 0
+	}
+	opened, ok := z.roots[root]
+	if !ok {
+		var err error
+		// A UNC or device root is never opened: opening `\\host\share` is itself network I/O,
+		// before os.Root can refuse anything.
+		if remoteVolume(root) {
+			opened = nil
+		} else if opened, err = os.OpenRoot(root); err != nil {
+			opened = nil
+		}
+		z.roots[root] = opened
+		z.sizes[root] = map[string]int64{}
+	}
+	if opened == nil {
+		return 0
+	}
+	known := z.sizes[root]
+	seen := map[string]bool{}
+	var total int64
+	for _, path := range call.Paths {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		size, ok := known[path]
+		if !ok {
+			if info, err := opened.Stat(filepath.FromSlash(path)); err == nil && info.Mode().IsRegular() {
+				size = info.Size()
+			}
+			known[path] = size
+		}
+		total += size
+	}
+	return total
+}
+
+func (z *coveredFileSizer) close() {
+	for _, root := range z.roots {
+		if root != nil {
+			_ = root.Close()
+		}
 	}
 }
 

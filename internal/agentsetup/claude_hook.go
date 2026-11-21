@@ -58,6 +58,14 @@ const ClaudeLocalSettings = ".claude/settings.local.json"
 // maxClaudeSettingsBytes bounds the settings read. A settings file is a few KiB.
 const maxClaudeSettingsBytes = 1 << 20
 
+// claudeHookSettingsHint ends the hook step's refusals of settings.local.json, and
+// claudeStatusLineSettingsHint the status line step's. Each names only the opt-out that gets past
+// its own step: setup reads that file for the status line only when the line is chosen.
+const (
+	claudeHookSettingsHint       = "(fix it, or pass --no-claude-hook)"
+	claudeStatusLineSettingsHint = "(fix it, or pass --no-statusline)"
+)
+
 // SubagentDirective is the additionalContext the hook injects. It is SHIPPED text and carries the
 // same obligation and the same command lines as graphObligation (graphCommands, unindented),
 // compressed: Explore and Plan receive it as their only instruction about the graph, so it must
@@ -94,14 +102,9 @@ func subagentHookGroup() map[string]any {
 // SubagentStart are not the documented shapes, belong to the user, and rewriting them would lose
 // whatever they meant.
 func mergeSubagentHook(existing []byte) ([]byte, bool, error) {
-	settings := map[string]json.RawMessage{}
-	if trimmed := bytes.TrimSpace(existing); len(trimmed) > 0 {
-		if trimmed[0] != '{' {
-			return nil, false, fmt.Errorf("%s is not a JSON object", ClaudeLocalSettings)
-		}
-		if err := json.Unmarshal(trimmed, &settings); err != nil {
-			return nil, false, fmt.Errorf("%s is not valid JSON: %w", ClaudeLocalSettings, err)
-		}
+	settings, err := parseSettingsObject(ClaudeLocalSettings, existing)
+	if err != nil {
+		return nil, false, err
 	}
 	hooks := map[string]json.RawMessage{}
 	if raw, ok := settings["hooks"]; ok {
@@ -148,6 +151,21 @@ func mergeSubagentHook(existing []byte) ([]byte, bool, error) {
 	return append(rendered, '\n'), true, nil
 }
 
+// parseSettingsObject decodes a Claude Code settings document, naming it in errors. Empty content
+// is an empty object; anything that is not a JSON object is refused, never repaired.
+func parseSettingsObject(name string, content []byte) (map[string]json.RawMessage, error) {
+	settings := map[string]json.RawMessage{}
+	if trimmed := bytes.TrimSpace(content); len(trimmed) > 0 {
+		if trimmed[0] != '{' {
+			return nil, fmt.Errorf("%s is not a JSON object", name)
+		}
+		if err := json.Unmarshal(trimmed, &settings); err != nil {
+			return nil, fmt.Errorf("%s is not valid JSON: %w", name, err)
+		}
+	}
+	return settings, nil
+}
+
 // marshalSettingsValue is json.MarshalIndent without HTML escaping: the hook command holds `>` and
 // `|`, and "2>/dev/null" is valid JSON that nobody can read.
 func marshalSettingsValue(value any) ([]byte, error) {
@@ -177,6 +195,14 @@ type claudeSettingsState struct {
 // a JSON rewrite at any object-shaped file in the tree (package.json, a CI config). Refusing is
 // free for every real installation.
 func readClaudeSettings(repo *os.Root) (claudeSettingsState, error) {
+	return readRepoClaudeSettings(repo, ClaudeLocalSettings)
+}
+
+// readRepoClaudeSettings reads one settings file under .claude (name is slash-separated and
+// repository-relative) with the refusals described on readClaudeSettings. The status line's
+// inspection of the shared .claude/settings.json uses it too, so a committed symlink there is
+// never followed.
+func readRepoClaudeSettings(repo *os.Root, name string) (claudeSettingsState, error) {
 	var state claudeSettingsState
 	dir, err := repo.Lstat(".claude")
 	if errors.Is(err, fs.ErrNotExist) {
@@ -189,7 +215,7 @@ func readClaudeSettings(repo *os.Root) (claudeSettingsState, error) {
 		return state, fmt.Errorf(".claude is not a directory (symlinks are not followed)")
 	}
 	state.dir = dir
-	file, err := repo.Lstat(ClaudeLocalSettings)
+	file, err := repo.Lstat(name)
 	if errors.Is(err, fs.ErrNotExist) {
 		return state, nil
 	}
@@ -197,9 +223,9 @@ func readClaudeSettings(repo *os.Root) (claudeSettingsState, error) {
 		return state, err
 	}
 	if !file.Mode().IsRegular() {
-		return state, fmt.Errorf("%s is not a regular file (symlinks are not followed)", ClaudeLocalSettings)
+		return state, fmt.Errorf("%s is not a regular file (symlinks are not followed)", name)
 	}
-	handle, err := repo.Open(ClaudeLocalSettings)
+	handle, err := repo.Open(name)
 	if err != nil {
 		return state, err
 	}
@@ -209,17 +235,17 @@ func readClaudeSettings(repo *os.Root) (claudeSettingsState, error) {
 		return state, err
 	}
 	if !os.SameFile(file, opened) {
-		return state, fmt.Errorf("%s changed while it was being read", ClaudeLocalSettings)
+		return state, fmt.Errorf("%s changed while it was being read", name)
 	}
 	if links, _, _, ok := openFileIdentity(handle); ok && links > 1 {
-		return state, fmt.Errorf("%w: %s has %d names", errSharedInodeManagedTarget, ClaudeLocalSettings, links)
+		return state, fmt.Errorf("%w: %s has %d names", errSharedInodeManagedTarget, name, links)
 	}
 	content, err := io.ReadAll(io.LimitReader(handle, maxClaudeSettingsBytes+1))
 	if err != nil {
 		return state, err
 	}
 	if len(content) > maxClaudeSettingsBytes {
-		return state, fmt.Errorf("%s: %w", ClaudeLocalSettings, errContainedFileTooLarge)
+		return state, fmt.Errorf("%s: %w", name, errContainedFileTooLarge)
 	}
 	state.file = file
 	state.content = content
@@ -247,7 +273,7 @@ func CheckClaudeSubagentHook(root string) error {
 	defer repo.Close()
 	_, _, _, err = planClaudeSubagentHook(repo)
 	if err != nil {
-		return fmt.Errorf("setup: %w (fix it, or pass --no-claude-hook)", err)
+		return fmt.Errorf("setup: %w %s", err, claudeHookSettingsHint)
 	}
 	return nil
 }
@@ -266,7 +292,7 @@ func InstallClaudeSubagentHookChanged(root string) (path string, created, change
 	defer repo.Close()
 	state, rendered, changed, err := planClaudeSubagentHook(repo)
 	if err != nil {
-		return "", false, false, fmt.Errorf("setup: %w (fix it, or pass --no-claude-hook)", err)
+		return "", false, false, fmt.Errorf("setup: %w %s", err, claudeHookSettingsHint)
 	}
 	path = filepath.Join(root, filepath.FromSlash(ClaudeLocalSettings))
 	if !changed {

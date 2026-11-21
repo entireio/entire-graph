@@ -14,6 +14,47 @@ auto-generated notes on
 
 ### Added
 
+- `snapshot`, `symbols` and `edges` take `--output <path>`, which writes the
+  record stream to a file instead of stdout. The bytes are the ones stdout
+  would have received. Saving a compact snapshot used to require a shell
+  redirect, and the shell chooses the encoding: Windows PowerShell 5.1's `>`
+  is `Out-File`, whose default is UTF-16LE, so the documented
+  save-then-`snapshot-query` flow produced a file the loader could not read.
+  A refused invocation never opens, and so never truncates, the destination,
+  and the path is judged by the same rule `index --report` uses: inside a
+  scanned checkout it was chosen by the repository, so a committed symlink
+  there is refused instead of followed; outside one it is yours and is written
+  as before.
+
+- `setup` can install the Claude Code status line, opt-in: a `statusLine`
+  running `entire graph statusline` in the per-user
+  `.claude/settings.local.json`, merged into existing settings and added once.
+  At a terminal setup asks (default no); otherwise it installs only with
+  `--statusline`. It does not ask when ours is installed or another status
+  line is set. The line shows this session's estimated graph tokens, never
+  prices; when HEAD is indexed, the graph's size as `N nodes | M edges`, the
+  counts `entire graph index` reported, in full; and, when HEAD has no index,
+  how many commits behind (at most 5) the nearest indexed first-parent
+  ancestor is, else `not indexed`. The line shows no index state when there
+  is no commit yet, when git cannot be run on the checkout (metadata
+  validation or the HEAD read fails), or when the index state cannot be read.
+  Each complete committed-tree cache entry gains a small `<key>.counts.json`
+  beside it, which the status line reads; entries built earlier gain theirs
+  the next time `index` runs. Outside a checkout it prints nothing. A
+  project-local status line overrides the shared
+  and user ones, so when `.claude/settings.local.json`,
+  `.claude/settings.json` or the user settings (`$CLAUDE_CONFIG_DIR/settings.json`
+  when that is set, else `~/.claude/settings.json`) already defines another,
+  setup keeps it, writes nothing and says so. `--statusline` installs ours
+  anyway, overriding a shared or user line in that repository; one already in
+  `settings.local.json` is never replaced, except a legacy line running
+  `scripts/entire-graph-statusline.sh`: setup names it and the command to switch
+  to, and `--statusline` replaces it. `--no-statusline` skips the step
+  without reading any settings, and `--no-claude-hook` does not skip it. A
+  malformed `settings.local.json` stops setup only at a step that rewrites it,
+  and the error names that step's opt-out. A settings file that cannot be read
+  (malformed, or a symlink or other non-regular file in the repository) skips
+  only the status line, and says so; `--statusline` installs it anyway.
 - `graph context --allow-ancestor N` (opt-in, N at most 5) answers an exact store
   miss after a new commit from the newest of the N nearest first-parent ancestors
   that has a store under the same provider version and ignore policy, when the
@@ -43,6 +84,15 @@ auto-generated notes on
   (`&raw const`, `&raw mut`), `gen` blocks, async closures and shebang lines no
   longer report a parse error. The parser identity revision is bumped to
   rebuild cached snapshots.
+- `stats` without `--sessions-dir` or `--transcript` reads transcripts from
+  `$CLAUDE_CONFIG_DIR/projects/` when `CLAUDE_CONFIG_DIR` is set, as Claude Code
+  writes them, instead of `~/.claude/projects/`.
+- The Claude Code plugin no longer declares a status line; installing it does
+  not turn one on. `scripts/entire-graph-statusline.sh` remains as a shim that
+  runs `entire graph statusline` with its arguments, so settings that name it
+  keep working. It runs `entire graph statusline` when `entire` is on PATH, else
+  `$ENTIRE_GRAPH_BIN statusline`, else an `entire-graph` on PATH; the
+  `ENTIRE_GRAPH_STATUSLINE_*` variables no longer apply.
 - `neighbors` (with `--direction in` or `both`) and `impact` on a Go function or
   method now disclose that references to it as a value are not modelled: being
   assigned to a variable, passed as an argument, or stored in a struct field or
@@ -51,6 +101,11 @@ auto-generated notes on
   agent and text output print one line beside the callers with a `grep` the
   reader can run to find those references. A degenerate `impact` ("no callers")
   keeps its marker line and prints the disclosure after it.
+- `stats` JSON gains `gross_covered_bytes` and `gross_covered_est_tokens`: the
+  size of the distinct existing files each graph locate result names, less the
+  result's own bytes, summed over results (tokens are bytes / 4). It assumes
+  nothing about what the agent would have read. The status line shows the
+  token figure.
 - `query --format agent` labels coverage `degraded` (compact `!D`) only when a
   partial failure can remove a code fact: one not confined to a single file
   (repo-ignore shortfalls, a spent analysis budget), or one in a source file.
@@ -65,8 +120,56 @@ auto-generated notes on
   Kubernetes YAML, CUE) also gives `notice`.
 - A `query` that matches nothing when no graph is built or cached now reports
   an explicit `completeness.health.status: ok` instead of omitting `health`.
+- The agent guide that `setup` writes when Brain is enabled now says what a
+  `remember --path` segment may contain: lowercase letters, digits and
+  underscores, no hyphens. It is the rule Brain's own guide states
+  (entireio/entire-brain#605).
+- The Brain-enabled agent guide no longer says the write is available over MCP
+  as the `brain_remember` tool. Brain removed its MCP surface in 0.4.0, and its
+  own guide dropped the sentence then. With this and the `--path` rule above,
+  Graph renders the same guide text as a Brain that includes
+  entireio/entire-brain#605, so a repository's `.entire/agent-guide.md` no
+  longer depends on which product ran `setup` last.
+- The Brain-enabled agent guide now states the COR-2308 memories-first rule
+  already on Brain main: memories are the default retrieval surface, the brief's
+  precedent section lists each surfaced memory's source-session anchors, and
+  transcript history is searched only as an explicit escalation
+  (`entire brain query --source history`). With this, Graph renders the same
+  guide text as current Brain (including the remember `--path` rule), so a
+  repository's `.entire/agent-guide.md` no longer depends on which product ran
+  `setup` last.
 
 ### Fixed
+
+- An ignore file whose first bytes are a UTF-8 byte-order mark no longer loses
+  its first rule. Git drops exactly one mark at byte zero of an exclude file;
+  this did not, so the first pattern of such a `.graphignore`, `.gitignore`,
+  `--ignore-file` or `--include-file` was the mark plus the pattern, matched
+  nothing, and the path it was written to exclude was indexed with nothing
+  reporting it. Windows PowerShell 5.1 writes that mark for `Out-File` and
+  `Set-Content -Encoding utf8`. A second mark, or one on a later line, is
+  still pattern text.
+
+- `snapshot-query` now names the encoding when its input is a UTF-16 or UTF-32
+  file, and says how to produce a readable one, instead of reporting
+  `invalid character '\xff' looking for beginning of value`. It also accepts
+  one leading UTF-8 byte-order mark, which Windows PowerShell 5.1 writes for
+  `Out-File`/`Set-Content -Encoding utf8`; a mark anywhere else is still
+  malformed input.
+
+- `query`'s `VERIFY:` block no longer names an ancestor Gradle build for a file in
+  a Gradle project directory that build does not own. With `include ':app'` in the
+  root settings script and an undeclared `lib/build.gradle`, an edit in `lib/` used
+  to be answered with `./gradlew :test --tests …` or `./gradlew test` at the root,
+  which runs without compiling `lib/`; it now reports that no command is derivable,
+  while a Maven or Node build above the directory is still consulted. A settings
+  script that renames the project (`project(':lib').name = 'core'`, `setName`), or
+  renames or relocates one of its parent projects, declines the same way instead of
+  emitting a project path Gradle does not have. A settings script between the
+  wrapper and the project is now recognised as its build root and addressed as
+  `./gradlew -p modules :core:test`. Repositories whose settings script computes its
+  includes get no Gradle command for files in subproject directories, where the
+  root suite was offered before.
 
 - Valid Go that the bundled tree-sitter grammar cannot fully parse (Go 1.26's
   `new(expr)`, for example `new(0)`) is no longer reported as an `E_PARSE_ERROR`
@@ -139,6 +242,17 @@ auto-generated notes on
   replayed. The search cache version moves to v28 for the same reason: `graph
   store` and `graph context` serve the persisted entry and its sqlite store without
   building, so an earlier build's warning-less entry is retired rather than served.
+- On Windows, Git no longer opens a console window that flashes and steals
+  focus when entire-graph runs without a console, as a Claude Code status line
+  render does.
+
+- A clone made with `core.autocrlf=true`, the Git for Windows default, can now
+  pass the checks `CONTRIBUTING.md` asks for. `.gitattributes` pins Go source
+  and every script with a `#!` line to LF at checkout. Without it each Go file
+  arrived with CRLF and `gofmt -s -l .` listed all 872 of them, and the POSIX
+  shell suite (`sh scripts/entire-graph-statusline_test.sh`) died at its second
+  line with exit 2. The pin changes checkout only, never committed content, and
+  no CI runner could see the problem because all of them check out LF.
 
 ## [0.5.0] - 2026-10-23
 

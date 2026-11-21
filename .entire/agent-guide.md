@@ -43,6 +43,13 @@ recall ranks decisions, rejected approaches, invariants and gotchas first. query
 mixes memories with history and documentation and can rank documentation above the
 recorded decision.
 
+The brief's precedent section lists each surfaced memory's source sessions.
+Follow those anchors when you need the detail behind a memory; the brief does
+not search transcript history. Search transcripts only as an explicit
+escalation when memories and their anchors miss:
+
+    entire brain query --source history "<question>" --json
+
 Reuse useful code locations from the brief. Use Brain retrieval for previous
 decisions, attempts, documentation, and durable memories - Brain's episodic record
 of what was decided, what went wrong before, and what must stay true. Record one
@@ -51,9 +58,10 @@ when you learn something durable that the code does not already state:
     entire brain remember "<memory>" --path <category.subcategory.type> --json
 
 Categories are architecture, constraints, preferences, project and workflow.
+Each path segment uses only lowercase letters, digits and underscores: write
+project.ci_cache.layout, not project.ci-cache.layout.
 Omitting --path classifies the memory for you, which requires a supported coding
-agent on PATH. Over MCP the same write is the brain_remember tool, which
-requires path. Retrieve with recall, and re-check anchors with verify.
+agent on PATH. Retrieve with recall, and re-check anchors with verify.
 
 Use Brain entities history to connect code changes to earlier checkpoints and
 sessions. Use Brain memory-informed review and workspace

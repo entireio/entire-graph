@@ -204,10 +204,9 @@ The comparison is `unavailable` unless a session has both result types; an
 available zero can also be cancellation between positive and negative sessions.
 `--verbose` includes observed usage, transcript-reported tokens, comparison
 population and assumptions, plus the legacy unvalidated 1:1 context model.
-`--format json` remains additive and independent of `--verbose`. The status line
-continues to use `estimated_savings_est_tokens_unfloored` and
-`sessions_with_savings_comparison`; the default stats headline uses the observed
-follow-up and `modeled_balance_*` fields. Legacy positive-only savings, percentage
+`--format json` remains additive and independent of `--verbose`. The default stats
+headline and the status line use the observed follow-up and `modeled_balance_*`
+fields. Legacy positive-only savings, percentage
 and graph-first fields are retained for compatibility, not endorsed as evidence.
 
 `--since` prunes transcripts by file mtime before parsing them, and unchanged
@@ -215,11 +214,24 @@ transcripts are memoised under the cache directory keyed on file identity plus
 the binary's own identity, so repeat runs do not re-parse gigabytes of session
 log. `--no-cache` forces a full re-parse; `--cache-dir` relocates the memo.
 
-`scripts/entire-graph-statusline.sh` renders the single-session variant as a
-Claude Code status line: `1:1 model +N tok`, `-N tok`, `0 tok`, or `unavailable`.
-It does not fall back to positive-only estimates from older binaries. Detail
-mode adds observed counts and estimated exploration tokens, not a savings
-percentage or an inferred graph-first behavior claim.
+`entire graph statusline` renders the single-session variant as a Claude Code
+status line: gross covered tokens (`gross_covered_est_tokens`) once the session
+has made a graph lookup, and the signed modeled balance
+(`modeled_balance_est_tokens`) when stats has a comparison, in estimated tokens
+only. When HEAD is indexed it shows the graph's size as `N nodes | M edges`,
+the `counts.symbols` and `counts.relations` that `entire graph index` last
+reported for HEAD's entry (full before fast), read from the `<key>.counts.json`
+file beside it; nodes are symbol nodes only, not file or external-endpoint
+nodes. When HEAD has no index it says how many commits behind the nearest indexed
+first-parent ancestor is (at most 5), else `not indexed`, and shows no size. The line shows no
+index state when there is no commit yet, when git cannot be run on the checkout (metadata
+validation or the HEAD read fails), or when the index state cannot be read. It is opt-in:
+`entire graph setup` asks at a terminal, or installs it with `--statusline`, in
+`.claude/settings.local.json`; see [agent activation](agents.md).
+`scripts/entire-graph-statusline.sh` remains only as a shim that runs the
+subcommand, for settings that still name it. It prefers `entire graph statusline`,
+which reads the cache `entire graph index` writes; `ENTIRE_GRAPH_BIN` or an
+`entire-graph` on PATH runs only when `entire` is not on PATH.
 
 ## Release archives
 

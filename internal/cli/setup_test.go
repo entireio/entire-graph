@@ -20,11 +20,12 @@ func TestSetupStrictModePersistsAcrossBareReruns(t *testing.T) {
 	t.Parallel()
 	repo := gitRepoForTest(t, false)
 	guidePath := filepath.Join(repo, agentsetup.Path)
+	home := tempHome(t)
 	setup := func(extra ...string) string {
 		t.Helper()
 		var out bytes.Buffer
 		args := append([]string{"setup", "--repo", repo, "--no-claude-hook"}, extra...)
-		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, args); err != nil {
+		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out, homeDir: home}, args); err != nil {
 			t.Fatalf("%v\n%s", err, out.String())
 		}
 		guide, err := os.ReadFile(guidePath)
@@ -108,7 +109,7 @@ func TestNestedRepoWarningUsesTheQuotedForm(t *testing.T) {
 	// environment instead, and the warning must print before anything else
 	// refuses or writes.
 	var out bytes.Buffer
-	_ = Run(context.Background(), Options{Stdout: &out, Stderr: &out, Env: EntireEnv{RepoRoot: inner}}, []string{"setup"})
+	_ = Run(context.Background(), Options{Stdout: &out, Stderr: &out, Env: EntireEnv{RepoRoot: inner}, homeDir: tempHome(t)}, []string{"setup"})
 
 	got := out.String()
 	if !strings.Contains(got, "git repository inside") {
@@ -124,7 +125,7 @@ func TestNestedRepoWarningUsesTheQuotedForm(t *testing.T) {
 	// An explicit --repo is consent to the nested target: the warning stays
 	// quiet.
 	var quiet bytes.Buffer
-	_ = Run(context.Background(), Options{Stdout: &quiet, Stderr: &quiet}, []string{"setup", "--repo", inner})
+	_ = Run(context.Background(), Options{Stdout: &quiet, Stderr: &quiet, homeDir: tempHome(t)}, []string{"setup", "--repo", inner})
 	if strings.Contains(quiet.String(), "git repository inside") {
 		t.Errorf("an explicit --repo must silence the nested-repo warning:\n%s", quiet.String())
 	}
@@ -151,7 +152,7 @@ func TestNestedRepoWarningSkipsAGitTrackedHome(t *testing.T) {
 	t.Setenv(homeEnv, home)
 
 	var out bytes.Buffer
-	_ = Run(context.Background(), Options{Stdout: &out, Stderr: &out, Env: EntireEnv{RepoRoot: project}}, []string{"setup"})
+	_ = Run(context.Background(), Options{Stdout: &out, Stderr: &out, Env: EntireEnv{RepoRoot: project}, homeDir: func() string { return home }}, []string{"setup"})
 	if strings.Contains(out.String(), "git repository inside") {
 		t.Errorf("a git-tracked home must not trigger the nested-repo warning:\n%s", out.String())
 	}
@@ -165,7 +166,7 @@ func TestNestedRepoWarningSkipsAGitTrackedHome(t *testing.T) {
 		}
 	}
 	var warned bytes.Buffer
-	_ = Run(context.Background(), Options{Stdout: &warned, Stderr: &warned, Env: EntireEnv{RepoRoot: inner}}, []string{"setup"})
+	_ = Run(context.Background(), Options{Stdout: &warned, Stderr: &warned, Env: EntireEnv{RepoRoot: inner}, homeDir: func() string { return home }}, []string{"setup"})
 	if !strings.Contains(warned.String(), "git repository inside") {
 		t.Errorf("an outer repository below home must still warn:\n%s", warned.String())
 	}

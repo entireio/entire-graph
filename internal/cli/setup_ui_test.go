@@ -58,16 +58,17 @@ func TestSetupGlyphsFallBackToASCII(t *testing.T) {
 func TestSetupPrintsOneRowPerPhase(t *testing.T) {
 	t.Parallel()
 	repo := gitRepoForTest(t, false)
+	home := tempHome(t)
 	run := func(extra ...string) string {
 		var out bytes.Buffer
-		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, append([]string{"setup", "--repo", repo}, extra...)); err != nil {
+		if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out, homeDir: home}, append([]string{"setup", "--repo", repo}, extra...)); err != nil {
 			t.Fatalf("%v\n%s", err, out.String())
 		}
 		return out.String()
 	}
 
 	first := run()
-	for _, want := range []string{"agent instructions", "written (", "Claude hook", "wrote "} {
+	for _, want := range []string{"agent instructions", "written (", "Claude hook", "wrote ", "status line"} {
 		if !strings.Contains(first, want) {
 			t.Errorf("first run missing %q:\n%s", want, first)
 		}

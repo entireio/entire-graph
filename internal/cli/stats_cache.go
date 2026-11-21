@@ -7,8 +7,9 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 // The stats memo. Transcripts are append-mostly and a finished one never changes again, so the
@@ -34,7 +35,9 @@ import (
 // mean something else and must never be served alongside v3 ones.
 // v4: named paths come from result rows only (a zero-result answer is ineligible), and a read
 // span-attributed to a sibling result is a shared read ("s"), not skipped. v3 "n" over-credits.
-const statsCacheSchema = "v4"
+// v5: a successful locate call carries its named paths ("p") and resolved root ("o") for the
+// gross estimate. A v4 memo has neither and would price every cached result at 0.
+const statsCacheSchema = "v5"
 
 // Small scopes skip memo overhead only when both their file count and total size are small.
 const statsCacheMinTranscripts = 8
@@ -45,7 +48,9 @@ const statsCacheMinTranscriptBytes = 1 << 20
 const statsCacheMaxBytes = 256 << 20
 
 type statsCache struct {
-	path    string
+	root    string
+	dirs    []string
+	name    string
 	salt    string
 	entries map[string]fileSummary // what the next save writes
 	changed bool
@@ -64,11 +69,23 @@ func statsCacheDir(flags statsFlags, env EntireEnv) string {
 // openStatsCache loads the memo for one scope (a project transcript directory, or a single
 // transcript). A nil *statsCache is a working no-op cache, so callers never branch.
 func openStatsCache(dir, scope, version string, files []transcriptFile) *statsCache {
+	return openStatsCacheIn(dir, "", scope, version, files)
+}
+
+// openStatsCacheIn keeps the status line memo beneath its own family without treating that
+// descendant as a new trust root. All directory components use the shared confinement checks.
+func openStatsCacheIn(dir, family, scope, version string, files []transcriptFile) *statsCache {
 	if dir == "" || !statsCacheWorthwhile(files) {
 		return nil
 	}
+	dirs := []string{"stats", statsCacheSchema}
+	if family != "" {
+		dirs = append([]string{family}, dirs...)
+	}
 	cache := &statsCache{
-		path:    filepath.Join(dir, "stats", statsCacheSchema, statsCacheKey(scope)+".json.gz"),
+		root:    dir,
+		dirs:    dirs,
+		name:    statsCacheKey(scope) + ".json.gz",
 		salt:    statsCacheSalt(version),
 		entries: map[string]fileSummary{},
 	}
@@ -137,7 +154,12 @@ type statsCacheDocument struct {
 // load reads the memo. Every error path leaves an empty cache: recomputing is always correct,
 // and serving something this code cannot fully parse never is.
 func (c *statsCache) load() {
-	handle, err := os.Open(c.path) //nolint:gosec // path is derived from the resolved cache directory
+	directory, err := sem.OpenCacheDirectory(c.root, c.dirs...)
+	if err != nil {
+		return
+	}
+	defer directory.Close()
+	handle, err := sem.OpenCacheRegularFile(directory, c.name)
 	if err != nil {
 		return
 	}
@@ -212,15 +234,16 @@ func (c *statsCache) save() {
 	if c == nil || !c.changed {
 		return
 	}
-	directory := filepath.Dir(c.path)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return
-	}
-	temporary, err := os.CreateTemp(directory, ".stats-*.tmp")
+	directory, err := sem.OpenCacheDirectory(c.root, c.dirs...)
 	if err != nil {
 		return
 	}
-	name := temporary.Name()
+	defer directory.Close()
+	temporary, name, err := sem.CreateCacheTemp(directory, "stats")
+	if err != nil {
+		return
+	}
+	defer directory.Remove(name)
 	writer := gzip.NewWriter(temporary)
 	encodeErr := json.NewEncoder(writer).Encode(statsCacheDocument{
 		Schema:  statsCacheSchema,
@@ -229,10 +252,7 @@ func (c *statsCache) save() {
 	closeErr := writer.Close()
 	syncErr := temporary.Sync()
 	if err := temporary.Close(); err != nil || encodeErr != nil || closeErr != nil || syncErr != nil {
-		_ = os.Remove(name)
 		return
 	}
-	if err := os.Rename(name, c.path); err != nil {
-		_ = os.Remove(name)
-	}
+	_ = directory.Rename(name, c.name)
 }
