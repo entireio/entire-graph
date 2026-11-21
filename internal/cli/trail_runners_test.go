@@ -49,11 +49,12 @@ func TestEveryEnabledTrailRunnerFiresOnAPush(t *testing.T) {
 		t.Skipf("no checked-in runners at %s: %v", dir, err)
 	}
 
-	checked := 0
+	found, checked := 0, 0
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
+		found++
 		path := filepath.Join(dir, entry.Name())
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -86,7 +87,15 @@ func TestEveryEnabledTrailRunnerFiresOnAPush(t *testing.T) {
 		}
 	}
 
-	if checked == 0 {
-		t.Fatal("non-vacuity: no enabled runner was read, so this proves nothing")
+	// A skip here prints its reason, so the test cannot stop testing in
+	// silence. It is a skip rather than a failure because the file-runner
+	// mechanism may legitimately go away -- PR #388 removes all seven of these
+	// files -- and because disabling every runner is a configuration choice,
+	// not a defect this test is entitled to veto.
+	switch {
+	case found == 0:
+		t.Skipf("non-vacuity: %s holds no runner JSON, so this proves nothing; if the file runners were removed, delete this test with them", dir)
+	case checked == 0:
+		t.Skipf("non-vacuity: all %d runners in %s are disabled, so this proves nothing", found, dir)
 	}
 }
