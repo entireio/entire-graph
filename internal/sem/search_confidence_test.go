@@ -366,6 +366,47 @@ func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testin
 	requirePreselectionNotice(t, "needle quillwort", dropped)
 }
 
+// Off the Git path the content pass schedules every corpus file, and one too large to read can
+// hold a term no file it read does. The confidence counts that term, so the cut that keeps only
+// needle files reads 0.5 and gets the notice, and the file counts as examined again. A file
+// too large to read with a NUL byte in its first 8,000 bytes, which the content pass would skip
+// however it was read, counts nothing.
+func TestSearchRepositoryCountsTermsOnlyAFileTooLargeToReadHolds(t *testing.T) {
+	t.Parallel()
+	repo := writeNeedleQuillwortFixture(t)
+	write(t, repo, "docs/zz_other.md", "quillwort\n"+strings.Repeat("padding line\n", 20))
+	write(t, repo, "docs/zz_binary.md", "\x00"+strings.Repeat("godwit\n", 20))
+	for _, tc := range []struct {
+		query string
+		low   bool
+	}{
+		{query: "needle quillwort", low: true},
+		{query: "needle godwit"},
+	} {
+		response, err := SearchRepository(t.Context(), repo, "test", tc.query, SearchOptions{
+			Worktree:      true,
+			Profile:       ProfileSyntaxOnly,
+			MaxParseBytes: 64,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stats := response.Stats
+		if stats.FilesIndexed != 384 || !stats.PreselectionBounded {
+			t.Fatalf("%q: stats = %#v, want the 384-file cap", tc.query, stats)
+		}
+		// Both files too large to read are examined again, in order, the NUL one first.
+		if stats.PreselectionFilesExamined != stats.FilesScanned+2 {
+			t.Fatalf("%q: files examined = %d, want the %d scanned and both files too large to read", tc.query, stats.PreselectionFilesExamined, stats.FilesScanned)
+		}
+		if tc.low {
+			requirePreselectionNotice(t, tc.query, response)
+		} else if confidence := confidenceValue(stats.PreselectionConfidence); confidence != 1 {
+			t.Fatalf("%q: preselection confidence = %v, want 1: only a file the content pass would skip holds godwit", tc.query, confidence)
+		}
+	}
+}
+
 // --deep's sparse pass reads every candidate, the file left out included, but its candidates
 // still compete for the same few results with the indexed ones. On this fixture the quillwort
 // file first appears at rank 123 of --top-k 400, so the notice stays right.

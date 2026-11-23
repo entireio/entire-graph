@@ -138,11 +138,12 @@ auto-generated notes on
 
 - `query --format json`'s `preselection_confidence` now reports how much of the
   query's matched-term weight the files a capped cold working-tree selection
-  kept, 1 when they hold every query term found in the repository. In a
-  worktree of 10,000 files or more, where Git shortlists the files first, it is
-  reported even when nothing was cut, and it also counts the terms held only by
-  files the content pass left unread, text files that `.gitattributes` marks
-  binary included. As before, a limit set with `--max-indexed-files` reports
+  kept, 1 when they hold every query term found in the repository, terms held
+  only by text files too large to read included. In a worktree of 10,000 files
+  or more, where Git shortlists the files first, it is reported even when
+  nothing was cut, and it also counts the terms held only by files the
+  shortlist left out, text files that `.gitattributes` marks binary included.
+  As before, a limit set with `--max-indexed-files` reports
   none. It used to report the relative fused-score drop at the cut,
   which reciprocal-rank fusion keeps near 1/(61+rank) at almost every cut (about
   0.0022 at the 384-file cap), so it read as near-zero confidence on every

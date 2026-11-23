@@ -2992,6 +2992,9 @@ func preselectSearchFiles(
 	if usedGitIndexPreselection {
 		contentReadPaths = make(map[string]bool, len(scanPaths))
 	}
+	// contentUnread lists, off the Git path, the corpus files this pass could not read, so the
+	// confidence can still count a term only such a file holds (searchUnreadTerms).
+	var contentUnread []string
 	scoreFile := func(filePath string) (searchFileCandidate, bool) {
 		if err := ctx.Err(); err != nil {
 			return searchFileCandidate{}, false
@@ -3007,6 +3010,9 @@ func preselectSearchFiles(
 			// Unread, oversized or failed: whether it contains a query term is UNKNOWN, so
 			// this pass can no longer give an exact repository-wide document frequency.
 			contentReadFailures++
+			if !usedGitIndexPreselection {
+				contentUnread = append(contentUnread, filePath)
+			}
 		}
 		contentReadMu.Unlock()
 		if !ok || strings.IndexByte(content, 0) >= 0 {
@@ -3132,7 +3138,9 @@ func preselectSearchFiles(
 	// shortlist before either) can leave out every file holding a query term. Widening reads
 	// matchedAnywhere alone, as ranking does; the reported confidence also counts the terms
 	// matched only in files the content pass never read, which were left out of the index as
-	// surely as the ones the cut dropped. The Git shortlist leaves such files out even when it
+	// surely as the ones the cut dropped: on the Git path the ones the shortlist dropped or
+	// the pass could not read (searchGitUnreadTerms), and otherwise the ones it could not read
+	// (searchUnreadTerms). The Git shortlist leaves such files out even when it
 	// drops nothing, since its sample searches at most six patterns and skips the files Git
 	// counts as binary, so every Git-shortlist query is assessed; it costs another Git pass
 	// only when a term is missing from every file read. An explicit MaxIndexedFiles is an
@@ -3140,6 +3148,7 @@ func preselectSearchFiles(
 	assessConfidence := !options.explicitMaxIndexedFiles &&
 		(usedGitIndexPreselection || progressive || truncated || len(shortlistDropped) > 0)
 	gitIndexReread := 0
+	unreadExamined := 0
 	// unread marks the terms matched in files the content pass never read. After the Git
 	// passes it also marks matchedAnywhere's terms, which the coverage below ORs in anyway.
 	var unread []bool
@@ -3171,6 +3180,25 @@ func preselectSearchFiles(
 				return searchFileSelection{}, err
 			}
 			gitIndexPasses += passes
+		} else if len(contentUnread) > 0 {
+			sort.Strings(contentUnread)
+			unreadFiles := searchUnreadFiles{
+				readFile: func(filePath string) (string, bool) {
+					content, ok := source.read(filePath)
+					if ok {
+						// The content pass is over, so this read is counted without its lock.
+						contentReads++
+					}
+					return content, ok
+				},
+				readPrefix: source.readPrefix,
+				open:       source.open,
+			}
+			var err error
+			unread, unreadExamined, err = searchUnreadTerms(ctx, unreadFiles, contentUnread, q, matcher, matchedAnywhere)
+			if err != nil {
+				return searchFileSelection{}, err
+			}
 		}
 	}
 	// An explicit MaxIndexedFiles is an exact compatibility limit, so the bridge
@@ -3195,7 +3223,7 @@ func preselectSearchFiles(
 	}
 	selection.filesContentRead += contentReads
 	selection.preselectionBackend = "go-content"
-	selection.preselectionFilesExamined = len(scanPaths)
+	selection.preselectionFilesExamined = len(scanPaths) + unreadExamined
 	// Exact only when the content pass INSPECTED every file: scheduled is not the same as read.
 	if !usedGitIndexPreselection && len(scanPaths) == len(source.paths) && contentReadFailures == 0 {
 		selection.corpusFiles = len(scanPaths)
@@ -3220,12 +3248,13 @@ func preselectSearchFiles(
 const searchBinarySniffBytes = 8000
 
 // searchUnreadFiles is how searchGitUnreadTerms reaches the files the content pass did not
-// read: allowed is the corpus, read the files that pass read, sampled the candidates the Git
-// shortlist dropped with the terms Git's sample matched in each, untracked the corpus files
-// Git's index does not track, indexHidden the tracked files a worktree grep does not read
-// from the worktree (searchIndexHiddenFiles), and readFile and readPrefix read a file whole
-// (under the same cap, maxReadBytes) or its first bytes. open opens a file for scan, which
-// reads scanBytes at a time.
+// read, and how searchUnreadTerms does off the Git path, with its readers alone: allowed is
+// the corpus, read the files that pass read, sampled the candidates the Git shortlist dropped
+// with the terms Git's sample matched in each, untracked the corpus files Git's index does not
+// track, indexHidden the tracked files a worktree grep does not read from the worktree
+// (searchIndexHiddenFiles), and readFile and readPrefix read a file whole (under the same cap,
+// maxReadBytes) or its first bytes. open opens a file for scan, which reads scanBytes at a
+// time.
 type searchUnreadFiles struct {
 	absRepo      string
 	allowed      map[string]bool
@@ -3328,9 +3357,54 @@ func searchGitUnreadTerms(
 	if err != nil {
 		return result, 1, examined, ctx.Err()
 	}
+	examined += files.judge(ctx, unreadFiles, q, matcher, result, pending)
+	return result, 1, examined, ctx.Err()
+}
+
+// searchUnreadTerms is searchGitUnreadTerms for the Go-content path, where the content pass
+// scheduled every corpus file and unread holds the ones it could not read: too large, or
+// failed. For the terms no file it read holds, each is judged as that pass would judge it
+// (searchUnreadFiles.judge), and the scan stops once all are found. It returns known plus
+// those terms, and how many files it examined again; the error is ctx's.
+func searchUnreadTerms(
+	ctx context.Context,
+	files searchUnreadFiles,
+	unread []string,
+	q searchQuery,
+	matcher searchTermMatcher,
+	known []bool,
+) ([]bool, int, error) {
+	result := make([]bool, len(q.terms))
+	copy(result, known)
+	var pending []int
+	for index := range q.terms {
+		if !result[index] {
+			pending = append(pending, index)
+		}
+	}
+	if len(pending) == 0 {
+		return result, 0, ctx.Err()
+	}
+	return result, files.judge(ctx, unread, q, matcher, result, pending), ctx.Err()
+}
+
+// judge marks in result the terms each of paths holds, judged as the content pass would
+// judge it (searchUnreadFiles.text): a readable file is matched whole, and a text file too
+// large to read is scanned in bounded windows (searchUnreadFiles.scan). It stops once result
+// marks every term at pending, and returns how many files it examined.
+func (files searchUnreadFiles) judge(
+	ctx context.Context,
+	paths []string,
+	q searchQuery,
+	matcher searchTermMatcher,
+	result []bool,
+	pending []int,
+) int {
+	done := func() bool { return searchTermsAllMarked(result, pending) || ctx.Err() != nil }
+	examined := 0
 	var large []string
-	for _, filePath := range unreadFiles {
-		if searchTermsAllMarked(result, pending) || ctx.Err() != nil {
+	for _, filePath := range paths {
+		if done() {
 			break
 		}
 		examined++
@@ -3343,14 +3417,13 @@ func searchGitUnreadTerms(
 		}
 	}
 	overlap := searchUnreadScanOverlap(q)
-	done := func() bool { return searchTermsAllMarked(result, pending) || ctx.Err() != nil }
 	for _, filePath := range large {
 		if done() {
 			break
 		}
 		files.scan(filePath, matcher, overlap, result, done)
 	}
-	return result, 1, examined, ctx.Err()
+	return examined
 }
 
 // confirmSampled marks in result the terms Git's sample matched in the files the shortlist
