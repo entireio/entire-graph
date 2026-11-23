@@ -1,0 +1,47 @@
+# How Git must store and check out this repository's text, so that a clone made
+# with the Git for Windows default (core.autocrlf=true) can still pass the
+# checks CONTRIBUTING.md asks for. CI cannot catch a mistake here: every runner,
+# the Windows ones included, checks out LF.
+#
+# Measured 2026-11-19 on this repository at 3f632e40, by cloning it with
+# `git clone -c core.autocrlf=true` and running the gate against that clone.
+# `go build`, `go vet` and the whole `go test ./...` suite (10 packages, 0
+# failures) were unaffected; the two rules below are what broke.
+#
+# internal/cli/repo_line_endings_test.go asserts both rules over every file in
+# each class, so a new file cannot quietly miss one.
+
+# gofmt always writes LF, so it reports a CRLF file as unformatted on content
+# nobody has touched. On the CRLF clone above, all 872 Go files checked out with
+# CRLF and `gofmt -s -l .` listed all 872 -- the first command CONTRIBUTING.md
+# tells a contributor to run, and a blocking CI check, cannot pass there at all.
+*.go text eol=lf
+
+# A script the kernel starts from its `#!` line cannot have a CR on that line:
+# the CR becomes part of the interpreter's name. Measured here, a CRLF
+# `#!/usr/bin/env python3` file exits 127 with
+# `env: python3\r: No such file or directory`, and on the CRLF clone
+# `sh scripts/entire-graph-statusline_test.sh` -- the POSIX shell suite in
+# `mise run check` and in CI -- died at its second line with
+# `: command not found` and `set: -: invalid option`, exit 2.
+#
+# The rules are globs but the guard is not: it reads the first two bytes of
+# every tracked file and demands this attribute of anything beginning with
+# `#!`, because the next script added here may not carry an extension at all.
+# (Naming an interpreter explicitly, as CI does with
+# `python3 scripts/entire-graph-prompt-context_test.py`, bypasses the `#!`
+# line and hides the problem -- that suite's 41 tests passed on the CRLF
+# clone.)
+*.sh text eol=lf
+*.py text eol=lf
+*.zsh text eol=lf
+
+# Nothing else is pinned, and that is a finding rather than an omission. The
+# NDJSON goldens are compared through normalizeSnapshotText
+# (internal/sem/golden_test.go), which strips CR before the comparison, and the
+# verify-block goldens hold hashes of freshly rendered output in JSON that is
+# parsed rather than hashed, so neither depends on its file's line endings.
+# docs/images/gh-repo-cover.png is the only committed file whose bytes contain
+# a CR, and Git leaves it alone as binary. `git add --renormalize .` therefore
+# rewrites nothing under these rules, which is the proof that they change
+# checkout only and never content.

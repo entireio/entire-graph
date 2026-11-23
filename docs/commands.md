@@ -59,7 +59,10 @@ other query commands use; details are in the
 ## Export
 
 Bulk NDJSON streams. These default to the **committed tree**; pass
-`--worktree` to stream the working tree instead.
+`--worktree` to stream the working tree instead. To save a stream, pass
+`--output <path>` rather than redirecting: a shell redirect writes whatever
+that shell encodes in, and Windows PowerShell 5.1's `>` is `Out-File`, whose
+default is UTF-16LE. `snapshot-query` refuses such a file by name.
 
 | Command | What it does |
 | --- | --- |

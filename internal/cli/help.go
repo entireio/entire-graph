@@ -376,13 +376,13 @@ var commandDocs = []commandDoc{
 		name:    "snapshot",
 		group:   groupInspect,
 		summary: "Export the whole graph: files, symbols, and relations",
-		usage:   []string{"entire graph snapshot --repo . --format ndjson|compact-ndjson|scip [--worktree]"},
-		long:    "One header record, then file, external-endpoint, symbol, and relation records. Native and compact NDJSON stream so memory stays bounded; the experimental scip format assembles one complete protobuf Index in memory. The snapshot is a superset of symbols + edges + files for ingestion into agent memory or a store such as Entire Brain. compact-ndjson can be read by snapshot-query. scip reserves stderr for one machine-readable omission note and cannot be combined with --progress.",
+		usage:   []string{"entire graph snapshot --repo . --format ndjson|compact-ndjson|scip [--worktree] [--output path]"},
+		long:    "One header record, then file, external-endpoint, symbol, and relation records. Native and compact NDJSON stream so memory stays bounded; the experimental scip format assembles one complete protobuf Index in memory. The snapshot is a superset of symbols + edges + files for ingestion into agent memory or a store such as Entire Brain. compact-ndjson can be read by snapshot-query. scip reserves stderr for one machine-readable omission note and cannot be combined with --progress. Use --output to save the stream: a shell redirect writes whatever the shell encodes in, and Windows PowerShell 5.1 saves UTF-16LE, which snapshot-query refuses.",
 		flags:   snapshotFlagDocs,
 		examples: []string{
 			"entire graph snapshot --repo . --format ndjson",
-			"entire graph snapshot --repo . --format compact-ndjson > graph.compact.ndjson",
-			"entire graph snapshot --repo . --format scip > index.scip",
+			"entire graph snapshot --repo . --format compact-ndjson --output graph.compact.ndjson",
+			"entire graph snapshot --repo . --format scip --output index.scip",
 		},
 	},
 	{
@@ -540,6 +540,7 @@ var providerFlagDocs = []flagDoc{
 	{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
 	{name: "--ignore-file", arg: "path", desc: "Extra gitignore-style exclude rules (repeatable)"},
 	{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
+	{name: "--output", arg: "path", desc: "Write the records to a file instead of stdout"},
 }
 
 // snapshotFlagDocs extend the bulk provider flags with complete-snapshot formats.
@@ -551,6 +552,7 @@ var snapshotFlagDocs = []flagDoc{
 	{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
 	{name: "--ignore-file", arg: "path", desc: "Extra gitignore-style exclude rules (repeatable)"},
 	{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
+	{name: "--output", arg: "path", desc: "Write the records to a file instead of stdout; a shell redirect saves UTF-16LE in Windows PowerShell 5.1, which snapshot-query refuses"},
 }
 
 // commonFlagDocs are shared by the commit/diff/analyze change-analysis commands.
