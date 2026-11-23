@@ -1,0 +1,45 @@
+{
+  "cli_version": "0.11.5-nightly.202610100625.1f44a6f96.0.20261024214757-e7c0393725dd",
+  "checkpoint_id": "b62baea60c07",
+  "strategy": "manual-commit",
+  "branch": "fix/semantic-diff-fires-and-owns-its-subject",
+  "checkpoints_count": 2,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/b6/2baea60c07/0/metadata.json",
+      "transcript": "/b6/2baea60c07/0/full.jsonl",
+      "compact_transcript": "/b6/2baea60c07/0/transcript.jsonl",
+      "content_hash": "/b6/2baea60c07/0/content_hash.txt",
+      "prompt": "/b6/2baea60c07/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 460,
+    "cache_creation_tokens": 991080,
+    "cache_read_tokens": 40218282,
+    "output_tokens": 218206,
+    "api_call_count": 230,
+    "subagent_tokens": {
+      "input_tokens": 46,
+      "cache_creation_tokens": 273358,
+      "cache_read_tokens": 1578133,
+      "output_tokens": 14475,
+      "api_call_count": 22
+    }
+  },
+  "redaction": {
+    "replacements": 425,
+    "layers": {
+      "betterleaks": 5,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 69,
+      "credentialed_uri": 3,
+      "entropy": 355,
+      "key_context": 0,
+      "provider_token": 9,
+      "shell_stdin": 0
+    }
+  }
+}
