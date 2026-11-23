@@ -141,19 +141,26 @@ func (matcher searchTermMatcher) match(text string) []bool {
 			}
 		}
 	}
-	if len(matcher.aliasTerms) > 0 {
-		for index := range matcher.aliasTerms {
-			found[index] = false
-		}
-		for _, raw := range searchSourceWordPattern.FindAllString(text, -1) {
-			for _, token := range searchTokenVariants(raw) {
-				for _, index := range matcher.aliasTokens[token] {
-					found[index] = true
-				}
+	matcher.matchAliasTokens(found, text)
+	return found
+}
+
+// matchAliasTokens sets in found each query alias whose token is one of text's words, and
+// clears the others: an alias matches a whole word, never a substring.
+func (matcher searchTermMatcher) matchAliasTokens(found []bool, text string) {
+	if len(matcher.aliasTerms) == 0 {
+		return
+	}
+	for index := range matcher.aliasTerms {
+		found[index] = false
+	}
+	for _, raw := range searchSourceWordPattern.FindAllString(text, -1) {
+		for _, token := range searchTokenVariants(raw) {
+			for _, index := range matcher.aliasTokens[token] {
+				found[index] = true
 			}
 		}
 	}
-	return found
 }
 
 func asciiString(value string) bool {

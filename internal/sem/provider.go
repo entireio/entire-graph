@@ -14085,7 +14085,14 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		if err != nil {
 			return openFallback(pinned, repo, path)
 		}
-		return file, info.Size(), true
+		// The size is the opened file's, not the Lstat's, so a file replaced in
+		// between is judged by what will be read.
+		opened, err := file.Stat()
+		if err != nil || !opened.Mode().IsRegular() {
+			_ = file.Close()
+			return nil, 0, false
+		}
+		return file, opened.Size(), true
 	}
 	return openedSource{
 		paths:      paths,

@@ -2,6 +2,7 @@ package sem
 
 import (
 	"io"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -115,5 +116,41 @@ func TestSearchUnreadScanReportsAFileItCannotOpen(t *testing.T) {
 	}
 	if (searchUnreadFiles{}).scan("f", newSearchQueryTermMatcher(q), 36, result, func() bool { return false }) {
 		t.Fatal("scan without an opener reported success")
+	}
+}
+
+// An alias matches a whole word, so where a window edge falls inside a line, the scan reads
+// alias tokens only from the words lying whole in the window: a fragment of a longer word is
+// never taken for the abbreviation, and the word itself is still found wherever it occurs.
+func TestSearchUnreadScanTakesNoAliasFromPartOfAWord(t *testing.T) {
+	t.Parallel()
+	const window = 16
+	q := buildSearchQuery("integer value")
+	alias := slices.Index(q.terms, "int")
+	if alias < 0 || !q.inferredAbbreviations["int"] {
+		t.Fatalf("terms = %q, want the inferred alias int", q.terms)
+	}
+	for offset := range 4 * window {
+		for _, tc := range []struct {
+			content string
+			want    bool
+		}{
+			// A window can start at "int", the end of the word "x...xint".
+			{strings.Repeat("x", offset+1) + "int " + strings.Repeat("y", 3*window), false},
+			// A window can end after "int", the start of the word "intx...".
+			{strings.Repeat("x", offset) + " int" + strings.Repeat("x", 3*window), false},
+			{strings.Repeat("x", offset) + " int " + strings.Repeat("y", 3*window), true},
+		} {
+			if whole := newSearchQueryTermMatcher(q).match(tc.content); whole[alias] != tc.want {
+				t.Fatalf("offset %d: the matcher finds int = %v in the whole file", offset, whole[alias])
+			}
+			result := make([]bool, len(q.terms))
+			if !searchTestScanFiles(tc.content, window, nil, nil).scan("f", newSearchQueryTermMatcher(q), searchUnreadScanOverlap(q), result, func() bool { return false }) {
+				t.Fatal("scan failed")
+			}
+			if result[alias] != tc.want {
+				t.Fatalf("offset %d: scan found int = %v in %q, want %v", offset, result[alias], tc.content, tc.want)
+			}
+		}
 	}
 }
