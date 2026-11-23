@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -309,8 +310,15 @@ func TestAssessSearchConfidenceMarksAColdIndexThatDroppedPartOfTheQuery(t *testi
 			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.99)",
 		},
 		{
-			name:     "an empty payload is still not marked",
-			response: SearchResponse{Stats: SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(0.5)}},
+			// No results there is not absence: the answer may be in a file the cut dropped.
+			name:       "an empty payload is marked too",
+			response:   SearchResponse{Stats: SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(0.5)}},
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.50)",
+		},
+		{
+			name:     "an empty payload from a complete selection is not marked",
+			response: SearchResponse{Stats: SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(1)}},
 		},
 	}
 	for _, testCase := range cases {
@@ -451,17 +459,23 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		// the include file leaves out, so outside the corpus and never searched.
 		{query: "heron siskin", maxParseBytes: 64, reinclude: true, low: true, gitPasses: 2},
 		{query: "heron linnet", maxParseBytes: 64, reinclude: true, gitPasses: 2},
-		// avocet and stilt are each only in a tracked file too large to read whose worktree
-		// content Git's listing does not read: a regular file where the index records a
-		// symlink, and an assume-unchanged file.
+		// avocet, dotterel and stilt are each only in a tracked file too large to read whose
+		// worktree content Git's listing does not read: a regular file where the index records
+		// a symlink, one where it records a submodule, and an assume-unchanged file.
 		{query: "heron avocet", maxParseBytes: 64, low: true, gitPasses: 2},
+		{query: "heron dotterel", maxParseBytes: 64, low: true, gitPasses: 2},
 		{query: "heron stilt", maxParseBytes: 64, low: true, gitPasses: 2},
 		{query: "needle sandpiper", low: true, gitPasses: 2},
 		// Git's sample matched redwing in a dropped file whose NUL byte comes after the 8,000
 		// bytes Git sniffs, so the content pass would never index it, even with every file.
 		{query: "needle redwing", gitPasses: 2},
-		// café has no Git pattern, and sandpiper is still searched for.
+		// café is searched for too, and no file holds it.
 		{query: `needle sandpiper "café"`, low: true, gitPasses: 2},
+		// The shortlist drops nothing and no cut runs, yet godwit is only in a file too large
+		// to read, so the query is assessed all the same. Alone it leaves nothing to rank.
+		{query: "quillwort", gitPasses: 1},
+		{query: "quillwort godwit", maxParseBytes: 64, low: true, gitPasses: 2},
+		{query: "godwit", maxParseBytes: 64, low: true, gitPasses: 2},
 	} {
 		var includeFiles []string
 		if tc.reinclude {
@@ -500,6 +514,9 @@ func (tc gitShortlistCase) check(t *testing.T, response SearchResponse) {
 	if tc.query == "heron curlew" && response.Stats.FilesContentRead != 53 {
 		t.Fatalf("%q: files content read = %d, want 53", tc.query, response.Stats.FilesContentRead)
 	}
+	if tc.query == "godwit" && len(response.Results) != 0 {
+		t.Fatalf("%q: %d results, want none: the one file holding it is too large to read", tc.query, len(response.Results))
+	}
 	if tc.topK > 0 && response.Stats.FilesIndexed != 120 {
 		t.Fatalf("%q at top-k %d: files indexed = %d, want the adaptive 120", tc.query, tc.topK, response.Stats.FilesIndexed)
 	}
@@ -513,8 +530,8 @@ func (tc gitShortlistCase) check(t *testing.T, response SearchResponse) {
 	}
 }
 
-// writeGitShortlistFixture commits an 11,510-file worktree, past minGitGrepPreselectionFiles,
-// changes two of those files in ways a worktree grep does not read, and leaves three more
+// writeGitShortlistFixture commits an 11,511-file worktree, past minGitGrepPreselectionFiles,
+// changes three of those files in ways a worktree grep does not read, and leaves three more
 // files untracked, two of them ignored, holding each way
 // TestSearchRepositoryCountsTermsTheGitShortlistDropped hides a term.
 func writeGitShortlistFixture(t *testing.T) string {
@@ -561,10 +578,13 @@ func writeGitShortlistFixture(t *testing.T) string {
 	// The index records this one as a symlink, with no symlink on disk.
 	link := gitInput(t, repo, "zz_egret.md", "hash-object", "-w", "--stdin")
 	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+link+",large/zz_link.md")
+	// And this one as a submodule.
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+link+",large/zz_gitlink.md")
 	git(t, repo, "commit", "-q", "-m", "large corpus")
-	// A worktree grep skips a path the index records as a symlink, though the worktree now
-	// holds a regular file there, and reads an assume-unchanged file from the index.
+	// A worktree grep skips a path the index records as a symlink or a submodule, though the
+	// worktree now holds a regular file there, and reads an assume-unchanged file from the index.
 	write(t, repo, "large/zz_link.md", "avocet\n"+strings.Repeat("// padding\n", 40))
+	write(t, repo, "large/zz_gitlink.md", "dotterel\n"+strings.Repeat("// padding\n", 40))
 	git(t, repo, "update-index", "--assume-unchanged", "large/zz_frozen.md")
 	write(t, repo, "large/zz_frozen.md", "stilt\n"+strings.Repeat("// padding\n", 40))
 	// Never added, so only the worktree listing has it; the content pass reads it unless a
@@ -687,7 +707,7 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 		},
 	} {
 		q := buildSearchQuery(tc.query)
-		marked, passes, examined := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, tc.known))
+		marked, passes, examined := searchTestGitUnreadTerms(t, files, q, tc.known)
 		requireSearchTermsMarked(t, tc.query, q, marked, tc.want)
 		// One listing pass, then each unread corpus file it listed.
 		if passes != 1 || examined != tc.examined {
@@ -732,7 +752,7 @@ func TestSearchGitUnreadTermsSearchesUntrackedFiles(t *testing.T) {
 		{query: "pipit ruff knot stint", want: map[string]bool{"pipit": true, "ruff": false, "knot": false, "stint": false}},
 	} {
 		q := buildSearchQuery(tc.query)
-		marked, passes, examined := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, tc.known))
+		marked, passes, examined := searchTestGitUnreadTerms(t, files, q, tc.known)
 		requireSearchTermsMarked(t, tc.query, q, marked, tc.want)
 		// One listing pass, then the one untracked file it listed, streamed.
 		if passes != 1 || examined != 1 {
@@ -742,8 +762,8 @@ func TestSearchGitUnreadTermsSearchesUntrackedFiles(t *testing.T) {
 }
 
 // A worktree `git grep` reads a file marked assume-unchanged or skip-worktree from its index
-// blob, and skips a path the index records as a symlink even once the worktree holds a
-// regular file there, so the listing misses a term only the worktree content of such a file
+// blob, and skips a path the index records as a symlink or a submodule even once the worktree
+// holds a regular file there, so the listing misses a term only the worktree content of such a file
 // holds. Each is searched by name instead, from the worktree. A term Git's sample matched in
 // the index blob of such a file too large to read is not taken on the sample's word.
 func TestSearchGitUnreadTermsSearchesIndexHiddenFiles(t *testing.T) {
@@ -759,7 +779,10 @@ func TestSearchGitUnreadTermsSearchesIndexHiddenFiles(t *testing.T) {
 	git(t, repo, "add", ".")
 	// The index records link.md as a symlink, with no symlink on disk.
 	write(t, repo, "link.md", "plain.md")
-	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+gitInput(t, repo, "plain.md", "hash-object", "-w", "--stdin")+",link.md")
+	target := gitInput(t, repo, "plain.md", "hash-object", "-w", "--stdin")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+target+",link.md")
+	// And sub.md as a submodule, with a regular file on disk instead.
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+target+",sub.md")
 	git(t, repo, "commit", "-q", "-m", "fixture")
 	git(t, repo, "update-index", "--assume-unchanged", "frozen.md")
 	git(t, repo, "update-index", "--skip-worktree", "sparse.md")
@@ -769,7 +792,8 @@ func TestSearchGitUnreadTermsSearchesIndexHiddenFiles(t *testing.T) {
 	write(t, repo, "link.md", "avocet\n"+padding)
 	write(t, repo, "frozen.md", "stilt\n"+padding)
 	write(t, repo, "sparse.md", "whimbrel\n"+padding)
-	allowed := map[string]bool{"kept.md": true, "plain.md": true, "link.md": true, "frozen.md": true, "sparse.md": true}
+	write(t, repo, "sub.md", "dotterel\n"+padding)
+	allowed := map[string]bool{"kept.md": true, "plain.md": true, "link.md": true, "frozen.md": true, "sparse.md": true, "sub.md": true}
 	files := searchTestUnreadFiles(repo, allowed, map[string]bool{"kept.md": true}, 200)
 	files.indexHidden = searchIndexHiddenFiles(t.Context(), repo)
 
@@ -778,7 +802,10 @@ func TestSearchGitUnreadTermsSearchesIndexHiddenFiles(t *testing.T) {
 		sampled map[string][]string
 		want    map[string]bool
 	}{
-		{query: "needle turnstone avocet stilt whimbrel", want: map[string]bool{"turnstone": true, "avocet": true, "stilt": true, "whimbrel": true}},
+		{
+			query: "needle turnstone avocet stilt whimbrel dotterel",
+			want:  map[string]bool{"turnstone": true, "avocet": true, "stilt": true, "whimbrel": true, "dotterel": true},
+		},
 		{query: "needle redshank", sampled: map[string][]string{"frozen.md": {"redshank"}}, want: map[string]bool{"redshank": false}},
 	} {
 		q := buildSearchQuery(tc.query)
@@ -786,7 +813,7 @@ func TestSearchGitUnreadTermsSearchesIndexHiddenFiles(t *testing.T) {
 		for _, path := range slices.Sorted(maps.Keys(tc.sampled)) {
 			files.sampled = append(files.sampled, searchFileCandidate{path: path, matchedTerms: searchTestTermMarks(q, tc.sampled[path])})
 		}
-		marked, _, _ := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, []string{"needle"}))
+		marked, _, _ := searchTestGitUnreadTerms(t, files, q, []string{"needle"})
 		requireSearchTermsMarked(t, tc.query, q, marked, tc.want)
 	}
 
@@ -794,16 +821,24 @@ func TestSearchGitUnreadTermsSearchesIndexHiddenFiles(t *testing.T) {
 	files.sampled = nil
 	files.indexHidden = func() (map[string]bool, error) { return nil, errors.New("listing failed") }
 	q := buildSearchQuery("needle turnstone avocet")
-	marked, _, _ := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, []string{"needle"}))
+	marked, _, _ := searchTestGitUnreadTerms(t, files, q, []string{"needle"})
 	requireSearchTermsMarked(t, "needle turnstone avocet", q, marked, map[string]bool{"turnstone": true, "avocet": false})
+
+	// A cancelled pass is not a failed one: it returns the context's error, so the caller
+	// stops rather than report what the pass confirmed before it was cut short.
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, _, _, err := searchGitUnreadTerms(cancelled, files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, []string{"needle"})); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled pass: err = %v, want context.Canceled", err)
+	}
 }
 
 // Git's sample can match a term in a file the shortlist dropped, and the term counts only once
 // that file passes the content pass's test: Git's -I looks for a NUL byte in a file's first
 // 8,000 bytes, and the content pass skips a file holding one anywhere. A file too large to
 // read keeps the sample's verdict, which is Git's own test, and a file whose sampled terms are
-// known already is not read. A missing term Git has no pattern for ("café") does not stop the
-// pass for the others.
+// known already is not read. A missing term outside ASCII is searched too, in any case, and
+// one no file holds ("café") does not stop the pass for the others.
 func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -816,13 +851,15 @@ func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 	write(t, repo, "big.md", "linnet\n"+strings.Repeat("x\n", 10000))
 	write(t, repo, ".gitattributes", "marked.txt -diff\n")
 	write(t, repo, "marked.txt", "sandpiper\n")
+	// Upper case, and with no ASCII fragment Git could find it by.
+	write(t, repo, "magpie.md", "СОРОКА\n")
 	// The default driver makes every file here binary to Git's -I, and a driver set to auto
 	// is one `git config --bool` refuses; the listing still finds late-nul.md.
 	git(t, repo, "config", "diff.default.binary", "true")
 	git(t, repo, "config", "diff.autod.binary", "auto")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "fixture")
-	allowed := map[string]bool{"late-nul.md": true, "clean.md": true, "big.md": true, "marked.txt": true}
+	allowed := map[string]bool{"late-nul.md": true, "clean.md": true, "big.md": true, "marked.txt": true, "magpie.md": true}
 	files := searchTestUnreadFiles(repo, allowed, nil, 16000)
 
 	for _, tc := range []struct {
@@ -844,18 +881,30 @@ func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 		},
 		{query: "siskin", known: []string{"siskin"}, sampled: map[string][]string{"clean.md": {"siskin"}}, want: map[string]bool{"siskin": true}},
 		{query: `sandpiper "café"`, want: map[string]bool{"sandpiper": true, "café": false}, passes: 1, examined: 1},
+		{query: `sandpiper "сорока"`, want: map[string]bool{"sandpiper": true, "сорока": true}, passes: 1, examined: 2},
 	} {
 		q := buildSearchQuery(tc.query)
 		files.sampled = nil
 		for _, path := range slices.Sorted(maps.Keys(tc.sampled)) {
 			files.sampled = append(files.sampled, searchFileCandidate{path: path, matchedTerms: searchTestTermMarks(q, tc.sampled[path])})
 		}
-		marked, passes, examined := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, tc.known))
+		marked, passes, examined := searchTestGitUnreadTerms(t, files, q, tc.known)
 		requireSearchTermsMarked(t, tc.query, q, marked, tc.want)
 		if passes != tc.passes || examined != tc.examined {
 			t.Fatalf("%q: passes = %d, files examined again = %d, want %d and %d", tc.query, passes, examined, tc.passes, tc.examined)
 		}
 	}
+}
+
+// searchTestGitUnreadTerms runs searchGitUnreadTerms with the terms known lists marked, and
+// fails on an error.
+func searchTestGitUnreadTerms(t *testing.T, files searchUnreadFiles, q searchQuery, known []string) ([]bool, int, int) {
+	t.Helper()
+	marked, passes, examined, err := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, known))
+	if err != nil {
+		t.Fatalf("%v: %v", q.terms, err)
+	}
+	return marked, passes, examined
 }
 
 // searchTestTermMarks marks each of q's terms that terms lists.

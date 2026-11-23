@@ -3149,12 +3149,21 @@ func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T)
 		t.Fatalf("sampled files = %v, want the marked files skipped as binary", sampled)
 	}
 	var files []string
-	if err := GrepIndexPatternFiles(t.Context(), repo, patterns, func(path string) error { files = append(files, path); return nil }); err != nil {
+	if err := GrepIndexPatternFiles(t.Context(), repo, patterns, nil, func(path string) error { files = append(files, path); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	sort.Strings(files)
 	if !reflect.DeepEqual(files, []string{"e.txt", "skipped.go", "source.go"}) {
 		t.Fatalf("matching files = %q, want the marked files skipped", files)
+	}
+	// An excluded path is not read, and a pattern-like name excludes only itself.
+	files = nil
+	if err := GrepIndexPatternFiles(t.Context(), repo, patterns, []string{"skipped.go", "*.txt"}, func(path string) error { files = append(files, path); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(files)
+	if !reflect.DeepEqual(files, []string{"e.txt", "source.go"}) {
+		t.Fatalf("matching files with skipped.go excluded = %q", files)
 	}
 	marked, err := FilesMarkedBinary(t.Context(), repo, names)
 	if err != nil {
@@ -3218,7 +3227,7 @@ func TestFilesMarkedBinaryFollowsGitsDefaultDriver(t *testing.T) {
 	git(t, repo, "config", "diff.unspecified.binary", "false")
 	git(t, repo, "add", ".")
 	var listed []string
-	if err := GrepIndexPatternFiles(t.Context(), repo, []string{"plover"}, func(path string) error { listed = append(listed, path); return nil }); err != nil {
+	if err := GrepIndexPatternFiles(t.Context(), repo, []string{"plover"}, nil, func(path string) error { listed = append(listed, path); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	sort.Strings(listed)
@@ -3246,7 +3255,7 @@ func TestGrepIndexPatternFilesInSearchesEveryNamedFile(t *testing.T) {
 	write(t, repo, "ignored.md", "plover\n")
 	named := []string{"excluded.md", "new.md", "tracked.md"}
 	var whole, listed []string
-	if err := GrepIndexPatternFiles(t.Context(), repo, []string{"plover"}, func(path string) error { whole = append(whole, path); return nil }); err != nil {
+	if err := GrepIndexPatternFiles(t.Context(), repo, []string{"plover"}, nil, func(path string) error { whole = append(whole, path); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if err := GrepIndexPatternFilesIn(t.Context(), repo, []string{"plover"}, named, func(path string) error { listed = append(listed, path); return nil }); err != nil {
@@ -3279,20 +3288,22 @@ func TestIndexHiddenFilesListsWhatWorktreeGrepDoesNotRead(t *testing.T) {
 	write(t, repo, "link.md", "plain.md")
 	link := gitOutput(t, repo, "hash-object", "-w", "link.md")
 	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+link+",link.md")
+	// And it records sub.md as a submodule, with a regular file on disk instead.
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+link+",sub.md")
 	git(t, repo, "update-index", "--assume-unchanged", "frozen.md")
 	git(t, repo, "update-index", "--skip-worktree", "sparse.md")
-	for _, name := range []string{"plain.md", "frozen.md", "sparse.md", "link.md"} {
+	for _, name := range []string{"plain.md", "frozen.md", "sparse.md", "link.md", "sub.md"} {
 		write(t, repo, name, "base\nplover\n")
 	}
 	hidden, err := IndexHiddenFiles(t.Context(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"frozen.md", "link.md", "sparse.md"}; !reflect.DeepEqual(hidden, want) {
+	if want := []string{"frozen.md", "link.md", "sparse.md", "sub.md"}; !reflect.DeepEqual(hidden, want) {
 		t.Fatalf("index-hidden files = %q, want %q", hidden, want)
 	}
 	var whole, listed []string
-	if err := GrepIndexPatternFiles(t.Context(), repo, []string{"plover"}, func(path string) error { whole = append(whole, path); return nil }); err != nil {
+	if err := GrepIndexPatternFiles(t.Context(), repo, []string{"plover"}, nil, func(path string) error { whole = append(whole, path); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if err := GrepIndexPatternFilesIn(t.Context(), repo, []string{"plover"}, hidden, func(path string) error { listed = append(listed, path); return nil }); err != nil {
@@ -3316,6 +3327,7 @@ func TestIndexHiddenPathReadsLsFilesRecords(t *testing.T) {
 		{record: "h 100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tfrozen.md", path: "frozen.md", hidden: true, ok: true},
 		{record: "S 100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tsparse.md", path: "sparse.md", hidden: true, ok: true},
 		{record: "H 120000 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tlink.md", path: "link.md", hidden: true, ok: true},
+		{record: "H 160000 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tsub", path: "sub", hidden: true, ok: true},
 		// Only the first tab ends the fields; the path keeps the rest.
 		{record: "H 100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tdir/a b\tc.md", path: "dir/a b\tc.md", ok: true},
 		{record: "H 100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0"},

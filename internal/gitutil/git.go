@@ -520,9 +520,10 @@ func FilesMarkedBinary(ctx context.Context, repo string, paths []string) ([]stri
 // IndexHiddenFiles lists, sorted, the tracked files whose worktree content a worktree
 // `git grep` does not read (`git ls-files -z -s -v`). Git greps a file marked assume-unchanged
 // or skip-worktree (a lowercase tag, or `S`) from its index blob, and skips a path the index
-// records as a symlink (mode 120000) even once the worktree holds a regular file there. To
-// search such a file's worktree lines, name it to GrepIndexPatternFilesIn or
-// GrepIndexPatternEveryInFiles, which read each named file from the worktree.
+// records as anything but a regular file, a symlink (mode 120000) or a submodule (160000),
+// even once the worktree holds a regular file there. To search such a file's worktree lines,
+// name it to GrepIndexPatternFilesIn or GrepIndexPatternEveryInFiles, which read each named
+// file from the worktree.
 func IndexHiddenFiles(ctx context.Context, repo string) ([]string, error) {
 	var hidden []string
 	var parseErr error
@@ -560,7 +561,8 @@ func indexHiddenPath(record string) (path string, hidden, ok bool) {
 	}
 	mode, _, _ := strings.Cut(rest, " ")
 	lower := tag[0] >= 'a' && tag[0] <= 'z'
-	return path, lower || tag == "S" || mode == "120000", true
+	regular := mode == "100644" || mode == "100755"
+	return path, lower || tag == "S" || !regular, true
 }
 
 // checkDiffAttributes visits each path's `diff` attribute value, because that attribute is what
@@ -856,11 +858,15 @@ func GrepIndexPatternSample(ctx context.Context, repo string, patterns []string,
 // match, so a file full of matches costs no more than one with a single match. Like every
 // runGrepPatterns search it skips the files Git counts as binary. Git does not even read a
 // file .gitattributes marks binary; FilesMarkedBinary finds those.
-func GrepIndexPatternFiles(ctx context.Context, repo string, patterns []string, visit func(path string) error) error {
+//
+// exclude names paths the caller would discard anyway, as for GrepTreePatternFiles: they
+// become exclusion pathspecs while they fit, so excluding only saves work and never decides
+// membership.
+func GrepIndexPatternFiles(ctx context.Context, repo string, patterns, exclude []string, visit func(path string) error) error {
 	read := func(reader *bufio.Reader) error {
 		return readGrepPaths(reader, visit)
 	}
-	return runGrepPatterns(ctx, repo, "", patterns, []string{"-l"}, nil, read)
+	return runGrepPatterns(ctx, repo, "", patterns, []string{"-l"}, grepExcludePathspecs(exclude), read)
 }
 
 // GrepIndexPatternFilesIn is GrepIndexPatternFiles over only the named worktree files,

@@ -251,3 +251,25 @@ func preselectionTestQuery(terms ...string) searchQuery {
 	}
 	return searchQuery{terms: terms, weights: weights}
 }
+
+// A kept file the content pass never scored, such as one the registration bridge adds, counts
+// the terms it holds on both sides of the coverage: it holds them, so they were found in the
+// repository. Left out of the denominator, a term only it holds would not count at all.
+func TestSearchKeptTermCoverageCountsTheTermsABridgedFileHolds(t *testing.T) {
+	t.Parallel()
+	q := buildSearchQuery("alpha beta gamma")
+	marks := func(terms ...string) []bool { return searchTestTermMarks(q, terms) }
+	files := []searchFileCandidate{{path: "kept.go", matchedTerms: marks("alpha")}}
+	termsOf := func(path string) []bool {
+		if path == "bridged.go" {
+			return marks("beta")
+		}
+		return nil
+	}
+	// gamma is only in a file the content pass never read.
+	got := searchKeptTermCoverage(files, []string{"kept.go", "bridged.go"}, marks("alpha"), marks("gamma"), q, termsOf)
+	weight := func(term string) float64 { return q.weights[term] }
+	if want := (weight("alpha") + weight("beta")) / (weight("alpha") + weight("beta") + weight("gamma")); math.Abs(got-want) > 1e-9 {
+		t.Fatalf("coverage = %v, want %v", got, want)
+	}
+}

@@ -157,13 +157,11 @@ type SearchConfidence struct {
 
 // AssessSearchConfidence evaluates a payload against the low-confidence rule.
 //
-// An empty payload is NOT marked: "no results" is already unambiguous, and a marker on top
-// of it would only add bytes.
+// An empty payload is NOT marked by the ranking tests: "no results" is already unambiguous,
+// and a marker on top of it would only add bytes. It is marked when a capped cold selection
+// left out every file matching part of the query, because then "no results" is not.
 func AssessSearchConfidence(response SearchResponse) SearchConfidence {
 	results := response.Results
-	if len(results) == 0 {
-		return SearchConfidence{}
-	}
 	window := results
 	if len(window) > lowConfidenceWindow {
 		window = window[:lowConfidenceWindow]
@@ -172,15 +170,21 @@ func AssessSearchConfidence(response SearchResponse) SearchConfidence {
 	for _, result := range window {
 		files[result.FilePath] = true
 	}
-	assessment := SearchConfidence{TopScore: results[0].Score, TopFiles: len(files)}
+	var assessment SearchConfidence
+	if len(results) > 0 {
+		assessment = SearchConfidence{TopScore: results[0].Score, TopFiles: len(files)}
+	}
 	// Every test below judges the ranking. This one judges what the ranking was given, so
-	// it goes first: when a capped cold selection left out every file matching part of the
-	// query, an answer in those files was never ranked, and the default advice that the
-	// repository may not contain it would be wrong.
+	// it goes first, empty ranking included: when a capped cold selection left out every
+	// file matching part of the query, an answer in those files was never ranked, and the
+	// default advice that the repository may not contain it would be wrong.
 	if reason := searchPreselectionLowReason(response.Stats); reason != "" {
 		assessment.Low = true
 		assessment.Reason = reason
 		assessment.Advice = searchPreselectionLowAdvice
+		return assessment
+	}
+	if len(results) == 0 {
 		return assessment
 	}
 	switch {

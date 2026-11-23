@@ -294,4 +294,21 @@ func TestSearchLowConfidenceNoticeAdvisesWideningWhenTheColdIndexDroppedATerm(t 
 			t.Fatalf("rendered search is missing the notice:\n%s", out.String())
 		}
 	}
+
+	// With no results at all the notice matters most, since no hits there is not absence.
+	response.Results = nil
+	full, _ = searchLowConfidenceNotices(response)
+	want = "LOW CONFIDENCE: no results and the cold index left out every file matching part of the query " +
+		"(preselection confidence 0.50). Re-query with the identifier's exact spelling, or pass --index-all-files, " +
+		"before concluding it is absent.\n"
+	if string(full) != want {
+		t.Fatalf("empty ranking: notice = %q, want %q", full, want)
+	}
+	var out bytes.Buffer
+	if err := writeAgentSearch(&out, response, 0); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), want) || !strings.Contains(out.String(), "No search results.") {
+		t.Fatalf("empty ranking: rendered search is missing the notice:\n%s", out.String())
+	}
 }

@@ -181,8 +181,9 @@ func searchPreselectionBoundaryGap(evidence []searchPreselectionEvidence, limit 
 // searchKeptTermCoverage is the coverage of the kept files against every term matched in
 // the repository: matchedAnywhere from the files the content pass scored, plus unread, the
 // terms Git matched only in files that pass never read. A kept file the content pass did
-// not score (the registration bridge can add one) gets its terms from termsOf. With no
-// unread terms and no such file it equals the capped selection's own Coverage.
+// not score (the registration bridge can add one) gets its terms from termsOf, and they count
+// as matched in the repository too, since that file holds them. With no unread terms and no
+// such file it equals the capped selection's own Coverage.
 func searchKeptTermCoverage(
 	files []searchFileCandidate,
 	kept []string,
@@ -209,7 +210,9 @@ func searchKeptTermCoverage(
 	}
 	for _, path := range kept {
 		if keptPaths[path] && termsOf != nil {
-			selected = append(selected, searchPreselectionEvidence{Path: path, MatchedTerms: termsOf(path)})
+			terms := termsOf(path)
+			markSearchHits(matched, terms)
+			selected = append(selected, searchPreselectionEvidence{Path: path, MatchedTerms: terms})
 		}
 	}
 	return searchPreselectionCoverage(selected, matched, q)

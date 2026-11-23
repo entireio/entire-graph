@@ -2120,6 +2120,10 @@ func searchLowConfidenceNotices(response sem.SearchResponse) ([]byte, []byte) {
 	if ceiling := sem.LowConfidenceScoreCeiling(); err == nil && shown < ceiling {
 		score += fmt.Sprintf(" (weak, below %.0f)", ceiling)
 	}
+	// An empty ranking is marked only by the preselection notice, and has no top score.
+	if len(response.Results) == 0 {
+		score = "no results"
+	}
 	advice := assessment.Advice
 	if advice == "" {
 		advice = "This repo may not contain what you asked for; verify before editing."
