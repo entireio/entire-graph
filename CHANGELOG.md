@@ -136,6 +136,20 @@ auto-generated notes on
 
 ### Fixed
 
+- `query --format json`'s `preselection_confidence` now reports how much of the
+  query's matched-term weight the files a capped cold working-tree selection
+  kept, 1 when they hold every query term found in the files the content pass
+  read, the same terms `preselection_coverage` counts. As before, a limit set
+  with `--max-indexed-files` reports none. It used to report the relative
+  fused-score drop at the cut, which reciprocal-rank fusion keeps near
+  1/(61+rank) at almost every cut (about 0.0022 at the 384-file cap), so it read
+  as near-zero confidence on every query. That drop still decides widening, so
+  which files are indexed is unchanged; it is now reported as
+  `preselection_boundary_gap`. When a capped selection left out every file
+  matching part of the query, the `LOW CONFIDENCE:` notice in agent and text
+  output now says so, also when the query returns no results, and advises
+  re-querying with the identifier's exact spelling or `--index-all-files`.
+
 - An ignore file whose first bytes are a UTF-8 byte-order mark no longer loses
   its first rule. Git drops exactly one mark at byte zero of an exclude file;
   this did not, so the first pattern of such a `.graphignore`, `.gitignore`,

@@ -96,6 +96,10 @@ type SearchOptions struct {
 	// standard cold default may widen adaptively; explicit and TopK-adaptive
 	// MaxIndexedFiles values remain exact compatibility limits.
 	progressivePreselection bool
+	// explicitMaxIndexedFiles is internal: the caller set MaxIndexedFiles. That limit is
+	// an exact one the caller chose, so preselection reports no confidence for its cut.
+	// A TopK-adaptive limit is not explicit.
+	explicitMaxIndexedFiles bool
 	// coldCompleteEligible is internal policy, set by searchRepository: this query
 	// missed the complete preindex, and nothing it asked for rules out the
 	// cold-complete build (a cache directory is in use, the search is on HEAD, and
@@ -381,18 +385,19 @@ type SearchStats struct {
 	// ignore rules removed from this corpus before FilesScanned was taken. It sits
 	// beside FilesScanned deliberately: read alone, "scanned N files" invites the
 	// reading that N is what the repository contains.
-	RepoIgnoredFiles               int     `json:"files_excluded_by_repo_ignore_rules,omitempty"`
-	PreselectionBackend            string  `json:"preselection_backend,omitempty"`
-	PreselectionPasses             int     `json:"preselection_passes,omitempty"`
-	PreselectionFilesExamined      int     `json:"preselection_files_examined,omitempty"`
-	PreselectionConfidence         float64 `json:"preselection_confidence,omitempty"`
-	PreselectionCoverage           float64 `json:"preselection_coverage,omitempty"`
-	PreselectionDiversity          float64 `json:"preselection_diversity,omitempty"`
-	PreselectionWidened            bool    `json:"preselection_widened,omitempty"`
-	PreselectionBounded            bool    `json:"preselection_bounded,omitempty"`
-	UsagePreselectionBackend       string  `json:"identifier_usage_preselection_backend,omitempty"`
-	UsagePreselectionPasses        int     `json:"identifier_usage_preselection_passes,omitempty"`
-	UsagePreselectionFilesExamined int     `json:"identifier_usage_preselection_files_examined,omitempty"`
+	RepoIgnoredFiles               int      `json:"files_excluded_by_repo_ignore_rules,omitempty"`
+	PreselectionBackend            string   `json:"preselection_backend,omitempty"`
+	PreselectionPasses             int      `json:"preselection_passes,omitempty"`
+	PreselectionFilesExamined      int      `json:"preselection_files_examined,omitempty"`
+	PreselectionConfidence         *float64 `json:"preselection_confidence,omitempty"`
+	PreselectionBoundaryGap        float64  `json:"preselection_boundary_gap,omitempty"`
+	PreselectionCoverage           float64  `json:"preselection_coverage,omitempty"`
+	PreselectionDiversity          float64  `json:"preselection_diversity,omitempty"`
+	PreselectionWidened            bool     `json:"preselection_widened,omitempty"`
+	PreselectionBounded            bool     `json:"preselection_bounded,omitempty"`
+	UsagePreselectionBackend       string   `json:"identifier_usage_preselection_backend,omitempty"`
+	UsagePreselectionPasses        int      `json:"identifier_usage_preselection_passes,omitempty"`
+	UsagePreselectionFilesExamined int      `json:"identifier_usage_preselection_files_examined,omitempty"`
 	// Content-read counters report blobs hydrated into the Go process. Git's
 	// own immutable-tree scans are represented by the backend/pass/examined
 	// counters above; their internal byte IO is deliberately not estimated.
@@ -1166,6 +1171,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// An explicit --max-indexed-files bounds cold parsing, so it also rules out
 	// building the complete snapshot on a cold miss (see coldCompletePolicy).
 	explicitIndexedFileBound := options.MaxIndexedFiles > 0
+	options.explicitMaxIndexedFiles = explicitIndexedFileBound
 	if options.MaxIndexedFiles <= 0 {
 		options.MaxIndexedFiles = defaultSearchIndexedFiles(options.TopK)
 		if options.defaultIndexedFilesForTest > 0 {
@@ -1356,6 +1362,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 				PreselectionPasses:        selection.preselectionPasses,
 				PreselectionFilesExamined: selection.preselectionFilesExamined,
 				PreselectionConfidence:    selection.preselectionConfidence,
+				PreselectionBoundaryGap:   selection.preselectionBoundaryGap,
 				PreselectionCoverage:      selection.preselectionCoverage,
 				PreselectionDiversity:     selection.preselectionDiversity,
 				PreselectionWidened:       selection.preselectionWidened,
@@ -1634,6 +1641,7 @@ func searchRepository(ctx context.Context, repo, providerVersion, query string, 
 		PreselectionPasses:        selection.preselectionPasses,
 		PreselectionFilesExamined: selection.preselectionFilesExamined,
 		PreselectionConfidence:    selection.preselectionConfidence,
+		PreselectionBoundaryGap:   selection.preselectionBoundaryGap,
 		PreselectionCoverage:      selection.preselectionCoverage,
 		PreselectionDiversity:     selection.preselectionDiversity,
 		PreselectionWidened:       selection.preselectionWidened,
@@ -2511,7 +2519,8 @@ type searchFileSelection struct {
 	preselectionBackend       string
 	preselectionPasses        int
 	preselectionFilesExamined int
-	preselectionConfidence    float64
+	preselectionConfidence    *float64
+	preselectionBoundaryGap   float64
 	preselectionCoverage      float64
 	preselectionDiversity     float64
 	preselectionWidened       bool
@@ -3058,6 +3067,8 @@ func preselectSearchFiles(
 		}
 	}
 	progressive := options.progressivePreselection && len(legacyFiles) > options.MaxIndexedFiles
+	// truncated is the fixed cut a TopK-adaptive (or explicit) limit makes instead.
+	truncated := false
 	if progressive {
 		evidence := make([]searchPreselectionEvidence, len(files))
 		for index, file := range files {
@@ -3075,7 +3086,7 @@ func preselectSearchFiles(
 		)
 		selection.files = assessment.Files
 		selection.preselectionPasses = assessment.Passes
-		selection.preselectionConfidence = assessment.Confidence
+		selection.preselectionBoundaryGap = assessment.BoundaryGap
 		selection.preselectionCoverage = assessment.Coverage
 		selection.preselectionDiversity = assessment.Diversity
 		selection.preselectionWidened = assessment.Widened
@@ -3089,6 +3100,7 @@ func preselectSearchFiles(
 		})
 		if len(legacyFiles) > options.MaxIndexedFiles {
 			legacyFiles = legacyFiles[:options.MaxIndexedFiles]
+			truncated = true
 		}
 		selection.files = make([]string, len(legacyFiles))
 		for index, file := range legacyFiles {
@@ -3096,9 +3108,30 @@ func preselectSearchFiles(
 		}
 		selection.preselectionPasses = 1
 	}
+	// Either cut, the capped selection or the fixed cut of a TopK-adaptive limit, can leave
+	// out every file holding a query term. An explicit MaxIndexedFiles is an exact limit the
+	// caller chose, so it gets no confidence, as before.
+	assessConfidence := !options.explicitMaxIndexedFiles && (progressive || truncated)
 	// An explicit MaxIndexedFiles is an exact compatibility limit, so the bridge
 	// spends only what preselection left unused.
 	selection.files = bridgeRegistrationHandlerFiles(ctx, source, selection.files, options.MaxIndexedFiles-len(selection.files))
+	if assessConfidence {
+		// The confidence describes the files indexed, so it is taken after the bridge: a
+		// handler file it adds can hold a term every file the cut kept lacks.
+		confidence := searchKeptTermCoverage(files, selection.files, matchedAnywhere, q, func(filePath string) []bool {
+			content, ok := source.read(filePath)
+			if !ok {
+				return nil
+			}
+			// The content pass is over, so this read is counted without its lock.
+			contentReads++
+			if strings.IndexByte(content, 0) >= 0 {
+				return nil
+			}
+			return matcher.match(content)
+		})
+		selection.preselectionConfidence = &confidence
+	}
 	selection.filesContentRead += contentReads
 	selection.preselectionBackend = "go-content"
 	selection.preselectionFilesExamined = len(scanPaths)
@@ -3120,6 +3153,15 @@ func preselectSearchFiles(
 		selection.gitGrepTreeish = ""
 	}
 	return selection, nil
+}
+
+// markSearchHits marks in result each term hits marks.
+func markSearchHits(result, hits []bool) {
+	for index, hit := range hits {
+		if hit && index < len(result) {
+			result[index] = true
+		}
+	}
 }
 
 const (

@@ -1,6 +1,11 @@
 package sem
 
-import "testing"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+)
 
 func confidenceResponse(scores []float64, files []string, section string) SearchResponse {
 	results := make([]SearchResult, 0, len(scores))
@@ -236,6 +241,242 @@ func TestAssessSearchConfidenceIgnoresTheDirectionOfTheTopTwoGap(t *testing.T) {
 			confidenceResponse(scores, []string{"src/a.go", "src/a.go", "src/a.go"}, ""))
 		if !assessment.Low {
 			t.Fatalf("a 0.01-point tie at %v was not reported", scores)
+		}
+	}
+}
+
+// A capped cold selection that left out every file matching part of the query is marked
+// whatever the ranking looks like, and ahead of the ranking's own reasons: the advice for it
+// is to widen or re-query, not to conclude the repository lacks the answer.
+func TestAssessSearchConfidenceMarksAColdIndexThatDroppedPartOfTheQuery(t *testing.T) {
+	t.Parallel()
+	threeFiles := []string{"src/a.go", "src/b.go", "src/c.go"}
+	withStats := func(scores []float64, stats SearchStats) SearchResponse {
+		response := confidenceResponse(scores, threeFiles, "")
+		response.Stats = stats
+		return response
+	}
+	cases := []struct {
+		name       string
+		response   SearchResponse
+		wantLow    bool
+		wantReason string
+	}{
+		{
+			name:     "a complete capped selection is not marked",
+			response: withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(1)}),
+		},
+		{
+			// Every path without a capped cold selection: the committed-tree grep, an
+			// explicit --max-indexed-files, a corpus under the limit.
+			name:     "no capped selection is not marked",
+			response: withStats([]float64{35.3, 33.3, 33.1}, SearchStats{}),
+		},
+		{
+			name:       "a strong ranking over a selection that dropped a term is marked",
+			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(0.5)}),
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.50)",
+		},
+		{
+			// The Git shortlist of a large worktree can drop a term before the cap is reached.
+			name:       "a selection that dropped a term before its cap is marked",
+			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionConfidence: preselectionConfidenceOf(0.5)}),
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.50)",
+		},
+		{
+			name:       "a selection whose files hold no matched term is marked",
+			response:   withStats([]float64{4.1, 3.0, 2.0}, SearchStats{PreselectionConfidence: preselectionConfidenceOf(0)}),
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.00)",
+		},
+		{
+			name:       "the dropped term outranks a weak score",
+			response:   withStats([]float64{4.1, 3.0, 2.0}, SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(0.75)}),
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.75)",
+		},
+		{
+			name:       "the printed confidence never rounds up to 1",
+			response:   withStats([]float64{35.3, 33.3, 33.1}, SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(0.996)}),
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.99)",
+		},
+		{
+			// No results there is not absence: the answer may be in a file the cut dropped.
+			name:       "an empty payload is marked too",
+			response:   SearchResponse{Stats: SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(0.5)}},
+			wantLow:    true,
+			wantReason: "the cold index left out every file matching part of the query (preselection confidence 0.50)",
+		},
+		{
+			name:     "an empty payload from a complete selection is not marked",
+			response: SearchResponse{Stats: SearchStats{PreselectionBounded: true, PreselectionConfidence: preselectionConfidenceOf(1)}},
+		},
+	}
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got := AssessSearchConfidence(testCase.response)
+			if got.Low != testCase.wantLow || got.Reason != testCase.wantReason {
+				t.Fatalf("assessment = Low %v reason %q, want Low %v reason %q",
+					got.Low, got.Reason, testCase.wantLow, testCase.wantReason)
+			}
+			if (got.Advice != "") != (testCase.wantReason != "") {
+				t.Fatalf("advice = %q, want advice only with the preselection reason", got.Advice)
+			}
+		})
+	}
+}
+
+// TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept runs the default cold
+// working-tree path end to end. Four hundred files name "needle" in their path and body; one
+// other file holds "quillwort" and nothing else, so it ranks last and the 384-file cap leaves
+// it out. The selection is what it was before issue 273's fix: still widened to the cap. The
+// confidence now says a query term is missing from every indexed file, and the notice says so.
+func TestSearchRepositoryReportsPreselectionConfidenceFromTheFilesKept(t *testing.T) {
+	t.Parallel()
+	repo := writeNeedleQuillwortFixture(t)
+
+	complete := searchColdWorktree(t, repo, "needle", false)
+	stats := complete.Stats
+	if stats.FilesIndexed != 384 || !stats.PreselectionBounded || stats.PreselectionPasses != 3 {
+		t.Fatalf("stats = %#v, want the cold selection widened to its 384-file cap", stats)
+	}
+	if confidenceValue(stats.PreselectionConfidence) != 1 {
+		t.Fatalf("preselection confidence = %v, want 1: every indexed file holds the only term", confidenceValue(stats.PreselectionConfidence))
+	}
+	if stats.PreselectionBoundaryGap <= 0 || stats.PreselectionBoundaryGap >= searchPreselectionMinBoundaryGap {
+		t.Fatalf("boundary gap = %v, want the small RRF step that keeps widening", stats.PreselectionBoundaryGap)
+	}
+
+	dropped := searchColdWorktree(t, repo, "needle quillwort", false)
+	if dropped.Stats.FilesIndexed != 384 || !dropped.Stats.PreselectionBounded {
+		t.Fatalf("stats = %#v, want the 384-file cap", dropped.Stats)
+	}
+	requirePreselectionNotice(t, "needle quillwort", dropped)
+}
+
+// --deep's sparse pass reads every candidate, the file left out included, but its candidates
+// still compete for the same few results with the indexed ones. On this fixture the quillwort
+// file first appears at rank 123 of --top-k 400, so the notice stays right.
+func TestSearchRepositoryKeepsThePreselectionNoticeForDeepSearches(t *testing.T) {
+	t.Parallel()
+	deep := searchColdWorktree(t, writeNeedleQuillwortFixture(t), "needle quillwort", true)
+	if deep.Stats.SparseFilesRead == 0 {
+		t.Fatalf("stats = %#v, want a sparse pass", deep.Stats)
+	}
+	for _, result := range deep.Results {
+		if result.FilePath == "docs/zz_other.md" {
+			t.Fatalf("the deep ranking now reaches the file the cold index left out; " +
+				"the preselection notice should account for the sparse pass")
+		}
+	}
+	requirePreselectionNotice(t, "needle quillwort", deep)
+}
+
+// writeNeedleQuillwortFixture writes 400 files that name "needle" in their path and body and
+// one that holds "quillwort" and nothing else, so it ranks last and the 384-file cap leaves
+// it out.
+func writeNeedleQuillwortFixture(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for index := 0; index < 400; index++ {
+		write(t, repo, fmt.Sprintf("docs/needle_%03d.md", index), "needle\n")
+	}
+	write(t, repo, "docs/zz_other.md", "quillwort\n")
+	return repo
+}
+
+func searchColdWorktree(t *testing.T, repo, query string, deep bool) SearchResponse {
+	t.Helper()
+	response, err := SearchRepository(t.Context(), repo, "test", query, SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		Deep:     deep,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+// requirePreselectionNotice fails unless the response reports a confidence below 1 and the
+// assessment carries the preselection notice with its advice.
+func requirePreselectionNotice(t *testing.T, query string, response SearchResponse) {
+	t.Helper()
+	if confidence := confidenceValue(response.Stats.PreselectionConfidence); confidence < 0 || confidence >= 1 {
+		t.Fatalf("%q: preselection confidence = %v, want below 1: no indexed file holds the second term", query, confidence)
+	}
+	assessment := AssessSearchConfidence(response)
+	if !assessment.Low || assessment.Advice != searchPreselectionLowAdvice ||
+		!strings.HasPrefix(assessment.Reason, "the cold index left out every file matching part of the query") {
+		t.Fatalf("%q: assessment = %#v, want the preselection notice", query, assessment)
+	}
+}
+
+// A TopK-adaptive limit is not one the caller chose, so its fixed cut is assessed like the
+// capped selection's; an explicit --max-indexed-files of the same size reports nothing.
+func TestSearchRepositoryReportsPreselectionConfidenceForAnAdaptiveLimit(t *testing.T) {
+	t.Parallel()
+	repo := writeNeedleQuillwortFixture(t)
+	const query = "needle quillwort"
+	response, err := SearchRepository(t.Context(), repo, "test", query, SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.FilesIndexed != 120 {
+		t.Fatalf("files indexed = %d, want the adaptive 120", response.Stats.FilesIndexed)
+	}
+	requirePreselectionNotice(t, query, response)
+
+	response, err = SearchRepository(t.Context(), repo, "test", query, SearchOptions{
+		Worktree:        true,
+		Profile:         ProfileSyntaxOnly,
+		TopK:            40,
+		MaxIndexedFiles: 120,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.PreselectionConfidence != nil {
+		t.Fatalf("explicit limit: preselection confidence = %v, want none", *response.Stats.PreselectionConfidence)
+	}
+}
+
+func preselectionConfidenceOf(value float64) *float64 { return &value }
+
+// confidenceValue reads a reported preselection confidence, -1 when none was reported.
+func confidenceValue(confidence *float64) float64 {
+	if confidence == nil {
+		return -1
+	}
+	return *confidence
+}
+
+// A capped selection whose kept files hold none of the matched terms reports 0, which must
+// stay distinguishable in JSON from a query that never ran the capped selection.
+func TestSearchStatsKeepAZeroPreselectionConfidenceInJSON(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		stats SearchStats
+		want  bool
+	}{
+		{stats: SearchStats{PreselectionConfidence: preselectionConfidenceOf(0)}, want: true},
+		{stats: SearchStats{}, want: false},
+	} {
+		encoded, err := json.Marshal(tc.stats)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), `"preselection_confidence":0`) != tc.want {
+			t.Fatalf("json = %s, want preselection_confidence present: %v", encoded, tc.want)
 		}
 	}
 }

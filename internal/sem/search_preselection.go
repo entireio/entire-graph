@@ -9,8 +9,12 @@ import (
 const (
 	searchPreselectionRRFConstant       = 60
 	searchPreselectionMaxWideningFactor = 4
-	searchPreselectionMinConfidence     = 0.15
-	searchPreselectionDirectoryTarget   = 3
+	// searchPreselectionMinBoundaryGap is the relative fused-score drop at the cut
+	// that counts as a decisive boundary. Fusion keeps only ranks, so it is reached
+	// where the first file left out drops out of a channel the last file kept is
+	// in, not by an ordinary step down one channel (see searchPreselectionBoundaryGap).
+	searchPreselectionMinBoundaryGap  = 0.15
+	searchPreselectionDirectoryTarget = 3
 )
 
 // searchPreselectionEvidence holds independent, file-level signals gathered
@@ -36,6 +40,16 @@ type searchPreselectionAssessment struct {
 	Diversity  float64
 	Widened    bool
 	Bounded    bool
+	// BoundaryGap is the relative drop in fused score between the last file kept
+	// and the first file left out, 1 when nothing was left out. It decides whether
+	// the cut is decisive enough to stop widening, but it does not describe the
+	// files kept: two neighbours in the same channels differ by about 1/(61+rank),
+	// so it is near zero at almost every cut. Confidence, which the stats report as
+	// preselection_confidence, is Coverage instead: below 1, a query term that
+	// matches files in the repository matches none of the files kept, so the
+	// ranking cannot see an answer that lives in the files left out. The reported value
+	// is recomputed over the files finally indexed (see searchKeptTermCoverage).
+	BoundaryGap float64
 }
 
 // fuseSearchPreselectionEvidence applies reciprocal-rank fusion to the
@@ -97,7 +111,7 @@ func selectProgressiveSearchFiles(
 	baseLimit int,
 ) searchPreselectionAssessment {
 	if baseLimit <= 0 || len(evidence) == 0 {
-		return searchPreselectionAssessment{Coverage: 1, Diversity: 1}
+		return searchPreselectionAssessment{BoundaryGap: 1, Confidence: 1, Coverage: 1, Diversity: 1}
 	}
 	if !searchPreselectionFused(evidence) {
 		evidence = fuseSearchPreselectionEvidence(evidence)
@@ -115,10 +129,11 @@ func selectProgressiveSearchFiles(
 		for index, item := range selected {
 			assessment.Files[index] = item.Path
 		}
-		assessment.Confidence = searchPreselectionConfidence(evidence, limit)
+		assessment.BoundaryGap = searchPreselectionBoundaryGap(evidence, limit)
 		assessment.Coverage = searchPreselectionCoverage(selected, matchedAnywhere, q)
 		assessment.Diversity = searchPreselectionDiversity(selected, evidence)
-		if assessment.Confidence >= searchPreselectionMinConfidence &&
+		assessment.Confidence = assessment.Coverage
+		if assessment.BoundaryGap >= searchPreselectionMinBoundaryGap &&
 			assessment.Coverage == 1 && assessment.Diversity == 1 {
 			assessment.Widened = assessment.Passes > 1
 			return assessment
@@ -146,7 +161,12 @@ func searchPreselectionFused(evidence []searchPreselectionEvidence) bool {
 	return false
 }
 
-func searchPreselectionConfidence(evidence []searchPreselectionEvidence, limit int) float64 {
+// searchPreselectionBoundaryGap is 1 - next/current over the fused scores at the
+// cut. Reciprocal-rank fusion keeps only ranks, so a file one rank below its
+// neighbour in the same channels scores (60+r)/(61+r) of it and the gap is about
+// 1/(61+r): 0.0064 at the default 96 files, 0.0022 at the 384-file cap. Only a
+// file that drops out of a channel opens a gap near the stop threshold.
+func searchPreselectionBoundaryGap(evidence []searchPreselectionEvidence, limit int) float64 {
 	if limit >= len(evidence) {
 		return 1
 	}
@@ -155,6 +175,40 @@ func searchPreselectionConfidence(evidence []searchPreselectionEvidence, limit i
 		return 0
 	}
 	return math.Max(0, 1-next/current)
+}
+
+// searchKeptTermCoverage is the coverage of the kept files against every term matchedAnywhere
+// marks, from the files the content pass scored. A kept file the content pass did not score
+// (the registration bridge can add one) gets its terms from termsOf, and they count as
+// matched in the repository too, since that file holds them. With no such file it equals the
+// capped selection's own Coverage.
+func searchKeptTermCoverage(
+	files []searchFileCandidate,
+	kept []string,
+	matchedAnywhere []bool,
+	q searchQuery,
+	termsOf func(path string) []bool,
+) float64 {
+	matched := append([]bool(nil), matchedAnywhere...)
+	keptPaths := make(map[string]bool, len(kept))
+	for _, path := range kept {
+		keptPaths[path] = true
+	}
+	selected := make([]searchPreselectionEvidence, 0, len(kept))
+	for _, file := range files {
+		if keptPaths[file.path] {
+			selected = append(selected, searchPreselectionEvidence{Path: file.path, MatchedTerms: file.matchedTerms})
+			delete(keptPaths, file.path)
+		}
+	}
+	for _, path := range kept {
+		if keptPaths[path] && termsOf != nil {
+			terms := termsOf(path)
+			markSearchHits(matched, terms)
+			selected = append(selected, searchPreselectionEvidence{Path: path, MatchedTerms: terms})
+		}
+	}
+	return searchPreselectionCoverage(selected, matched, q)
 }
 
 func searchPreselectionCoverage(selected []searchPreselectionEvidence, matchedAnywhere []bool, q searchQuery) float64 {
