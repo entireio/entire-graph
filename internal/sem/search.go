@@ -3415,10 +3415,9 @@ func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]s
 			marked = append(marked, filePath)
 		}
 	}
-	hidden, err := files.hidden()
-	if err != nil {
-		return nil, err
-	}
+	// A failed listing names none of them, which leaves the pass as it was without them: the
+	// confidence can then read high, never low.
+	hidden, _ := files.hidden()
 	for filePath := range hidden {
 		if files.eligible(filePath) {
 			marked = append(marked, filePath)

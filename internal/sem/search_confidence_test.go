@@ -2,6 +2,7 @@ package sem
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -788,6 +789,13 @@ func TestSearchGitUnreadTermsSearchesIndexHiddenFiles(t *testing.T) {
 		marked, _, _ := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, []string{"needle"}))
 		requireSearchTermsMarked(t, tc.query, q, marked, tc.want)
 	}
+
+	// A failed listing of those files costs only their terms, not the rest of the pass.
+	files.sampled = nil
+	files.indexHidden = func() (map[string]bool, error) { return nil, errors.New("listing failed") }
+	q := buildSearchQuery("needle turnstone avocet")
+	marked, _, _ := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, []string{"needle"}))
+	requireSearchTermsMarked(t, "needle turnstone avocet", q, marked, map[string]bool{"turnstone": true, "avocet": false})
 }
 
 // Git's sample can match a term in a file the shortlist dropped, and the term counts only once
