@@ -114,6 +114,7 @@ func Context(explicit, host string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	ceilings := gitCeilingDirectories()
 	for {
 		_, err := os.Lstat(filepath.Join(p, ".git"))
 		if err == nil {
@@ -122,8 +123,10 @@ func Context(explicit, host string) (string, error) {
 		if !os.IsNotExist(err) {
 			return "", err
 		}
+		// The starting directory is examined even when it is itself a
+		// ceiling, as git does; the walk never steps UP into one.
 		parent := filepath.Dir(p)
-		if parent == p {
+		if parent == p || isGitCeiling(parent, ceilings) {
 			return "", nil
 		}
 		p = parent
