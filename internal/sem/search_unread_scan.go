@@ -18,13 +18,14 @@ const searchUnreadScanBytes = 1 << 20
 // the whole file to grep it. A window ends after its last newline, and no query term holds
 // one, so the matcher sees whole lines, as in a file it reads whole. A line longer than a
 // window is cut where the window ends instead, and the next window starts overlap bytes
-// before the cut (searchUnreadScanOverlap), so every occurrence of a term lies wholly in one
-// window, past the character the cut or that start may fall inside. A word either falls
-// inside goes on past the window, so the window's alias tokens leave it out
-// (searchWholeWords): an abbreviation is never found in part of a longer word, and is missed
-// only in a word too long to lie whole in a window. It marks in result the terms it finds and
-// stops as soon as done reports true. It reports false when the file cannot be opened or read;
-// what it marked stays marked.
+// before the cut (searchUnreadScanOverlap), or at the start of the word the cut falls inside
+// when that is further back but within half a window. So every occurrence of a term lies
+// wholly in one window, past the character the cut or that start may fall inside, and so does
+// every word no longer than half a window. A window's alias tokens leave out a word it starts
+// or ends inside, which goes on past it (searchWholeWords): an abbreviation is never found in
+// part of a longer word, and is missed only in a word longer than half a window. It marks in
+// result the terms it finds and stops as soon as done reports true. It reports false when the
+// file cannot be opened or read; what it marked stays marked.
 func (files searchUnreadFiles) scan(filePath string, matcher searchTermMatcher, overlap int, result []bool, done func() bool) bool {
 	if files.open == nil {
 		return false
@@ -54,6 +55,9 @@ func (files searchUnreadFiles) scan(filePath string, matcher searchTermMatcher, 
 				cut, next = newline+1, newline+1
 			} else {
 				next, trail = max(0, cut-overlap), true
+				if start := searchWordStart(buf[:cut], window/2); start >= 0 {
+					next = min(next, start)
+				}
 			}
 		}
 		found := matcher.match(string(buf[:cut]))
@@ -64,8 +68,8 @@ func (files searchUnreadFiles) scan(filePath string, matcher searchTermMatcher, 
 		if last || done() {
 			return true
 		}
-		lastRune, _ := utf8.DecodeLastRune(buf[:next])
-		lead = next > 0 && searchWordRune(lastRune)
+		lastRune, size := utf8.DecodeLastRune(buf[:next])
+		lead = next > 0 && searchWordRune(lastRune, size)
 		kept = copy(buf, buf[next:end])
 	}
 }
@@ -76,14 +80,14 @@ func (files searchUnreadFiles) scan(filePath string, matcher searchTermMatcher, 
 func searchWholeWords(text []byte, lead, trail bool) []byte {
 	for trail && len(text) > 0 {
 		r, size := utf8.DecodeLastRune(text)
-		if !searchWordRune(r) {
+		if !searchWordRune(r, size) {
 			break
 		}
 		text = text[:len(text)-size]
 	}
 	for lead && len(text) > 0 {
 		r, size := utf8.DecodeRune(text)
-		if !searchWordRune(r) {
+		if !searchWordRune(r, size) {
 			break
 		}
 		text = text[size:]
@@ -91,10 +95,28 @@ func searchWholeWords(text []byte, lead, trail bool) []byte {
 	return text
 }
 
-// searchWordRune reports whether r can be part of a word searchSourceWordPattern matches. An
-// invalid byte counts too, since it can be part of a character a window edge cuts through.
-func searchWordRune(r rune) bool {
-	return r == utf8.RuneError || unicode.IsLetter(r) || unicode.IsNumber(r) || strings.ContainsRune("_./:+#-", r)
+// searchWordStart returns where the word text ends inside starts, or len(text) when text ends
+// after a character outside any word. It returns -1 when the word reaches further back than
+// limit bytes, or to the start of text, before which it may go on.
+func searchWordStart(text []byte, limit int) int {
+	for start := len(text); start > 0 && len(text)-start <= limit; {
+		r, size := utf8.DecodeLastRune(text[:start])
+		if !searchWordRune(r, size) {
+			return start
+		}
+		start -= size
+	}
+	return -1
+}
+
+// searchWordRune reports whether r, decoded from size bytes, can be part of a word
+// searchSourceWordPattern matches. An invalid byte counts too, since it can be part of a
+// character a window edge cuts through; a U+FFFD the text holds does not.
+func searchWordRune(r rune, size int) bool {
+	if r == utf8.RuneError {
+		return size == 1
+	}
+	return unicode.IsLetter(r) || unicode.IsNumber(r) || strings.ContainsRune("_./:+#-", r)
 }
 
 // searchUnreadScanOverlap is the overlap searchUnreadFiles.scan needs for q: an occurrence of

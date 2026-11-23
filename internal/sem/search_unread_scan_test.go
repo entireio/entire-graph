@@ -154,3 +154,37 @@ func TestSearchUnreadScanTakesNoAliasFromPartOfAWord(t *testing.T) {
 		}
 	}
 }
+
+// A window that ends inside a word shorter than half a window hands the whole word to the
+// next one, so an alias in an identifier longer than the overlap is found wherever the cut
+// falls, and a U+FFFD in the text separates words as it does for the whole file.
+func TestSearchUnreadScanFindsAnAliasInAWordAWindowEdgeCuts(t *testing.T) {
+	t.Parallel()
+	q := buildSearchQuery("integer value")
+	alias := slices.Index(q.terms, "int")
+	if alias < 0 || searchUnreadScanOverlap(q) >= 100 {
+		t.Fatalf("terms = %q, overlap %d, want the inferred alias int and an overlap under 100 bytes", q.terms, searchUnreadScanOverlap(q))
+	}
+	for _, tc := range []struct {
+		window    int
+		word, sep string
+	}{
+		{256, strings.Repeat("a", 50) + "_int_" + strings.Repeat("b", 50), " "},
+		// Only the U+FFFDs part int from the runs of x and y.
+		{16, "\uFFFDint\uFFFD", ""},
+	} {
+		for offset := range 2 * tc.window {
+			content := strings.Repeat("x", offset) + tc.sep + tc.word + tc.sep + strings.Repeat("y", 3*tc.window)
+			if whole := newSearchQueryTermMatcher(q).match(content); !whole[alias] {
+				t.Fatalf("offset %d: the matcher misses int in %q", offset, tc.word)
+			}
+			result := make([]bool, len(q.terms))
+			if !searchTestScanFiles(content, tc.window, nil, nil).scan("f", newSearchQueryTermMatcher(q), searchUnreadScanOverlap(q), result, func() bool { return false }) {
+				t.Fatal("scan failed")
+			}
+			if !result[alias] {
+				t.Fatalf("window %d, offset %d: scan missed int in %q", tc.window, offset, tc.word)
+			}
+		}
+	}
+}
