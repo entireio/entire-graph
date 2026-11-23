@@ -51,6 +51,13 @@ const (
 	// IdentityRevision is a global, opaque revision of parser identity rules across
 	// all languages. Change it when corrections re-key existing symbols.
 	//
+	// Revision 9: a bare `&` in JSX text ("Terms & Privacy") or in a JSX
+	// attribute string (`href="/s?q=1&page=2"`) no longer fails the parse of a
+	// .tsx, .jsx or .js file (issue #409). Those files parsed with an ERROR node
+	// before; they now parse cleanly and may yield declarations and relations the
+	// recovered tree lost. The caches are keyed on the source tree, so revision-8
+	// records would keep serving the E_PARSE_ERROR.
+	//
 	// Revision 8: recover PostgreSQL identity columns, named CHECK constraints,
 	// and DO blocks with LANGUAGE clauses while preserving static declarations.
 	// Stop treating identifier prefixes as constraints. Invalidate cached partial
@@ -86,7 +93,7 @@ const (
 	// `C.helper` (kind "method"). This re-keys every Python nested-callable
 	// symbol, and it un-keys the `#sig:` suffixes that the phantom forced onto
 	// real same-named members.
-	IdentityRevision     = "8"
+	IdentityRevision     = "9"
 	defaultMaxParseBytes = 4 * 1024 * 1024
 	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
 	// per-file indexes a snapshot keeps (one file record and its retained symbols)
