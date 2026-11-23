@@ -110,7 +110,10 @@ func TestSelectiveCacheFailsClosedOnUnreadableGenerationMarker(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.Symlink(outside, markerPath); err != nil {
-				t.Fatal(err)
+				// The package's idiom: a host that withholds the symlink
+				// privilege (Windows without Developer Mode) cannot express
+				// this corruption, which is not a failure of the reader.
+				t.Skipf("symlinks unavailable: %v", err)
 			}
 		},
 		"not a gzip stream": func(t *testing.T, markerPath string) {

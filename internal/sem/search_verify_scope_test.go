@@ -338,6 +338,11 @@ func TestReconcileLedger(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not on PATH; the derivation is pinned above")
 	}
+	// The command is replayed through a POSIX shell, which Git for Windows
+	// ships but does not put on PATH by default (CI runners add it).
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not on PATH; the derivation is pinned above")
+	}
 	command := exec.CommandContext(t.Context(), "sh", "-c", strings.Replace(want, "go test", "go test -v", 1))
 	command.Dir = scope
 	command.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
