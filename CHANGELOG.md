@@ -142,7 +142,8 @@ auto-generated notes on
   worktree of 10,000 files or more, where Git shortlists the files first, it is
   reported even when nothing was cut, and it also counts the terms held only by
   files the content pass left unread, text files that `.gitattributes` marks
-  binary included. It used to report the relative fused-score drop at the cut,
+  binary included. As before, a limit set with `--max-indexed-files` reports
+  none. It used to report the relative fused-score drop at the cut,
   which reciprocal-rank fusion keeps near 1/(61+rank) at almost every cut (about
   0.0022 at the 384-file cap), so it read as near-zero confidence on every
   query. That drop still decides widening, so which files are indexed is

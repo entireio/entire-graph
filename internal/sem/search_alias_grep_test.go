@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // aliasPreselect runs the committed-tree preselection against a complete
@@ -185,6 +187,27 @@ func TestCommittedAliasPreselectionValidatesOversizeHitsByLine(t *testing.T) {
 // A pattern for a term outside ASCII matches it in any case, and holds no bracket expression
 // with a character outside ASCII, which Git's C locale would read as a set of single bytes.
 // A term with a control byte or invalid UTF-8 gets no pattern.
+// The matcher lowers text with strings.ToLower, so the pattern for a character outside ASCII
+// must match every character that lowers to it, not only its upper and title case forms.
+func TestSearchFoldedUTF8LiteralMatchesEveryCharacterThatLowersToIt(t *testing.T) {
+	t.Parallel()
+	checked := 0
+	for value := rune(utf8.RuneSelf); value <= unicode.MaxRune; value++ {
+		lower := unicode.ToLower(value)
+		if lower < utf8.RuneSelf || lower == value {
+			continue
+		}
+		pattern := searchFoldedUTF8Literal(string(lower))
+		if !regexp.MustCompilePOSIX("^" + pattern + "$").MatchString(string(value)) {
+			t.Fatalf("pattern %q for %q does not match %q (%U)", pattern, lower, value, value)
+		}
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("no character outside ASCII lowers to another one")
+	}
+}
+
 func TestSearchGitUnreadPatternsMatchNonASCIITermsInAnyLocale(t *testing.T) {
 	t.Parallel()
 	q := buildSearchQuery(`needle "сорока" "Straße"`)

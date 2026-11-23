@@ -761,6 +761,42 @@ func TestSearchGitUnreadTermsSearchesUntrackedFiles(t *testing.T) {
 	}
 }
 
+// A file in HEAD outside the corpus can be a directory in the index since. Skipping it as one
+// of HEAD's excluded paths would leave out the corpus files under it, so it is not skipped.
+func TestSearchGitUnreadTermsSearchesUnderAFileThatBecameADirectory(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "assets", "a file in HEAD\n")
+	write(t, repo, "kept.md", "needle\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "fixture")
+	git(t, repo, "rm", "-q", "assets")
+	// Over the 200-byte read cap below, so too large for the content pass to read.
+	write(t, repo, "assets/source.go", "// whimbrel\n"+strings.Repeat("x\n", 200))
+	git(t, repo, "add", "assets/source.go")
+	allowed := map[string]bool{"kept.md": true, "assets/source.go": true}
+	files := searchTestUnreadFiles(repo, allowed, map[string]bool{"kept.md": true}, 200)
+
+	q := buildSearchQuery("needle whimbrel")
+	marked, passes, examined := searchTestGitUnreadTerms(t, files, q, []string{"needle"})
+	requireSearchTermsMarked(t, "needle whimbrel", q, marked, map[string]bool{"needle": true, "whimbrel": true})
+	if passes != 1 || examined != 1 {
+		t.Fatalf("passes = %d, files examined again = %d, want 1 and 1", passes, examined)
+	}
+}
+
+func TestSearchGitWorktreeExclusionsKeepTheDirectoriesOfCorpusFiles(t *testing.T) {
+	t.Parallel()
+	corpus := map[string]bool{"assets/icons/source.go": true, "docs/b.md": true, "top.go": true}
+	got := searchGitWorktreeExclusions([]string{"assets", "big.bin", "assets/icons", "doc", "docs/a.md", "docs"}, corpus)
+	if want := []string{"big.bin", "doc", "docs/a.md"}; !slices.Equal(got, want) {
+		t.Fatalf("exclusions = %q, want %q", got, want)
+	}
+}
+
 // A worktree `git grep` reads a file marked assume-unchanged or skip-worktree from its index
 // blob, and skips a path the index records as a symlink or a submodule even once the worktree
 // holds a regular file there, so the listing misses a term only the worktree content of such a file
@@ -853,13 +889,16 @@ func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 	write(t, repo, "marked.txt", "sandpiper\n")
 	// Upper case, and with no ASCII fragment Git could find it by.
 	write(t, repo, "magpie.md", "СОРОКА\n")
+	// Starts with the ohm sign, which strings.ToLower maps to ω although it is not ω's upper
+	// case form, the Greek capital omega.
+	write(t, repo, "omega.md", "\u2126ΜΕΓΑ\n")
 	// The default driver makes every file here binary to Git's -I, and a driver set to auto
 	// is one `git config --bool` refuses; the listing still finds late-nul.md.
 	git(t, repo, "config", "diff.default.binary", "true")
 	git(t, repo, "config", "diff.autod.binary", "auto")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-q", "-m", "fixture")
-	allowed := map[string]bool{"late-nul.md": true, "clean.md": true, "big.md": true, "marked.txt": true, "magpie.md": true}
+	allowed := map[string]bool{"late-nul.md": true, "clean.md": true, "big.md": true, "marked.txt": true, "magpie.md": true, "omega.md": true}
 	files := searchTestUnreadFiles(repo, allowed, nil, 16000)
 
 	for _, tc := range []struct {
@@ -882,6 +921,7 @@ func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 		{query: "siskin", known: []string{"siskin"}, sampled: map[string][]string{"clean.md": {"siskin"}}, want: map[string]bool{"siskin": true}},
 		{query: `sandpiper "café"`, want: map[string]bool{"sandpiper": true, "café": false}, passes: 1, examined: 1},
 		{query: `sandpiper "сорока"`, want: map[string]bool{"sandpiper": true, "сорока": true}, passes: 1, examined: 2},
+		{query: `sandpiper "ωμεγα"`, want: map[string]bool{"sandpiper": true, "ωμεγα": true}, passes: 1, examined: 2},
 	} {
 		q := buildSearchQuery(tc.query)
 		files.sampled = nil

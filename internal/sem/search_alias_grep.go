@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -171,9 +172,11 @@ func searchTermHasGitUnreadPattern(term string) bool {
 
 // searchFoldedUTF8Literal is searchFoldedLiteral for text that may hold characters outside
 // ASCII. A bracket expression holding one would match single bytes in Git's C locale, so each
-// such character matches as an alternation of its case forms instead, which reads the same
-// bytes in any locale.
+// such character matches as an alternation instead, which reads the same bytes in any locale.
+// It holds the character's case forms and every other character strings.ToLower maps to the
+// same one, as the matcher's lowering does, such as the ohm sign Ω for ω.
 func searchFoldedUTF8Literal(text string) string {
+	initSearchUnicodeLowerAlternatives()
 	var out strings.Builder
 	for _, r := range text {
 		lower := unicode.ToLower(r)
@@ -182,7 +185,8 @@ func searchFoldedUTF8Literal(text string) string {
 			continue
 		}
 		forms := []string{regexp.QuoteMeta(string(lower))}
-		for _, form := range []rune{unicode.ToUpper(r), unicode.ToTitle(r), r} {
+		candidates := append([]rune{unicode.ToUpper(r), unicode.ToTitle(r), r}, searchUnicodeLowerAlternatives[lower]...)
+		for _, form := range candidates {
 			if quoted := regexp.QuoteMeta(string(form)); !slices.Contains(forms, quoted) {
 				forms = append(forms, quoted)
 			}
@@ -194,6 +198,24 @@ func searchFoldedUTF8Literal(text string) string {
 		out.WriteString("(" + strings.Join(forms, "|") + ")")
 	}
 	return out.String()
+}
+
+var (
+	searchUnicodeLowerAlternativesOnce sync.Once
+	// searchUnicodeLowerAlternatives maps each character outside ASCII to the others that
+	// unicode.ToLower maps to it, as searchASCIILowerAlternatives does for ASCII.
+	searchUnicodeLowerAlternatives map[rune][]rune
+)
+
+func initSearchUnicodeLowerAlternatives() {
+	searchUnicodeLowerAlternativesOnce.Do(func() {
+		searchUnicodeLowerAlternatives = map[rune][]rune{}
+		for value := rune(utf8.RuneSelf); value <= unicode.MaxRune; value++ {
+			if lower := unicode.ToLower(value); lower >= utf8.RuneSelf && lower != value {
+				searchUnicodeLowerAlternatives[lower] = append(searchUnicodeLowerAlternatives[lower], value)
+			}
+		}
+	})
 }
 
 func searchFoldedLiteral(text string) string {

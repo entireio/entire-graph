@@ -3399,7 +3399,8 @@ func (files searchUnreadFiles) sampledFromIndex(filePath string) bool {
 // to read or unreadable. No excluded asset or binary outside them is read in full. The Git
 // pass skips the largest of HEAD's files outside the corpus, as the committed-tree alias grep
 // does (searchGitGrepExcludedPaths): it would discard them anyway, so skipping them only
-// saves reading them.
+// saves reading them. A corpus file can lie under one of them, a file in HEAD that is a
+// directory now, and that one is not skipped (searchGitWorktreeExclusions).
 func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]string, error) {
 	var unread []string
 	keep := func(filePath string) error {
@@ -3408,7 +3409,7 @@ func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]s
 		}
 		return ctx.Err()
 	}
-	outside := searchGitGrepExcludedPaths(ctx, files.absRepo, "HEAD", files.allowed)
+	outside := searchGitWorktreeExclusions(searchGitGrepExcludedPaths(ctx, files.absRepo, "HEAD", files.allowed), files.allowed)
 	if err := gitutil.GrepIndexPatternFiles(ctx, files.absRepo, patterns, outside, keep); err != nil {
 		return nil, err
 	}
@@ -3443,6 +3444,29 @@ func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]s
 	}
 	sort.Strings(unread)
 	return slices.Compact(unread), nil
+}
+
+// searchGitWorktreeExclusions drops from outside each path that a corpus file lies under. A
+// file in HEAD can have become a directory in the worktree since, and an exclusion pathspec
+// for it would leave out that directory's whole tree.
+func searchGitWorktreeExclusions(outside []string, corpus map[string]bool) []string {
+	if len(outside) == 0 {
+		return outside
+	}
+	dirs := map[string]bool{}
+	for filePath := range corpus {
+		for dir := filePath; ; {
+			cut := strings.LastIndexByte(dir, '/')
+			if cut < 0 {
+				break
+			}
+			if dir = dir[:cut]; dirs[dir] {
+				break
+			}
+			dirs[dir] = true
+		}
+	}
+	return slices.DeleteFunc(outside, func(filePath string) bool { return dirs[filePath] })
 }
 
 // sniffsBinary reports whether filePath's first searchBinarySniffBytes hold a NUL byte, or
