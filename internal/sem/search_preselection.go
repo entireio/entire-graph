@@ -48,8 +48,7 @@ type searchPreselectionAssessment struct {
 	// preselection_confidence, is Coverage instead: below 1, a query term that
 	// matches files in the repository matches none of the files kept, so the
 	// ranking cannot see an answer that lives in the files left out. The reported value
-	// is recomputed over every matched term, including those only in files the content
-	// pass never read (see searchKeptTermCoverage).
+	// is recomputed over the files finally indexed (see searchKeptTermCoverage).
 	BoundaryGap float64
 }
 
@@ -178,25 +177,19 @@ func searchPreselectionBoundaryGap(evidence []searchPreselectionEvidence, limit 
 	return math.Max(0, 1-next/current)
 }
 
-// searchKeptTermCoverage is the coverage of the kept files against every term matched in
-// the repository: matchedAnywhere from the files the content pass scored, plus unread, the
-// terms Git matched only in files that pass never read. A kept file the content pass did
-// not score (the registration bridge can add one) gets its terms from termsOf, and they count
-// as matched in the repository too, since that file holds them. With no unread terms and no
-// such file it equals the capped selection's own Coverage.
+// searchKeptTermCoverage is the coverage of the kept files against every term matchedAnywhere
+// marks, from the files the content pass scored. A kept file the content pass did not score
+// (the registration bridge can add one) gets its terms from termsOf, and they count as
+// matched in the repository too, since that file holds them. With no such file it equals the
+// capped selection's own Coverage.
 func searchKeptTermCoverage(
 	files []searchFileCandidate,
 	kept []string,
-	matchedAnywhere, unread []bool,
+	matchedAnywhere []bool,
 	q searchQuery,
 	termsOf func(path string) []bool,
 ) float64 {
 	matched := append([]bool(nil), matchedAnywhere...)
-	for index, hit := range unread {
-		if hit && index < len(matched) {
-			matched[index] = true
-		}
-	}
 	keptPaths := make(map[string]bool, len(kept))
 	for _, path := range kept {
 		keptPaths[path] = true

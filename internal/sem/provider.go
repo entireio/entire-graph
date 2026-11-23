@@ -1036,12 +1036,6 @@ type contentReader func(path string) (string, bool)
 // without reading whole files.
 type prefixReader func(path string, limit int) (string, bool)
 
-// streamOpener opens a file for a streaming read of any size, under the same
-// containment rules as the content reader, and returns its size. The caller
-// closes it. Only the working-tree source has one: a committed blob read is all
-// or nothing.
-type streamOpener func(path string) (io.ReadCloser, int64, bool)
-
 // oversizeFile describes a file the content reader refused to materialize
 // because it exceeds the read cap. The size, content hash and line count are
 // computed by streaming the file in a fixed window, so a snapshot can still
@@ -1076,7 +1070,6 @@ type sourceContext struct {
 	paths      []string
 	read       contentReader
 	readPrefix prefixReader
-	open       streamOpener
 	oversize   oversizeReader
 	// ignores is the exact matcher that admitted paths. Search carries it to
 	// whole-tree Git-grep filtering so no second policy-file read can diverge
@@ -2127,7 +2120,6 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		paths:       paths,
 		read:        opened.read,
 		readPrefix:  opened.readPrefix,
-		open:        opened.open,
 		oversize:    opened.oversize,
 		ignores:     opened.ignores,
 		close:       opened.close,
@@ -13773,7 +13765,6 @@ type openedSource struct {
 	paths      []string
 	read       contentReader
 	readPrefix prefixReader
-	open       streamOpener
 	oversize   oversizeReader
 	ignores    ignoreMatcher
 	// prime deterministically admits the final filtered committed-tree paths
@@ -14072,33 +14063,10 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		}
 		return string(buf[:n]), true
 	}
-	open := func(path string) (io.ReadCloser, int64, bool) {
-		name := filepath.FromSlash(path)
-		info, err := root.Lstat(name)
-		if err != nil {
-			return openFallback(pinned, repo, path)
-		}
-		if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return nil, 0, false
-		}
-		file, err := root.Open(name)
-		if err != nil {
-			return openFallback(pinned, repo, path)
-		}
-		// The size is the opened file's, not the Lstat's, so a file replaced in
-		// between is judged by what will be read.
-		opened, err := file.Stat()
-		if err != nil || !opened.Mode().IsRegular() {
-			_ = file.Close()
-			return nil, 0, false
-		}
-		return file, opened.Size(), true
-	}
 	return openedSource{
 		paths:      paths,
 		read:       read,
 		readPrefix: readPrefix,
-		open:       open,
 		oversize:   registry.lookup,
 		ignores:    ignores,
 		// This field was nil while the working-tree reader held no handle. The root
@@ -14302,15 +14270,6 @@ func readPrefixFallback(pinned fs.FileInfo, repo, relPath string, limit int) (st
 	return string(buf[:n]), true
 }
 
-// openFallback is readFallback's counterpart for a streaming read.
-func openFallback(pinned fs.FileInfo, repo, relPath string) (io.ReadCloser, int64, bool) {
-	file, info, ok := openContainedRegularFile(pinned, repo, relPath)
-	if !ok {
-		return nil, 0, false
-	}
-	return file, info.Size(), true
-}
-
 // openManuallyConfinedWorktreeSource builds a refusal-only worktree source for
 // the defensive case where the repository root could not be held open. Without
 // that descriptor, pathname identity cannot be trusted across concurrent
@@ -14325,9 +14284,6 @@ func openManuallyConfinedWorktreeSource(repo string, paths []string, ignores ign
 		},
 		readPrefix: func(path string, limit int) (string, bool) {
 			return readPrefixFallback(pinned, repo, path, limit)
-		},
-		open: func(path string) (io.ReadCloser, int64, bool) {
-			return openFallback(pinned, repo, path)
 		},
 		oversize: registry.lookup,
 		ignores:  ignores,

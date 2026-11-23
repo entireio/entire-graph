@@ -3,12 +3,9 @@ package sem
 import (
 	"context"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
@@ -117,105 +114,6 @@ func searchGitAliasPatternsForTerms(q searchQuery, terms []string) []string {
 		}
 	}
 	return patterns
-}
-
-// searchGitUnreadPatterns returns the patterns searchGitUnreadTerms lists unread files with,
-// one for each of terms, which must each pass searchTermHasGitUnreadPattern. A printable-ASCII
-// term gets the pattern every Git pass gives it (searchGitAliasPatternsForTerms). Any other
-// term gets one of its own (searchFoldedUTF8Literal), which the passes that shortlist files do
-// not use: Git's C-locale matching can disagree with the query's matcher, and a file they miss
-// is dropped. This pass only lists files the matcher then confirms, so a file its pattern
-// misses can leave the confidence high, never low. It returns nil when the patterns exceed
-// maxSearchGitAliasPatternBytes.
-func searchGitUnreadPatterns(q searchQuery, terms []string) []string {
-	var ascii, other []string
-	for _, term := range terms {
-		if searchTermsSafeForGitGrep([]string{term}) {
-			ascii = append(ascii, term)
-		} else {
-			other = append(other, term)
-		}
-	}
-	var patterns []string
-	if len(ascii) > 0 {
-		if patterns = searchGitAliasPatternsForTerms(q, ascii); patterns == nil {
-			return nil
-		}
-	}
-	bytes := 0
-	for _, pattern := range patterns {
-		bytes += len(pattern) + 4
-	}
-	for _, term := range other {
-		pattern := searchFoldedUTF8Literal(term)
-		if bytes += len(pattern) + 4; bytes > maxSearchGitAliasPatternBytes {
-			return nil
-		}
-		patterns = append(patterns, pattern)
-	}
-	return patterns
-}
-
-// searchTermHasGitUnreadPattern reports whether searchGitUnreadPatterns can build a pattern
-// for term: valid UTF-8 with no control byte, which would end or corrupt a pattern line.
-func searchTermHasGitUnreadPattern(term string) bool {
-	if term == "" || !utf8.ValidString(term) {
-		return false
-	}
-	for index := 0; index < len(term); index++ {
-		if term[index] < 0x20 || term[index] == 0x7f {
-			return false
-		}
-	}
-	return true
-}
-
-// searchFoldedUTF8Literal is searchFoldedLiteral for text that may hold characters outside
-// ASCII. A bracket expression holding one would match single bytes in Git's C locale, so each
-// such character matches as an alternation instead, which reads the same bytes in any locale.
-// It holds the character's case forms and every other character strings.ToLower maps to the
-// same one, as the matcher's lowering does, such as the ohm sign Ω for ω.
-func searchFoldedUTF8Literal(text string) string {
-	initSearchUnicodeLowerAlternatives()
-	var out strings.Builder
-	for _, r := range text {
-		lower := unicode.ToLower(r)
-		if lower < utf8.RuneSelf {
-			out.WriteString(searchFoldedLiteral(string(lower)))
-			continue
-		}
-		forms := []string{regexp.QuoteMeta(string(lower))}
-		candidates := append([]rune{unicode.ToUpper(r), unicode.ToTitle(r), r}, searchUnicodeLowerAlternatives[lower]...)
-		for _, form := range candidates {
-			if quoted := regexp.QuoteMeta(string(form)); !slices.Contains(forms, quoted) {
-				forms = append(forms, quoted)
-			}
-		}
-		if len(forms) == 1 {
-			out.WriteString(forms[0])
-			continue
-		}
-		out.WriteString("(" + strings.Join(forms, "|") + ")")
-	}
-	return out.String()
-}
-
-var (
-	searchUnicodeLowerAlternativesOnce sync.Once
-	// searchUnicodeLowerAlternatives maps each character outside ASCII to the others that
-	// unicode.ToLower maps to it, as searchASCIILowerAlternatives does for ASCII.
-	searchUnicodeLowerAlternatives map[rune][]rune
-)
-
-func initSearchUnicodeLowerAlternatives() {
-	searchUnicodeLowerAlternativesOnce.Do(func() {
-		searchUnicodeLowerAlternatives = map[rune][]rune{}
-		for value := rune(utf8.RuneSelf); value <= unicode.MaxRune; value++ {
-			if lower := unicode.ToLower(value); lower >= utf8.RuneSelf && lower != value {
-				searchUnicodeLowerAlternatives[lower] = append(searchUnicodeLowerAlternatives[lower], value)
-			}
-		}
-	})
 }
 
 func searchFoldedLiteral(text string) string {

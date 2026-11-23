@@ -6,13 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
-	"unicode"
-	"unicode/utf8"
 )
 
 // aliasPreselect runs the committed-tree preselection against a complete
@@ -181,57 +178,5 @@ func TestCommittedAliasPreselectionValidatesOversizeHitsByLine(t *testing.T) {
 	}
 	if selection.filesContentRead != wantReads {
 		t.Fatalf("files content read = %d, want %d", selection.filesContentRead, wantReads)
-	}
-}
-
-// A pattern for a term outside ASCII matches it in any case, and holds no bracket expression
-// with a character outside ASCII, which Git's C locale would read as a set of single bytes.
-// A term with a control byte or invalid UTF-8 gets no pattern.
-// The matcher lowers text with strings.ToLower, so the pattern for a character outside ASCII
-// must match every character that lowers to it, not only its upper and title case forms.
-func TestSearchFoldedUTF8LiteralMatchesEveryCharacterThatLowersToIt(t *testing.T) {
-	t.Parallel()
-	checked := 0
-	for value := rune(utf8.RuneSelf); value <= unicode.MaxRune; value++ {
-		lower := unicode.ToLower(value)
-		if lower < utf8.RuneSelf || lower == value {
-			continue
-		}
-		pattern := searchFoldedUTF8Literal(string(lower))
-		if !regexp.MustCompilePOSIX("^" + pattern + "$").MatchString(string(value)) {
-			t.Fatalf("pattern %q for %q does not match %q (%U)", pattern, lower, value, value)
-		}
-		checked++
-	}
-	if checked == 0 {
-		t.Fatal("no character outside ASCII lowers to another one")
-	}
-}
-
-func TestSearchGitUnreadPatternsMatchNonASCIITermsInAnyLocale(t *testing.T) {
-	t.Parallel()
-	q := buildSearchQuery(`needle "сорока" "Straße"`)
-	patterns := searchGitUnreadPatterns(q, []string{"needle", "сорока", "straße"})
-	if len(patterns) != 3 {
-		t.Fatalf("patterns = %q, want one for each term", patterns)
-	}
-	for index, want := range [][]string{{"NEEDLE"}, {"СОРОКА", "сорока", "Сорока"}, {"STRAßE", "Straße"}} {
-		pattern := patterns[index]
-		for _, bracket := range regexp.MustCompile(`\[[^\]]*\]`).FindAllString(pattern, -1) {
-			if !searchTermsSafeForGitGrep([]string{bracket}) {
-				t.Fatalf("pattern %q holds the bracket expression %q outside ASCII", pattern, bracket)
-			}
-		}
-		expression := regexp.MustCompilePOSIX(pattern)
-		for _, text := range want {
-			if !expression.MatchString(text) {
-				t.Fatalf("pattern %q does not match %q", pattern, text)
-			}
-		}
-	}
-	for _, term := range []string{"", "tab\there", "bell\x07", "bad\xff"} {
-		if searchTermHasGitUnreadPattern(term) {
-			t.Fatalf("term %q has a pattern, want none", term)
-		}
 	}
 }

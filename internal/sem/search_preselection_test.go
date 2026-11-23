@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -258,16 +259,25 @@ func preselectionTestQuery(terms ...string) searchQuery {
 func TestSearchKeptTermCoverageCountsTheTermsABridgedFileHolds(t *testing.T) {
 	t.Parallel()
 	q := buildSearchQuery("alpha beta gamma")
-	marks := func(terms ...string) []bool { return searchTestTermMarks(q, terms) }
-	files := []searchFileCandidate{{path: "kept.go", matchedTerms: marks("alpha")}}
+	marks := func(terms ...string) []bool {
+		marked := make([]bool, len(q.terms))
+		for index, term := range q.terms {
+			marked[index] = slices.Contains(terms, term)
+		}
+		return marked
+	}
+	files := []searchFileCandidate{
+		{path: "kept.go", matchedTerms: marks("alpha")},
+		{path: "dropped.go", matchedTerms: marks("gamma")},
+	}
 	termsOf := func(path string) []bool {
 		if path == "bridged.go" {
 			return marks("beta")
 		}
 		return nil
 	}
-	// gamma is only in a file the content pass never read.
-	got := searchKeptTermCoverage(files, []string{"kept.go", "bridged.go"}, marks("alpha"), marks("gamma"), q, termsOf)
+	// gamma is only in a file the content pass scored and the cut left out.
+	got := searchKeptTermCoverage(files, []string{"kept.go", "bridged.go"}, marks("alpha", "gamma"), q, termsOf)
 	weight := func(term string) float64 { return q.weights[term] }
 	if want := (weight("alpha") + weight("beta")) / (weight("alpha") + weight("beta") + weight("gamma")); math.Abs(got-want) > 1e-9 {
 		t.Fatalf("coverage = %v, want %v", got, want)
