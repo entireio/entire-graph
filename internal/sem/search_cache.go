@@ -61,7 +61,13 @@ import (
 // v29 retires body-laden Julia signatures and module DATA_FLOWS edges.
 // v30 retires headers that report valid Go the bundled grammar cannot fully
 // parse as an E_PARSE_ERROR partial failure instead of a W_GO_GRAMMAR_GAP warning.
-const searchSnapshotCacheVersion = "search-snapshot-v30-" + IdentityRevision
+// v31 retires entries built from an ignore file whose first bytes are a UTF-8
+// byte-order mark. That mark used to stay attached to the first pattern, which
+// then matched nothing, so such an entry holds files the repository asked to
+// exclude. The ignore file's own bytes are in the key and they have not
+// changed -- only what they mean has -- so nothing else would stop this build
+// serving one.
+const searchSnapshotCacheVersion = "search-snapshot-v31-" + IdentityRevision
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`

@@ -549,7 +549,7 @@ func runCapabilities(opts Options, args []string) error {
 	return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(sem.Capabilities())
 }
 
-func runProviderRecords(ctx context.Context, opts Options, args []string, mode string) error {
+func runProviderRecords(ctx context.Context, opts Options, args []string, mode string) (err error) {
 	flags, rest, err := parseProviderFlags(args)
 	if err != nil {
 		return err
@@ -581,6 +581,37 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {
 		return err
+	}
+	// --output is opened after every flag combination has been judged, so a
+	// rejected invocation never truncates a file, and after the repository is
+	// known, because the destination is judged against it. `--output
+	// graph.compact.ndjson` is the in-repo spelling the documentation shows,
+	// and a path inside the scanned checkout was chosen by the repository
+	// rather than by the caller, so a committed symlink there is refused
+	// instead of followed. That is `index --report`'s rule and literally its
+	// code (openOutputFile, internal/cli/outputpath.go); a second caller-named
+	// destination with its own answer would be the one that gets it wrong.
+	//
+	// The destination replaces stdout for the record stream alone: progress,
+	// warnings and the SCIP omission note are stderr's, as they are without
+	// the flag, and the bytes written here are the same ones stdout would have
+	// received -- terminal safety wrap included -- so a file saved either way
+	// is identical.
+	recordsOut := opts.Stdout
+	if flags.Output != "" {
+		file, openErr := openOutputFile(ctx, repo, flags.Output, 0o644)
+		if openErr != nil {
+			return fmt.Errorf("open --output file: %w", openErr)
+		}
+		recordsOut = file
+		defer func() {
+			// A close error on a regular file is where a lost final write
+			// surfaces, so it fails the command. It never masks the real
+			// error on a path that already has one.
+			if closeErr := file.Close(); closeErr != nil && err == nil {
+				err = fmt.Errorf("close --output file: %w", closeErr)
+			}
+		}()
 	}
 	profile, err := parseProfile(flags.Profile)
 	if err != nil {
@@ -633,7 +664,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		encoder.SetEscapeHTML(false) // match json.Marshal used elsewhere (no < escaping)
 		return encoder.Encode
 	}
-	encodeRecord := newRecordEncoder(contextChunkWriterFor(ctx, opts.Stdout))
+	encodeRecord := newRecordEncoder(contextChunkWriterFor(ctx, recordsOut))
 	if scipEncoder != nil {
 		// The version is read inside the snapshot build, through the reader that
 		// is already validated, bounded and pinned to this snapshot's revision.
@@ -737,7 +768,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 				if ok {
 					// Same wrap as the unfiltered hit below: escaping is idempotent, and an
 					// entry written before the C1 rule must not reach the terminal raw.
-					if err := writeBytesWithContext(ctx, termsafe.NewJSONWriter(opts.Stdout), filtered); err != nil {
+					if err := writeBytesWithContext(ctx, termsafe.NewJSONWriter(recordsOut), filtered); err != nil {
 						return err
 					}
 					warnIfPartial(opts.Stderr, flags.Worktree, cachedSummary)
@@ -804,7 +835,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			// C1 rule existed — or by any build that predates it — would stream the
 			// repository's raw control straight to the terminal on every hit. Escaping
 			// is idempotent, so a clean entry passes through unchanged.
-			if err := writeBytesWithContext(ctx, termsafe.NewJSONWriter(opts.Stdout), records); err != nil {
+			if err := writeBytesWithContext(ctx, termsafe.NewJSONWriter(recordsOut), records); err != nil {
 				return err
 			}
 			warnIfPartial(opts.Stderr, flags.Worktree, cachedSummary)
@@ -820,12 +851,13 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// output — or, capped, silently stored nothing on exactly the large
 	// repositories the cache matters most for.
 	//
-	// The stdout side stays wrapped for cancellation: a run that is cancelled
+	// The record side stays wrapped for cancellation: a run that is cancelled
 	// must stop writing, not drain the rest of the graph into a pipe nobody is
-	// reading. The wrapper is idempotent,
-	// so this is a no-op when opts.Stdout was already wrapped at entry.
+	// reading, or into an --output file nobody will finish. The wrapper is
+	// idempotent, so this is a no-op when the destination was already wrapped
+	// at entry.
 	if spool = beginRecordsSpool(recordsCache, opts.Stderr); spool != nil {
-		encodeRecord = newRecordEncoder(io.MultiWriter(contextChunkWriterFor(ctx, opts.Stdout), spool))
+		encodeRecord = newRecordEncoder(io.MultiWriter(contextChunkWriterFor(ctx, recordsOut), spool))
 	}
 	if err := streamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
 		capture(record)
@@ -1037,6 +1069,13 @@ type providerFlags struct {
 	// falls back to ENTIRE_PLUGIN_DATA_DIR; --no-cache disables it entirely.
 	CacheDir     string
 	DisableCache bool
+	// Output sends the record stream to a file instead of stdout. The saved
+	// artifact is what `snapshot-query --input` reads, and the only way to
+	// produce one used to be a shell redirect -- which in Windows PowerShell
+	// 5.1 saves UTF-16LE and makes the file unreadable. Writing it here never
+	// meets a shell. Progress, warnings and the SCIP omission note stay on
+	// stderr either way.
+	Output string
 }
 
 // idMatches reports whether a stable symbol ID matches a user-supplied selector:
@@ -1096,6 +1135,12 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 				return flags, nil, errors.New("--repo requires a value")
 			}
 			flags.Repo = args[i]
+		case "--output":
+			i++
+			if i >= len(args) {
+				return flags, nil, errors.New("--output requires a value")
+			}
+			flags.Output = args[i]
 		case "--format":
 			i++
 			if i >= len(args) {
@@ -1446,7 +1491,20 @@ func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, e
 }
 
 // discoverImplicitCheckoutRoot applies an inherited ceiling without a Git
-// subprocess. With no usable ceiling it keeps the established two-spelling
+// subprocess.
+//
+// It is not the only answer to GIT_CEILING_DIRECTORIES in this binary, and the
+// other one is deliberately weaker. internal/agentsetup applies the same rule
+// lexically, never touching the filesystem, and leaves its walk unfenced when
+// an entry does not match. That is right there: its answer only decides where
+// a guide is written, while the path THIS function returns is one Git is then
+// run in, so an entry that cannot be resolved safely has to fail closed here.
+//
+// Consolidating the two is not available. internal/cli imports
+// internal/agentsetup, so the dependency cannot run the other way; the guarded
+// resolver below lives on internal/sem; and entire-brain keeps its own copy of
+// internal/agentsetup, byte-identical file by file, with no sem package at all
+// -- a dependency there would fork the two copies for good. With no usable ceiling it keeps the established two-spelling
 // filesystem fallback. Git canonicalizes entries before the first empty list
 // element, while an empty element promises that subsequent entries contain no
 // symlinks and can stay lexical. Canonicalization uses the provider's guarded

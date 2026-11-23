@@ -251,6 +251,15 @@ Consumers must also reject unknown format or schema-major versions, malformed
 known field values, missing required fields, non-first or duplicate headers,
 and missing summaries.
 
+Save the artifact with `snapshot --format compact-ndjson --output <path>`.
+A shell redirect works wherever the shell writes the bytes through unchanged,
+but it is the shell that decides the encoding: in Windows PowerShell 5.1 `>`
+is `Out-File`, whose default is UTF-16LE, and the result is not a compact
+snapshot at all. The loader forgives one leading UTF-8 byte-order mark, which
+is what that shell's `-Encoding utf8` adds, and refuses a UTF-16 or UTF-32
+artifact by naming its encoding -- there is nothing to decode partway through,
+since every byte of such a file is in that encoding.
+
 All `h`, `d`, data, and `m` bytes count as raw compact artifact bytes;
 dictionary overhead must never be subtracted. Compact output is loaded only
 through the production compact loader and queried with
