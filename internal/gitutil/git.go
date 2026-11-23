@@ -522,8 +522,7 @@ func FilesMarkedBinary(ctx context.Context, repo string, paths []string) ([]stri
 // or skip-worktree (a lowercase tag, or `S`) from its index blob, and skips a path the index
 // records as anything but a regular file, a symlink (mode 120000) or a submodule (160000),
 // even once the worktree holds a regular file there. To search such a file's worktree lines,
-// name it to GrepIndexPatternFilesIn or GrepIndexPatternEveryInFiles, which read each named
-// file from the worktree.
+// name it to GrepIndexPatternFilesIn, which reads each named file from the worktree.
 func IndexHiddenFiles(ctx context.Context, repo string) ([]string, error) {
 	var hidden []string
 	var parseErr error
@@ -880,18 +879,6 @@ func GrepIndexPatternFilesIn(ctx context.Context, repo string, patterns, files [
 		return readGrepPaths(reader, visit)
 	}
 	return grepPatternsInFiles(ctx, repo, patterns, []string{gitGrepNamedFiles, gitGrepNoExcludes, "--text", "-l"}, files, read)
-}
-
-// GrepIndexPatternEveryInFiles streams every line matching one of the expressions in the
-// named worktree files, with no per-file limit, for a caller that confirms each line itself
-// and must not let lines it rejects hide a later one. Only the named files are searched,
-// tracked or not, whatever exclude rules say and as text, like GrepIndexPatternFilesIn, so
-// pick them first and keep the list short. A visit error stops the scan.
-func GrepIndexPatternEveryInFiles(ctx context.Context, repo string, patterns, files []string, visit func(GrepMatch) error) error {
-	read := func(reader *bufio.Reader) error {
-		return readGrepPatternLines(reader, visit)
-	}
-	return grepPatternsInFiles(ctx, repo, patterns, []string{gitGrepNamedFiles, gitGrepNoExcludes, "--text"}, files, read)
 }
 
 // gitGrepNamedFiles and gitGrepNoExcludes make a named-file search reach every file it names.

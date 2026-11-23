@@ -3115,10 +3115,9 @@ func TestGrepIndexPatternLinesKeepsContextAndCase(t *testing.T) {
 
 // GrepIndexPatternFiles lists each matching file once and, like the sample, skips the files
 // Git's attributes make binary, which FilesMarkedBinary finds: `-diff`, `binary`, and a diff
-// driver configured binary, even one whose name holds a dot. GrepIndexPatternFilesIn and
-// GrepIndexPatternEveryInFiles search only the files they are given, as text, and the latter
-// keeps every matching line across pathspec batches.
-func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T) {
+// driver configured binary, even one whose name holds a dot. GrepIndexPatternFilesIn searches
+// only the files it is given, as text.
+func TestGrepIndexPatternFilesSkipWhatGitMarksBinary(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	content := "func readInt() {}\n" + strings.Repeat("func otherInt() {}\n", 1000)
@@ -3183,26 +3182,6 @@ func TestGrepIndexPatternEveryInFilesKeepsEveryLineOfTheNamedFiles(t *testing.T)
 	if !reflect.DeepEqual(named, []string{"a b.go", "skipped.go"}) {
 		t.Fatalf("named matching files = %q, want both named files, the -diff one as text", named)
 	}
-	counts := map[string]int{}
-	err = GrepIndexPatternEveryInFiles(t.Context(), repo, patterns, []string{"source.go", "a b.go"}, func(match GrepMatch) error {
-		counts[match.Path]++
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(counts, map[string]int{"source.go": 1001, "a b.go": 1001}) {
-		t.Fatalf("lines per file = %v, want all 1001 of each named file and none of skipped.go", counts)
-	}
-	stop := errors.New("stop")
-	seen := 0
-	err = GrepIndexPatternEveryInFiles(t.Context(), repo, patterns, []string{"source.go"}, func(GrepMatch) error {
-		seen++
-		return stop
-	})
-	if !errors.Is(err, stop) || seen != 1 {
-		t.Fatalf("a visit error should stop the scan: err %v after %d lines", err, seen)
-	}
 }
 
 // Git's grep gives a file the default diff driver when its diff attribute names no driver
@@ -3240,7 +3219,7 @@ func TestFilesMarkedBinaryFollowsGitsDefaultDriver(t *testing.T) {
 	}
 }
 
-// The named-file searches reach a file Git's index does not track, which the whole-worktree
+// The named-file search reaches a file Git's index does not track, which the whole-worktree
 // listing does not, and a tracked file an exclude rule covers, which `--untracked` alone would
 // hide. An ignored file the caller does not name is never searched.
 func TestGrepIndexPatternFilesInSearchesEveryNamedFile(t *testing.T) {
@@ -3266,15 +3245,11 @@ func TestGrepIndexPatternFilesInSearchesEveryNamedFile(t *testing.T) {
 	if !reflect.DeepEqual(whole, []string{"excluded.md", "tracked.md"}) || !reflect.DeepEqual(listed, named) {
 		t.Fatalf("whole-worktree listing = %q, named listing = %q, want the tracked files and then every named one", whole, listed)
 	}
-	lines := 0
-	if err := GrepIndexPatternEveryInFiles(t.Context(), repo, []string{"plover"}, []string{"excluded.md", "new.md"}, func(GrepMatch) error { lines++; return nil }); err != nil || lines != 3 {
-		t.Fatalf("streamed %d lines of the excluded and untracked files, %v, want 3", lines, err)
-	}
 }
 
 // A worktree `git grep` reads a file marked assume-unchanged or skip-worktree from its index
 // blob, and skips a path the index records as a symlink even once the worktree holds a
-// regular file there. IndexHiddenFiles lists those three, and the named-file searches read
+// regular file there. IndexHiddenFiles lists those three, and the named-file search reads
 // each from the worktree.
 func TestIndexHiddenFilesListsWhatWorktreeGrepDoesNotRead(t *testing.T) {
 	t.Parallel()

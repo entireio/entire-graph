@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -644,15 +645,15 @@ func requireGitShortlistPath(t *testing.T, query string, stats SearchStats, capp
 	}
 }
 
-// The recovery pass judges each unread file as the content pass would. Git keeps every
-// matching line of a file too large to read, not 32 a file, so a missing term cannot hide
-// another, and neither can lines Git matches but the query's matcher rejects: in the C locale
-// "éint" matches the int alias's ASCII boundary, and the matcher refuses it. A text file that
+// The recovery pass judges each unread file as the content pass would. A file too large to
+// read is scanned to its end, not 32 lines a file, so a missing term cannot hide another, and
+// neither can lines Git matches but the query's matcher rejects: in the C locale "éint"
+// matches the int alias's ASCII boundary, and the matcher refuses it. A text file that
 // .gitattributes marks `-diff` or `binary`, or gives a diff driver configured binary, still
-// counts, whole or streamed, as the content pass reads it; a file holding a NUL byte does not,
-// as the content pass skips it, and a marked one whose first 8,000 bytes hold a NUL is not even
-// grepped. Git's own listing skips an unmarked binary, and a marked file outside the corpus is
-// never searched.
+// counts, read whole or scanned, as the content pass reads it; a file holding a NUL byte does
+// not, as the content pass skips it, and a marked one whose first 8,000 bytes hold a NUL is
+// not even grepped. Git's own listing skips an unmarked binary, and a marked file outside the
+// corpus is never searched.
 func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -689,11 +690,12 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 		want     map[string]bool
 		examined int
 	}{
-		// osprey is only in a file the content pass read, so it stays unmarked.
-		{query: "wren lark osprey", want: map[string]bool{"wren": true, "lark": true, "osprey": false}, examined: 1},
-		// kestrel is only in a file outside the corpus, which Git lists but never streams.
-		{query: "wren kestrel", want: map[string]bool{"wren": true, "kestrel": false}, examined: 1},
-		{query: "integer value", known: []string{"integer", "value"}, want: map[string]bool{"int": true}, examined: 1},
+		// osprey is only in a file the content pass read, so it stays unmarked. big-marked.log
+		// is too large to read, so it is examined whatever it holds (searchUnreadFiles.list).
+		{query: "wren lark osprey", want: map[string]bool{"wren": true, "lark": true, "osprey": false}, examined: 2},
+		// kestrel is only in a file outside the corpus, which Git lists but which is never scanned.
+		{query: "wren kestrel", want: map[string]bool{"wren": true, "kestrel": false}, examined: 2},
+		{query: "integer value", known: []string{"integer", "value"}, want: map[string]bool{"int": true}, examined: 2},
 		// The three marked text files are examined, out.gen through its binary diff driver.
 		// bin.dat and bigbin.dat hold a NUL byte in their first 8,000 bytes, so they are
 		// never grepped as text, and raw.bin and vendor/asset.dat are never searched.
@@ -718,9 +720,10 @@ func TestSearchGitUnreadTermsKeepsEveryMatchingLine(t *testing.T) {
 
 // The content pass reads every untracked corpus file, so an unread one is too large to read,
 // and Git's listing, which covers tracked files, never reaches it. Such a file counts as a
-// tracked one would: streamed when its first 8,000 bytes hold no NUL, a file .gitattributes
-// marks binary included. An untracked file whose first 8,000 bytes hold a NUL, one the pass
-// read and one outside the corpus are never searched.
+// tracked one would: scanned when its first 8,000 bytes hold no NUL, a file .gitattributes
+// marks binary included. It is not named to Git, which would load it whole to grep it, so it
+// is listed whatever it holds. An untracked file whose first 8,000 bytes hold a NUL, one the
+// pass read and one outside the corpus are never searched.
 func TestSearchGitUnreadTermsSearchesUntrackedFiles(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -754,10 +757,15 @@ func TestSearchGitUnreadTermsSearchesUntrackedFiles(t *testing.T) {
 		q := buildSearchQuery(tc.query)
 		marked, passes, examined := searchTestGitUnreadTerms(t, files, q, tc.known)
 		requireSearchTermsMarked(t, tc.query, q, marked, tc.want)
-		// One listing pass, then the one untracked file it listed, streamed.
-		if passes != 1 || examined != 1 {
-			t.Fatalf("%q: passes = %d, files examined again = %d, want 1 and 1", tc.query, passes, examined)
+		// One listing pass, then both untracked files too large to read, scanned.
+		if passes != 1 || examined != 2 {
+			t.Fatalf("%q: passes = %d, files examined again = %d, want 1 and 2", tc.query, passes, examined)
 		}
+	}
+	// Neither is left to Git's patterns: new.md is listed although it holds no pipit.
+	listed, err := files.list(t.Context(), searchGitUnreadPatterns(buildSearchQuery("pipit"), []string{"pipit"}))
+	if err != nil || !slices.Equal(listed, []string{"new.log", "new.md"}) {
+		t.Fatalf("listed = %q, %v; want both untracked files too large to read", listed, err)
 	}
 }
 
@@ -910,8 +918,9 @@ func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 		examined int
 	}{
 		// late-nul.md fails the content pass's test, so redwing is listed and examined again,
-		// and still not counted.
-		{query: "redwing", sampled: map[string][]string{"late-nul.md": {"redwing"}}, want: map[string]bool{"redwing": false}, passes: 1, examined: 2},
+		// and still not counted. Every file here is marked binary, so big.md, too large to
+		// read, is never named to Git and is examined in each listing whatever it holds.
+		{query: "redwing", sampled: map[string][]string{"late-nul.md": {"redwing"}}, want: map[string]bool{"redwing": false}, passes: 1, examined: 3},
 		{
 			query:    "siskin linnet",
 			sampled:  map[string][]string{"clean.md": {"siskin"}, "big.md": {"linnet"}},
@@ -919,9 +928,9 @@ func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 			examined: 2,
 		},
 		{query: "siskin", known: []string{"siskin"}, sampled: map[string][]string{"clean.md": {"siskin"}}, want: map[string]bool{"siskin": true}},
-		{query: `sandpiper "café"`, want: map[string]bool{"sandpiper": true, "café": false}, passes: 1, examined: 1},
-		{query: `sandpiper "сорока"`, want: map[string]bool{"sandpiper": true, "сорока": true}, passes: 1, examined: 2},
-		{query: `sandpiper "ωμεγα"`, want: map[string]bool{"sandpiper": true, "ωμεγα": true}, passes: 1, examined: 2},
+		{query: `sandpiper "café"`, want: map[string]bool{"sandpiper": true, "café": false}, passes: 1, examined: 2},
+		{query: `sandpiper "сорока"`, want: map[string]bool{"sandpiper": true, "сорока": true}, passes: 1, examined: 3},
+		{query: `sandpiper "ωμεγα"`, want: map[string]bool{"sandpiper": true, "ωμεγα": true}, passes: 1, examined: 3},
 	} {
 		q := buildSearchQuery(tc.query)
 		files.sampled = nil
@@ -981,6 +990,19 @@ func searchTestUnreadFiles(repo string, allowed, read map[string]bool, maxBytes 
 			content, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(filePath)))
 			return string(content[:min(limit, len(content))]), err == nil
 		},
+		open: func(filePath string) (io.ReadCloser, int64, bool) {
+			file, err := os.Open(filepath.Join(repo, filepath.FromSlash(filePath)))
+			if err != nil {
+				return nil, 0, false
+			}
+			info, err := file.Stat()
+			if err != nil {
+				_ = file.Close()
+				return nil, 0, false
+			}
+			return file, info.Size(), true
+		},
+		maxReadBytes: int64(maxBytes),
 	}
 }
 

@@ -1,0 +1,119 @@
+package sem
+
+import (
+	"io"
+	"strings"
+	"testing"
+)
+
+// searchTestScanFiles scans one in-memory file, path "f", through searchUnreadFiles.scan with
+// windows of window bytes, recording the largest read the scan asks for.
+func searchTestScanFiles(content string, window int, largest *int, reads *int) searchUnreadFiles {
+	return searchUnreadFiles{
+		scanBytes: window,
+		open: func(string) (io.ReadCloser, int64, bool) {
+			return io.NopCloser(&searchTestReadRecorder{reader: strings.NewReader(content), largest: largest, reads: reads}), int64(len(content)), true
+		},
+	}
+}
+
+type searchTestReadRecorder struct {
+	reader  io.Reader
+	largest *int
+	reads   *int
+}
+
+func (recorder *searchTestReadRecorder) Read(p []byte) (int, error) {
+	if recorder.largest != nil {
+		*recorder.largest = max(*recorder.largest, len(p))
+	}
+	if recorder.reads != nil {
+		*recorder.reads++
+	}
+	return recorder.reader.Read(p)
+}
+
+func searchTestScan(t *testing.T, query, content string, window int) []bool {
+	t.Helper()
+	q := buildSearchQuery(query)
+	result := make([]bool, len(q.terms))
+	if !searchTestScanFiles(content, window, nil, nil).scan("f", newSearchQueryTermMatcher(q), searchUnreadScanOverlap(q), result, func() bool { return false }) {
+		t.Fatalf("%q: scan failed", query)
+	}
+	return result
+}
+
+// Wherever a window boundary falls, in a long line, in short lines or inside a character
+// outside ASCII, the scan finds an occurrence of a term as the matcher finds it in the whole
+// file, and finds nothing a term does not occur in.
+func TestSearchUnreadScanFindsATermAtEveryWindowEdge(t *testing.T) {
+	t.Parallel()
+	const window = 16
+	for offset := range 4 * window {
+		for _, tc := range []struct {
+			query, content string
+		}{
+			{"quillwort", strings.Repeat("x", offset) + "QuillWort" + strings.Repeat("y", 3*window)},
+			{"quillwort", strings.Repeat("x\n", offset/2) + strings.Repeat("x", offset%2) + "quillwort\n" + strings.Repeat("y\n", 2*window)},
+			// The ohm sign lowers to ω, and each ж is two bytes, so windows end inside one.
+			{`"ωμεγα"`, strings.Repeat("ж", offset) + "ΩΜΕΓΑ" + strings.Repeat("ж", 2*window)},
+			// The Kelvin sign, three bytes, lowers to k, so this occurrence is longer than the term.
+			{`"kelvin"`, strings.Repeat("x", offset) + "\u212Aelvin" + strings.Repeat("y", 3*window)},
+		} {
+			q := buildSearchQuery(tc.query)
+			if whole := newSearchQueryTermMatcher(q).match(tc.content); !whole[0] {
+				t.Fatalf("offset %d: the matcher misses %q in the whole file", offset, tc.query)
+			}
+			if result := searchTestScan(t, tc.query, tc.content, window); !result[0] {
+				t.Fatalf("offset %d: scan of %q missed it in %q", offset, tc.query, tc.content)
+			}
+		}
+	}
+	if result := searchTestScan(t, "godwit", strings.Repeat("godwi\nt", 20), window); result[0] {
+		t.Fatal("scan found a term that occurs only split across lines")
+	}
+}
+
+// The scan never asks for more than a window and its overlap at once, however long the file
+// and its one line, and it stops reading once done reports true.
+func TestSearchUnreadScanReadsABoundedWindow(t *testing.T) {
+	t.Parallel()
+	const window = 64
+	q := buildSearchQuery("quillwort")
+	overlap := searchUnreadScanOverlap(q)
+	content := "quillwort" + strings.Repeat("x", 1<<20)
+	largest, reads := 0, 0
+	result := make([]bool, len(q.terms))
+	files := searchTestScanFiles(content, window, &largest, &reads)
+	if !files.scan("f", newSearchQueryTermMatcher(q), overlap, result, func() bool { return result[0] }) || !result[0] {
+		t.Fatal("scan missed quillwort")
+	}
+	if limit := overlap + window + 8; largest > limit {
+		t.Fatalf("largest read = %d bytes, want at most %d", largest, limit)
+	}
+	if reads > 2 {
+		t.Fatalf("scan read %d times after finding the only term in its first window", reads)
+	}
+	largest = 0
+	result[0] = false
+	files = searchTestScanFiles(strings.Repeat("x", 1<<20)+"quillwort", window, &largest, nil)
+	if !files.scan("f", newSearchQueryTermMatcher(q), overlap, result, func() bool { return false }) || !result[0] {
+		t.Fatal("scan missed quillwort at the end of a 1 MiB line")
+	}
+	if limit := overlap + window + 8; largest > limit {
+		t.Fatalf("largest read = %d bytes, want at most %d", largest, limit)
+	}
+}
+
+func TestSearchUnreadScanReportsAFileItCannotOpen(t *testing.T) {
+	t.Parallel()
+	q := buildSearchQuery("quillwort")
+	result := make([]bool, 1)
+	files := searchUnreadFiles{open: func(string) (io.ReadCloser, int64, bool) { return nil, 0, false }}
+	if files.scan("f", newSearchQueryTermMatcher(q), 36, result, func() bool { return false }) || result[0] {
+		t.Fatal("scan of a file it cannot open reported success")
+	}
+	if (searchUnreadFiles{}).scan("f", newSearchQueryTermMatcher(q), 36, result, func() bool { return false }) {
+		t.Fatal("scan without an opener reported success")
+	}
+}

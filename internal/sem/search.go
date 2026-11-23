@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"path/filepath"
 	"regexp"
@@ -3159,7 +3160,9 @@ func preselectSearchFiles(
 					}
 					return content, ok
 				},
-				readPrefix: source.readPrefix,
+				readPrefix:   source.readPrefix,
+				open:         source.open,
+				maxReadBytes: int64(resolveMaxParseBytes(snapshotOptions.MaxParseBytes)),
 			}
 			var passes int
 			var err error
@@ -3213,9 +3216,6 @@ func preselectSearchFiles(
 	return selection, nil
 }
 
-// errSearchUnreadTermsFound stops searchGitUnreadTerms' Git pass once every term it greps for is found.
-var errSearchUnreadTermsFound = errors.New("every unread query term found")
-
 // searchBinarySniffBytes is how much of a file Git's own binary test reads for a NUL byte.
 const searchBinarySniffBytes = 8000
 
@@ -3224,16 +3224,20 @@ const searchBinarySniffBytes = 8000
 // shortlist dropped with the terms Git's sample matched in each, untracked the corpus files
 // Git's index does not track, indexHidden the tracked files a worktree grep does not read
 // from the worktree (searchIndexHiddenFiles), and readFile and readPrefix read a file whole
-// (under the same cap) or its first bytes.
+// (under the same cap, maxReadBytes) or its first bytes. open opens a file for scan, which
+// reads scanBytes at a time.
 type searchUnreadFiles struct {
-	absRepo     string
-	allowed     map[string]bool
-	read        map[string]bool
-	sampled     []searchFileCandidate
-	untracked   []string
-	indexHidden func() (map[string]bool, error)
-	readFile    func(path string) (string, bool)
-	readPrefix  func(path string, limit int) (string, bool)
+	absRepo      string
+	allowed      map[string]bool
+	read         map[string]bool
+	sampled      []searchFileCandidate
+	untracked    []string
+	indexHidden  func() (map[string]bool, error)
+	readFile     func(path string) (string, bool)
+	readPrefix   func(path string, limit int) (string, bool)
+	open         func(path string) (io.ReadCloser, int64, bool)
+	maxReadBytes int64
+	scanBytes    int
 }
 
 // searchIndexHiddenFiles returns a lookup of the tracked files whose worktree content a
@@ -3267,8 +3271,8 @@ func (files searchUnreadFiles) hidden() (map[string]bool, error) {
 // text reports how the content pass would see a file it did not read: its content when it
 // is readable and holds no NUL byte, as that pass requires, or, for a file too large to read,
 // whether its first searchBinarySniffBytes hold no NUL either (Git's own test of content),
-// so Git should stream its lines. Neither looks at .gitattributes, which the content pass
-// ignores too.
+// so it should be scanned (searchUnreadFiles.scan). Neither looks at .gitattributes, which the
+// content pass ignores too.
 func (files searchUnreadFiles) text(filePath string) (content string, readable, stream bool) {
 	if content, ok := files.readFile(filePath); ok {
 		return content, strings.IndexByte(content, 0) < 0, false
@@ -3292,9 +3296,9 @@ func (files searchUnreadFiles) text(filePath string) (content string, readable, 
 // files outside allowed or already read cost little), and the corpus files Git's attributes
 // make binary are searched apart, as text (searchUnreadFiles.list). Each listed file is then
 // judged as the content pass would judge it (searchUnreadFiles.text): one it can read is
-// matched whole with the query's matcher, and Git streams every matching line of the text
-// files too large to read, confirming each with that matcher, so neither a missing term nor a
-// line Git matches but the matcher rejects can crowd out a later one. A file holding a NUL
+// matched whole with the query's matcher, and a text file too large to read is matched with
+// it too, in bounded windows (searchUnreadFiles.scan), so no line Git matches but the matcher
+// rejects can crowd out a later one, and no such file is held whole. A file holding a NUL
 // byte is skipped, as the content pass skips it. A missing term Git has no pattern for
 // (searchGitMissingTerms) counts only where a file read for another term holds it, so it never
 // costs the other terms their pass. The scan stops as soon as every term the pass greps for is
@@ -3338,14 +3342,13 @@ func searchGitUnreadTerms(
 			large = append(large, filePath)
 		}
 	}
-	if !searchTermsAllMarked(result, pending) && len(large) > 0 {
-		_ = gitutil.GrepIndexPatternEveryInFiles(ctx, files.absRepo, patterns, large, func(match gitutil.GrepMatch) error {
-			markSearchHits(result, matcher.match(match.Text))
-			if searchTermsAllMarked(result, pending) {
-				return errSearchUnreadTermsFound
-			}
-			return ctx.Err()
-		})
+	overlap := searchUnreadScanOverlap(q)
+	done := func() bool { return searchTermsAllMarked(result, pending) || ctx.Err() != nil }
+	for _, filePath := range large {
+		if done() {
+			break
+		}
+		files.scan(filePath, matcher, overlap, result, done)
 	}
 	return result, 1, examined, ctx.Err()
 }
@@ -3355,7 +3358,7 @@ func searchGitUnreadTerms(
 // looks for a NUL byte only in a file's first searchBinarySniffBytes, and the content pass
 // skips a file holding one anywhere, so the sample alone can count a file that pass would
 // never index. A readable file is matched whole; for one too large to read, the sample's own
-// lines stand, as the lines Git streams for searchGitUnreadTerms do, unless Git sampled the
+// lines stand, as a scan's would for searchGitUnreadTerms, unless Git sampled the
 // file's index blob rather than its worktree content (searchUnreadFiles.indexHidden): its
 // terms then wait for the named-file search in list. A file whose sampled terms are all
 // marked already is not read. It returns how many files it examined.
@@ -3394,13 +3397,15 @@ func (files searchUnreadFiles) sampledFromIndex(filePath string) bool {
 // unread corpus files, those are found by attribute (gitutil.FilesMarkedBinary), from
 // untracked and from indexHidden, and searched by name as text, except the ones whose first
 // searchBinarySniffBytes hold a NUL byte: text skips those however they are read, as Git's
-// own test would for an untracked one, and Git would load each whole to grep it as text. The
-// content pass reads every untracked corpus file, so the unread ones are only those too large
-// to read or unreadable. No excluded asset or binary outside them is read in full. The Git
-// pass skips the largest of HEAD's files outside the corpus, as the committed-tree alias grep
-// does (searchGitGrepExcludedPaths): it would discard them anyway, so skipping them only
-// saves reading them. A corpus file can lie under one of them, a file in HEAD that is a
-// directory now, and that one is not skipped (searchGitWorktreeExclusions).
+// own test would for an untracked one, and Git would load each whole to grep it as text. Git
+// loads every file it greps whole, so of the rest, the ones over the content pass's read cap
+// are not named to Git: each is listed whether it matches or not, to be scanned in bounded
+// windows. The content pass reads every untracked corpus file, so the unread ones are only
+// those too large to read or unreadable. No excluded asset or binary outside them is read in
+// full. The Git pass skips the largest of HEAD's files outside the corpus, as the
+// committed-tree alias grep does (searchGitGrepExcludedPaths): it would discard them anyway,
+// so skipping them only saves reading them. A corpus file can lie under one of them, a file
+// in HEAD that is a directory now, and that one is not skipped (searchGitWorktreeExclusions).
 func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]string, error) {
 	var unread []string
 	keep := func(filePath string) error {
@@ -3439,7 +3444,17 @@ func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]s
 	}
 	slices.Sort(marked)
 	marked = slices.DeleteFunc(slices.Compact(marked), files.sniffsBinary)
-	if err := gitutil.GrepIndexPatternFilesIn(ctx, files.absRepo, patterns, marked, keep); err != nil {
+	// Git loads each file it greps whole, so one too large for the content pass to read is not
+	// named to it: it is listed as it is, and searchGitUnreadTerms scans it in bounded windows.
+	var named []string
+	for _, filePath := range marked {
+		if files.tooLarge(filePath) {
+			unread = append(unread, filePath)
+		} else {
+			named = append(named, filePath)
+		}
+	}
+	if err := gitutil.GrepIndexPatternFilesIn(ctx, files.absRepo, patterns, named, keep); err != nil {
 		return nil, err
 	}
 	sort.Strings(unread)
@@ -3467,6 +3482,20 @@ func searchGitWorktreeExclusions(outside []string, corpus map[string]bool) []str
 		}
 	}
 	return slices.DeleteFunc(outside, func(filePath string) bool { return dirs[filePath] })
+}
+
+// tooLarge reports whether filePath is over the content pass's read cap, which a file Git
+// greps by name is loaded whole past. A file it cannot open is not.
+func (files searchUnreadFiles) tooLarge(filePath string) bool {
+	if files.open == nil || files.maxReadBytes <= 0 {
+		return false
+	}
+	file, size, ok := files.open(filePath)
+	if !ok {
+		return false
+	}
+	_ = file.Close()
+	return size > files.maxReadBytes
 }
 
 // sniffsBinary reports whether filePath's first searchBinarySniffBytes hold a NUL byte, or
