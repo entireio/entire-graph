@@ -6,11 +6,17 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 )
 
-func TestGitWorktreePreflightRefusesMountBeforeReadingChildren(t *testing.T) {
+// A directory that is itself a mount point is never opened. It still declines
+// Git enumeration, whose recursive walk would cross into it, but it is reported
+// for the filesystem fallback to prune instead of failing the whole worktree
+// closed (entireio/entire-graph#393: a sandbox's read-only bind mount inside
+// the checkout made every working-tree query fail).
+func TestGitWorktreePreflightSkipsMountPointBeforeReadingChildren(t *testing.T) {
 	anchor, resolvedRoot, err := newPathTraversalAnchor("/", "/")
 	if err != nil {
 		t.Fatal(err)
@@ -25,14 +31,20 @@ func TestGitWorktreePreflightRefusesMountBeforeReadingChildren(t *testing.T) {
 	if !budget.admitDirectory("proc") {
 		t.Fatal("failed to admit the synthetic preflight seed")
 	}
-	err = gitWorktreeSafeBeforeListingFromDirectories(
+	mounts, err := gitWorktreeSafeBeforeListingFromDirectories(
 		t.Context(), root, anchor, &budget, []string{"proc"},
 	)
 	if err == nil {
-		t.Fatal("worktree preflight crossed the /proc mount boundary")
+		t.Fatal("worktree preflight let Git enumerate a tree containing the /proc mount point")
 	}
-	if !errors.Is(err, errGitWorktreeFallbackUnsafe) {
-		t.Fatalf("mount refusal error = %v, want %v", err, errGitWorktreeFallbackUnsafe)
+	if errors.Is(err, errGitWorktreeFallbackUnsafe) {
+		t.Fatalf("mount point error = %v, want a decline the filesystem fallback can honour", err)
+	}
+	if !slices.Equal(mounts, []string{"proc"}) {
+		t.Fatalf("skipped mount points = %q, want [proc]", mounts)
+	}
+	if budget.directories != 1 {
+		t.Fatalf("admitted directories = %d, want only the seed: the mount point's children were read", budget.directories)
 	}
 }
 
@@ -66,22 +78,30 @@ func TestGitWorktreePreflightNestedMarkerCannotMaskLaterMount(t *testing.T) {
 	if !markerOnlyBudget.admitDirectory(markerRel) {
 		t.Fatal("failed to admit the nested-marker seed")
 	}
-	markerErr := gitWorktreeSafeBeforeListingFromDirectories(
+	markerMounts, markerErr := gitWorktreeSafeBeforeListingFromDirectories(
 		t.Context(), root, anchor, &markerOnlyBudget, []string{markerRel},
 	)
 	if markerErr == nil || errors.Is(markerErr, errGitWorktreeFallbackUnsafe) {
 		t.Fatalf("nested marker error = %v, want ordinary filesystem fallback", markerErr)
 	}
+	if len(markerMounts) != 0 {
+		t.Fatalf("nested marker reported mount points %q, want none", markerMounts)
+	}
 
+	// The marker already declined Git enumeration, but the traversal has to go
+	// on: the fallback is safe only if it learns about the mount point after it.
 	var combinedBudget gitWorktreePreflightBudget
 	if !combinedBudget.admitDirectory(markerRel) || !combinedBudget.admitDirectory("proc") {
 		t.Fatal("failed to admit the combined preflight seeds")
 	}
-	combinedErr := gitWorktreeSafeBeforeListingFromDirectories(
+	combinedMounts, combinedErr := gitWorktreeSafeBeforeListingFromDirectories(
 		t.Context(), root, anchor, &combinedBudget, []string{markerRel, "proc"},
 	)
-	if !errors.Is(combinedErr, errGitWorktreeFallbackUnsafe) {
-		t.Fatalf("marker-before-mount error = %v, want %v", combinedErr, errGitWorktreeFallbackUnsafe)
+	if combinedErr == nil || errors.Is(combinedErr, errGitWorktreeFallbackUnsafe) {
+		t.Fatalf("marker-before-mount error = %v, want ordinary filesystem fallback", combinedErr)
+	}
+	if !slices.Equal(combinedMounts, []string{"proc"}) {
+		t.Fatalf("marker-before-mount skipped mount points = %q, want [proc]", combinedMounts)
 	}
 }
 

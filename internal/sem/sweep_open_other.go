@@ -28,6 +28,16 @@ func newSweepDirectoryRoot(repo string) (*sweepDirectoryRoot, error) {
 
 func (r *sweepDirectoryRoot) Close() error { return r.root.Close() }
 
+// Stat describes the held root directory itself.
+func (r *sweepDirectoryRoot) Stat() (fs.FileInfo, error) { return r.root.Stat(".") }
+
+// OpenFile refuses every file. Only the Linux sweep skips a mount point, and
+// only a source whose listing skipped one reads through OpenFile, so nothing
+// reaches this; refusing keeps an untested opener out of the build.
+func (r *sweepDirectoryRoot) OpenFile(pathTraversalAnchor, string) (*os.File, error) {
+	return nil, errSymlinkChainOffVolume
+}
+
 func (r *sweepDirectoryRoot) Open(anchor pathTraversalAnchor, dir string, admitStep func() bool) (*os.File, error) {
 	rel := filepath.FromSlash(dir)
 	if filepath.IsAbs(rel) || filepath.VolumeName(rel) != "" {

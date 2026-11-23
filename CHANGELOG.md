@@ -136,6 +136,16 @@ auto-generated notes on
 
 ### Fixed
 
+- A read-only mount inside the repository on Linux, such as the one the Claude
+  Code sandbox places at `.claude/.cc-writes`, no longer fails every
+  working-tree command with `worktree preflight declined`. A directory that is
+  itself a mount point is now skipped without being opened: the run lists files
+  through the bounded filesystem fallback (`W_GIT_WORKTREE_FALLBACK`), reports
+  the skipped directories in a `W_WALK_MOUNT_SKIPPED` warning, and never reads
+  source at or below them, even for files Git tracks there. Redirects, mounts
+  met below an admitted directory, and mount boundaries on macOS, the BSDs and
+  Windows still fail closed. `--head` queries were not affected.
+
 - An ignore file whose first bytes are a UTF-8 byte-order mark no longer loses
   its first rule. Git drops exactly one mark at byte zero of an exclude file;
   this did not, so the first pattern of such a `.graphignore`, `.gitignore`,

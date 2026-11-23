@@ -27,7 +27,7 @@ func TestGitWorktreePreflightChecksMountBeforeChildLookup(t *testing.T) {
 	if !budget.admitDirectory(missing) {
 		t.Fatal("failed to admit the synthetic preflight seed")
 	}
-	if err := gitWorktreeSafeBeforeListingFromDirectories(
+	if _, err := gitWorktreeSafeBeforeListingFromDirectories(
 		t.Context(), root, anchor, &budget, []string{missing},
 	); err == nil {
 		t.Fatal("worktree preflight looked through a known mount point")
@@ -61,7 +61,7 @@ func TestGitWorktreePreflightNestedMarkerCannotMaskLaterKnownMount(t *testing.T)
 	if !budget.admitDirectory("marker") || !budget.admitDirectory(mount) {
 		t.Fatal("failed to admit the synthetic preflight seeds")
 	}
-	err = gitWorktreeSafeBeforeListingFromDirectories(
+	_, err = gitWorktreeSafeBeforeListingFromDirectories(
 		t.Context(), root, anchor, &budget, []string{"marker", mount},
 	)
 	if !errors.Is(err, errGitWorktreeFallbackUnsafe) {
