@@ -3141,11 +3141,12 @@ func preselectSearchFiles(
 	if assessConfidence {
 		if usedGitIndexPreselection {
 			unreadFiles := searchUnreadFiles{
-				absRepo:   source.absRepo,
-				allowed:   gitAllowed,
-				read:      contentReadPaths,
-				sampled:   shortlistDropped,
-				untracked: gitUntracked,
+				absRepo:     source.absRepo,
+				allowed:     gitAllowed,
+				read:        contentReadPaths,
+				sampled:     shortlistDropped,
+				untracked:   gitUntracked,
+				indexHidden: searchIndexHiddenFiles(ctx, source.absRepo),
 				readFile: func(filePath string) (string, bool) {
 					content, ok := source.read(filePath)
 					if ok {
@@ -3213,16 +3214,46 @@ const searchBinarySniffBytes = 8000
 // searchUnreadFiles is how searchGitUnreadTerms reaches the files the content pass did not
 // read: allowed is the corpus, read the files that pass read, sampled the candidates the Git
 // shortlist dropped with the terms Git's sample matched in each, untracked the corpus files
-// Git's index does not track, and readFile and readPrefix read a file whole (under the same
-// cap) or its first bytes.
+// Git's index does not track, indexHidden the tracked files a worktree grep does not read
+// from the worktree (searchIndexHiddenFiles), and readFile and readPrefix read a file whole
+// (under the same cap) or its first bytes.
 type searchUnreadFiles struct {
-	absRepo    string
-	allowed    map[string]bool
-	read       map[string]bool
-	sampled    []searchFileCandidate
-	untracked  []string
-	readFile   func(path string) (string, bool)
-	readPrefix func(path string, limit int) (string, bool)
+	absRepo     string
+	allowed     map[string]bool
+	read        map[string]bool
+	sampled     []searchFileCandidate
+	untracked   []string
+	indexHidden func() (map[string]bool, error)
+	readFile    func(path string) (string, bool)
+	readPrefix  func(path string, limit int) (string, bool)
+}
+
+// searchIndexHiddenFiles returns a lookup of the tracked files whose worktree content a
+// worktree `git grep` does not read (gitutil.IndexHiddenFiles), listed once, on first use.
+func searchIndexHiddenFiles(ctx context.Context, repo string) func() (map[string]bool, error) {
+	var once sync.Once
+	var hidden map[string]bool
+	var err error
+	return func() (map[string]bool, error) {
+		once.Do(func() {
+			var paths []string
+			if paths, err = gitutil.IndexHiddenFiles(ctx, repo); err == nil {
+				hidden = make(map[string]bool, len(paths))
+				for _, filePath := range paths {
+					hidden[filePath] = true
+				}
+			}
+		})
+		return hidden, err
+	}
+}
+
+// hidden returns the files indexHidden lists, or none when no lookup is set.
+func (files searchUnreadFiles) hidden() (map[string]bool, error) {
+	if files.indexHidden == nil {
+		return nil, nil
+	}
+	return files.indexHidden()
 }
 
 // text reports how the content pass would see a file it did not read: its content when it
@@ -3315,8 +3346,10 @@ func searchGitUnreadTerms(
 // looks for a NUL byte only in a file's first searchBinarySniffBytes, and the content pass
 // skips a file holding one anywhere, so the sample alone can count a file that pass would
 // never index. A readable file is matched whole; for one too large to read, the sample's own
-// lines stand, as the lines Git streams for searchGitUnreadTerms do. A file whose sampled
-// terms are all marked already is not read. It returns how many files it examined.
+// lines stand, as the lines Git streams for searchGitUnreadTerms do, unless Git sampled the
+// file's index blob rather than its worktree content (searchUnreadFiles.indexHidden): its
+// terms then wait for the named-file search in list. A file whose sampled terms are all
+// marked already is not read. It returns how many files it examined.
 func (files searchUnreadFiles) confirmSampled(ctx context.Context, matcher searchTermMatcher, result []bool) int {
 	examined := 0
 	for _, candidate := range files.sampled {
@@ -3331,22 +3364,30 @@ func (files searchUnreadFiles) confirmSampled(ctx context.Context, matcher searc
 		switch {
 		case readable:
 			markSearchHits(result, matcher.match(content))
-		case stream:
+		case stream && !files.sampledFromIndex(candidate.path):
 			markSearchHits(result, candidate.matchedTerms)
 		}
 	}
 	return examined
 }
 
+// sampledFromIndex reports whether Git's worktree grep read filePath from the index, so its
+// sample may not match the worktree. A failed listing keeps the sample.
+func (files searchUnreadFiles) sampledFromIndex(filePath string) bool {
+	hidden, err := files.hidden()
+	return err == nil && hidden[filePath]
+}
+
 // list returns the corpus files the content pass did not read that have a line matching one
 // of patterns. One Git pass over the worktree lists the tracked text files. That pass skips
-// the files Git's attributes make binary without reading them, and every untracked file, so
-// of the unread corpus files, those are found by attribute (gitutil.FilesMarkedBinary) and
-// from untracked, and searched as text, except the ones whose first searchBinarySniffBytes
-// hold a NUL byte: text skips those however they are read, as Git's own test would for an
-// untracked one, and Git would load each whole to grep it as text. The content pass reads
-// every untracked corpus file, so the unread ones are only those too large to read or
-// unreadable. No excluded asset or binary outside them is read in full.
+// the files Git's attributes make binary without reading them, every untracked file, and the
+// tracked files it does not read from the worktree (searchUnreadFiles.indexHidden), so of the
+// unread corpus files, those are found by attribute (gitutil.FilesMarkedBinary), from
+// untracked and from indexHidden, and searched by name as text, except the ones whose first
+// searchBinarySniffBytes hold a NUL byte: text skips those however they are read, as Git's
+// own test would for an untracked one, and Git would load each whole to grep it as text. The
+// content pass reads every untracked corpus file, so the unread ones are only those too large
+// to read or unreadable. No excluded asset or binary outside them is read in full.
 func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]string, error) {
 	var unread []string
 	keep := func(filePath string) error {
@@ -3370,6 +3411,15 @@ func (files searchUnreadFiles) list(ctx context.Context, patterns []string) ([]s
 		return nil, err
 	}
 	for _, filePath := range files.untracked {
+		if files.eligible(filePath) {
+			marked = append(marked, filePath)
+		}
+	}
+	hidden, err := files.hidden()
+	if err != nil {
+		return nil, err
+	}
+	for filePath := range hidden {
 		if files.eligible(filePath) {
 			marked = append(marked, filePath)
 		}

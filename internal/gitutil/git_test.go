@@ -3263,6 +3263,71 @@ func TestGrepIndexPatternFilesInSearchesEveryNamedFile(t *testing.T) {
 	}
 }
 
+// A worktree `git grep` reads a file marked assume-unchanged or skip-worktree from its index
+// blob, and skips a path the index records as a symlink even once the worktree holds a
+// regular file there. IndexHiddenFiles lists those three, and the named-file searches read
+// each from the worktree.
+func TestIndexHiddenFilesListsWhatWorktreeGrepDoesNotRead(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	for _, name := range []string{"plain.md", "frozen.md", "sparse.md"} {
+		write(t, repo, name, "base\n")
+	}
+	git(t, repo, "add", ".")
+	// The index records link.md as a symlink to plain.md, with no symlink on disk.
+	write(t, repo, "link.md", "plain.md")
+	link := gitOutput(t, repo, "hash-object", "-w", "link.md")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+link+",link.md")
+	git(t, repo, "update-index", "--assume-unchanged", "frozen.md")
+	git(t, repo, "update-index", "--skip-worktree", "sparse.md")
+	for _, name := range []string{"plain.md", "frozen.md", "sparse.md", "link.md"} {
+		write(t, repo, name, "base\nplover\n")
+	}
+	hidden, err := IndexHiddenFiles(t.Context(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"frozen.md", "link.md", "sparse.md"}; !reflect.DeepEqual(hidden, want) {
+		t.Fatalf("index-hidden files = %q, want %q", hidden, want)
+	}
+	var whole, listed []string
+	if err := GrepIndexPatternFiles(t.Context(), repo, []string{"plover"}, func(path string) error { whole = append(whole, path); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := GrepIndexPatternFilesIn(t.Context(), repo, []string{"plover"}, hidden, func(path string) error { listed = append(listed, path); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(listed)
+	if !reflect.DeepEqual(whole, []string{"plain.md"}) || !reflect.DeepEqual(listed, hidden) {
+		t.Fatalf("whole-worktree listing = %q, named listing = %q, want plain.md and then every hidden file", whole, listed)
+	}
+}
+
+func TestIndexHiddenPathReadsLsFilesRecords(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		record     string
+		path       string
+		hidden, ok bool
+	}{
+		{record: "H 100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tplain.md", path: "plain.md", ok: true},
+		{record: "H 100755 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\trun.sh", path: "run.sh", ok: true},
+		{record: "h 100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tfrozen.md", path: "frozen.md", hidden: true, ok: true},
+		{record: "S 100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tsparse.md", path: "sparse.md", hidden: true, ok: true},
+		{record: "H 120000 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tlink.md", path: "link.md", hidden: true, ok: true},
+		// Only the first tab ends the fields; the path keeps the rest.
+		{record: "H 100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tdir/a b\tc.md", path: "dir/a b\tc.md", ok: true},
+		{record: "H 100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0"},
+		{record: "plain.md"},
+	} {
+		path, hidden, ok := indexHiddenPath(tc.record)
+		if path != tc.path || hidden != tc.hidden || ok != tc.ok {
+			t.Fatalf("indexHiddenPath(%q) = %q, %v, %v, want %q, %v, %v", tc.record, path, hidden, ok, tc.path, tc.hidden, tc.ok)
+		}
+	}
+}
+
 func TestGrepTreePatternFilesPinsCommittedContent(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")

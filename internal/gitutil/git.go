@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -514,6 +515,52 @@ func FilesMarkedBinary(ctx context.Context, repo string, paths []string) ([]stri
 	}
 	sort.Strings(marked)
 	return marked, nil
+}
+
+// IndexHiddenFiles lists, sorted, the tracked files whose worktree content a worktree
+// `git grep` does not read (`git ls-files -z -s -v`). Git greps a file marked assume-unchanged
+// or skip-worktree (a lowercase tag, or `S`) from its index blob, and skips a path the index
+// records as a symlink (mode 120000) even once the worktree holds a regular file there. To
+// search such a file's worktree lines, name it to GrepIndexPatternFilesIn or
+// GrepIndexPatternEveryInFiles, which read each named file from the worktree.
+func IndexHiddenFiles(ctx context.Context, repo string) ([]string, error) {
+	var hidden []string
+	var parseErr error
+	err := visitBoundedWorktreePathOutput(newCmd(ctx, repo, "git", "ls-files", "-z", "-s", "-v"), func(record string) bool {
+		if record == "" {
+			return true
+		}
+		path, isHidden, ok := indexHiddenPath(record)
+		if !ok {
+			parseErr = fmt.Errorf("git ls-files -s -v returned a malformed record %q", record)
+			return false
+		}
+		if isHidden {
+			hidden = append(hidden, path)
+		}
+		return true
+	})
+	if err == nil {
+		err = parseErr
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(hidden)
+	return slices.Compact(hidden), nil
+}
+
+// indexHiddenPath reads one `git ls-files -s -v` record, `<tag> <mode> <object> <stage>` and a
+// tab before the path, and reports whether IndexHiddenFiles counts that path.
+func indexHiddenPath(record string) (path string, hidden, ok bool) {
+	fields, path, ok := strings.Cut(record, "\t")
+	tag, rest, hasMode := strings.Cut(fields, " ")
+	if !ok || !hasMode || len(tag) != 1 || path == "" {
+		return "", false, false
+	}
+	mode, _, _ := strings.Cut(rest, " ")
+	lower := tag[0] >= 'a' && tag[0] <= 'z'
+	return path, lower || tag == "S" || mode == "120000", true
 }
 
 // checkDiffAttributes visits each path's `diff` attribute value, because that attribute is what

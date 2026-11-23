@@ -450,6 +450,11 @@ func TestSearchRepositoryCountsTermsTheGitShortlistDropped(t *testing.T) {
 		// the include file leaves out, so outside the corpus and never searched.
 		{query: "heron siskin", maxParseBytes: 64, reinclude: true, low: true, gitPasses: 2},
 		{query: "heron linnet", maxParseBytes: 64, reinclude: true, gitPasses: 2},
+		// avocet and stilt are each only in a tracked file too large to read whose worktree
+		// content Git's listing does not read: a regular file where the index records a
+		// symlink, and an assume-unchanged file.
+		{query: "heron avocet", maxParseBytes: 64, low: true, gitPasses: 2},
+		{query: "heron stilt", maxParseBytes: 64, low: true, gitPasses: 2},
 		{query: "needle sandpiper", low: true, gitPasses: 2},
 		// Git's sample matched redwing in a dropped file whose NUL byte comes after the 8,000
 		// bytes Git sniffs, so the content pass would never index it, even with every file.
@@ -507,8 +512,9 @@ func (tc gitShortlistCase) check(t *testing.T, response SearchResponse) {
 	}
 }
 
-// writeGitShortlistFixture commits an 11,508-file worktree, past minGitGrepPreselectionFiles,
-// and leaves three more files untracked, two of them ignored, holding each way
+// writeGitShortlistFixture commits an 11,510-file worktree, past minGitGrepPreselectionFiles,
+// changes two of those files in ways a worktree grep does not read, and leaves three more
+// files untracked, two of them ignored, holding each way
 // TestSearchRepositoryCountsTermsTheGitShortlistDropped hides a term.
 func writeGitShortlistFixture(t *testing.T) string {
 	t.Helper()
@@ -549,8 +555,17 @@ func writeGitShortlistFixture(t *testing.T) string {
 	// table names it.
 	write(t, repo, "large/commands/heron.json", `{"function":"wadeCommand","summary":"heron"}`)
 	write(t, repo, "large/zz_wade_test.go", "package p\n\n// curlew\nfunc wadeCommand() {}\n")
+	write(t, repo, "large/zz_frozen.md", "frozen\n")
 	git(t, repo, "add", ".")
+	// The index records this one as a symlink, with no symlink on disk.
+	link := gitInput(t, repo, "zz_egret.md", "hash-object", "-w", "--stdin")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+link+",large/zz_link.md")
 	git(t, repo, "commit", "-q", "-m", "large corpus")
+	// A worktree grep skips a path the index records as a symlink, though the worktree now
+	// holds a regular file there, and reads an assume-unchanged file from the index.
+	write(t, repo, "large/zz_link.md", "avocet\n"+strings.Repeat("// padding\n", 40))
+	git(t, repo, "update-index", "--assume-unchanged", "large/zz_frozen.md")
+	write(t, repo, "large/zz_frozen.md", "stilt\n"+strings.Repeat("// padding\n", 40))
 	// Never added, so only the worktree listing has it; the content pass reads it unless a
 	// read cap leaves it out.
 	write(t, repo, "large/zz_untracked.md", "godwit\n"+strings.Repeat("// padding\n", 40))
@@ -722,6 +737,56 @@ func TestSearchGitUnreadTermsSearchesUntrackedFiles(t *testing.T) {
 		if passes != 1 || examined != 1 {
 			t.Fatalf("%q: passes = %d, files examined again = %d, want 1 and 1", tc.query, passes, examined)
 		}
+	}
+}
+
+// A worktree `git grep` reads a file marked assume-unchanged or skip-worktree from its index
+// blob, and skips a path the index records as a symlink even once the worktree holds a
+// regular file there, so the listing misses a term only the worktree content of such a file
+// holds. Each is searched by name instead, from the worktree. A term Git's sample matched in
+// the index blob of such a file too large to read is not taken on the sample's word.
+func TestSearchGitUnreadTermsSearchesIndexHiddenFiles(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "kept.md", "needle\n")
+	write(t, repo, "plain.md", "base\n")
+	write(t, repo, "frozen.md", "redshank\n")
+	write(t, repo, "sparse.md", "base\n")
+	git(t, repo, "add", ".")
+	// The index records link.md as a symlink, with no symlink on disk.
+	write(t, repo, "link.md", "plain.md")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+gitInput(t, repo, "plain.md", "hash-object", "-w", "--stdin")+",link.md")
+	git(t, repo, "commit", "-q", "-m", "fixture")
+	git(t, repo, "update-index", "--assume-unchanged", "frozen.md")
+	git(t, repo, "update-index", "--skip-worktree", "sparse.md")
+	// Each is now over the 200-byte read cap below, so the content pass did not read it.
+	padding := strings.Repeat("x\n", 200)
+	write(t, repo, "plain.md", "turnstone\n"+padding)
+	write(t, repo, "link.md", "avocet\n"+padding)
+	write(t, repo, "frozen.md", "stilt\n"+padding)
+	write(t, repo, "sparse.md", "whimbrel\n"+padding)
+	allowed := map[string]bool{"kept.md": true, "plain.md": true, "link.md": true, "frozen.md": true, "sparse.md": true}
+	files := searchTestUnreadFiles(repo, allowed, map[string]bool{"kept.md": true}, 200)
+	files.indexHidden = searchIndexHiddenFiles(t.Context(), repo)
+
+	for _, tc := range []struct {
+		query   string
+		sampled map[string][]string
+		want    map[string]bool
+	}{
+		{query: "needle turnstone avocet stilt whimbrel", want: map[string]bool{"turnstone": true, "avocet": true, "stilt": true, "whimbrel": true}},
+		{query: "needle redshank", sampled: map[string][]string{"frozen.md": {"redshank"}}, want: map[string]bool{"redshank": false}},
+	} {
+		q := buildSearchQuery(tc.query)
+		files.sampled = nil
+		for _, path := range slices.Sorted(maps.Keys(tc.sampled)) {
+			files.sampled = append(files.sampled, searchFileCandidate{path: path, matchedTerms: searchTestTermMarks(q, tc.sampled[path])})
+		}
+		marked, _, _ := searchGitUnreadTerms(t.Context(), files, q, newSearchQueryTermMatcher(q), searchTestTermMarks(q, []string{"needle"}))
+		requireSearchTermsMarked(t, tc.query, q, marked, tc.want)
 	}
 }
 
