@@ -1,6 +1,8 @@
 package sem
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -8,37 +10,53 @@ import (
 )
 
 // searchTestScanFiles scans one in-memory file, path "f", through searchUnreadFiles.scan with
-// windows of window bytes, recording the largest read the scan asks for.
-func searchTestScanFiles(content string, window int, largest *int, reads *int) searchUnreadFiles {
+// windows of window bytes, recording the largest read the scan asks for and the bytes it reads
+// in all.
+func searchTestScanFiles(content string, window int, largest, total *int) searchUnreadFiles {
+	return searchTestScanTree(map[string]string{"f": content}, window, largest, total)
+}
+
+// searchTestScanTree is searchTestScanFiles over several in-memory files.
+func searchTestScanTree(tree map[string]string, window int, largest, total *int) searchUnreadFiles {
 	return searchUnreadFiles{
 		scanBytes: window,
-		open: func(string) (io.ReadCloser, int64, bool) {
-			return io.NopCloser(&searchTestReadRecorder{reader: strings.NewReader(content), largest: largest, reads: reads}), int64(len(content)), true
+		open: func(filePath string) (io.ReadCloser, int64, bool) {
+			content, ok := tree[filePath]
+			if !ok {
+				return nil, 0, false
+			}
+			return io.NopCloser(&searchTestReadRecorder{reader: strings.NewReader(content), largest: largest, total: total}), int64(len(content)), true
 		},
 	}
 }
 
 type searchTestReadRecorder struct {
-	reader  io.Reader
-	largest *int
-	reads   *int
+	reader         io.Reader
+	largest, total *int
 }
 
 func (recorder *searchTestReadRecorder) Read(p []byte) (int, error) {
 	if recorder.largest != nil {
 		*recorder.largest = max(*recorder.largest, len(p))
 	}
-	if recorder.reads != nil {
-		*recorder.reads++
+	n, err := recorder.reader.Read(p)
+	if recorder.total != nil {
+		*recorder.total += n
 	}
-	return recorder.reader.Read(p)
+	return n, err
+}
+
+// searchTestScanOnce runs one scan of "f" for q in a pass of its own, and reports whether it
+// marked the file's terms in result.
+func searchTestScanOnce(files searchUnreadFiles, q searchQuery, result []bool) bool {
+	return files.scan(context.Background(), "f", newSearchQueryTermMatcher(q), result, files.newScans(q))
 }
 
 func searchTestScan(t *testing.T, query, content string, window int) []bool {
 	t.Helper()
 	q := buildSearchQuery(query)
 	result := make([]bool, len(q.terms))
-	if !searchTestScanFiles(content, window, nil, nil).scan("f", newSearchQueryTermMatcher(q), searchUnreadScanOverlap(q), result, func() bool { return false }) {
+	if !searchTestScanOnce(searchTestScanFiles(content, window, nil, nil), q, result) {
 		t.Fatalf("%q: scan failed", query)
 	}
 	return result
@@ -76,33 +94,125 @@ func TestSearchUnreadScanFindsATermAtEveryWindowEdge(t *testing.T) {
 }
 
 // The scan never asks for more than a window and its overlap at once, however long the file
-// and its one line, and it stops reading once done reports true.
+// and its one line, and it reads the file to its end, past the term, to rule out a NUL byte.
 func TestSearchUnreadScanReadsABoundedWindow(t *testing.T) {
 	t.Parallel()
 	const window = 64
 	q := buildSearchQuery("quillwort")
 	overlap := searchUnreadScanOverlap(q)
-	content := "quillwort" + strings.Repeat("x", 1<<20)
-	largest, reads := 0, 0
+	for _, content := range []string{"quillwort" + strings.Repeat("x", 1<<20), strings.Repeat("x", 1<<20) + "quillwort"} {
+		largest, total := 0, 0
+		result := make([]bool, len(q.terms))
+		if !searchTestScanOnce(searchTestScanFiles(content, window, &largest, &total), q, result) || !result[0] {
+			t.Fatalf("scan missed quillwort at offset %d of a 1 MiB line", strings.Index(content, "quillwort"))
+		}
+		if limit := overlap + window + 8; largest > limit {
+			t.Fatalf("largest read = %d bytes, want at most %d", largest, limit)
+		}
+		if total != len(content) {
+			t.Fatalf("scan read %d of %d bytes, want the whole file", total, len(content))
+		}
+	}
+}
+
+// The content pass skips a file holding a NUL byte anywhere, and Git's test reads only the
+// first 8,000 bytes, so the scan marks nothing for a file with one past them, wherever a
+// window puts it.
+func TestSearchUnreadScanSkipsAFileHoldingANULByte(t *testing.T) {
+	t.Parallel()
+	const window = 64
+	q := buildSearchQuery("quillwort")
+	body := "quillwort\n" + strings.Repeat("x", 4*window)
+	for offset := range len(body) + 1 {
+		result := make([]bool, len(q.terms))
+		if searchTestScanOnce(searchTestScanFiles(body[:offset]+"\x00"+body[offset:], window, nil, nil), q, result) || result[0] {
+			t.Fatalf("NUL at byte %d: scan marked %v, want nothing", offset, result)
+		}
+	}
+	if result := searchTestScan(t, "quillwort", body, window); !result[0] {
+		t.Fatal("scan missed quillwort without the NUL byte")
+	}
+}
+
+// One pass scans at most its budget in all: a file larger than what is left is not read, so
+// a later smaller one still fits, and a file that grew past the budget since it was opened
+// is cut off there and marks nothing. A file is scanned once a pass.
+func TestSearchUnreadScanStaysWithinItsBudget(t *testing.T) {
+	t.Parallel()
+	q := buildSearchQuery("alpha beta gamma delta")
+	matcher := newSearchQueryTermMatcher(q)
+	total := 0
+	files := searchTestScanTree(map[string]string{
+		"a": "alpha\n" + strings.Repeat("x\n", 297), // 600 bytes
+		"b": "beta\n" + strings.Repeat("x\n", 297),  // 599 bytes, over the 400 left
+		"c": "gamma\n" + strings.Repeat("x\n", 147), // 300 bytes
+		"d": "delta\n" + strings.Repeat("x\n", 22),  // 50 bytes
+	}, 64, nil, &total)
+	files.scanBudget = 1000
+	scans := files.newScans(q)
 	result := make([]bool, len(q.terms))
-	files := searchTestScanFiles(content, window, &largest, &reads)
-	if !files.scan("f", newSearchQueryTermMatcher(q), overlap, result, func() bool { return result[0] }) || !result[0] {
-		t.Fatal("scan missed quillwort")
+	for _, tc := range []struct {
+		path      string
+		ok        bool
+		left, got int
+	}{
+		{path: "a", ok: true, left: 400, got: 600},
+		{path: "b", ok: false, left: 400, got: 600},
+		{path: "c", ok: true, left: 100, got: 900},
+		{path: "d", ok: true, left: 50, got: 950},
+		{path: "d", ok: false, left: 50, got: 950},
+	} {
+		if ok := files.scan(context.Background(), tc.path, matcher, result, scans); ok != tc.ok || scans.left != int64(tc.left) || total != tc.got {
+			t.Fatalf("scan %s: ok = %v, budget left %d, bytes read %d; want %v, %d, %d", tc.path, ok, scans.left, total, tc.ok, tc.left, tc.got)
+		}
 	}
-	if limit := overlap + window + 8; largest > limit {
-		t.Fatalf("largest read = %d bytes, want at most %d", largest, limit)
+	requireSearchTermsMarked(t, "alpha beta gamma delta", q, result, map[string]bool{"alpha": true, "beta": false, "gamma": true, "delta": true})
+
+	// The opener reports 100 bytes, but the file holds 5,000 by the time it is read.
+	total = 0
+	grown := searchTestScanFiles("beta\n"+strings.Repeat("x\n", 2500), 64, nil, &total)
+	open := grown.open
+	grown.open = func(filePath string) (io.ReadCloser, int64, bool) {
+		file, _, ok := open(filePath)
+		return file, 100, ok
 	}
-	if reads > 2 {
-		t.Fatalf("scan read %d times after finding the only term in its first window", reads)
+	grown.scanBudget = 1000
+	scans = grown.newScans(q)
+	result = make([]bool, len(q.terms))
+	if grown.scan(context.Background(), "f", matcher, result, scans) || result[1] || total > 1001 || scans.left != 0 {
+		t.Fatalf("grown file: marked %v, read %d bytes, budget left %d; want nothing, at most 1,001 bytes and none left", result, total, scans.left)
 	}
-	largest = 0
-	result[0] = false
-	files = searchTestScanFiles(strings.Repeat("x", 1<<20)+"quillwort", window, &largest, nil)
-	if !files.scan("f", newSearchQueryTermMatcher(q), overlap, result, func() bool { return false }) || !result[0] {
-		t.Fatal("scan missed quillwort at the end of a 1 MiB line")
+}
+
+// A pass's terms only files past its budget hold are missed, which leaves the confidence high:
+// searchUnreadTerms scans the files that fit and stops reading at the budget.
+func TestSearchUnreadTermsScansWithinOnePassBudget(t *testing.T) {
+	t.Parallel()
+	q := buildSearchQuery("alpha beta")
+	tree := map[string]string{}
+	var unread []string
+	for index := range 8 {
+		filePath := fmt.Sprintf("big_%d.md", index)
+		tree[filePath] = strings.Repeat("x\n", 300)
+		unread = append(unread, filePath)
 	}
-	if limit := overlap + window + 8; largest > limit {
-		t.Fatalf("largest read = %d bytes, want at most %d", largest, limit)
+	tree["big_3.md"] = "alpha\n" + tree["big_3.md"]
+	tree["big_7.md"] = "beta\n" + tree["big_7.md"]
+	total := 0
+	files := searchTestScanTree(tree, 64, nil, &total)
+	files.readFile = func(string) (string, bool) { return "", false }
+	files.readPrefix = func(filePath string, limit int) (string, bool) {
+		return tree[filePath][:min(limit, len(tree[filePath]))], true
+	}
+	// Room for big_0.md to big_3.md, which holds alpha, and none after.
+	files.scanBudget = int64(3*len(tree["big_0.md"]) + len(tree["big_3.md"]))
+	marked, examined, err := searchUnreadTerms(t.Context(), files, unread, q, newSearchQueryTermMatcher(q), make([]bool, len(q.terms)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireSearchTermsMarked(t, "alpha beta", q, marked, map[string]bool{"alpha": true, "beta": false})
+	if examined != len(unread) || total > int(files.scanBudget) {
+		t.Fatalf("examined %d files and scanned %d bytes, want all %d examined and at most %d bytes", examined, total, len(unread), files.scanBudget)
 	}
 }
 
@@ -111,10 +221,10 @@ func TestSearchUnreadScanReportsAFileItCannotOpen(t *testing.T) {
 	q := buildSearchQuery("quillwort")
 	result := make([]bool, 1)
 	files := searchUnreadFiles{open: func(string) (io.ReadCloser, int64, bool) { return nil, 0, false }}
-	if files.scan("f", newSearchQueryTermMatcher(q), 36, result, func() bool { return false }) || result[0] {
+	if searchTestScanOnce(files, q, result) || result[0] {
 		t.Fatal("scan of a file it cannot open reported success")
 	}
-	if (searchUnreadFiles{}).scan("f", newSearchQueryTermMatcher(q), 36, result, func() bool { return false }) {
+	if searchTestScanOnce(searchUnreadFiles{}, q, result) {
 		t.Fatal("scan without an opener reported success")
 	}
 }
@@ -145,7 +255,7 @@ func TestSearchUnreadScanTakesNoAliasFromPartOfAWord(t *testing.T) {
 				t.Fatalf("offset %d: the matcher finds int = %v in the whole file", offset, whole[alias])
 			}
 			result := make([]bool, len(q.terms))
-			if !searchTestScanFiles(tc.content, window, nil, nil).scan("f", newSearchQueryTermMatcher(q), searchUnreadScanOverlap(q), result, func() bool { return false }) {
+			if !searchTestScanOnce(searchTestScanFiles(tc.content, window, nil, nil), q, result) {
 				t.Fatal("scan failed")
 			}
 			if result[alias] != tc.want {
@@ -179,7 +289,7 @@ func TestSearchUnreadScanFindsAnAliasInAWordAWindowEdgeCuts(t *testing.T) {
 				t.Fatalf("offset %d: the matcher misses int in %q", offset, tc.word)
 			}
 			result := make([]bool, len(q.terms))
-			if !searchTestScanFiles(content, tc.window, nil, nil).scan("f", newSearchQueryTermMatcher(q), searchUnreadScanOverlap(q), result, func() bool { return false }) {
+			if !searchTestScanOnce(searchTestScanFiles(content, tc.window, nil, nil), q, result) {
 				t.Fatal("scan failed")
 			}
 			if !result[alias] {

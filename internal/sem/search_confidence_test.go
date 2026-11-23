@@ -376,12 +376,15 @@ func TestSearchRepositoryCountsTermsOnlyAFileTooLargeToReadHolds(t *testing.T) {
 	repo := writeNeedleQuillwortFixture(t)
 	write(t, repo, "docs/zz_other.md", "quillwort\n"+strings.Repeat("padding line\n", 20))
 	write(t, repo, "docs/zz_binary.md", "\x00"+strings.Repeat("godwit\n", 20))
+	// Its NUL byte lies past the 8,000 bytes Git's test reads, so only the scan finds it.
+	write(t, repo, "docs/zz_late.md", "redwing\n"+strings.Repeat("x", searchBinarySniffBytes+100)+"\x00\n")
 	for _, tc := range []struct {
 		query string
 		low   bool
 	}{
 		{query: "needle quillwort", low: true},
 		{query: "needle godwit"},
+		{query: "needle redwing"},
 	} {
 		response, err := SearchRepository(t.Context(), repo, "test", tc.query, SearchOptions{
 			Worktree:      true,
@@ -395,14 +398,14 @@ func TestSearchRepositoryCountsTermsOnlyAFileTooLargeToReadHolds(t *testing.T) {
 		if stats.FilesIndexed != 384 || !stats.PreselectionBounded {
 			t.Fatalf("%q: stats = %#v, want the 384-file cap", tc.query, stats)
 		}
-		// Both files too large to read are examined again, in order, the NUL one first.
-		if stats.PreselectionFilesExamined != stats.FilesScanned+2 {
-			t.Fatalf("%q: files examined = %d, want the %d scanned and both files too large to read", tc.query, stats.PreselectionFilesExamined, stats.FilesScanned)
+		// The three files too large to read are examined again, in order, quillwort's last.
+		if stats.PreselectionFilesExamined != stats.FilesScanned+3 {
+			t.Fatalf("%q: files examined = %d, want the %d scanned and the three files too large to read", tc.query, stats.PreselectionFilesExamined, stats.FilesScanned)
 		}
 		if tc.low {
 			requirePreselectionNotice(t, tc.query, response)
 		} else if confidence := confidenceValue(stats.PreselectionConfidence); confidence != 1 {
-			t.Fatalf("%q: preselection confidence = %v, want 1: only a file the content pass would skip holds godwit", tc.query, confidence)
+			t.Fatalf("%q: preselection confidence = %v, want 1: only a file the content pass would skip holds its second term", tc.query, confidence)
 		}
 	}
 }
@@ -921,8 +924,8 @@ func TestSearchGitUnreadTermsSearchesIndexHiddenFiles(t *testing.T) {
 // Git's sample can match a term in a file the shortlist dropped, and the term counts only once
 // that file passes the content pass's test: Git's -I looks for a NUL byte in a file's first
 // 8,000 bytes, and the content pass skips a file holding one anywhere. A file too large to
-// read keeps the sample's verdict, which is Git's own test, and a file whose sampled terms are
-// known already is not read. A missing term outside ASCII is searched too, in any case, and
+// read counts once a scan finds no NUL byte in the rest of it, and a file whose sampled terms
+// are known already is not read. A missing term outside ASCII is searched too, in any case, and
 // one no file holds ("café") does not stop the pass for the others.
 func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 	t.Parallel()
@@ -934,6 +937,9 @@ func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 	write(t, repo, "clean.md", "siskin\n")
 	// Over the 16,000-byte read cap below, so too large for the content pass to read.
 	write(t, repo, "big.md", "linnet\n"+strings.Repeat("x\n", 10000))
+	// Too large to read too, with a NUL byte past the 8,000 bytes Git's sample test reads. It
+	// is left out of the corpus below, so only the sample names it.
+	write(t, repo, "big-late-nul.md", "merlin\n"+strings.Repeat("x\n", 10000)+"\x00\n")
 	write(t, repo, ".gitattributes", "marked.txt -diff\n")
 	write(t, repo, "marked.txt", "sandpiper\n")
 	// Upper case, and with no ASCII fragment Git could find it by.
@@ -967,6 +973,15 @@ func TestSearchGitUnreadTermsConfirmsSampledFiles(t *testing.T) {
 			sampled:  map[string][]string{"clean.md": {"siskin"}, "big.md": {"linnet"}},
 			want:     map[string]bool{"siskin": true, "linnet": true},
 			examined: 2,
+		},
+		// big-late-nul.md's NUL byte keeps merlin out, so the listing runs; big.md, scanned
+		// already, is examined there but not read again.
+		{
+			query:    "linnet merlin",
+			sampled:  map[string][]string{"big.md": {"linnet"}, "big-late-nul.md": {"merlin"}},
+			want:     map[string]bool{"linnet": true, "merlin": false},
+			passes:   1,
+			examined: 3,
 		},
 		{query: "siskin", known: []string{"siskin"}, sampled: map[string][]string{"clean.md": {"siskin"}}, want: map[string]bool{"siskin": true}},
 		{query: `sandpiper "café"`, want: map[string]bool{"sandpiper": true, "café": false}, passes: 1, examined: 2},

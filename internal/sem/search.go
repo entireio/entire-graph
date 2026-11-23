@@ -3254,7 +3254,7 @@ const searchBinarySniffBytes = 8000
 // track, indexHidden the tracked files a worktree grep does not read from the worktree
 // (searchIndexHiddenFiles), and readFile and readPrefix read a file whole (under the same cap,
 // maxReadBytes) or its first bytes. open opens a file for scan, which reads scanBytes at a
-// time.
+// time and scanBudget in all in one pass (searchUnreadScanBudgetBytes when unset).
 type searchUnreadFiles struct {
 	absRepo      string
 	allowed      map[string]bool
@@ -3267,6 +3267,7 @@ type searchUnreadFiles struct {
 	open         func(path string) (io.ReadCloser, int64, bool)
 	maxReadBytes int64
 	scanBytes    int
+	scanBudget   int64
 }
 
 // searchIndexHiddenFiles returns a lookup of the tracked files whose worktree content a
@@ -3300,8 +3301,8 @@ func (files searchUnreadFiles) hidden() (map[string]bool, error) {
 // text reports how the content pass would see a file it did not read: its content when it
 // is readable and holds no NUL byte, as that pass requires, or, for a file too large to read,
 // whether its first searchBinarySniffBytes hold no NUL either (Git's own test of content),
-// so it should be scanned (searchUnreadFiles.scan). Neither looks at .gitattributes, which the
-// content pass ignores too.
+// so it should be scanned (searchUnreadFiles.scan), which looks for one in the rest. Neither
+// looks at .gitattributes, which the content pass ignores too.
 func (files searchUnreadFiles) text(filePath string) (content string, readable, stream bool) {
 	if content, ok := files.readFile(filePath); ok {
 		return content, strings.IndexByte(content, 0) < 0, false
@@ -3328,7 +3329,8 @@ func (files searchUnreadFiles) text(filePath string) (content string, readable, 
 // matched whole with the query's matcher, and a text file too large to read is matched with
 // it too, in bounded windows (searchUnreadFiles.scan), so no line Git matches but the matcher
 // rejects can crowd out a later one, and no such file is held whole. A file holding a NUL
-// byte is skipped, as the content pass skips it. A missing term Git has no pattern for
+// byte is skipped, as the content pass skips it. The pass scans a bounded amount in all
+// (searchUnreadScans), the confirmation of the sample included. A missing term Git has no pattern for
 // (searchGitMissingTerms) counts only where a file read for another term holds it, so it never
 // costs the other terms their pass. The scan stops as soon as every term the pass greps for is
 // found, and a failed pass keeps what it confirmed, so the confidence can only read high,
@@ -3344,7 +3346,8 @@ func searchGitUnreadTerms(
 ) ([]bool, int, int, error) {
 	result := make([]bool, len(q.terms))
 	copy(result, known)
-	examined := files.confirmSampled(ctx, matcher, result)
+	scans := files.newScans(q)
+	examined := files.confirmSampled(ctx, matcher, result, scans)
 	missing, pending := searchGitMissingTerms(q, result)
 	if len(missing) == 0 {
 		return result, 0, examined, ctx.Err()
@@ -3357,7 +3360,7 @@ func searchGitUnreadTerms(
 	if err != nil {
 		return result, 1, examined, ctx.Err()
 	}
-	examined += files.judge(ctx, unreadFiles, q, matcher, result, pending)
+	examined += files.judge(ctx, unreadFiles, matcher, result, pending, scans)
 	return result, 1, examined, ctx.Err()
 }
 
@@ -3385,20 +3388,21 @@ func searchUnreadTerms(
 	if len(pending) == 0 {
 		return result, 0, ctx.Err()
 	}
-	return result, files.judge(ctx, unread, q, matcher, result, pending), ctx.Err()
+	return result, files.judge(ctx, unread, matcher, result, pending, files.newScans(q)), ctx.Err()
 }
 
 // judge marks in result the terms each of paths holds, judged as the content pass would
 // judge it (searchUnreadFiles.text): a readable file is matched whole, and a text file too
-// large to read is scanned in bounded windows (searchUnreadFiles.scan). It stops once result
-// marks every term at pending, and returns how many files it examined.
+// large to read is scanned in bounded windows (searchUnreadFiles.scan), within what scans has
+// left. It stops once result marks every term at pending, and returns how many files it
+// examined.
 func (files searchUnreadFiles) judge(
 	ctx context.Context,
 	paths []string,
-	q searchQuery,
 	matcher searchTermMatcher,
 	result []bool,
 	pending []int,
+	scans *searchUnreadScans,
 ) int {
 	done := func() bool { return searchTermsAllMarked(result, pending) || ctx.Err() != nil }
 	examined := 0
@@ -3416,12 +3420,11 @@ func (files searchUnreadFiles) judge(
 			large = append(large, filePath)
 		}
 	}
-	overlap := searchUnreadScanOverlap(q)
 	for _, filePath := range large {
 		if done() {
 			break
 		}
-		files.scan(filePath, matcher, overlap, result, done)
+		files.scan(ctx, filePath, matcher, result, scans)
 	}
 	return examined
 }
@@ -3430,12 +3433,12 @@ func (files searchUnreadFiles) judge(
 // dropped, once each file passes the content pass's test (searchUnreadFiles.text). Git's -I
 // looks for a NUL byte only in a file's first searchBinarySniffBytes, and the content pass
 // skips a file holding one anywhere, so the sample alone can count a file that pass would
-// never index. A readable file is matched whole; for one too large to read, the sample's own
-// lines stand, as a scan's would for searchGitUnreadTerms, unless Git sampled the
-// file's index blob rather than its worktree content (searchUnreadFiles.indexHidden): its
+// never index. A readable file is matched whole, and one too large to read is scanned for the
+// rest of the test (searchUnreadFiles.scan, within what scans has left), unless Git sampled
+// the file's index blob rather than its worktree content (searchUnreadFiles.indexHidden): its
 // terms then wait for the named-file search in list. A file whose sampled terms are all
 // marked already is not read. It returns how many files it examined.
-func (files searchUnreadFiles) confirmSampled(ctx context.Context, matcher searchTermMatcher, result []bool) int {
+func (files searchUnreadFiles) confirmSampled(ctx context.Context, matcher searchTermMatcher, result []bool, scans *searchUnreadScans) int {
 	examined := 0
 	for _, candidate := range files.sampled {
 		if ctx.Err() != nil {
@@ -3450,7 +3453,7 @@ func (files searchUnreadFiles) confirmSampled(ctx context.Context, matcher searc
 		case readable:
 			markSearchHits(result, matcher.match(content))
 		case stream && !files.sampledFromIndex(candidate.path):
-			markSearchHits(result, candidate.matchedTerms)
+			files.scan(ctx, candidate.path, matcher, result, scans)
 		}
 	}
 	return examined

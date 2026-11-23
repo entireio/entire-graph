@@ -2,6 +2,7 @@ package sem
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"strings"
 	"unicode"
@@ -12,66 +13,140 @@ import (
 // reads at a time.
 const searchUnreadScanBytes = 1 << 20
 
+// searchUnreadScanBudgetBytes is how much one recovery pass scans in all, over every file too
+// large to read (searchUnreadFiles.scanBudget overrides it): four times the content pass's
+// default read cap, so a few files just over it fit. A term only files past it hold is
+// missed, which leaves the confidence high, never low.
+const searchUnreadScanBudgetBytes = 16 << 20
+
+// searchUnreadScans is one recovery pass's scan budget: the bytes it may still scan, the
+// overlap its query needs (searchUnreadScanOverlap), and the files it has scanned, which a
+// second scan would find no more in.
+type searchUnreadScans struct {
+	left    int64
+	overlap int
+	seen    map[string]bool
+}
+
+// newScans starts a recovery pass's scan budget for q.
+func (files searchUnreadFiles) newScans(q searchQuery) *searchUnreadScans {
+	budget := files.scanBudget
+	if budget <= 0 {
+		budget = searchUnreadScanBudgetBytes
+	}
+	return &searchUnreadScans{left: budget, overlap: searchUnreadScanOverlap(q), seen: map[string]bool{}}
+}
+
 // scan matches a corpus file too large for the content pass to read with the query's matcher,
-// without holding it whole: it reads files.scanBytes at a time (searchUnreadScanBytes when
-// unset), so memory stays bounded whatever the file's size or line lengths. Git would load
-// the whole file to grep it. A window ends after its last newline, and no query term holds
-// one, so the matcher sees whole lines, as in a file it reads whole. A line longer than a
-// window is cut where the window ends instead, and the next window starts overlap bytes
-// before the cut (searchUnreadScanOverlap), or at the start of the word the cut falls inside
-// when that is further back but within half a window. So every occurrence of a term lies
-// wholly in one window, past the character the cut or that start may fall inside, and so does
-// every word no longer than half a window. A window's alias tokens leave out a word it starts
-// or ends inside, which goes on past it (searchWholeWords): an abbreviation is never found in
-// part of a longer word, and is missed only in a word longer than half a window. It marks in
-// result the terms it finds and stops as soon as done reports true. It reports false when the
-// file cannot be opened or read; what it marked stays marked.
-func (files searchUnreadFiles) scan(filePath string, matcher searchTermMatcher, overlap int, result []bool, done func() bool) bool {
-	if files.open == nil {
+// without holding it whole, as searchScanWindows does. The content pass skips a file holding a
+// NUL byte anywhere, so the file's terms are marked in result only once it has been read to
+// its end with none found; Git's own test reads only its first searchBinarySniffBytes. A file
+// larger than what scans has left is not read, and the bytes read are taken from it, so one
+// pass reads a bounded amount however many files it scans and however large they are. It
+// reports whether it marked the file's terms: false when the file holds a NUL byte, is over
+// the budget, was scanned already, or cannot be opened or read in full.
+func (files searchUnreadFiles) scan(ctx context.Context, filePath string, matcher searchTermMatcher, result []bool, scans *searchUnreadScans) bool {
+	if files.open == nil || scans.seen[filePath] {
 		return false
 	}
-	file, _, ok := files.open(filePath)
+	scans.seen[filePath] = true
+	file, size, ok := files.open(filePath)
 	if !ok {
 		return false
 	}
 	defer file.Close()
+	if size > scans.left {
+		return false
+	}
 	window := files.scanBytes
 	if window <= 0 {
 		window = searchUnreadScanBytes
 	}
+	// One byte past the budget tells a file that grew since it was opened from one that ends.
+	limited := &io.LimitedReader{R: file, N: scans.left + 1}
+	hits := make([]bool, len(result))
+	whole := searchScanWindows(ctx, limited, matcher, scans.overlap, window, result, hits)
+	scans.left = max(0, limited.N-1)
+	if !whole || limited.N == 0 {
+		return false
+	}
+	markSearchHits(result, hits)
+	return true
+}
+
+// searchScanWindows matches reader with the query's matcher window bytes at a time, marking
+// in hits the terms it finds, so memory stays bounded whatever its size or line lengths. A
+// window ends after its last newline, and no query term holds one, so the matcher sees whole
+// lines, as in a file it reads whole. A line longer than a window is cut where the window ends
+// instead, and the next window starts overlap bytes before the cut (searchUnreadScanOverlap),
+// or at the start of the word the cut falls inside when that is further back but within half a
+// window (searchScanCut). So every occurrence of a term lies wholly in one window, past the
+// character the cut or that start may fall inside, and so does every word no longer than half
+// a window. A window's alias tokens leave out a word it starts or ends inside, which goes on
+// past it (searchWholeWords): an abbreviation is never found in part of a longer word, and is
+// missed only in a word longer than half a window. Once known and hits mark every term, the
+// rest is only checked for a NUL byte. It reports whether it read reader to its end with none
+// in it; it stops at the first one, a failed read, or ctx's end.
+func searchScanWindows(ctx context.Context, reader io.Reader, matcher searchTermMatcher, overlap, window int, known, hits []bool) bool {
 	buf := make([]byte, overlap+window)
 	kept := 0
 	lead := false
-	for {
-		n, err := io.ReadFull(file, buf[kept:])
+	for ctx.Err() == nil {
+		n, err := io.ReadFull(reader, buf[kept:])
 		end := kept + n
 		last := err != nil
 		if last && err != io.EOF && err != io.ErrUnexpectedEOF {
 			return false
 		}
-		cut, next, trail := end, end, false
-		if !last {
-			if newline := bytes.LastIndexByte(buf[:end], '\n'); newline >= 0 {
-				cut, next = newline+1, newline+1
-			} else {
-				next, trail = max(0, cut-overlap), true
-				if start := searchWordStart(buf[:cut], window/2); start >= 0 {
-					next = min(next, start)
-				}
+		if bytes.IndexByte(buf[kept:end], 0) >= 0 {
+			return false
+		}
+		cut, next, trail := searchScanCut(buf[:end], last, overlap, window)
+		if !searchEveryTermMarked(known, hits) {
+			found := matcher.match(string(buf[:cut]))
+			if lead || trail {
+				matcher.matchAliasTokens(found, string(searchWholeWords(buf[:cut], lead, trail)))
 			}
+			markSearchHits(hits, found)
 		}
-		found := matcher.match(string(buf[:cut]))
-		if lead || trail {
-			matcher.matchAliasTokens(found, string(searchWholeWords(buf[:cut], lead, trail)))
-		}
-		markSearchHits(result, found)
-		if last || done() {
+		if last {
 			return true
 		}
 		lastRune, size := utf8.DecodeLastRune(buf[:next])
 		lead = next > 0 && searchWordRune(lastRune, size)
 		kept = copy(buf, buf[next:end])
 	}
+	return false
+}
+
+// searchEveryTermMarked reports whether known or hits marks each term.
+func searchEveryTermMarked(known, hits []bool) bool {
+	for index := range hits {
+		if !hits[index] && !searchTermMarked(known, index) {
+			return false
+		}
+	}
+	return true
+}
+
+// searchScanCut returns where the window text ends for matching (cut) and where the next one
+// starts (next), and whether the cut falls inside a line (trail). The last window takes all of
+// text. Another ends after its last newline, or, in a line longer than the window, at its end,
+// and the next then starts overlap bytes back, or at the start of the word the cut falls
+// inside when that is further back but within half a window (searchWordStart).
+func searchScanCut(text []byte, last bool, overlap, window int) (cut, next int, trail bool) {
+	end := len(text)
+	if last {
+		return end, end, false
+	}
+	if newline := bytes.LastIndexByte(text, '\n'); newline >= 0 {
+		return newline + 1, newline + 1, false
+	}
+	next = max(0, end-overlap)
+	if start := searchWordStart(text, window/2); start >= 0 {
+		next = min(next, start)
+	}
+	return end, next, true
 }
 
 // searchWholeWords returns text without the word it starts inside, when lead is set, and
