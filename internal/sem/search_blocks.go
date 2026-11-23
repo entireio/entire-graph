@@ -250,7 +250,7 @@ func validateSearchContextBlockBudget(response SearchResponse) error {
 	// each component so individually affordable blocks cannot overspend together.
 	if stats.ContextBudgetBytes > 0 {
 		funded := stats.ResultBytes + stats.TypeCardBytes + stats.SignatureTypeBytes
-		if funded > stats.ContextBudgetBytes {
+		if funded > searchFundedCeiling(stats.ContextBudgetBytes) {
 			return fmt.Errorf("search context exceeds byte budget: %d > %d",
 				funded, stats.ContextBudgetBytes)
 		}

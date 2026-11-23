@@ -955,6 +955,13 @@ func searchRelatedMergedPlan(results, entries []SearchResult, displaced []int) [
 // the highest-value context block in the payload, and the yield order documented in
 // search_blocks.go is inverted exactly when bytes are tight enough for it to matter.
 func searchRelatedDisplacementOrder(results []SearchResult, floor int) []int {
+	return searchRelatedDisplacementOrderSparing(results, floor, nil)
+}
+
+// searchRelatedDisplacementOrderSparing is searchRelatedDisplacementOrder with hits that must stay:
+// a spared hit is never offered, and it still counts as a mention of its file, so a second
+// fragment of that file is still redundant while the spared one remains.
+func searchRelatedDisplacementOrderSparing(results []SearchResult, floor int, spared func(SearchResult) bool) []int {
 	counts := make(map[string]int, len(results))
 	for _, result := range results {
 		counts[result.FilePath]++
@@ -962,6 +969,9 @@ func searchRelatedDisplacementOrder(results []SearchResult, floor int) []int {
 	order := make([]int, 0, len(results))
 	for index := len(results) - 1; index >= floor; index-- {
 		if results[index].Section == searchSectionCoveringTest {
+			continue
+		}
+		if spared != nil && spared(results[index]) {
 			continue
 		}
 		// A result carrying SOURCE the reader will see is not a redundant locator, and this function

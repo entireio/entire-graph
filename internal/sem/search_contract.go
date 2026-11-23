@@ -34,6 +34,9 @@ type searchContractContext struct {
 	note *SearchCoverageNote
 	// card is the type/signature card, already inside its allowance.
 	card []TypeCardEntry
+	// anchor is the symbol `test` covers. The budget re-fit keeps the ranked result that names it
+	// until the test itself is gone, so a covering test never outlives its fix site.
+	anchor SymbolRecord
 }
 
 // buildSearchContractContext computes both blocks for a payload. It is a pure read of the
@@ -74,6 +77,7 @@ func buildSearchContractContext(
 			continue
 		}
 		context.test = &entry
+		context.anchor = anchor
 		context.note = buildSearchCoverageNote(anchor, test, peers, searchCoverageNoteBytes)
 		break
 	}

@@ -136,6 +136,21 @@ auto-generated notes on
 
 ### Fixed
 
+- `query --format json`, `ndjson` and `text` no longer fail with
+  `search result context exceeds byte budget` when a step that runs after the
+  byte fitter adds bytes the ceiling no longer has room for. The payload is
+  held to `--max-context-bytes` once more before the blocks that describe its
+  hits (VERIFY, the container map, outlines) are built, and a payload over it
+  gets smaller instead: redundant tail fragments go first, then the type
+  card, then the signature-type block, then ranked hits from the bottom, with
+  the covering test after the other hits and the head last. Whole hits are
+  removed, never clipped, and `results_dropped_by_budget` counts them. Prose
+  passages promoted, or bodies marked complete, after that point are left out
+  if they would overshoot. A payload that already fits is unchanged. A budget
+  below two bytes no longer fails with `2 > 1`: the empty ranking `[]` is the
+  smallest answer there is, and it is what every budget that fits no hit
+  returns.
+
 - An ignore file whose first bytes are a UTF-8 byte-order mark no longer loses
   its first rule. Git drops exactly one mark at byte zero of an exclude file;
   this did not, so the first pattern of such a `.graphignore`, `.gitignore`,
