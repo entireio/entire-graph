@@ -24,6 +24,8 @@ type checkedInRunner struct {
 		Template string `json:"template"`
 	} `json:"prompt"`
 	Output struct {
+		Adapter      string `json:"adapter"`
+		ResultType   string `json:"result_type"`
 		TrailField   string `json:"trail_field"`
 		TrailMonitor *struct {
 			Key       string `json:"key"`
@@ -139,25 +141,42 @@ func TestEveryEnabledTrailRunnerFiresOnAPush(t *testing.T) {
 //
 // Listing "push" is necessary and not sufficient. The platform will only start
 // a pushed trail-prompt runner when its output also lands somewhere a trail
-// renders. In entire.io, api/src/lib/agents/push-router.ts:
+// renders. The live rule is SelectEventLaunch in entire-api,
+// internal/runnerconfig/launch.go:305:
 //
-//	function hasFirstClassTrailOutput(config) {
-//	  return !!config.output?.trailMonitor || config.output?.trailField === "body"
+//	review := cfg.TrailsReviewEnabled && cfg.Output.isCodeReview()
+//	if triggerType == "push" {
+//	    firstClass := cfg.writesTrailBody() || cfg.writesTrailMonitor()
+//	    if !review && (!firstClass || cfg.TrailsReviewEnabled) {
+//	        return LaunchProfile{}, errors.New("push runner config must be ...")
+//	    }
 //	}
 //
-// and isPushTriggeredTrailPromptConfig requires it, while review runners take
-// the separate trails_review.enabled route. So there are exactly three ways to
-// clear the gate, and a runner that takes none of them silently does nothing on
-// a push no matter what its trigger_types say.
+// Three things in that predicate are easy to miss, and all three are silent:
+//
+//  1. The adapter is part of the gate, not a detail beside it. writesTrailBody
+//     and writesTrailMonitor (launch.go:327, :331) each require an adapter that
+//     can carry what is declared -- TrailFieldCapableAdapter admits markdown and
+//     last_json_line, MonitorCapableAdapter admits json and last_json_line
+//     (runnerconfig.go:211, :373). A trail_monitor on a markdown adapter is not
+//     first-class output; it is nothing.
+//  2. The two routes are mutually exclusive. `!firstClass || TrailsReviewEnabled`
+//     rejects a runner that declares trails_review.enabled beside a monitor.
+//     They are not merged.
+//  3. isCodeReview (launch.go:336) is itself adapter-gated: last_json_line
+//     carrying result_type "code_review_comments". trails_review.enabled alone
+//     does not make a review runner.
 //
 // This cost a release. trail-semantic-diff was fixed once by adding "push" to
 // trigger_types alone, which looked like the whole repair and changed nothing:
 // it carried no trail_monitor, no trail_field and no review flag, so it still
 // never fired.
 //
-// This test encodes another repository's predicate. If push-router.ts changes
+// This test encodes another repository's predicate. If SelectEventLaunch changes
 // its rules, this test is stale rather than wrong -- re-read the function above
-// before weakening anything here.
+// before weakening anything here. (The TypeScript runtime this rule used to live
+// in, entire.io api/src/lib/agents/push-router.ts, was deleted on 2026-08-18 in
+// ebca854852; do not cite it.)
 func TestEveryPushTriggeredRunnerCarriesFirstClassTrailOutput(t *testing.T) {
 	t.Parallel()
 
@@ -168,13 +187,22 @@ func TestEveryPushTriggeredRunnerCarriesFirstClassTrailOutput(t *testing.T) {
 			continue
 		}
 		pushTriggered++
-		switch {
-		case runner.TrailsReview.Enabled:
-		case runner.Output.TrailMonitor != nil:
-		case runner.Output.TrailField == "body":
-		default:
-			t.Errorf("%s lists \"push\" but has no output a pushed trail accepts: it sets no output.trail_monitor, no output.trail_field \"body\" and no trails_review.enabled, so push-router's hasFirstClassTrailOutput rejects it and listing \"push\" buys nothing. Give it a trail_monitor, write it to the trail body, or stop claiming it runs on a push",
-				runner.File)
+
+		adapter := strings.TrimSpace(runner.Output.Adapter)
+		// isCodeReview: last_json_line carrying code_review_comments.
+		review := runner.TrailsReview.Enabled && adapter == "last_json_line" &&
+			strings.TrimSpace(runner.Output.ResultType) == "code_review_comments"
+		// writesTrailBody || writesTrailMonitor, each adapter-gated.
+		writesBody := runner.Output.TrailField == "body" &&
+			(adapter == "markdown" || adapter == "last_json_line")
+		writesMonitor := runner.Output.TrailMonitor != nil &&
+			(adapter == "json" || adapter == "last_json_line")
+		firstClass := writesBody || writesMonitor
+
+		if !review && (!firstClass || runner.TrailsReview.Enabled) {
+			t.Errorf("%s lists \"push\" but SelectEventLaunch rejects it: adapter %q, trail_field %q, trail_monitor %v, trails_review.enabled %v, result_type %q -> review=%v firstClass=%v. A pushed runner must be either a review runner (trails_review.enabled AND last_json_line AND result_type \"code_review_comments\") or a first-class-output runner with trails_review.enabled false (trail_field \"body\" on markdown/last_json_line, or trail_monitor on json/last_json_line). Declaring a monitor on an adapter that cannot carry it is not first-class output, and declaring trails_review.enabled beside a monitor is rejected rather than merged",
+				runner.File, adapter, runner.Output.TrailField, runner.Output.TrailMonitor != nil,
+				runner.TrailsReview.Enabled, runner.Output.ResultType, review, firstClass)
 		}
 	}
 
@@ -190,18 +218,22 @@ func TestEveryPushTriggeredRunnerCarriesFirstClassTrailOutput(t *testing.T) {
 //
 // A trail_monitor block declares a value_type. The platform then parses the
 // agent's final JSON for a value of exactly that shape and for a rationale
-// string, in entire.io api/src/lib/sandbox-runs/automation-results.ts:
+// string, in entire-api, internal/runneroutput/monitor.go:140 MonitorResult:
 //
-//	percent -> record.value | record.score, 0-100
-//	size    -> record.value | record.size, "small" | "medium" | "large"
-//	boolean -> record.value | record.boolean
-//	rationale -> record.rationale | record.summary
+//	percent -> record.value | record.score, 0-100          (monitor.go:155)
+//	size    -> record.value | record.size, small|medium|large (monitor.go:165)
+//	boolean -> record.value | record.boolean                (monitor.go:176)
+//	rationale -> record.rationale | record.summary          (monitor.go:261)
 //
-// If the prompt never asks the agent for those fields, parseTrailMonitorOutput
-// fails -- and applyTrailOutput runs BEFORE the result is stored, so
-// completePromptAutomationResultFromText calls failPromptAutomationResult and
-// returns nil. The narrative is discarded along with the value. A prompt that
-// forgets its own monitor field does not degrade; it destroys the whole run.
+// The same three value types are what the column accepts:
+// internal/store/migrations/repo/042_trails_runner_family.sql:57-62.
+//
+// If the prompt never asks the agent for those fields, MonitorResult returns an
+// error and the failure is destructive: internal/runner/handlers.go:4179 calls
+// failSnapshot with ReasonMonitorOutputRejected and RETURNS, above the
+// CompleteRunWithResult at :4193 that would have stored the run. The narrative
+// is discarded along with the value. A prompt that forgets its own monitor field
+// does not degrade; it destroys the whole run.
 //
 // So this asserts the prompt names a field the platform will read for the value
 // and one it will read for the rationale, and for a size monitor that it names
@@ -210,7 +242,7 @@ func TestEveryPushTriggeredRunnerCarriesFirstClassTrailOutput(t *testing.T) {
 func TestEveryTrailMonitorRunnerPromptAsksForTheValueItDeclares(t *testing.T) {
 	t.Parallel()
 
-	// Keys automation-results.ts will read, per declared value_type.
+	// Keys runneroutput.MonitorResult will read, per declared value_type.
 	valueKeys := map[string][]string{
 		"percent": {"value", "score"},
 		"size":    {"value", "size"},
@@ -230,12 +262,12 @@ func TestEveryTrailMonitorRunnerPromptAsksForTheValueItDeclares(t *testing.T) {
 
 		accepted, known := valueKeys[monitor.ValueType]
 		if !known {
-			t.Errorf("%s declares value_type %q, which automation-results.ts does not parse; it accepts percent, size or boolean",
+			t.Errorf("%s declares value_type %q, which runneroutput.MonitorResult does not parse; it accepts percent, size or boolean",
 				runner.File, monitor.ValueType)
 			continue
 		}
 		if !namesOneOf(prompt, accepted) {
-			t.Errorf("%s declares a %s monitor but its prompt never asks the agent for %v, so parseTrailMonitorOutput finds no value, the run is failed and the narrative is discarded with it",
+			t.Errorf("%s declares a %s monitor but its prompt never asks the agent for %v, so MonitorResult finds no value, the run is failed and the narrative is discarded with it",
 				runner.File, monitor.ValueType, quoted(accepted))
 		}
 		if !namesOneOf(prompt, rationaleKeys) {
