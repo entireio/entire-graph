@@ -249,6 +249,25 @@ auto-generated notes on
   line with exit 2. The pin changes checkout only, never committed content, and
   no CI runner could see the problem because all of them check out LF.
 
+- The Graph Semantic Diff trail runner runs again, reports the semantic diff
+  rather than a textual one, and carries a sortable severity. Two separate
+  things stopped it. It declared `trigger_types` of `["api"]` alone -- the
+  only one of the seven checked-in runners that omitted `push` -- so no pushed
+  branch ever started it. Adding `push` was not enough on its own: the
+  platform only starts a pushed trail-prompt runner whose output also lands
+  somewhere a trail renders, and this runner declared no trail monitor, wrote
+  no trail field and was not a review runner, so it still fired on nothing.
+  Its absence from a trail read exactly like a monitor with nothing to say.
+  It now publishes a `Blast radius` monitor of `small`, `medium` or `large`,
+  judged from the dependent counts and change types in the entity-level diff,
+  which both clears that gate and gives a reviewer something to triage by.
+  Its prompt also treated `entire graph diff` as optional supplementary
+  evidence to `git diff`, and fell back silently; the entity-level diff is now
+  the runner's subject, and a fallback has to open its summary with
+  `Textual diff only:` and the reason. Because a dependent count of zero is
+  heuristic rather than proof, the prompt is now explicit that a zero may
+  never be reported as "safe", "isolated" or "no consumers".
+
 ## [0.5.0] - 2026-10-23
 
 ### Removed
